@@ -25,7 +25,7 @@
 # ******************************************************************************
 from fastapi import APIRouter
 from pyworkflow.project import Manager
-from typing import List, Any
+from typing import Any
 
 from app.backend.api.services.plugin_service import PluginService
 
