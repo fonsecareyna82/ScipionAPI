@@ -23,30 +23,18 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from fastapi import APIRouter
+from pyworkflow.project import Manager
+from typing import List, Any
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
-from app.backend.api.routers.plugin_router import router as plugins
+from app.backend.api.services.plugin_service import PluginService
 
-app = FastAPI(title="Scipion API")
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
+router = APIRouter(prefix="/plugins", tags=["Plugins"])
+manager = Manager()
+service = PluginService()
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+@router.get("/", response_model=Any)
+async def loadPlugins():
+    return service.getPlugins()
 

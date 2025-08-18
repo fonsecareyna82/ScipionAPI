@@ -23,3 +23,33 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from pyworkflow.object import Scalar
+
+
+def toSerializable(obj):
+    """Convert complex Python objects into JSON-serializable structures."""
+    from datetime import datetime, date
+    from decimal import Decimal
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: toSerializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple, set)):
+        return [toSerializable(item) for item in obj]
+    elif isinstance(obj, Scalar):
+        return obj.get()
+    elif hasattr(obj, "__dict__"):  # Any custom class
+        excludedKeys = ['__module__', '__init__', '__doc__', '_dist', '_plugin']
+        paramDict = {k: toSerializable(v) for k, v in obj.__dict__.items() if k not in excludedKeys}
+        return paramDict
+    else:
+        return str(obj)  # Last resort: convert to string
+
+
+def serializeToJson(obj):
+    """Serialize any Python object (even with 'weird' attributes) to JSON."""
+    return toSerializable(obj)
