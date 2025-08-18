@@ -1,4 +1,6 @@
+import os
 from typing import List, Dict, Optional
+from urllib.parse import urljoin
 
 from pyworkflow import Config
 from pyworkflow.project import Manager
@@ -45,6 +47,12 @@ class PluginService:
                 if pluginObj is not None:
                     if pluginObj._getPlugin():
                         serializedPlugin = serializeToJson(pluginObj)
+                        logo = serializedPlugin['logo'].lstrip('/')
+                        fullLogo = ''
+                        if logo:
+                            fullLogo = urljoin('https://scipion.i2pc.es/', logo)
+
+                        serializedPlugin['fullLogo'] = fullLogo
                         serializedPlugin['installed'] = False
                         pluginBinaryList = pluginObj.getInstallenv()
                         if pluginBinaryList is not None:
@@ -64,6 +72,12 @@ class PluginService:
                                 serializedPlugin['installed'] = True
                     else:
                         serializedPlugin = serializeToJson(pluginObj)
+                        logo = serializedPlugin['logo'].lstrip('/')
+                        fullLogo = ''
+                        if logo:
+                            fullLogo = urljoin('https://scipion.i2pc.es/', logo)
+
+                        serializedPlugin['fullLogo'] = fullLogo
                         serializedPlugin['installed'] = False
 
                     serializedList.append(serializedPlugin)
