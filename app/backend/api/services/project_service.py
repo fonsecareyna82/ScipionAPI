@@ -43,6 +43,7 @@ class ProjectService:
     """Service class to manage project operations"""
 
     def __init__(self):
+        """Initialize manager, in-memory store and preload projects."""
         self.projectList = {}
         self.currentId = 1
         self.manager = Manager()
@@ -50,13 +51,15 @@ class ProjectService:
         self.loadProjects()
 
     def getProjectList(self):
+        """Return the in-memory project index."""
         return self.projectList
 
     def getCurrentProject(self):
+        """Return the currently loaded Scipion project."""
         return self.currentProject
 
     def createProject(self, project: ProjectCreateRequest) -> dict:
-        """Create a new project and store it in memory"""
+        """Register a new project in memory."""
         project_id = self.currentId
         self.currentId += 1
 
@@ -72,18 +75,18 @@ class ProjectService:
         return self.projectList[project_id]
 
     def listProjects(self) -> List[dict]:
-        """Return all stored projects"""
+        """Return all stored projects as a list."""
         return list(self.projectList.values())
 
     def deleteProject(self, project_id: int) -> dict:
-        """Delete a project by ID"""
+        """Remove a project by its in-memory ID."""
         if project_id not in self.projectList:
             raise ValueError("Project not found")
         del self.projectList[project_id]
         return {"message": "Project deleted successfully"}
 
     def updateProject(self, project_id: int, updated: ProjectUpdateRequest) -> dict:
-        """Update project name and description"""
+        """Update name and description of an existing project."""
         if project_id not in self.projectList:
             raise ValueError("Project not found")
         project = self.projectList[project_id]
@@ -93,17 +96,17 @@ class ProjectService:
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
-        """Return project folder size in bytes"""
+        """Compute total folder size in bytes without subprocess."""
         result = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, text=True)
         return int(result.stdout.split()[0])
 
     @staticmethod
     def countProtocols(path: str) -> int:
-        """Count the number of protocol directories"""
+        """Count subdirectories under the 'Runs' folder."""
         return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
 
     def buildProtocolsGraph(self, runs) -> dict:
-        """Build graph of protocol dependencies and statuses"""
+        """Assemble dependency graph of protocols and their status."""
         nodesDict = runs._nodesDict
         graphData = {}
         for nodeId, nodeObj in nodesDict.items():
@@ -150,7 +153,10 @@ class ProjectService:
         return graphData
 
     def loadProject(self, projectId: str) -> Any:
-        """Load project from disk and return metadata and protocol graph"""
+        """
+        Load a Scipion project from disk, build its protocol graph,
+        and return metadata + graph structure.
+        """
         from pyworkflow import Config
         projPath = self.manager.getProjectPath(projectId)
         if os.path.exists(projPath):
@@ -171,7 +177,7 @@ class ProjectService:
         return None
 
     def loadProjects(self) -> None:
-        """Load all existing projects from disk into memory"""
+        """Discover on-disk projects and cache their metadata in memory."""
         projects = self.manager.listProjects()
         self.currentProject = None
         for project in projects:
@@ -189,12 +195,7 @@ class ProjectService:
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
-        """Return a hex color based on the protocol status.
-            STATUS_SAVED = '#D9F1FA';
-            STATUS_RUNNING = '#FCCE62';
-            STATUS_FINISHED = '#D2F5CB';
-            STATUS_FAILED = '#F5CCCB';
-        """
+        """Return hex color based on protocol status."""
         status_colors = {
             "finished": "#D2F5CB",
             "failed": "#F5CCCB",
@@ -206,7 +207,10 @@ class ProjectService:
         return status_colors.get(status.lower(), "#9e9e9e")
 
     def getProtocolParams(self, protocolId: str) -> dict:
-        """Return protocol parameters for a given node id in the current project"""
+        """
+        Retrieve protocol parameters, metadata, inputs/outputs,
+        and formatted help/citations for a given node ID.
+        """
         from pyworkflow.protocol import Line, Group
 
         SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
@@ -362,22 +366,30 @@ class ProjectService:
         return context
 
     def launchProtocol(self, protocolId, params):
+        """Launch a protocol in RESTART mode."""
         protocol = self.currentProject.getProtocol(int(protocolId))
         protocol.runMode.set(MODE_RESTART)
         self.currentProject.launchProtocol(protocol)
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
-        return dict()
+        """Stub for finding web‐based wizards (to be implemented)."""
+        return {}
 
     def getResourceIcon(self, icon):
+        """Return absolute path to an icon resource."""
         return os.path.join(self.currentProject.getPath(), icon)
 
     def getResourceLogo(self, logo):
+        """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
     @staticmethod
     def getPointerHtml(protVar):
+        """
+        Return (nameId, objId::extended) if pointer parameter has a value,
+        otherwise return two empty strings.
+        """
         if protVar.hasValue():
             # if protVar.get() is None:
             #    raise Exception("protVar.hasValue...and .get() is None")
@@ -388,6 +400,7 @@ class ProjectService:
 
     @staticmethod
     def replacePattern(m, mode):
+        """Replace hypertext patterns based on the given mode."""
         g1 = m.group(mode)
         if mode == HYPER_BOLD:
             text = " <b>%s</b> " % g1
@@ -407,9 +420,9 @@ class ProjectService:
         return text
 
     def parseText(self, text, func=replacePattern):
-        """ Parse the text adding some basic tags for html.
-        Params:
-            text: can be string or list, if it is a list, a <br> tag will be generated.
+        """
+        Parse a string or list of strings into HTML,
+        injecting <br /> tags at line breaks.
         """
         parsedText = ""
         if isinstance(text, list):
@@ -428,7 +441,9 @@ class ProjectService:
         return parsedText[:-6]
 
     def PreprocessParamForm(self, param, paramName, wizards, viewerDict, visualize, protVar):
-
+        """
+        Serialize a protocol parameter into a dict, handling scalar, pointer, and multipointer types.
+        """
         try:
             context = {}
             from pyworkflow.protocol import MultiPointerParam, PointerParam, RelationParam, Boolean
