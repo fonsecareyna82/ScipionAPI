@@ -48,6 +48,7 @@ class PluginService:
                     if pluginObj._getPlugin():
                         serializedPlugin = serializeToJson(pluginObj)
                         logo = serializedPlugin['logo'].lstrip('/')
+                        # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
                         fullLogo = ''
                         if logo:
                             fullLogo = urljoin('https://scipion.i2pc.es/', logo)
@@ -73,6 +74,7 @@ class PluginService:
                     else:
                         serializedPlugin = serializeToJson(pluginObj)
                         logo = serializedPlugin['logo'].lstrip('/')
+                        # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
                         fullLogo = ''
                         if logo:
                             fullLogo = urljoin('https://scipion.i2pc.es/', logo)
@@ -87,6 +89,13 @@ class PluginService:
 
         # Return a shallow copy to avoid external mutation
         return list(self._pluginsCache)
+
+    def getPlugin(self, pluginName):
+        plugins = self.getPlugins()
+        for plugin in plugins:
+            if plugin['pipName'] == pluginName:
+                return plugin
+        return None
 
     def clearCache(self) -> None:
         """

@@ -27,7 +27,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from typing import List, Any
 
-from pydantic import BaseModel
 from pyworkflow.object import Dict
 
 from app.backend.api.services.project_service import ProjectService
@@ -104,6 +103,6 @@ async def update_project(project_id: int, updated: ProjectUpdateRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/protocols/{protocolId}", response_model=Any)
-async def loadProtocol(protocolId: str):
-    return service.getProtocolParams(protocolId)
+@router.get("/{projectName}/{protocolId}", response_model=Any)
+async def loadProtocol(projectName: str, protocolId: str):
+    return service.getProtocolParams(projectName, protocolId)

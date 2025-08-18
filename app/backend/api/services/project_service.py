@@ -206,7 +206,7 @@ class ProjectService:
         }
         return status_colors.get(status.lower(), "#9e9e9e")
 
-    def getProtocolParams(self, protocolId: str) -> dict:
+    def getProtocolParams(self, projectName: str, protocolId: str) -> dict:
         """
         Retrieve protocol parameters, metadata, inputs/outputs,
         and formatted help/citations for a given node ID.
@@ -217,8 +217,7 @@ class ProjectService:
         OBJ_PARAMS = ['runName', 'comment']
         context = {}
 
-        if not self.currentProject:
-            raise ValueError("No project loaded")
+        self.loadProject(projectName)
         # Load the selected protocol
         protocol = self.currentProject.getProtocol(int(protocolId))
         hosts = self.currentProject.getHostNames()
