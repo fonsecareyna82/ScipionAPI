@@ -31,12 +31,12 @@ from datetime import datetime
 from pathlib import Path
 
 import pyworkflow
-from pyworkflow.object import String, Scalar
 from pyworkflow.project import Manager, Project
-from pyworkflow.protocol import PointerParam, MODE_RESTART
+from pyworkflow.protocol import MODE_RESTART
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 
 from app.backend.models.project_model import ProjectCreateRequest, ProjectUpdateRequest
+from app.utils.scipion_helper import serializeToJson
 
 
 class ProjectService:
@@ -102,8 +102,7 @@ class ProjectService:
         """Count the number of protocol directories"""
         return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
 
-    @staticmethod
-    def buildProtocolsGraph(runs) -> dict:
+    def buildProtocolsGraph(self, runs) -> dict:
         """Build graph of protocol dependencies and statuses"""
         nodesDict = runs._nodesDict
         graphData = {}
@@ -111,13 +110,42 @@ class ProjectService:
             childrenIds = [child.getName() for child in nodeObj._children]
             parentIds = [parent.getName() for parent in nodeObj._parents]
             status = nodeObj.run.getStatus() if nodeObj.run else ''
+            inputs = []
+            outputs = []
+            if nodeId != 'PROJECT':
+                protocol = self.currentProject.getProtocol(int(nodeId))
+                self.currentProject._fixProtParamsConfiguration(protocol)
+
+                # Iterate over the inputs
+                # input = {}
+                # for key, attr in protocol.iterInputAttributes():
+                #     input.setdefault(key, {})
+                #     input[key]['_class'] = attr.__class__.__name__
+                #     input[key]['info'] = attr.__str__()
+                #     input[key]['_objValue'] = attr.get()
+                #     inputs.append(input)
+
+                # Iterate over the outputs
+                output = {}
+                for key, attr in protocol.iterOutputAttributes():
+                    output.setdefault(key, {})
+                    output[key]['_class'] = attr.__class__.__name__
+                    try:
+                        output[key]['info'] = attr.__str__()
+                    except Exception as e:
+                        output[key]['info'] = ""
+                    output[key]['_objValue'] = "%s.%s" % (nodeObj.getLabel(), key)
+                    outputs.append(output)
+
             graphData[nodeId] = {
                 "id": nodeId,
                 "children": childrenIds,
                 "parents": parentIds,
                 "label": nodeObj.getLabel(),
                 "status": status,
-                "parameter": []
+                "parameter": [],
+                "inputs": inputs,
+                "outputs": outputs
             }
         return graphData
 
@@ -127,6 +155,7 @@ class ProjectService:
         projPath = self.manager.getProjectPath(projectId)
         if os.path.exists(projPath):
             Config.setDomain("pwem")
+            Config.getDomain()
             self.currentProject = Project(pyworkflow.Config.getDomain(), projPath)
             self.currentProject.load(dbPath=self.currentProject.getDbPath())
             runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
@@ -189,6 +218,7 @@ class ProjectService:
         # Load the selected protocol
         protocol = self.currentProject.getProtocol(int(protocolId))
         hosts = self.currentProject.getHostNames()
+        self.currentProject._fixProtParamsConfiguration(protocol)
 
         # Package logo
         package = protocol.getClassPackage()
@@ -197,7 +227,7 @@ class ProjectService:
         if path != '':
             logoPath = self.getResourceLogo(path)  # Logo
 
-        protLabel = str(protocol)  # Label
+        protName = str(protocol)
         status = protocol.getStatus()  # status
         cite = protocol.citations()
         help = protocol.getHelpText()
@@ -206,7 +236,7 @@ class ProjectService:
         context = {
             "id": protocolId,
             "label": label,
-            "protocolName": str(protocol),
+            "protocolName": protName,
             "status": status,
             "color": self.getProtocolColor(status),
             "projectName": self.currentProject.getName(),
@@ -236,6 +266,36 @@ class ProjectService:
 
         visualize = 0
         viewerDict = None
+
+        inputs = []
+        outputs = []
+
+        # Iterate over the inputs
+        input = {}
+        for key, attr in protocol.iterInputAttributes():
+            input.setdefault(key, {})
+            input[key]['_class'] = attr.__class__.__name__
+            try:
+                input[key]['info'] = attr.__str__()
+            except Exception as e:
+                input[key]['info'] = ""
+            input[key]['_objValue'] = "%s.%s" % (protName, key)
+            inputs.append(input)
+
+        # Iterate over the outputs
+        output = {}
+        for key, attr in protocol.iterOutputAttributes():
+            output.setdefault(key, {})
+            output[key]['_class'] = attr.__class__.__name__
+            try:
+                output[key]['info'] = attr.__str__()
+            except Exception as e:
+                output[key]['info'] = ""
+            output[key]['_objValue'] = "%s.%s" % (protName, key)
+            outputs.append(output)
+
+        context['inputs'] = inputs
+        context['outputs'] = outputs
 
         paramsData = []
         for section in protocol._definition.iterSections():
@@ -305,33 +365,6 @@ class ProjectService:
         protocol = self.currentProject.getProtocol(int(protocolId))
         protocol.runMode.set(MODE_RESTART)
         self.currentProject.launchProtocol(protocol)
-
-    def toSerializable(self, obj):
-        """Convert complex Python objects into JSON-serializable structures."""
-        from datetime import datetime, date
-        from decimal import Decimal
-        if isinstance(obj, (str, int, float, bool, type(None))):
-            return obj
-        elif isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        elif isinstance(obj, Decimal):
-            return float(obj)
-        elif isinstance(obj, dict):
-            return {k: self.toSerializable(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple, set)):
-            return [self.toSerializable(item) for item in obj]
-        elif isinstance(obj, Scalar):
-            return obj.get()
-        elif hasattr(obj, "__dict__"):  # Any custom class
-            excludedKeys = ['__module__', '__init__', '__doc__']
-            paramDict = {k: self.toSerializable(v) for k, v in obj.__dict__.items() if k not in excludedKeys}
-            return paramDict
-        else:
-            return str(obj)  # Last resort: convert to string
-
-    def serializeToJson(self, obj):
-        """Serialize any Python object (even with 'weird' attributes) to JSON."""
-        return self.toSerializable(obj)
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
@@ -411,11 +444,11 @@ class ProjectService:
                 context.setdefault(paramName, {})
                 # Public attributes
                 for name, value in param.getAttributes():
-                    context[paramName][name] = self.serializeToJson(value)
+                    context[paramName][name] = serializeToJson(value)
                 # Protected attributes
                 for name, value in vars(param).items():
                     if name != 'paramClass' and name != '_form':
-                        context[paramName][name] = self.serializeToJson(value)
+                        context[paramName][name] = serializeToJson(value)
 
                 context[paramName]['_class'] = param.__class__.__name__
                 if protVar is not None:
