@@ -23,4 +23,3 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from .task_queue import *

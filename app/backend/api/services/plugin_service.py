@@ -1,11 +1,14 @@
-import os
+import logging
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
 
+from app.backend.api.services.environment import prepareEnvironment
 from pyworkflow import Config
 from pyworkflow.project import Manager
-from scipion.install.plugin_funcs import PluginRepository, NULL_VERSION
+from scipion.install.plugin_funcs import PluginRepository
 from app.utils.scipion_helper import serializeToJson
+
+logger = logging.getLogger(__name__)
 
 
 class PluginService:
@@ -47,17 +50,15 @@ class PluginService:
                 if pluginObj is not None:
                     if pluginObj._getPlugin():
                         serializedPlugin = serializeToJson(pluginObj)
+                        serializedPlugin['installed'] = True
                         logo = serializedPlugin['logo'].lstrip('/')
                         # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
                         fullLogo = ''
                         if logo:
                             fullLogo = urljoin('https://scipion.i2pc.es/', logo)
-
                         serializedPlugin['fullLogo'] = fullLogo
-                        serializedPlugin['installed'] = False
                         pluginBinaryList = pluginObj.getInstallenv()
                         if pluginBinaryList is not None:
-                            binariesInstalled = 0
                             binaryList = pluginBinaryList.getPackages()
                             keys = sorted(binaryList.keys())
                             serializedPlugin.setdefault('binaries', {})
@@ -67,10 +68,7 @@ class PluginService:
                                 for binary, version in pVersions:
                                     installed = pluginBinaryList._isInstalled(binary, version)
                                     serializedPlugin['binaries'][k][binary + '-' + version] = installed
-                                    if installed:
-                                        binariesInstalled += 1
-                            if binariesInstalled:
-                                serializedPlugin['installed'] = True
+
                     else:
                         serializedPlugin = serializeToJson(pluginObj)
                         logo = serializedPlugin['logo'].lstrip('/')
@@ -102,3 +100,36 @@ class PluginService:
         Clears the internal plugins cache.
         """
         self._pluginsCache = None
+
+    def installPlugin(self, pluginName) -> dict:
+        prepareEnvironment()
+        plugin = self.pluginRepository.getPlugins()[pluginName]
+        # installing the plugin
+        try:
+            plugin.installPipModule()
+            plugin.installBin({"args": ["-j", '3']})
+            self.refreshPluginCache(pluginName, True)
+        except Exception as e:
+            logger.exception("Error installing the plugin.")
+            return {'installed': 'FAILURE'}
+        return {'installed': 'SUCCESS'}
+
+    def uninstallPlugin(self, pluginName) -> dict:
+        prepareEnvironment()
+        plugin = self.pluginRepository.getPlugins()[pluginName]
+        # installing the plugin
+        try:
+            if plugin.isInstalled():
+                plugin.uninstallBins()
+                plugin.uninstallPip()
+            self.refreshPluginCache(pluginName, False)
+        except Exception as e:
+            logger.exception("Error uninstalling the plugin.")
+            return {'uninstalled': 'FAILURE'}
+        return {'uninstalled': 'SUCCESS'}
+
+    def refreshPluginCache(self, pluginName, installed):
+        self.getPlugins()
+        for plugin in self._pluginsCache:
+            if plugin['pipName'] == pluginName:
+                plugin['installed'] = installed
