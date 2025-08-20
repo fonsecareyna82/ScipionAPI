@@ -23,18 +23,71 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import logging
+from celery import Celery, Task
 
-from celery import Celery
-import os
-import time
 
 celeryApp = Celery('scipionweb')
 celeryApp.config_from_object('app.celeryconfig')
 
-@celeryApp.task
-def runDummyProtocol(projectName: str, protocolName: str) -> str:
-    # Simulate a long-running Scipion protocol
-    time.sleep(2)
-    os.makedirs(f"./projects/{projectName}", exist_ok=True)
-    return f"Protocol '{protocolName}' executed successfully in project '{projectName}'."
+from app.backend.api.services.environment import prepareEnvironment
 
+logger = logging.getLogger(__name__)
+
+
+class InstallPluginTask(Task):
+    autoretry_for = (Exception,)
+    retry_backoff = True
+    retry_backoff_max = 600
+    max_retries = 3
+    acks_late = True
+
+    def on_retry(self, exc, task_id, args, kwargs, einfo):
+        self.update_state(state="RETRY", meta={"error": str(exc)})
+        super().on_retry(exc, task_id, args, kwargs, einfo)
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        logger.error(f"Task {task_id} failed: {exc}")
+        super().on_failure(exc, task_id, args, kwargs, einfo)
+
+
+@celeryApp.task(
+    base=InstallPluginTask,
+    bind=True,
+    name="app.tasks.installPluginTask",
+)
+def installPluginTask(self, pip_name: str) -> str:
+    # Step 1: Load the service
+    self.update_state(state="PROGRESS", meta={"step": "loading_service"})
+    from app.backend.api.services.plugin_service import PluginService
+    service = PluginService()
+
+    # Step 2: Get the plugin
+    self.update_state(state="PROGRESS", meta={"step": "fetching_plugin"})
+    plugins_map = service.pluginRepository.getPlugins(getPipData=True)
+    plugin = plugins_map.get(pip_name)
+    if plugin is None:
+        raise ValueError(f"No existe plugin con pipName ‘{pip_name}’")
+
+    # Step 3: Prepare the environment
+    self.update_state(state="PROGRESS", meta={"step": "preparing_environment"})
+    prepareEnvironment()
+
+    # Step 4: Install the plugin
+    self.update_state(state="PROGRESS", meta={"step": "installing_pip_module"})
+    try:
+        plugin.installPipModule()
+    except Exception as e:
+        logger.exception("Error en installPipModule")
+        raise
+
+    # Step 5: Install binaries
+    self.update_state(state="PROGRESS", meta={"step": "installing_binaries"})
+    try:
+        plugin.installBin({"args": ["-j", 3]})
+    except Exception as e:
+        logger.exception("Error en installBin")
+        raise
+    # Final
+    self.update_state(state="SUCCESS", meta={"step": "completed"})
+    return f"Plugin {pip_name} installed successfully!"

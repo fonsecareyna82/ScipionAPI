@@ -23,38 +23,17 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import subprocess
-import time
-
-from fastapi import APIRouter, HTTPException
-from pyworkflow.project import Manager
+from pydantic import BaseModel, ConfigDict
 from typing import Any
-from app.backend.api.services.plugin_service import PluginService
-
-router = APIRouter(prefix="/plugins", tags=["Plugins"])
-manager = Manager()
-service = PluginService()
 
 
-@router.get("/", response_model=Any)
-async def loadPlugins():
-    return service.getPlugins()
+class PluginRequest(BaseModel):
+    pluginName: str
+    params: Any
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-@router.get("/{pluginName}", response_model=Any)
-async def loadPlugin(pluginName: str):
-    return service.getPlugin(pluginName)
+    def getPluginName(self):
+        return self.pluginName
 
-
-@router.post("/install/{pluginName}", response_model=Any)
-async def installPlugin(pluginName: str):
-    return service.installPlugin(pluginName)
-
-@router.post("/uninstall/{pluginName}", response_model=Any)
-async def uninstallPlugin(pluginName: str):
-    return service.uninstallPlugin(pluginName)
-
-@router.get("/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    from app.workers.task_queue import installPluginTask
-    task = installPluginTask.AsyncResult(task_id)
-    return {"status": task.status, "result": task.result}
+    def getParams(self):
+        return self.params

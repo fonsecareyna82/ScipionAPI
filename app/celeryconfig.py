@@ -24,6 +24,11 @@
 # *
 # ******************************************************************************
 
-broker_url = 'redis://localhost:6379/0'
-result_backend = 'redis://localhost:6379/0'
+broker_url = "redis://localhost:6379/0"       # broker to send tasks
+result_backend = "redis://localhost:6379/0"   # backend to store results
+accept_content = ["json"]
+task_serializer = "json"
+result_serializer = "json"
+timezone = "UTC"
+enable_utc = True
 
