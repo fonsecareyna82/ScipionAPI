@@ -23,10 +23,14 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from concurrent.futures import ThreadPoolExecutor
+
 import subprocess
 import time
+import asyncio
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 
-from fastapi import APIRouter, HTTPException
 from pyworkflow.project import Manager
 from typing import Any
 from app.backend.api.services.plugin_service import PluginService
@@ -40,6 +44,7 @@ service = PluginService()
 async def loadPlugins():
     return service.getPlugins()
 
+
 @router.get("/{pluginName}", response_model=Any)
 async def loadPlugin(pluginName: str):
     return service.getPlugin(pluginName)
@@ -47,11 +52,17 @@ async def loadPlugin(pluginName: str):
 
 @router.post("/install/{pluginName}", response_model=Any)
 async def installPlugin(pluginName: str):
-    return service.installPlugin(pluginName)
+    loop = asyncio.get_running_loop()
+    asyncio.ensure_future(
+        loop.run_in_executor(None, service.installPlugin, pluginName)
+    )
+    return {"status": "installation_started"}
+
 
 @router.post("/uninstall/{pluginName}", response_model=Any)
 async def uninstallPlugin(pluginName: str):
     return service.uninstallPlugin(pluginName)
+
 
 @router.get("/tasks/{task_id}")
 async def get_task_status(task_id: str):
