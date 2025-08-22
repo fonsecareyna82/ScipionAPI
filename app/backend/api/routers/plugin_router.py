@@ -52,16 +52,23 @@ async def loadPlugin(pluginName: str):
 
 @router.post("/install/{pluginName}", response_model=Any)
 async def installPlugin(pluginName: str):
-    loop = asyncio.get_running_loop()
-    asyncio.ensure_future(
-        loop.run_in_executor(None, service.installPlugin, pluginName)
-    )
-    return {"status": "installation_started"}
+    try:
+        loop = asyncio.get_running_loop()
+        await asyncio.ensure_future(
+            loop.run_in_executor(None, service.installPlugin, pluginName)
+        )
+        return {"status": "installation_started"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/uninstall/{pluginName}", response_model=Any)
 async def uninstallPlugin(pluginName: str):
-    return service.uninstallPlugin(pluginName)
+    loop = asyncio.get_running_loop()
+    await asyncio.ensure_future(
+        loop.run_in_executor(None, service.uninstallPlugin, pluginName)
+    )
+    return {"status": "installation_started"}
 
 
 @router.get("/tasks/{task_id}")

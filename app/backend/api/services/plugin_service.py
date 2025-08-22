@@ -1,8 +1,9 @@
+import subprocess
+
 import logging
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
 
-from app.backend.api.services.environment import prepareEnvironment
 from pyworkflow import Config
 from pyworkflow.project import Manager
 from scipion.install.plugin_funcs import PluginRepository
@@ -51,6 +52,9 @@ class PluginService:
                     if pluginObj._getPlugin():
                         serializedPlugin = serializeToJson(pluginObj)
                         serializedPlugin['installed'] = True
+                        serializedPlugin['toUpdate'] = False
+                        if pluginObj.latestRelease != pluginObj.pipVersion:
+                            serializedPlugin['toUpdate'] = True
                         logo = serializedPlugin['logo'].lstrip('/')
                         # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
                         fullLogo = ''
@@ -101,35 +105,59 @@ class PluginService:
         """
         self._pluginsCache = None
 
+    # def installPlugin(self, pluginName) -> dict:
+    #     status = 'SUCCESS'
+    #
+    #     try:
+    #         result = subprocess.run(
+    #             ['./scipion3', 'installp', '-p', pluginName],
+    #             capture_output=True,
+    #             text=True
+    #         )
+    #         if result.returncode != 0:
+    #             logger.error(f"Error installing plugin '{pluginName}': {result.stderr}")
+    #             status = 'FAILURE'
+    #         else:
+    #             logger.info(f"Plugin '{pluginName}' installed successfully: {result.stdout}")
+    #
+    #     except Exception as e:
+    #         logger.exception(f"Exception during plugin installation: {e}")
+    #         status = 'FAILURE'
+    #
+    #     self.clearCache()
+    #     self.getPlugins(forceRefresh=True)
+    #
+    #     return {'installed': status}
+
     def installPlugin(self, pluginName) -> dict:
-        prepareEnvironment()
-        plugin = self.pluginRepository.getPlugins()[pluginName]
+        plugin = self.pluginRepository.getPlugins(getPipData=True)[pluginName]
+        status = 'SUCCESS'
         # installing the plugin
         try:
-            plugin.installPipModule()
-            plugin.installBin({"args": ["-j", '3']})
-            self.refreshPluginCache(pluginName, True)
-        except Exception as e:
+            installed = plugin.installPipModule()
+            if installed:
+                plugin.installBin()
+        except Exception as e:  # Rollback the installation
+            plugin.uninstallBins()
+            plugin.uninstallPip()
             logger.exception("Error installing the plugin.")
-            return {'installed': 'FAILURE'}
-        return {'installed': 'SUCCESS'}
+            status = 'FAILURE'
+        self.clearCache()
+        self.getPlugins(forceRefresh=True)
+        return {'installed': status}
 
     def uninstallPlugin(self, pluginName) -> dict:
-        prepareEnvironment()
         plugin = self.pluginRepository.getPlugins()[pluginName]
+        pluginClassName = plugin.getPluginClass().name
+        status = 'SUCCESS'
         # installing the plugin
         try:
             if plugin.isInstalled():
                 plugin.uninstallBins()
                 plugin.uninstallPip()
-            self.refreshPluginCache(pluginName, False)
         except Exception as e:
             logger.exception("Error uninstalling the plugin.")
-            return {'uninstalled': 'FAILURE'}
-        return {'uninstalled': 'SUCCESS'}
-
-    def refreshPluginCache(self, pluginName, installed):
-        self.getPlugins()
-        for plugin in self._pluginsCache:
-            if plugin['pipName'] == pluginName:
-                plugin['installed'] = installed
+            status = 'FAILURE'
+        self.clearCache()
+        self.getPlugins(forceRefresh=True)
+        return {'uninstalled': status}
