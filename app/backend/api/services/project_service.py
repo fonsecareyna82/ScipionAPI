@@ -216,10 +216,10 @@ class ProjectService:
         SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
         OBJ_PARAMS = ['runName', 'comment']
         context = {}
-
         self.loadProject(projectName)
         # Load the selected protocol
         protocol = self.currentProject.getProtocol(int(protocolId))
+        protocol.getPlugin()
         hosts = self.currentProject.getHostNames()
         self.currentProject._fixProtParamsConfiguration(protocol)
 
@@ -264,8 +264,8 @@ class ProjectService:
         # viewers = findViewersWeb(protocol)
 
         # Process citations and documentation
-        protocol.htmlCitations = self.parseText(protocol.citations())
-        protocol.htmlDoc = self.parseText(protocol.getDoc())
+        #protocol.htmlCitations = self.parseText(protocol.citations())
+        #protocol.htmlDoc = self.parseText(protocol.getDoc())
 
         visualize = 0
         viewerDict = None

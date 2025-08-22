@@ -30,7 +30,7 @@ from datetime import datetime
 
 class ProjectCreateRequest(BaseModel):
     name: str
-    description: str | None = None
+    description: str
     created_at: datetime = datetime.now()
     status: str = 'PENDING'
     protocolsCount: str = '0'
@@ -40,7 +40,7 @@ class ProjectCreateRequest(BaseModel):
 class ProjectResponse(BaseModel):
     id: str
     name: str
-    description: str | None = None
+    description: str
     created_at: datetime
     status: str
     protocolsCount: str = '0'

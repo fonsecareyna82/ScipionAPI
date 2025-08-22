@@ -192,6 +192,7 @@ def prepareEnvironment():
         SCIPION_VERSION = getVersion()
         SCIPION_PYTHON = PYTHON
         SCIPION_TESTS_CMD = os.environ.get("SCIPION_TESTS_CMD", '%s %s' % (SCIPION_EP, MODE_TESTS))
+        CONDA_ACTIVATION_CMD = os.environ.get('CONDA_ACTIVATION_CMD', 'eval "$(/home/yunior/miniconda3/bin/conda shell.bash hook)" ')
 
         # Priority package list
         SCIPION_PRIORITY_PACKAGE_LIST = "pwem tomo pwchem"
@@ -214,6 +215,7 @@ def prepareEnvironment():
         VARS['SCIPION_LOCAL_CONFIG'] = Vars.SCIPION_LOCAL_CONFIG
         VARS['SCIPION_HOSTS'] = Vars.SCIPION_HOSTS
         VARS['SCIPION_PRIORITY_PACKAGE_LIST'] = Vars.SCIPION_PRIORITY_PACKAGE_LIST
+        VARS['CONDA_ACTIVATION_CMD'] = Vars.CONDA_ACTIVATION_CMD
 
         # Read main config file
         config2Dict(Vars.SCIPION_CONFIG, VARS)
@@ -237,4 +239,5 @@ def prepareEnvironment():
     VARS.update(pwVARS)
     # Update the environment now with pyworkflow values.
     os.environ.update(VARS)
+    os.chdir(scipionHome)
     # Check mode
