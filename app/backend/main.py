@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.backend.api.routers.project_router import router as projects
 from app.backend.api.routers.protocol_router import router as protocols
 from app.backend.api.routers.plugin_router import router as plugins
-from app.backend.api.routers.auth import router as auth
+from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.services.environment import prepareEnvironment
 
 
