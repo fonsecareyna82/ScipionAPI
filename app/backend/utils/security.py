@@ -23,35 +23,19 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+# utils/security.py
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
-from app.backend.api.routers.plugin_router import router as plugins
-from app.backend.api.routers.auth import router as auth
-from app.backend.api.services.environment import prepareEnvironment
+from passlib.context import CryptContext
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-app = FastAPI(title="Scipion API", debug=True)
+def hashPassword(password: str) -> str:
+    # Hash the plain password using bcrypt
+    return pwd_context.hash(password)
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-prepareEnvironment()
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
-app.include_router(auth)
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
+def verifyPassword(plainPassword: str, hashedPassword: str) -> bool:
+    # Verify that the plain password matches the hashed one
+    return pwd_context.verify(plainPassword, hashedPassword)

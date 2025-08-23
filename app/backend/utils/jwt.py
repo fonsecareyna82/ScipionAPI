@@ -23,35 +23,31 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+# utils/jwt.py
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
-from app.backend.api.routers.plugin_router import router as plugins
-from app.backend.api.routers.auth import router as auth
-from app.backend.api.services.environment import prepareEnvironment
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from typing import Optional
+import os
 
-
-app = FastAPI(title="Scipion API", debug=True)
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-prepareEnvironment()
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
-app.include_router(auth)
+# Secret key and algorithm
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+def createAccessToken(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    # Create a JWT token with expiration
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
+def decodeAccessToken(token: str) -> Optional[dict]:
+    # Decode and validate the JWT token
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None

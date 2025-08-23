@@ -3,3 +3,11 @@ uvicorn
 celery
 redis
 requests
+psycopg2-binary
+sqlalchemy
+alembic
+python-dotenv
+passlib[bcrypt]
+python-jose
+pydantic
+pydantic[email]
