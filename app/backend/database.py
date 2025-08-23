@@ -23,35 +23,34 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+# database.py
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
-from app.backend.api.routers.plugin_router import router as plugins
-from app.backend.api.routers.auth import router as auth
-from app.backend.api.services.environment import prepareEnvironment
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
-app = FastAPI(title="Scipion API", debug=True)
+# Get the database connection URL from the environment
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Create the SQLAlchemy engine using the database URL
+engine = create_engine(DATABASE_URL)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Create a session factory bound to the engine
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-prepareEnvironment()
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
-app.include_router(auth)
+# Base class for all ORM models
+Base = declarative_base()
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
+# Dependency to get a database session in FastAPI routes
+def getDb():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
