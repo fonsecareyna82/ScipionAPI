@@ -25,9 +25,9 @@
 # ******************************************************************************
 # routers/auth_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.backend.api.schemas.user import UserCreate, UserOut
+from app.backend.api.schemas.user import UserCreate, UserOut, SignupResponse, LoginResponse, LoginRequest
 from app.backend.database import getDb
 from app.backend.models.user import User
 from app.backend.utils.security import hashPassword, verifyPassword
@@ -37,28 +37,38 @@ from app.backend.api.dependencies import getCurrentUser
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/register", response_model=UserOut)
-def register(user_data: UserCreate, db: Session = Depends(getDb)):
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-    if existing_user:
+@router.post("/signup", response_model=SignupResponse)
+def signup(userData: UserCreate, db: Session = Depends(getDb)):
+    existingUser = db.query(User).filter(User.email == userData.email).first()
+    if existingUser:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    hashed_pw = hashPassword(user_data.password)
-    new_user = User(email=user_data.email, username=user_data.username, hashed_password=hashed_pw)
-    db.add(new_user)
+    hashedPw = hashPassword(userData.password)
+    newUser = User(
+        email=userData.email,
+        hashedPassword=hashedPw,
+        firstName=userData.firstName,
+        lastName=userData.lastName,
+        institution=userData.institution,
+        role="user",
+        isActive=True
+    )
+    db.add(newUser)
     db.commit()
-    db.refresh(new_user)
-    return new_user
+    db.refresh(newUser)
+
+    token = createAccessToken({"sub": str(newUser.id)})
+    return SignupResponse(accessToken=token, tokenType="bearer")
 
 
 @router.post("/login")
-def login(user_data: UserCreate, db: Session = Depends(getDb)):
+def login(user_data: LoginRequest, db: Session = Depends(getDb)):
     user = db.query(User).filter(User.email == user_data.email).first()
     if not user or not verifyPassword(user_data.password, user.hashedPassword):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = createAccessToken({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    return LoginResponse(accessToken=token, tokenType="bearer")
 
 
 @router.get("/me", response_model=UserOut)

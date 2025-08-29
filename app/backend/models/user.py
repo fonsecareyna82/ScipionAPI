@@ -24,7 +24,11 @@ class User(Base):
     # Role of the user (e.g., "admin", "user")
     role = Column(String, default="user")
 
+    firstName = Column(String, nullable=True)
+    lastName = Column(String, nullable=True)
+    institution = Column(String, nullable=True)
+
     projects = relationship("Project", back_populates="owner")
 
-    username = Column(String, unique=True, index=True, nullable=False)
+
 
