@@ -1,6 +1,7 @@
 # schemas/user.py
+from pydantic import BaseModel, EmailStr, Field, validator
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from app.backend.api.routers.project_router import router
 
 
 class UserCreate(BaseModel):
@@ -11,7 +12,7 @@ class UserCreate(BaseModel):
     institution: str
 
     # Validate password complexity
-    @field_validator("password")
+    @validator("password")
     @classmethod
     def validatePassword(cls, passwordValue: str) -> str:
         # Password must contain at least one letter and one number
@@ -20,7 +21,7 @@ class UserCreate(BaseModel):
         return passwordValue
 
     # Validate email domain
-    @field_validator("email")
+    @validator("email")
     @classmethod
     def validateEmailDomain(cls, emailValue: str) -> str:
         # Reject temporary or disposable email domains
@@ -57,3 +58,18 @@ class LoginResponse(BaseModel):
 class SignupResponse(BaseModel):
     accessToken: str  # JWT token for authentication
     tokenType: str  # Token type used in Authorization header
+
+
+class ErrorResponse(BaseModel):
+    detail: str
+
+
+@router.post(
+    "/signup",
+    response_model=SignupResponse,
+    responses={400: {"model": ErrorResponse}}
+)
+
+
+class ResendCodeRequest(BaseModel):
+    email: EmailStr
