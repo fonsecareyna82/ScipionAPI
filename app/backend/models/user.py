@@ -27,6 +27,8 @@ class User(Base):
     firstName = Column(String, nullable=True)
     lastName = Column(String, nullable=True)
     institution = Column(String, nullable=True)
+    isVerified = Column(Boolean, default=False)
+    verificationCode = Column(String, nullable=True)
 
     projects = relationship("Project", back_populates="owner")
 

@@ -12,3 +12,4 @@ python-jose
 pydantic
 pydantic[email]
 bcrypt==3.2.0
+fastapi_mail

@@ -22,13 +22,11 @@ def registerValidationHandler(app):
 # Not found error handler
 def registerNotFoundHandler(app):
     @app.exception_handler(HTTPException)
-    async def notFoundHandler(request: Request, exc: HTTPException):
-        if exc.status_code == HTTP_404_NOT_FOUND:
-            return JSONResponse(
-                status_code=HTTP_404_NOT_FOUND,
-                content={"detail": "Route not found", "path": request.url.path}
-            )
-        raise exc
+    async def notFoundHandler(request, exc):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail}
+        )
 
 
 # Internal server error handler
