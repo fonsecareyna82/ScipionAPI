@@ -29,7 +29,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.backend.api.schemas.user import UserCreate, UserOut, SignupResponse, LoginResponse, LoginRequest, \
-    ResendCodeRequest, ErrorResponse
+    ResendCodeRequest, ErrorResponse, UserUpdate
 from app.backend.database import getDb
 from app.backend.models.user import User
 from app.backend.utils.email import sendVerificationEmail
@@ -118,4 +118,18 @@ def login(loginData: LoginRequest, db: Session = Depends(getDb)):
 
 @router.get("/me", response_model=UserOut)
 def getMe(currentUser: User = Depends(getCurrentUser)):
+    return currentUser
+
+
+@router.put("/me", response_model=UserOut)
+def updateMe(
+    updates: UserUpdate,
+    db: Session = Depends(getDb),
+    currentUser: User = Depends(getCurrentUser)
+):
+    for field, value in updates.dict(exclude_unset=True).items():
+        setattr(currentUser, field, value)
+
+    db.commit()
+    db.refresh(currentUser)
     return currentUser
