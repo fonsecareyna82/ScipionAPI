@@ -27,6 +27,12 @@ class User(Base):
     firstName = Column(String, nullable=True)
     lastName = Column(String, nullable=True)
     institution = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    position = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    postalCode = Column(String, nullable=True)
+
     isVerified = Column(Boolean, default=False)
     verificationCode = Column(String, nullable=True)
 

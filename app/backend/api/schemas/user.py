@@ -1,4 +1,6 @@
 # schemas/user.py
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field, validator
 
 from app.backend.api.routers.project_router import router
@@ -40,6 +42,11 @@ class UserOut(BaseModel):
     firstName: str
     lastName: str
     institution: str
+    phone: Optional[str]
+    position: Optional[str]
+    country: Optional[str]
+    city: Optional[str]
+    postalCode: Optional[str]
 
     class Config:
         orm_mode = True  # Enables compatibility with SQLAlchemy models
@@ -69,7 +76,31 @@ class ErrorResponse(BaseModel):
     response_model=SignupResponse,
     responses={400: {"model": ErrorResponse}}
 )
-
-
 class ResendCodeRequest(BaseModel):
     email: EmailStr
+
+
+class UserResponse(BaseModel):
+    email: str
+    firstName: str
+    lastName: str
+    institution: Optional[str]
+    phone: Optional[str]
+    position: Optional[str]
+    country: Optional[str]
+    city: Optional[str]
+    postalCode: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+
+class UserUpdate(BaseModel):
+    firstName: Optional[str]
+    lastName: Optional[str]
+    institution: Optional[str]
+    phone: Optional[str]
+    position: Optional[str]
+    country: Optional[str]
+    city: Optional[str]
+    postalCode: Optional[str]
