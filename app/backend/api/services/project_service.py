@@ -115,8 +115,12 @@ class ProjectService:
             status = nodeObj.run.getStatus() if nodeObj.run else ''
             inputs = []
             outputs = []
+            cpuTime = ''
+            elapsedTime = ''
             if nodeId != 'PROJECT':
                 protocol = self.currentProject.getProtocol(int(nodeId))
+                cpuTime = str(protocol.cpuTime)
+                elapsedTime = str(protocol.getElapsedTime().total_seconds()).split('.')[0]
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
                 # Iterate over the inputs
@@ -148,7 +152,9 @@ class ProjectService:
                 "status": status,
                 "parameter": [],
                 "inputs": inputs,
-                "outputs": outputs
+                "outputs": outputs,
+                "cpuTime": cpuTime,
+                "elapsedTime": elapsedTime
             }
         return graphData
 
