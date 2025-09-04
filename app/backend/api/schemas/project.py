@@ -21,8 +21,8 @@ class ProjectOut(BaseModel):
     status: str
     createdAt: datetime
     updatedAt: Optional[datetime]
-    protocolsCount = 0,
-    diskUsage = f"{0.0} GB"
+    protocolsCount: int = 0,
+    diskUsage: str = f"{0.0} GB"
 
     class Config:
         orm_mode = True

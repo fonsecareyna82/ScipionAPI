@@ -26,95 +26,152 @@
 
 import os
 import subprocess
-from typing import List, Any
-from datetime import datetime
 from pathlib import Path
-
-import pyworkflow
-from pyworkflow.project import Manager, Project
+from datetime import datetime
+from typing import List, Optional, Any
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+from pyworkflow import Config
+from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol import MODE_RESTART
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
+from app.backend.api.schemas.project import ProjectCreate
 
-from app.backend.models.project import ProjectCreateRequest, ProjectUpdateRequest
+
+from app.backend.models.project import Project as DbProject, ProjectCreateRequest, ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
 class ProjectService:
-    """Service class to manage project operations"""
-
     def __init__(self):
-        """Initialize manager, in-memory store and preload projects."""
+        Config.setDomain("pwem")
+        Config.getDomain()
         self.manager = Manager()
         self.currentProject = None
 
-    def createProject(self, project: ProjectCreateRequest) -> dict:
-        """Create a new Scipion project using Manager"""
-        proj = self.manager.createProject(project.name)
-        proj.setShortDescription(project.description or "")
-        proj.save()
+    def createProject(self, db: Session, projectData: ProjectCreate, currentUser) -> dict:
+        # Check if a project with the same name already exists for this user
+        existing = db.query(DbProject).filter_by(name=projectData.name, ownerId=currentUser.id).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A project with this name already exists for the current user"
+            )
+
+        # Check if the project already exists in the file system (Scipion)
+        scipionPath = self.manager.getProjectPath(projectData.name)
+        if os.path.exists(scipionPath):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A project with this name already exists in the file system"
+            )
+
+        # Create the project in Scipion
+        proj = self.manager.createProject(projectData.name)
+        proj.setComment(projectData.description or "")
+
+        # Save the project metadata in the database
+        dbProject = DbProject(
+            name=proj.getName(),
+            description=projectData.description,
+            status=projectData.status,
+            ownerId=currentUser.id,
+            createdAt=datetime.utcnow()
+        )
+        db.add(dbProject)
+        db.commit()
+        db.refresh(dbProject)
+
+        # Return the response payload
         return {
-            "id": proj.getName(),
-            "name": proj.getName(),
-            "description": project.description or "",
-            "created_at": proj.getCreationTime(),
-            "status": "created",
+            "id": dbProject.id,
+            "name": dbProject.name,
+            "description": dbProject.description,
+            "createdAt": dbProject.createdAt,
+            "status": dbProject.status,
             "protocolsCount": 0,
-            "diskUsage": "0 GB"
+            "diskUsage": f"{0.0} GB"
         }
 
-    def listProjects(self, db, currentUser) -> List[dict]:
-        """List projects from Manager and return metadata"""
-        projects = self.manager.listProjects()
+    def listProjects(self, db: Session, currentUser) -> List[dict]:
+        dbProjects = db.query(DbProject).filter_by(ownerId=currentUser.id).all()
         result = []
-        for index, p in enumerate(projects):
-            size_gb = self.getProjectSize(p.path) / (1024 ** 3)
-            prot_count = self.countProtocols(os.path.join(p.path, "Runs"))
+        for db_proj in dbProjects:
+            path = self.manager.getProjectPath(db_proj.name)
+            sizeGB = self.getProjectSize(path) / (1024 ** 3)
+            protCount = self.countProtocols(os.path.join(path, "Runs"))
             result.append({
-                "id": str(index),
-                "name": p.getName(),
-                "description": p.getName(),
-                "createdAt": p.getCreationTime(),
-                "status": "created",
-                "protocolsCount": str(prot_count),
-                "diskUsage": f"Total size: {size_gb:.2f} GB"
+                "id": db_proj.id,
+                "name": os.path.basename(db_proj.name),
+                "description": db_proj.description,
+                "createdAt": db_proj.createdAt,
+                "status": db_proj.status,
+                "protocolsCount": str(protCount),
+                "diskUsage": f"{sizeGB:.2f} GB"
             })
         return result
 
-    def deleteProject(self, project_id: str) -> dict:
-        """Delete a project via Manager"""
-        path = self.manager.getProjectPath(project_id)
-        if not os.path.exists(path):
-            raise ValueError("Project not found")
-        self.manager.deleteProject(project_id)
-        return {"message": "Project deleted successfully"}
+    def getProjectById(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
+        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+        if not dbProj:
+            return None
 
-    def updateProject(self, project_id: str, updated: ProjectUpdateRequest) -> dict:
-        """Update project metadata"""
-        projPath = self.manager.getProjectPath(project_id)
+        path = self.manager.getProjectPath(dbProj.name)
+        if not os.path.exists(path):
+            return None
+
+        return self.loadProject(dbProj)
+
+    def updateProject(self, db: Session, projectId: int, updated: ProjectUpdateRequest, currentUser) -> Optional[dict]:
+        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+        if not dbProj:
+            return None
+
+        projPath = self.manager.getProjectPath(dbProj.name)
         if not os.path.exists(projPath):
-            raise ValueError("Project not found")
-        proj = Project(pyworkflow.Config.getDomain(), projPath)
+            return None
+
+        proj = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         proj.load(dbPath=proj.getDbPath())
         proj.setShortDescription(updated.description or "")
         proj.rename(updated.name)
         proj.save()
+
+        dbProj.name = updated.name
+        dbProj.description = updated.description
+        db.commit()
+        db.refresh(dbProj)
+
         return {
-            "id": proj.getName(),
-            "name": proj.getName(),
-            "description": updated.description or "",
-            "created_at": proj.getCreationTime(),
-            "status": "updated"
+            "id": dbProj.id,
+            "name": dbProj.name,
+            "description": dbProj.description,
+            "created_at": dbProj.createdAt,
+            "status": dbProj.status
         }
+
+    def deleteProject(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
+        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+        if not dbProj:
+            return None
+
+        path = self.manager.getProjectPath(dbProj.name)
+        if not os.path.exists(path):
+            return None
+
+        self.manager.deleteProject(dbProj.name)
+        db.delete(dbProj)
+        db.commit()
+
+        return {"message": "Project deleted successfully"}
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
-        """Compute total folder size in bytes without subprocess."""
         result = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, text=True)
         return int(result.stdout.split()[0])
 
     @staticmethod
     def countProtocols(path: str) -> int:
-        """Count subdirectories under the 'Runs' folder."""
         return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
 
     def buildProtocolsGraph(self, runs) -> dict:
@@ -170,23 +227,22 @@ class ProjectService:
             }
         return graphData
 
-    def loadProject(self, projectId: str) -> Any:
+    def loadProject(self, project: Any) -> Any:
         """Load a project and build its protocol graph"""
-        from pyworkflow import Config
-        projPath = self.manager.getProjectPath(projectId)
+        projPath = self.manager.getProjectPath(project.name)
         if os.path.exists(projPath):
-            Config.setDomain("pwem")
-            Config.getDomain()
-            self.currentProject = Project(pyworkflow.Config.getDomain(), projPath)
+            self.currentProject = ScipionProject(Config.getDomain(), projPath)
             self.currentProject.load(dbPath=self.currentProject.getDbPath())
             runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
             graphData = self.buildProtocolsGraph(runs)
-
+            name = self.currentProject.getName()
             return {
-                "id": self.currentProject.getName(),
-                "name": self.currentProject.getName(),
-                "created_at": str(self.currentProject.getCreationTime()),
+                "id": project.id,
+                "name": name,
+                "shortName": os.path.basename(name),
+                "createdAt": str(self.currentProject.getCreationTime()),
                 "path": projPath,
+                "status": project.status,
                 "protocols": graphData
             }
         return None
@@ -204,7 +260,7 @@ class ProjectService:
         }
         return status_colors.get(status.lower(), "#9e9e9e")
 
-    def getProtocolParams(self, projectName: str, protocolId: str) -> dict:
+    def getProtocolParams(self, project: Any, protocolId: int) -> dict:
         """
         Retrieve protocol parameters, metadata, inputs/outputs,
         and formatted help/citations for a given node ID.
@@ -213,8 +269,6 @@ class ProjectService:
 
         SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
         OBJ_PARAMS = ['runName', 'comment']
-        context = {}
-        self.loadProject(projectName)
         # Load the selected protocol
         protocol = self.currentProject.getProtocol(int(protocolId))
         protocol.getPlugin()
