@@ -9,21 +9,21 @@ from app.backend.api.services.project_service import ProjectService
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-
+service = ProjectService()
 
 @router.post("/", response_model=ProjectOut)
 def createProject(projectData: ProjectCreate, db: Session = Depends(getDb), currentUser=Depends(getCurrentUser)):
-    return ProjectService.createProject(db, projectData, currentUser)
+    return service.createProject(db, projectData, currentUser)
 
 
 @router.get("/", response_model=List[ProjectOut])
 def listProjects(db: Session = Depends(getDb), currentUser=Depends(getCurrentUser)):
-    return ProjectService.listProjects(db, currentUser)
+    return service.listProjects(db, currentUser)
 
 
 @router.get("/{projectId}", response_model=ProjectOut)
 def getProject(projectId: int, db: Session = Depends(getDb), currentUser=Depends(getCurrentUser)):
-    project = ProjectService.getProjectById(db, projectId, currentUser)
+    project = service.getProjectById(db, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
@@ -31,7 +31,7 @@ def getProject(projectId: int, db: Session = Depends(getDb), currentUser=Depends
 
 @router.put("/{projectId}", response_model=ProjectOut)
 def updateProject(projectId: int, projectData: ProjectUpdate, db: Session = Depends(getDb), currentUser=Depends(getCurrentUser)):
-    project = ProjectService.updateProject(db, projectId, projectData, currentUser)
+    project = service.updateProject(db, projectId, projectData, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
@@ -39,7 +39,7 @@ def updateProject(projectId: int, projectData: ProjectUpdate, db: Session = Depe
 
 @router.delete("/{projectId}")
 def deleteProject(projectId: int, db: Session = Depends(getDb), currentUser=Depends(getCurrentUser)):
-    project = ProjectService.deleteProject(db, projectId, currentUser)
+    project = service.deleteProject(db, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return {"message": "Project deleted successfully"}
