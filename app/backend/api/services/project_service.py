@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from app.backend.models.project import Project
 from app.backend.api.schemas.project import ProjectOut
+import pyworkflow.utils as pwutils
 
 # Define the root folder where all Scipion projects are stored
-PROJECTS_ROOT = Path("/home/ScipionUserdata/projects")
+PROJECTS_ROOT = Path("~/ScipionUserData/projects")
 
 
 class ProjectService:
@@ -18,7 +19,7 @@ class ProjectService:
     @staticmethod
     def getProjectPath(projectName: str) -> Path:
         """Return the filesystem path of a project."""
-        return PROJECTS_ROOT / projectName
+        return Path(os.path.join(PROJECTS_ROOT, projectName))
 
     @staticmethod
     def createProject(db: Session, projectData, currentUser) -> ProjectOut:
@@ -44,7 +45,7 @@ class ProjectService:
 
         # Create project folder on disk
         projPath = ProjectService.getProjectPath(newProject.name)
-        os.makedirs(projPath, exist_ok=True)
+        pwutils.makePath(projPath)
 
         return ProjectOut(
             id=newProject.id,
