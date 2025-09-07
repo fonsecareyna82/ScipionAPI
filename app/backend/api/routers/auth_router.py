@@ -27,12 +27,10 @@
 
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from app.backend.api.schemas.user import UserCreate, UserOut, SignupResponse, LoginResponse, LoginRequest, \
-    ResendCodeRequest, ErrorResponse, UserUpdate
+from app.backend.api.schemas.user import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
+                                          UserUpdate)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
-from app.backend.models.user import User
 from app.backend.utils.email import sendVerificationEmail
 from app.backend.utils.security import hashPassword, verifyPassword
 from app.backend.utils.jwt import createAccessToken
@@ -133,11 +131,11 @@ def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Invalid credentials")
 
-    if not verifyPassword(loginData.password, user["hashed_password"]):
+    if not verifyPassword(loginData.password, user["hashedPassword"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Invalid credentials")
 
-    if not user["is_verified"]:
+    if not user["isVerified"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Email not verified")
 
