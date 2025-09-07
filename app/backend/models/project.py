@@ -11,6 +11,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
 
+
 class Project(Base):
     __tablename__ = "projects"
 

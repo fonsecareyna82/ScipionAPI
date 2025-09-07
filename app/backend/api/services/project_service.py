@@ -31,28 +31,29 @@ from datetime import datetime
 from typing import List, Optional, Any
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from pyworkflow import Config
+import pyworkflow
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol import MODE_RESTART
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project import ProjectCreate
 
 
-from app.backend.models.project import Project as DbProject, ProjectCreateRequest, ProjectUpdateRequest
+from app.backend.models.project import Project as DbProject, ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
 class ProjectService:
     def __init__(self):
-        Config.setDomain("pwem")
-        Config.getDomain()
+        pyworkflow.Config.setDomain("pwem")
+        pyworkflow.Config.getDomain()
         self.manager = Manager()
         self.currentProject = None
 
-    def createProject(self, db: Session, projectData: ProjectCreate, currentUser) -> dict:
+    def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
         # Check if a project with the same name already exists for this user
-        existing = db.query(DbProject).filter_by(name=projectData.name, ownerId=currentUser.id).first()
-        if existing:
+        existing_projects = mapper.listProjects(ownerId=currentUser.id)
+        if any(p['name'] == projectData.name for p in existing_projects):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A project with this name already exists for the current user"
@@ -70,84 +71,94 @@ class ProjectService:
         proj = self.manager.createProject(projectData.name)
         proj.setComment(projectData.description or "")
 
-        # Save the project metadata in the database
-        dbProject = DbProject(
-            name=proj.getName(),
-            description=projectData.description,
-            status=projectData.status,
+        # Insert project metadata into PostgreSQL via mapper
+        dbProjectId = mapper.insertProject(
             ownerId=currentUser.id,
-            createdAt=datetime.utcnow()
+            name=projectData.name,
+            description=projectData.description,
+            status=projectData.status
         )
-        db.add(dbProject)
-        db.commit()
-        db.refresh(dbProject)
 
         # Return the response payload
         return {
-            "id": dbProject.id,
-            "name": dbProject.name,
-            "description": dbProject.description,
-            "createdAt": dbProject.createdAt,
-            "status": dbProject.status,
+            "id": dbProjectId,
+            "name": projectData.name,
+            "description": projectData.description,
+            "createdAt": datetime.utcnow(),
+            "status": projectData.status,
             "protocolsCount": 0,
             "diskUsage": f"{0.0} GB"
         }
 
-    def listProjects(self, db: Session, currentUser) -> List[dict]:
-        dbProjects = db.query(DbProject).filter_by(ownerId=currentUser.id).all()
+    def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
+        # Retrieve projects from PostgreSQL using the mapper
+        dbProjects = mapper.listProjects(ownerId=currentUser["id"])
         result = []
-        for db_proj in dbProjects:
-            path = self.manager.getProjectPath(db_proj.name)
+
+        for dbProj in dbProjects:
+            path = self.manager.getProjectPath(dbProj['name'])
             sizeGB = self.getProjectSize(path) / (1024 ** 3)
             protCount = self.countProtocols(os.path.join(path, "Runs"))
+
             result.append({
-                "id": db_proj.id,
-                "name": os.path.basename(db_proj.name),
-                "description": db_proj.description,
-                "createdAt": db_proj.createdAt,
-                "status": db_proj.status,
+                "id": dbProj['id'],
+                "name": os.path.basename(dbProj['name']),
+                "description": dbProj.get('description', ''),
+                "createdAt": dbProj.get('createdAt'),
+                "status": dbProj.get('status', 'active'),
                 "protocolsCount": str(protCount),
                 "diskUsage": f"{sizeGB:.2f} GB"
             })
+
         return result
 
-    def getProjectById(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
-        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+    def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
+        # Retrieve project from PostgreSQL using the mapper
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
         if not dbProj:
             return None
 
-        path = self.manager.getProjectPath(dbProj.name)
+        path = self.manager.getProjectPath(dbProj['name'])
         if not os.path.exists(path):
             return None
 
         return self.loadProject(dbProj)
 
-    def updateProject(self, db: Session, projectId: int, updated: ProjectUpdateRequest, currentUser) -> Optional[dict]:
-        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+    def updateProject(self, mapper: PostgresqlFlatMapper,
+                      projectId: int,
+                      updated: ProjectUpdateRequest,
+                      currentUser) -> Optional[dict]:
+        # Retrieve project from PostgreSQL
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser.id)
         if not dbProj:
             return None
 
-        projPath = self.manager.getProjectPath(dbProj.name)
+        projPath = self.manager.getProjectPath(dbProj['name'])
         if not os.path.exists(projPath):
             return None
 
+        # Update Scipion project metadata
         proj = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         proj.load(dbPath=proj.getDbPath())
         proj.setShortDescription(updated.description or "")
         proj.rename(updated.name)
         proj.save()
 
-        dbProj.name = updated.name
-        dbProj.description = updated.description
-        db.commit()
-        db.refresh(dbProj)
+        # Update PostgreSQL metadata via mapper
+        mapper.updateProject(
+            projectId=projectId,
+            ownerId=currentUser.id,
+            name=updated.name,
+            description=updated.description
+        )
 
+        # Return updated data
         return {
-            "id": dbProj.id,
-            "name": dbProj.name,
-            "description": dbProj.description,
-            "created_at": dbProj.createdAt,
-            "status": dbProj.status
+            "id": dbProj['id'],
+            "name": updated.name,
+            "description": updated.description,
+            "created_at": dbProj['createdat'],  # asegúrate del nombre exacto en tu tabla
+            "status": dbProj['status']
         }
 
     def deleteProject(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
@@ -227,25 +238,22 @@ class ProjectService:
             }
         return graphData
 
-    def loadProject(self, project: Any) -> Any:
-        """Load a project and build its protocol graph"""
-        projPath = self.manager.getProjectPath(project.name)
-        if os.path.exists(projPath):
-            self.currentProject = ScipionProject(Config.getDomain(), projPath)
-            self.currentProject.load(dbPath=self.currentProject.getDbPath())
-            runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
-            graphData = self.buildProtocolsGraph(runs)
-            name = self.currentProject.getName()
-            return {
-                "id": project.id,
-                "name": name,
-                "shortName": os.path.basename(name),
-                "createdAt": str(self.currentProject.getCreationTime()),
-                "path": projPath,
-                "status": project.status,
-                "protocols": graphData
-            }
-        return None
+    def loadProject(self, dbProj: dict) -> dict:
+        projPath = self.manager.getProjectPath(dbProj['name'])
+        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
+        self.currentProject.load(dbPath=self.currentProject.getDbPath())
+        runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
+        graphData = self.buildProtocolsGraph(runs)
+
+        return {
+            "id": dbProj['id'],
+            "name": dbProj['name'],
+            "shortName": os.path.basename(dbProj['name']),
+            "createdAt": str(dbProj['createdAt']),
+            "status": str(dbProj['status']),
+            "path": projPath,
+            "protocols": graphData
+        }
 
     @staticmethod
     def getProtocolColor(status: str) -> str:

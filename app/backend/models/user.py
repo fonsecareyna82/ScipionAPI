@@ -6,6 +6,7 @@ from app.backend.models.project import Project
 
 from app.backend.database import Base
 
+
 class User(Base):
     __tablename__ = "users"
 
