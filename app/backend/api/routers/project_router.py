@@ -3,75 +3,111 @@ from sqlalchemy.orm import Session
 from typing import List, Any
 
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.database import getDb
+from app.backend.database import getMapper
 from app.backend.api.schemas.project import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import ProtocolRequest
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 service = ProjectService()
 
+
 @router.post("/", response_model=ProjectOut)
 def createProject(
     projectData: ProjectCreate,
-    db: Session = Depends(getDb),
-    currentUser=Depends(getCurrentUser)
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
 ):
-    return service.createProject(db, projectData, currentUser)
+    return service.createProject(mapper, projectData, currentUser)
 
 
 @router.get("/", response_model=List[ProjectOut])
 def listProjects(
-    db: Session = Depends(getDb),
-    currentUser=Depends(getCurrentUser)
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
 ):
-    return service.listProjects(db, currentUser)
+    return service.listProjects(mapper, currentUser)
 
 
 @router.get("/{projectId}", response_model=Any)
 def getProject(
     projectId: int,  # id in the DB
-    db: Session = Depends(getDb),
-    currentUser=Depends(getCurrentUser)
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
 ):
-    project = service.getProjectById(db, projectId, currentUser)
+    project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
 
 
-@router.put("/{projectId}", response_model=ProjectOut)
+@router.put("/{projectId}", response_model=ProjectOut, status_code=status.HTTP_200_OK)
 def updateProject(
     projectId: int,
     projectData: ProjectUpdate,
-    db: Session = Depends(getDb),
-    currentUser=Depends(getCurrentUser)
+    currentUser: dict = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    project = service.updateProject(db, projectId, projectData, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return project
+    """
+    Update an existing project owned by the authenticated user.
+    """
+
+    # Fetch the project, ensuring ownership
+    existing = mapper.getProject(projectId, currentUser["id"])
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+
+    #Collect only the fields that were actually sent
+    updateFields = projectData.dict(exclude_unset=True)
+
+    # Apply the updates via the mapper
+    mapper.updateProject(
+        projectId=projectId,
+        ownerId=currentUser["id"],
+        name=updateFields.get("name"),
+        description=updateFields.get("description"),
+        status=updateFields.get("status"),
+    )
+
+    # 4) Fetch the fresh copy and return
+    updated = mapper.getProject(projectId, currentUser["id"])
+    return updated
 
 
-@router.delete("/{projectId}")
+@router.delete("/{projectId}", status_code=status.HTTP_200_OK)
 def deleteProject(
     projectId: int,
-    db: Session = Depends(getDb),
-    currentUser=Depends(getCurrentUser)
+    currentUser: dict = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    result = service.deleteProject(db, projectId, currentUser)
-    if not result:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return result
+    """
+    Delete a project owned by the authenticated user.
+    """
+    deleted = mapper.deleteProject(projectId, currentUser["id"])
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+
+    return {"message": "Project deleted successfully"}
 
 
 @router.get("/{projectId}/{protocolId}", response_model=Any)
-async def loadProtocol(projectId: int, protocolId: int,
-                       db: Session = Depends(getDb),
-                       currentUser=Depends(getCurrentUser)):
-    project = service.getProjectById(db, projectId, currentUser)
+async def loadProtocol(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
     return service.getProtocolParams(project, protocolId)
 
 

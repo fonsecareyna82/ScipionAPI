@@ -26,11 +26,12 @@
 # routers/auth_router.py
 
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.backend.api.schemas.user import UserCreate, UserOut, SignupResponse, LoginResponse, LoginRequest, \
     ResendCodeRequest, ErrorResponse, UserUpdate
-from app.backend.database import getDb
+from app.backend.database import getMapper
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.models.user import User
 from app.backend.utils.email import sendVerificationEmail
 from app.backend.utils.security import hashPassword, verifyPassword
@@ -40,96 +41,159 @@ from app.backend.api.dependencies import getCurrentUser
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/signup")
-async def signup(userData: UserCreate, db: Session = Depends(getDb)):
-    existingUser = db.query(User).filter(User.email == userData.email).first()
+@router.post("/signup", status_code=status.HTTP_201_CREATED)
+async def signup(
+    userData: UserCreate,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    # Check if email is already registered
+    existingUser = mapper.getUserByEmail(userData.email)
     if existingUser:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
 
-    hashedPw = hashPassword(userData.password)
-    verification_code = str(uuid.uuid4())
-    newUser = User(
+    # Hash the password and generate a verification code
+    hashedPassword = hashPassword(userData.password)
+    verificationCode = str(uuid.uuid4())
+
+    # Insert user into the database via the mapper
+    userId = mapper.insertUser(
         email=userData.email,
-        hashedPassword=hashedPw,
+        hashedPassword=hashedPassword,
         firstName=userData.firstName,
         lastName=userData.lastName,
         institution=userData.institution,
         role="user",
         isActive=True,
         isVerified=False,
-        verificationCode=verification_code
+        verificationCode=verificationCode,
     )
-    db.add(newUser)
-    db.commit()
-    db.refresh(newUser)
 
+    # Send verification email (errors here do not block signup)
     try:
-        await sendVerificationEmail(userData.email, verification_code)
+        await sendVerificationEmail(userData.email, verificationCode)
     except Exception as e:
-        print("Error sending email:", e)
+        # Log the error but do not abort user creation
+        print("Error sending verification email:", e)
 
-    return {"message": "User created. Please verify your email."}
+    # Return confirmation message and new user ID
+    return {
+        "message": "User created. Please check your inbox to verify your email.",
+        "userId": userId,
+    }
 
 
-@router.post("/verify")
-def verifyEmail(code: str, db: Session = Depends(getDb)):
-    user = db.query(User).filter(User.verificationCode == code).first()
+@router.post("/verify", status_code=status.HTTP_200_OK)
+def verifyEmail(
+    verificationCode: str,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    user = mapper.getUserByVerificationCode(verificationCode)
     if not user:
-        raise HTTPException(status_code=400, detail="Invalid verification code")
-
-    user.isVerified = True
-    user.verificationCode = None
-    db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code"
+        )
+    mapper.verifyUser(user["id"])
     return {"message": "Email verified successfully"}
 
 
-@router.post("/resend-code")
-async def resendVerificationCode(data: ResendCodeRequest, db: Session = Depends(getDb)):
-    user = db.query(User).filter(User.email == data.email).first()
-
+@router.post("/resend-code", status_code=status.HTTP_200_OK)
+async def resendVerificationCode(
+    request: ResendCodeRequest,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    user = mapper.getUserByEmail(request.email)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
 
-    if user.isVerified:
-        raise HTTPException(status_code=400, detail="User is already verified")
-
+    if user["isVerified"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already verified"
+        )
     newCode = str(uuid.uuid4())
-    user.verificationCode = newCode
-    db.commit()
-
-    await sendVerificationEmail(user.email, newCode)
-
+    mapper.updateUserVerificationCode(user["id"], newCode)
+    await sendVerificationEmail(request.email, newCode)
     return {"message": "Verification code resent"}
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(loginData: LoginRequest, db: Session = Depends(getDb)):
-    user = db.query(User).filter(User.email == loginData.email).first()
+def login(
+    loginData: LoginRequest,
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
+):
+    user = mapper.getUserByEmail(loginData.email)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid credentials")
 
-    if not user or not verifyPassword(loginData.password, user.hashedPassword):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verifyPassword(loginData.password, user["hashed_password"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid credentials")
 
-    if not user.isVerified:
-        raise HTTPException(status_code=403, detail="Email not verified")
+    if not user["is_verified"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Email not verified")
 
-    access_token = createAccessToken(data={"sub": user.email})
+    access_token = createAccessToken(data={"sub": user["email"]})
     return LoginResponse(accessToken=access_token, tokenType="bearer")
 
 
-@router.get("/me", response_model=UserOut)
-def getMe(currentUser: User = Depends(getCurrentUser)):
-    return currentUser
+@router.get(
+    "/me",
+    response_model=UserOut,
+    status_code=status.HTTP_200_OK
+)
+def getMe(
+    currentUser: dict = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return the authenticated user's profile.
+    """
+    # Fetch up-to-date user fields from the database
+    userProfile = mapper.getUserById(currentUser["id"])
+    if not userProfile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    return userProfile
 
 
-@router.put("/me", response_model=UserOut)
+@router.put(
+    "/me",
+    response_model=UserOut,
+    status_code=status.HTTP_200_OK
+)
 def updateMe(
     updates: UserUpdate,
-    db: Session = Depends(getDb),
-    currentUser: User = Depends(getCurrentUser)
+    currentUser: dict = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    for field, value in updates.dict(exclude_unset=True).items():
-        setattr(currentUser, field, value)
+    """
+    Update the authenticated user's profile fields.
+    Only fields present in the request (exclude_unset) will be updated.
+    """
+    # Extract only provided fields from the payload
+    updateFields = updates.dict(exclude_unset=True)
 
-    db.commit()
-    db.refresh(currentUser)
-    return currentUser
+    # Persist updates via the mapper
+    mapper.updateUserFields(currentUser["id"], updateFields)
+
+    # Fetch the latest profile data
+    userProfile = mapper.getUserById(currentUser["id"])
+    if not userProfile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    return userProfile
