@@ -23,38 +23,15 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import os
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
-from app.backend.api.routers.plugin_router import router as plugins
-from app.backend.api.routers.auth_router import router as auth
-from app.backend.api.services.environment import prepareEnvironment
-from app.backend.utils.error_handlers import registerAllErrorHandlers
-
-app = FastAPI(title="Scipion API", debug=True)
-
-# Register custom error handlers
-registerAllErrorHandlers(app)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],  # o ["*"] para desarrollo
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-prepareEnvironment()
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
-app.include_router(auth)
+# app/backend/schemas.py
+from pydantic import BaseModel
+from typing import Any, Optional
+from datetime import datetime
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
+class ProtocolOut(BaseModel):
+    id: int
+    type: str
+    status: str
+    createdAt: datetime
+    parameters: Any

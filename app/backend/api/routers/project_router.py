@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List, Any
+from fastapi import APIRouter, Depends, HTTPException, status, Path
+from typing import List, Any, Dict
 
 from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.schemas.protocols import ProtocolOut
 from app.backend.database import getMapper
 from app.backend.api.schemas.project import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
@@ -94,6 +95,25 @@ def deleteProject(
         )
 
     return {"message": "Project deleted successfully"}
+
+
+@router.get(
+    "/{projectId}/protocols",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def loadProtocols(
+    projectId: int = Path(..., ge=1, title="Numeric project ID"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    protocols = service.getProtocols(mapper, projectId, currentUser)
+    if not protocols:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Protocols not found"
+        )
+    return protocols
 
 
 @router.get("/{projectId}/{protocolId}", response_model=Any)

@@ -27,9 +27,10 @@ from pyworkflow.object import Scalar
 
 
 def toSerializable(obj):
-    """Convert complex Python objects into JSON-serializable structures."""
+    """Convert complex Python objects into JSON-serializable structures, preserving full dict order recursively."""
     from datetime import datetime, date
     from decimal import Decimal
+
     if isinstance(obj, (str, int, float, bool, type(None))):
         return obj
     elif isinstance(obj, (datetime, date)):
@@ -37,19 +38,25 @@ def toSerializable(obj):
     elif isinstance(obj, Decimal):
         return float(obj)
     elif isinstance(obj, dict):
-        return {k: toSerializable(v) for k, v in obj.items()}
+        ordered_dict = {}
+        for k, v in obj.items():
+            ordered_dict[k] = toSerializable(v)
+        return ordered_dict
     elif isinstance(obj, (list, tuple, set)):
         return [toSerializable(item) for item in obj]
-    elif isinstance(obj, Scalar):
+    elif hasattr(obj, "get") and callable(getattr(obj, "get")):  # Scalar support
         return obj.get()
-    elif hasattr(obj, "__dict__"):  # Any custom class
-        excludedKeys = ['__module__', '__init__', '__doc__', '_dist', '_plugin']
-        paramDict = {k: toSerializable(v) for k, v in obj.__dict__.items() if k not in excludedKeys}
-        return paramDict
+    elif hasattr(obj, "__dict__"):  # Custom class
+        excluded_keys = ['__module__', '__init__', '__doc__', '_dist', '_plugin']
+        param_dict = {}
+        for k, v in obj.__dict__.items():
+            if k not in excluded_keys:
+                param_dict[k] = toSerializable(v)
+        return param_dict
     else:
-        return str(obj)  # Last resort: convert to string
-
+        return str(obj)
 
 def serializeToJson(obj):
-    """Serialize any Python object (even with 'weird' attributes) to JSON."""
+    """Serialize any Python object to JSON, preserving order of all dictionaries and nested structures."""
     return toSerializable(obj)
+
