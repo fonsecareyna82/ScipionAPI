@@ -23,6 +23,11 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import logging
+
+from matplotlib.pyplot import isinteractive
+
+logger = logging.getLogger(__name__)
 
 import os
 import subprocess
@@ -33,8 +38,10 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 import pyworkflow
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from pyworkflow import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol import MODE_RESTART
+import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project import ProjectCreate
 
@@ -45,14 +52,12 @@ from app.utils.scipion_helper import serializeToJson
 
 class ProjectService:
     def __init__(self):
-        pyworkflow.Config.setDomain("pwem")
-        pyworkflow.Config.getDomain()
         self.manager = Manager()
         self.currentProject = None
 
     def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
         # Check if a project with the same name already exists for this user
-        existing_projects = mapper.listProjects(ownerId=currentUser.id)
+        existing_projects = mapper.listProjects(ownerId=currentUser['id'])
         if any(p['name'] == projectData.name for p in existing_projects):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -73,7 +78,7 @@ class ProjectService:
 
         # Insert project metadata into PostgreSQL via mapper
         dbProjectId = mapper.insertProject(
-            ownerId=currentUser.id,
+            ownerId=currentUser['id'],
             name=projectData.name,
             description=projectData.description,
             status=projectData.status
@@ -129,7 +134,7 @@ class ProjectService:
                       updated: ProjectUpdateRequest,
                       currentUser) -> Optional[dict]:
         # Retrieve project from PostgreSQL
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser.id)
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser['id'])
         if not dbProj:
             return None
 
@@ -147,7 +152,7 @@ class ProjectService:
         # Update PostgreSQL metadata via mapper
         mapper.updateProject(
             projectId=projectId,
-            ownerId=currentUser.id,
+            ownerId=currentUser['id'],
             name=updated.name,
             description=updated.description
         )
@@ -162,7 +167,7 @@ class ProjectService:
         }
 
     def deleteProject(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
-        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser.id).first()
+        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser['id']).first()
         if not dbProj:
             return None
 
@@ -197,10 +202,16 @@ class ProjectService:
             outputs = []
             cpuTime = ''
             elapsedTime = ''
+            isinteractive = False
+            numberOfSteps = 0
+            stepsDone = 0
             if nodeId != 'PROJECT':
                 protocol = self.currentProject.getProtocol(int(nodeId))
                 cpuTime = str(protocol.cpuTime)
                 elapsedTime = str(protocol.getElapsedTime().total_seconds()).split('.')[0]
+                isinteractive = protocol.isInteractive()
+                numberOfSteps = protocol.numberOfSteps
+                stepsDone = protocol.stepsDone
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
                 # Iterate over the inputs
@@ -234,7 +245,10 @@ class ProjectService:
                 "inputs": inputs,
                 "outputs": outputs,
                 "cpuTime": cpuTime,
-                "elapsedTime": elapsedTime
+                "elapsedTime": elapsedTime,
+                "isInteractive": isinteractive,
+                "numberOfSteps": numberOfSteps,
+                "stepsDone": stepsDone
             }
         return graphData
 
@@ -548,3 +562,87 @@ class ProjectService:
         except Exception as ex:
             print("ERROR with param: " + paramName)
             raise ex
+
+    def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
+        # Retrieve all protocols
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser['id'])
+        if not dbProj:
+            return None
+        from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
+        configProtocols = Config.SCIPION_PROTOCOLS
+        localDir = Config.SCIPION_LOCAL_CONFIG
+        protConf = os.path.join(localDir, configProtocols)
+        protocolsTree = ProtocolTreeConfig.load(self.currentProject.getDomain(),  protConf)
+        protocolsTree = serializeToJson(protocolsTree)
+        self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
+        return protocolsTree
+
+    def replaceDefaultProtocolText(self, node: dict, resolverFn):
+        # Determine type and extract text, tag, and children
+        if isinstance(node, dict):
+            text = node.get("text")
+            tag = node.get("tag")
+            children = node.get("childs", [])
+        else:  # assume ProtocolConfig
+            text = getattr(node, "text", None)
+            tag = getattr(node, "tag", None)
+            children = getattr(node, "childs", [])
+
+        # Replace text if conditions are met
+        if text == "default" and tag == "protocol":
+            newText = resolverFn(node)
+            if newText:
+                if isinstance(node, dict):
+                    node["text"] = newText
+                else:
+                    setattr(node, "text", newText)
+
+        # Recursively process children
+        for child in children:
+            self.replaceDefaultProtocolText(child, resolverFn)
+
+    def walkAndReplaceProtocols(self, data: dict, resolverFn):
+        """
+        Walk through the entire JSON/tree structure and replace 'default' texts for protocol nodes.
+
+        Parameters:
+        - data: the root of the tree (can be a dictionary or a list of nodes)
+        - resolverFn: a function to determine the new text for 'default' protocol nodes
+        """
+        if isinstance(data, dict):
+            # Iterate over key/value pairs in a dictionary
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    # If the value is a dict, check/replace its text
+                    self.replaceDefaultProtocolText(value, resolverFn)
+                elif isinstance(value, list):
+                    # If the value is a list, apply the function to each item
+                    for item in value:
+                        if isinstance(item, dict):
+                            self.replaceDefaultProtocolText(item, resolverFn)
+        elif isinstance(data, list):
+            # If the root itself is a list, iterate and apply the replacement
+            for item in data:
+                if isinstance(item, dict):
+                   self.replaceDefaultProtocolText(item, resolverFn)
+
+    def getProtocolName(self, node):
+        text = node.get('text')
+        if text:
+            value = node.get('value') if node.get('value') is not None else text
+            protClassName = value.split('.')[-1]  # Take last part
+            emProtocolsDict = self.currentProject.getDomain().getProtocols()
+            prot = emProtocolsDict.get(protClassName, None)
+
+            if node.get('tag') == 'protocol' and text == 'default':
+                if prot is None:
+                    logger.warning("Protocol className '%s' not found!!!. \n"
+                                   "Fix your config/protocols.conf configuration."
+                                   % protClassName)
+                    return
+
+                text = prot.getClassLabel()
+
+                return text
+
+        return 'default'
