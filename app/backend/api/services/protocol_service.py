@@ -23,8 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from app.backend.api.services.project_service import ProjectService
 from pyworkflow.project import Manager
-from .project_service import ProjectService
 
 
 class ProtocolService:

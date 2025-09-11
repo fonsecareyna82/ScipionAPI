@@ -25,8 +25,6 @@
 # ******************************************************************************
 import logging
 
-from matplotlib.pyplot import isinteractive
-
 logger = logging.getLogger(__name__)
 
 import os
@@ -57,8 +55,8 @@ class ProjectService:
 
     def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
         # Check if a project with the same name already exists for this user
-        existing_projects = mapper.listProjects(ownerId=currentUser['id'])
-        if any(p['name'] == projectData.name for p in existing_projects):
+        existingProjects = mapper.listProjects(ownerId=currentUser['id'])
+        if any(p['name'] == projectData.name for p in existingProjects):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A project with this name already exists for the current user"
@@ -79,7 +77,7 @@ class ProjectService:
         # Insert project metadata into PostgreSQL via mapper
         dbProjectId = mapper.insertProject(
             ownerId=currentUser['id'],
-            name=projectData.name,
+            name=scipionPath,
             description=projectData.description,
             status=projectData.status
         )
@@ -122,73 +120,52 @@ class ProjectService:
         dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
         if not dbProj:
             return None
-
-        path = self.manager.getProjectPath(dbProj['name'])
-        if not os.path.exists(path):
+        projectPath = dbProj['name']
+        if not os.path.exists(projectPath):
             return None
 
         return self.loadProject(dbProj)
 
-    def updateProject(self, mapper: PostgresqlFlatMapper,
-                      projectId: int,
-                      updated: ProjectUpdateRequest,
-                      currentUser) -> Optional[dict]:
-        # Retrieve project from PostgreSQL
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser['id'])
-        if not dbProj:
-            return None
+    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdateRequest):
+        project = self.getProjectById(mapper, projectId, currentUser)
 
-        projPath = self.manager.getProjectPath(dbProj['name'])
-        if not os.path.exists(projPath):
-            return None
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
 
-        # Update Scipion project metadata
-        proj = ScipionProject(pyworkflow.Config.getDomain(), projPath)
-        proj.load(dbPath=proj.getDbPath())
-        proj.setShortDescription(updated.description or "")
-        proj.rename(updated.name)
-        proj.save()
+        self.manager.renameProject(project['name'], projectData.name)
+        mapper.updateProject(projectId, currentUser['id'],
+                             self.manager.getProjectPath(projectData.name),
+                             projectData.description)
 
-        # Update PostgreSQL metadata via mapper
-        mapper.updateProject(
-            projectId=projectId,
-            ownerId=currentUser['id'],
-            name=updated.name,
-            description=updated.description
-        )
+        return project
 
-        # Return updated data
-        return {
-            "id": dbProj['id'],
-            "name": updated.name,
-            "description": updated.description,
-            "created_at": dbProj['createdat'],  # asegúrate del nombre exacto en tu tabla
-            "status": dbProj['status']
-        }
-
-    def deleteProject(self, db: Session, projectId: int, currentUser) -> Optional[dict]:
-        dbProj = db.query(DbProject).filter_by(id=projectId, ownerId=currentUser['id']).first()
-        if not dbProj:
-            return None
-
-        path = self.manager.getProjectPath(dbProj.name)
+    def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
+        project = self.getProjectById(mapper, projectId, currentUser)
+        deleted = mapper.deleteProject(projectId, currentUser["id"])
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found"
+            )
+        path = self.manager.getProjectPath(project['name'])
         if not os.path.exists(path):
             return None
 
-        self.manager.deleteProject(dbProj.name)
-        db.delete(dbProj)
-        db.commit()
+        self.manager.deleteProject(path)
 
         return {"message": "Project deleted successfully"}
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
         result = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, text=True)
-        return int(result.stdout.split()[0])
+        return int(result.stdout.split()[0]) if result.stdout else 0
 
     @staticmethod
     def countProtocols(path: str) -> int:
-        return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        try:
+            return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        except Exception:
+            return 0
 
     def buildProtocolsGraph(self, runs) -> dict:
         """Assemble dependency graph of protocols and their status."""
@@ -253,7 +230,7 @@ class ProjectService:
         return graphData
 
     def loadProject(self, dbProj: dict) -> dict:
-        projPath = self.manager.getProjectPath(dbProj['name'])
+        projPath = dbProj['name']
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
