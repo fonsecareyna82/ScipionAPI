@@ -49,33 +49,7 @@ def updateProject(
     currentUser: dict = Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    """
-    Update an existing project owned by the authenticated user.
-    """
-
-    # Fetch the project, ensuring ownership
-    existing = mapper.getProject(projectId, currentUser["id"])
-    if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
-        )
-
-    #Collect only the fields that were actually sent
-    updateFields = projectData.dict(exclude_unset=True)
-
-    # Apply the updates via the mapper
-    mapper.updateProject(
-        projectId=projectId,
-        ownerId=currentUser["id"],
-        name=updateFields.get("name"),
-        description=updateFields.get("description"),
-        status=updateFields.get("status"),
-    )
-
-    # 4) Fetch the fresh copy and return
-    updated = mapper.getProject(projectId, currentUser["id"])
-    return updated
+    return service.updateProject(mapper, projectId, currentUser, projectData)
 
 
 @router.delete("/{projectId}", status_code=status.HTTP_200_OK)
@@ -87,14 +61,7 @@ def deleteProject(
     """
     Delete a project owned by the authenticated user.
     """
-    deleted = mapper.deleteProject(projectId, currentUser["id"])
-    if not deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
-        )
-
-    return {"message": "Project deleted successfully"}
+    return service.deleteProject(mapper, currentUser, projectId)
 
 
 @router.get(
