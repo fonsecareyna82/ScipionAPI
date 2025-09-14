@@ -33,18 +33,18 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Any
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
 import pyworkflow
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow import Config
 from pyworkflow.project import Manager, Project as ScipionProject
-from pyworkflow.protocol import MODE_RESTART
+from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
+                                        MultiPointerParam, RelationParam, MODE_RESTART)
 import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project import ProjectCreate
 
 
-from app.backend.models.project import Project as DbProject, ProjectUpdateRequest
+from app.backend.models.project import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
@@ -192,24 +192,30 @@ class ProjectService:
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
                 # Iterate over the inputs
-                # input = {}
-                # for key, attr in protocol.iterInputAttributes():
-                #     input.setdefault(key, {})
-                #     input[key]['_class'] = attr.__class__.__name__
-                #     input[key]['info'] = attr.__str__()
-                #     input[key]['_objValue'] = attr.get()
-                #     inputs.append(input)
+                for key, attr in protocol.iterInputAttributes():
+                    input = {}
+                    input.setdefault(key, {})
+                    input[key]['_class'] = attr.get().getClassName()
+                    try:
+                        input[key]['info'] = str(attr.get())
+                    except Exception as e:
+                        input[key]['info'] = ""
+
+                    input[key]['_objValue'] ="%s.%s" % (attr.getObjValue(), attr.getExtended())
+                    input[key]['_parentId'] = attr.getObjValue().getObjId()
+                    inputs.append(input)
 
                 # Iterate over the outputs
-                output = {}
                 for key, attr in protocol.iterOutputAttributes():
+                    output = {}
                     output.setdefault(key, {})
                     output[key]['_class'] = attr.__class__.__name__
                     try:
                         output[key]['info'] = attr.__str__()
                     except Exception as e:
                         output[key]['info'] = ""
-                    output[key]['_objValue'] = "%s.%s" % (nodeObj.getLabel(), key)
+                    output[key]['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
+                    output[key]['_parentId'] = protocol.getObjId()
                     outputs.append(output)
 
             graphData[nodeId] = {
@@ -325,20 +331,22 @@ class ProjectService:
         outputs = []
 
         # Iterate over the inputs
-        input = {}
         for key, attr in protocol.iterInputAttributes():
+            input = {}
             input.setdefault(key, {})
-            input[key]['_class'] = attr.__class__.__name__
+            input[key]['_class'] = attr.get().getClassName()
             try:
-                input[key]['info'] = attr.__str__()
+                input[key]['info'] = str(attr.get())
             except Exception as e:
                 input[key]['info'] = ""
-            input[key]['_objValue'] = "%s.%s" % (protName, key)
+
+            input[key]['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
+            input[key]['_parentId'] = attr.getObjValue().getObjId()
             inputs.append(input)
 
         # Iterate over the outputs
-        output = {}
         for key, attr in protocol.iterOutputAttributes():
+            output = {}
             output.setdefault(key, {})
             output[key]['_class'] = attr.__class__.__name__
             try:
@@ -346,6 +354,7 @@ class ProjectService:
             except Exception as e:
                 output[key]['info'] = ""
             output[key]['_objValue'] = "%s.%s" % (protName, key)
+            output[key][' '] = protocol.getObjId()
             outputs.append(output)
 
         context['inputs'] = inputs
@@ -415,10 +424,94 @@ class ProjectService:
 
         return context
 
+    def castParamValue(self, param, rawValue):
+        """Cast rawValue to the correct type depending on param type."""
+        if isinstance(param, EnumParam):
+            if isinstance(rawValue, int):
+                return rawValue
+            try:
+                return param.choices.index(str(rawValue))
+            except ValueError:
+                return 0
+        elif isinstance(param, IntParam):
+            return int(rawValue) if rawValue not in (None, "") else None
+        elif isinstance(param, FloatParam):
+            return float(rawValue) if rawValue not in (None, "") else None
+        elif isinstance(param, BooleanParam):
+            return str(rawValue).lower() in ("true", "1", "yes", "y")
+        elif isinstance(param, (StringParam, EnumParam)):
+            return str(rawValue) if rawValue is not None else None
+        else:
+            return rawValue
+
+    def applyParamsToProtocol(self, protocol, params):
+        """Apply pointer parameters to protocol."""
+        for key, value in params.items():
+            param = protocol.getParam(key)
+            if param is None:
+                continue
+
+            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                parentId = value.get("_parentId")
+                rawValue = value.get("value")
+
+                if parentId:
+                    try:
+                        parentProtocol = self.currentProject.getProtocol(int(parentId))
+                        param.set(value['editableValue'])
+                        protocol.setAttributeValue(key, parentProtocol)
+                        param.default.set(value['editableValue'])
+                        pointer = getattr(protocol, key)
+                        pointer.setExtended(value['editableValue'].split('.')[-1])
+
+                        print(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                    except Exception as e:
+                        print(f"[ERROR] Could not set pointer for {key}: {e}")
+                else:
+                    # Pointer sin parentId, fallback
+                    param.set(None)
+
+    def setPointerParam(self, protocol, key, value, parentId):
+        """Resolve and set a pointer param from parent protocol outputs."""
+        param = protocol.getParam(key)
+        if not isinstance(param, PointerParam):
+            print(f"[WARN] Param {key} is not a PointerParam")
+            return
+        parentProtocol = self.currentProject.getProtocol(int(parentId))
+        param.set(value['editableValue'])
+        protocol.setAttributeValue(key, parentProtocol)
+        param.default.set(value['editableValue'])
+
+
     def launchProtocol(self, protocolId, params):
-        """Launch a protocol in RESTART mode."""
+        """Launch a protocol in RESTART mode, applying all params."""
+
         protocol = self.currentProject.getProtocol(int(protocolId))
         protocol.runMode.set(MODE_RESTART)
+
+        # Set non-pointer parameters
+        for key, value in params.items():
+            param = protocol.getParam(key)
+            if param is None:
+                print(f"[WARN] Param not found: {key}")
+                continue
+
+            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
+            rawValue = value.get("value")
+            castedValue = self.castParamValue(param, rawValue)
+            param.set(castedValue)
+            protocol.setAttributeValue(key, castedValue)
+            print(f"[INFO] Set param {key} = {castedValue}")
+
+        # Apply pointer parameters
+        self.applyParamsToProtocol(protocol, params)
+
+        # Store & launch
+        self.currentProject._storeProtocol(protocol)
+        if protocol.runMode.get() == MODE_RESTART:
+            protocol.setRunning()
         self.currentProject.launchProtocol(protocol)
 
     def findWizardsWeb(self, protocol):
