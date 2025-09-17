@@ -94,17 +94,40 @@ async def loadProtocol(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getProtocolParams(project, protocolId)
+    return service.getProtocolParams(protocolId)
+
+
+@router.get("/{projectId}/protclass/{protClassName}", response_model=Any)
+async def loadNewProtocol(
+    projectId: int,
+    protClassName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.getNewProtocolParams(protClassName)
 
 
 @router.post("/launch", response_model=Any)
-async def launch_protocol(request: ProtocolRequest):
+async def launchProtocol(request: ProtocolRequest):
     try:
         protocolId = request.getProtocolId()
+        protocolClassName = request.getProtocolClassName()
         params = request.getParams()
-        if not protocolId:
-            raise HTTPException(status_code=400, detail="Protocol Id is required")
+        service.launchProtocol(protocolId, protocolClassName, params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        return service.launchProtocol(protocolId, params)
+
+@router.post("/save", response_model=Any)
+async def saveProtocol(request: ProtocolRequest):
+    try:
+        protocolId = request.getProtocolId()
+        protocolClassName = request.getProtocolClassName()
+        params = request.getParams()
+        service.saveProtocol(protocolId, protocolClassName, params)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

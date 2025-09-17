@@ -44,7 +44,7 @@ from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2,
 from app.backend.api.schemas.project import ProjectCreate
 
 
-from app.backend.models.project import ProjectUpdateRequest
+from app.backend.models.project_model import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
@@ -195,7 +195,7 @@ class ProjectService:
                 for key, attr in protocol.iterInputAttributes():
                     input = {}
                     input.setdefault(key, {})
-                    input[key]['_class'] = attr.get().getClassName()
+                    input[key]['_class'] = attr.get().getClassName() if attr.get() else ""
                     try:
                         input[key]['info'] = str(attr.get())
                     except Exception as e:
@@ -261,40 +261,36 @@ class ProjectService:
             "aborted": "#F5CCCB",
             "running": "#FCCE62",
             "saved": "#D9F1FA",
-            "launched": "#FCCE62"
+            "launched": "#FCCE62",
+            "new": "#D9F1FA",
         }
         return status_colors.get(status.lower(), "#9e9e9e")
 
-    def getProtocolParams(self, project: Any, protocolId: int) -> dict:
+    def _buildProtocolContext(self, protocol) -> dict:
         """
-        Retrieve protocol parameters, metadata, inputs/outputs,
-        and formatted help/citations for a given node ID.
+        Build the common context dictionary for a protocol,
+        including inputs, outputs, definition, status, color, logos, etc.
         """
         from pyworkflow.protocol import Line, Group
 
         SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
         OBJ_PARAMS = ['runName', 'comment']
-        # Load the selected protocol
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.getPlugin()
-        hosts = self.currentProject.getHostNames()
-        self.currentProject._fixProtParamsConfiguration(protocol)
 
-        # Package logo
+        # Basic metadata
         package = protocol.getClassPackage()
         logoPath = ''
         path = getattr(package, '_logo', '')
         if path != '':
-            logoPath = self.getResourceLogo(path)  # Logo
+            logoPath = self.getResourceLogo(path)
 
         protName = str(protocol)
-        status = protocol.getStatus()  # status
-        cite = protocol.citations()
-        help = protocol.getHelpText()
-        label = protocol._label if hasattr(protocol, '_label') else str(protocol)
+        status = protocol.getStatus()
+        label = protocol._label if hasattr(protocol, '_label') else protName
+        protocolClassName = protocol.getClassName()
+        hosts = self.currentProject.getHostNames()
 
         context = {
-            "id": protocolId,
+            "id": protocol.getObjId(),
             "label": label,
             "protocolName": protName,
             "status": status,
@@ -304,10 +300,12 @@ class ProjectService:
             "protocolId": protocol.getObjId(),
             "hosts": hosts,
             "favicon": self.getResourceIcon('favicon'),
-            "cite": cite,
-            "help": help
+            "cite": protocol.citations(),
+            "help": protocol.getHelpText(),
+            "protocolClassName": protocolClassName
         }
 
+        # Special params
         for paramName in SPECIAL_PARAMS:
             context.setdefault(paramName, {})
             attr = getattr(protocol, paramName, None)
@@ -315,58 +313,47 @@ class ProjectService:
                 context[paramName]['_class'] = attr.__class__.__name__
                 context[paramName]['_objValue'] = attr.get()
 
-
         # Detect available wizards and viewers
         wizards = self.findWizardsWeb(protocol)
         # viewers = findViewersWeb(protocol)
 
-        # Process citations and documentation
-        #protocol.htmlCitations = self.parseText(protocol.citations())
-        #protocol.htmlDoc = self.parseText(protocol.getDoc())
-
-        visualize = 0
-        viewerDict = None
-
+        # Inputs
         inputs = []
-        outputs = []
-
-        # Iterate over the inputs
         for key, attr in protocol.iterInputAttributes():
-            input = {}
-            input.setdefault(key, {})
-            input[key]['_class'] = attr.get().getClassName()
+            inp = {key: {}}
+            inp[key]['_class'] = attr.get().getClassName()
             try:
-                input[key]['info'] = str(attr.get())
-            except Exception as e:
-                input[key]['info'] = ""
-
-            input[key]['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
-            input[key]['_parentId'] = attr.getObjValue().getObjId()
-            inputs.append(input)
-
-        # Iterate over the outputs
-        for key, attr in protocol.iterOutputAttributes():
-            output = {}
-            output.setdefault(key, {})
-            output[key]['_class'] = attr.__class__.__name__
-            try:
-                output[key]['info'] = attr.__str__()
-            except Exception as e:
-                output[key]['info'] = ""
-            output[key]['_objValue'] = "%s.%s" % (protName, key)
-            output[key][' '] = protocol.getObjId()
-            outputs.append(output)
-
+                inp[key]['info'] = str(attr.get())
+            except Exception:
+                inp[key]['info'] = ""
+            inp[key]['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
+            inp[key]['_parentId'] = attr.getObjValue().getObjId()
+            inputs.append(inp)
         context['inputs'] = inputs
+
+        # Outputs
+        outputs = []
+        for key, attr in protocol.iterOutputAttributes():
+            outp = {key: {}}
+            outp[key]['_class'] = attr.__class__.__name__
+            try:
+                outp[key]['info'] = str(attr)
+            except Exception:
+                outp[key]['info'] = ""
+            outp[key]['_objValue'] = f"{protName}.{key}"
+            outp[key]['_parentId'] = protocol.getObjId()
+            outputs.append(outp)
         context['outputs'] = outputs
 
+        # Definition (params, sections, Line/Group)
         paramsData = []
         for section in protocol._definition.iterSections():
             sectionData = {"name": section.getLabel(), "params": []}
             for paramName, param in section.iterParams():
                 protVar = getattr(protocol, paramName, None)
+
                 if protVar is None:
-                    # Handle Group and Line special cases
+                    # Handle Group
                     if isinstance(param, Group):
                         group = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
                         group[paramName]['children'] = []
@@ -377,52 +364,61 @@ class ProjectService:
                             if isinstance(paramGroup, Line):
                                 for paramLineName, paramLine in paramGroup.iterParams():
                                     protVar = getattr(protocol, paramLineName, None)
-
-                                    if protVar is None:
-                                        pass
-                                    else:
-                                        paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
-                                                                             protVar)
+                                    if protVar:
+                                        paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None,
+                                                                              0, protVar)
                                         if paramChild:
                                             group[paramName]['children'].append(paramChild)
-
-                            elif protVar is None:
-                                pass
-                            else:
-                                paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0, protVar)
+                            elif protVar:
+                                paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0,
+                                                                      protVar)
                                 if paramChild:
                                     group[paramName]['children'].append(paramChild)
-
                         if group:
                             sectionData["params"].append(group)
 
-                        # LINE PARAM
+                    # Handle Line
                     if isinstance(param, Line):
                         line = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
                         line[paramName]['children'] = []
                         for paramLineName, paramLine in param.iterParams():
                             protVar = getattr(protocol, paramLineName, None)
-
-                            if protVar is None:
-                                pass
-                            else:
-                                paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0, protVar)
+                            if protVar:
+                                paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
+                                                                      protVar)
                                 if paramChild:
                                     line[paramName]['children'].append(paramChild)
-
                         if line:
                             sectionData["params"].append(line)
 
                 else:
-                    param = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                    if param:
-                        sectionData["params"].append(param)
+                    paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                    if paramProcessed:
+                        sectionData["params"].append(paramProcessed)
 
             paramsData.append(sectionData)
 
         context["definition"] = paramsData
-
         return context
+
+    def getNewProtocolParams(self, protocolClassName: str) -> dict:
+        """
+        Returns the parameters of a new protocol given its class name.
+        """
+        protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
+        if protClass:
+            protocol = self.currentProject.newProtocol(protClass)
+            return self._buildProtocolContext(protocol)
+        return {}
+
+    def getProtocolParams(self, protocolId: int) -> dict:
+        """
+        Returns the parameters of an existing protocol given its ID.
+        """
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        protocol.getPlugin()
+        self.currentProject._fixProtParamsConfiguration(protocol)
+        return self._buildProtocolContext(protocol)
 
     def castParamValue(self, param, rawValue):
         """Cast rawValue to the correct type depending on param type."""
@@ -482,13 +478,12 @@ class ProjectService:
         protocol.setAttributeValue(key, parentProtocol)
         param.default.set(value['editableValue'])
 
-
-    def launchProtocol(self, protocolId, params):
-        """Launch a protocol in RESTART mode, applying all params."""
-
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.runMode.set(MODE_RESTART)
-
+    def saveProtocol(self, protocolId, protocolClassName, params, setToSave=True):
+        if not protocolId:
+            protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
+            protocol = self.currentProject.newProtocol(protClass)
+        else:
+            protocol = self.currentProject.getProtocol(int(protocolId))
         # Set non-pointer parameters
         for key, value in params.items():
             param = protocol.getParam(key)
@@ -508,10 +503,20 @@ class ProjectService:
         # Apply pointer parameters
         self.applyParamsToProtocol(protocol, params)
 
+        if setToSave:
+            protocol.setSaved()
+
+        if protocol.hasObjId():
+            self.currentProject._storeProtocol(protocol)
+        else:
+            self.currentProject._setupProtocol(protocol)
+        return protocol
+
+    def launchProtocol(self, protocolId, protocolClassName, params):
+        """Launch a protocol in RESTART mode, applying all params."""
+
         # Store & launch
-        self.currentProject._storeProtocol(protocol)
-        if protocol.runMode.get() == MODE_RESTART:
-            protocol.setRunning()
+        protocol = self.saveProtocol(protocolId, protocolClassName, params, setToSave=False)
         self.currentProject.launchProtocol(protocol)
 
     def findWizardsWeb(self, protocol):

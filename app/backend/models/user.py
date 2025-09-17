@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, Integer, String, Boolean
 from sqlalchemy.orm import relationship
-from app.backend.models.project import Project
+from app.backend.models.project_model import Project
 
 from app.backend.database import Base
 

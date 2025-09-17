@@ -24,7 +24,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))  # Add project ro
 
 from app.backend.database import Base
 from app.backend.models.user import User  # Import at least one model
-from app.backend.models.project import Project
+from app.backend.models.project_model import Project
 
 # Provide metadata for Alembic's autogenerate
 target_metadata = Base.metadata

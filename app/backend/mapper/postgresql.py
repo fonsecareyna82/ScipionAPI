@@ -308,45 +308,75 @@ class PostgresqlFlatMapper(Mapper):
     # -----------------------------
     # Protocol Methods
     # -----------------------------
-    def insertProtocol(self, projectId: int, protocolType: str,
-                       parameters: Optional[OrderedDict] = None, status: str = 'pending') -> int:
+    def saveProtocol(self, protocol: Dict[str, Any]) -> int:
         """Insert a new protocol and return its id."""
         cur = self.db.execute(
-            "INSERT INTO protocols (project_id, type, status, parameters) VALUES (%s, %s, %s, %s) RETURNING id",
-            (projectId, protocolType, status, parameters)
+            """
+            INSERT INTO protocols ("projectId", "protocolClassName", status, params)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                protocol["projectId"],
+                protocol["protocolClassName"],
+                protocol.get("status", "pending"),
+                protocol.get("params"),
+            ),
         )
-        return cur.fetchone()['id']
+        return cur.fetchone()["id"]
 
-    def getProtocol(self, protocolId: int) -> Optional[Dict]:
+    def getProtocolById(self, protocolId: int) -> Optional[Dict]:
         """Retrieve a protocol by id."""
-        return self.db.fetchOne("SELECT * FROM protocols WHERE id=%s", (protocolId,))
+        return self.db.fetchOne(
+            'SELECT * FROM protocols WHERE "id"=%s',
+            (protocolId,)
+        )
 
-    def listProtocols(self, projectId: Optional[int] = None) -> List[Dict]:
+    def getProtocols(self, projectId: Optional[int] = None) -> List[Dict]:
         """List all protocols, optionally filtered by projectId."""
         if projectId is None:
-            return self.db.fetchAll("SELECT * FROM protocols ORDER BY createdAt DESC")
+            return self.db.fetchAll(
+                'SELECT * FROM protocols ORDER BY "createdAt" DESC'
+            )
         else:
             return self.db.fetchAll(
-                "SELECT * FROM protocols WHERE project_id=%s ORDER BY createdAt DESC",
+                'SELECT * FROM protocols WHERE "projectId"=%s ORDER BY "createdAt" DESC',
                 (projectId,)
             )
 
-    def updateProtocol(self, protocolId: int, status: Optional[str] = None,
-                       parameters: Optional[OrderedDict] = None):
-        """Update protocol fields."""
+    def updateProtocol(self, protocol: Dict[str, Any]) -> None:
+        """Update protocol fields dynamically."""
         updates = []
         params = []
-        if status is not None:
+
+        if "protocolClassName" in protocol and protocol["protocolClassName"] is not None:
+            updates.append('"protocolClassName"=%s')
+            params.append(protocol["protocolClassName"])
+
+        if "params" in protocol and protocol["params"] is not None:
+            updates.append("params=%s")
+            params.append(protocol["params"])
+
+        if "status" in protocol and protocol["status"] is not None:
             updates.append("status=%s")
-            params.append(status)
-        if parameters is not None:
-            updates.append("parameters=%s")
-            params.append(parameters)
+            params.append(protocol["status"])
+
         if not updates:
             return
-        params.append(protocolId)
-        self.db.execute(f"UPDATE protocols SET {', '.join(updates)} WHERE id=%s", tuple(params))
 
-    def deleteProtocol(self, protocolId: int):
-        """Delete a protocol."""
-        self.db.execute("DELETE FROM protocols WHERE id=%s", (protocolId,))
+        params.append(protocol["id"])
+        sql = f"""
+            UPDATE protocols
+               SET {', '.join(updates)},
+                   "updatedAt" = NOW()
+             WHERE "id"=%s
+        """
+        self.db.execute(sql, tuple(params))
+
+    def deleteProtocol(self, protocolId: int) -> bool:
+        """Delete a protocol by id."""
+        cursor = self.db.execute(
+            'DELETE FROM protocols WHERE "id"=%s',
+            (protocolId,)
+        )
+        return cursor.rowcount > 0

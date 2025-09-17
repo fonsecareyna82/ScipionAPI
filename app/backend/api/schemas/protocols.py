@@ -23,15 +23,55 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-# app/backend/schemas.py
-from pydantic import BaseModel
-from typing import Any, Optional
+# schemas/protocol.py
+from typing import Optional, Any, Dict
+from pydantic import BaseModel, Field, validator
 from datetime import datetime
+
+
+class ProtocolCreate(BaseModel):
+    projectId: int
+    protocolId: str = Field(..., min_length=1)
+    protocolClassName: str = Field(..., min_length=1)
+    params: Dict[str, Any] = {}
+
+    @validator("protocolId")
+    @classmethod
+    def validateProtocolId(cls, value: str) -> str:
+        if not value.isidentifier():
+            raise ValueError("protocolId must be a valid identifier")
+        return value
+
+    @validator("protocolClassName")
+    @classmethod
+    def validateProtocolClassName(cls, value: str) -> str:
+        if not value.isidentifier():
+            raise ValueError("protocolClassName must be a valid identifier")
+        return value
+
+
+class ProtocolUpdate(BaseModel):
+    params: Optional[Dict[str, Any]] = None
 
 
 class ProtocolOut(BaseModel):
     id: int
-    type: str
-    status: str
+    projectId: int
+    protocolId: str
+    protocolClassName: str
+    params: Dict[str, Any]
     createdAt: datetime
-    parameters: Any
+    updatedAt: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True  # Compatibility with SQLAlchemy models
+
+
+class ProtocolRequestOut(BaseModel):
+    protocolId: str
+    protocolClassName: str
+    params: Any
+
+    class Config:
+        arbitrary_types_allowed = True
+
