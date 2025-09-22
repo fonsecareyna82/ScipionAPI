@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List, Any, Dict
 
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.schemas.protocols import ProtocolOut
+from app.backend.api.schemas.protocols_schema import ProtocolOut
 from app.backend.database import getMapper
-from app.backend.api.schemas.project import ProjectCreate, ProjectOut, ProjectUpdate
+from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import ProtocolRequest
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -112,22 +112,24 @@ async def loadNewProtocol(
 
 
 @router.post("/launch", response_model=Any)
-async def launchProtocol(request: ProtocolRequest):
+async def launchProtocol(request: ProtocolRequest,
+                         mapper: PostgresqlFlatMapper = Depends(getMapper)):
     try:
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
-        service.launchProtocol(protocolId, protocolClassName, params)
+        service.launchProtocol(mapper, protocolId, protocolClassName, params)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/save", response_model=Any)
-async def saveProtocol(request: ProtocolRequest):
+async def saveProtocol(request: ProtocolRequest,
+                       mapper: PostgresqlFlatMapper = Depends(getMapper)):
     try:
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
-        service.saveProtocol(protocolId, protocolClassName, params)
+        service.saveProtocol(protocolId, mapper, protocolClassName, params)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

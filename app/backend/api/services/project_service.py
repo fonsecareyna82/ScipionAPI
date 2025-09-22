@@ -41,7 +41,7 @@ from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, Stri
                                         MultiPointerParam, RelationParam, MODE_RESTART)
 import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
-from app.backend.api.schemas.project import ProjectCreate
+from app.backend.api.schemas.project_schema import ProjectCreate
 
 
 from app.backend.models.project_model import ProjectUpdateRequest
@@ -124,7 +124,7 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        return self.loadProject(dbProj)
+        return self.loadProject(dbProj, mapper)
 
     def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdateRequest):
         project = self.getProjectById(mapper, projectId, currentUser)
@@ -235,12 +235,13 @@ class ProjectService:
             }
         return graphData
 
-    def loadProject(self, dbProj: dict) -> dict:
+    def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None) -> dict:
         projPath = dbProj['name']
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
         graphData = self.buildProtocolsGraph(runs)
+        # self.saveProtocolDependencies(mapper, graphData)
 
         return {
             "id": dbProj['id'],
@@ -251,6 +252,16 @@ class ProjectService:
             "path": projPath,
             "protocols": graphData
         }
+
+    def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
+        for nodeId, nodeInfo in graphData.items():
+            parentIds = [int(pid) for pid in nodeInfo['parents'] if pid != 'PROJECT']
+            childIds = [int(cid) for cid in nodeInfo['children']]
+            mapper.updateProtocolDependencies(
+                protocolId=nodeId,
+                parentIds=parentIds,
+                childIds=childIds
+            )
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
@@ -460,9 +471,9 @@ class ProjectService:
                         pointer = getattr(protocol, key)
                         pointer.setExtended(value['editableValue'].split('.')[-1])
 
-                        print(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                        logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                     except Exception as e:
-                        print(f"[ERROR] Could not set pointer for {key}: {e}")
+                        logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
                 else:
                     # Pointer sin parentId, fallback
                     param.set(None)
@@ -471,24 +482,24 @@ class ProjectService:
         """Resolve and set a pointer param from parent protocol outputs."""
         param = protocol.getParam(key)
         if not isinstance(param, PointerParam):
-            print(f"[WARN] Param {key} is not a PointerParam")
+            logger.warning(f"[WARN] Param {key} is not a PointerParam")
             return
         parentProtocol = self.currentProject.getProtocol(int(parentId))
         param.set(value['editableValue'])
         protocol.setAttributeValue(key, parentProtocol)
         param.default.set(value['editableValue'])
 
-    def saveProtocol(self, protocolId, protocolClassName, params, setToSave=True):
-        if not protocolId:
+    def saveProtocol(self, mapper, protocolId, protocolClassName, params, setToSave=True):
+        if not protocolId:  # new protocol
             protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
             protocol = self.currentProject.newProtocol(protClass)
-        else:
+        else:  # retrieve a protocol by id
             protocol = self.currentProject.getProtocol(int(protocolId))
         # Set non-pointer parameters
         for key, value in params.items():
             param = protocol.getParam(key)
             if param is None:
-                print(f"[WARN] Param not found: {key}")
+                logger.warning(f"[WARN] Param not found: {key}")
                 continue
 
             if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
@@ -498,7 +509,7 @@ class ProjectService:
             castedValue = self.castParamValue(param, rawValue)
             param.set(castedValue)
             protocol.setAttributeValue(key, castedValue)
-            print(f"[INFO] Set param {key} = {castedValue}")
+            logger.info(f"[INFO] Set param {key} = {castedValue}")
 
         # Apply pointer parameters
         self.applyParamsToProtocol(protocol, params)
@@ -510,13 +521,26 @@ class ProjectService:
             self.currentProject._storeProtocol(protocol)
         else:
             self.currentProject._setupProtocol(protocol)
+
+        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),
+                                                    projectId=27)
+        if not dbProtocol:
+            # Insert a new protocol
+            pass
+        else:
+            # Update parameters and status if exists
+            pass
+        # Save dependencies
+        # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
+        # self.saveProtocolDependencies(mapper, graphData._nodesDict)
+
         return protocol
 
-    def launchProtocol(self, protocolId, protocolClassName, params):
+    def launchProtocol(self, mapper, protocolId, protocolClassName, params):
         """Launch a protocol in RESTART mode, applying all params."""
 
         # Store & launch
-        protocol = self.saveProtocol(protocolId, protocolClassName, params, setToSave=False)
+        protocol = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
         self.currentProject.launchProtocol(protocol)
 
     def findWizardsWeb(self, protocol):
@@ -627,7 +651,8 @@ class ProjectService:
                         context[paramName]['default'] = defaultValueList
                     elif isinstance(param, PointerParam):
                         # TODO CHECK THIS LATER to display better when no _extended attribute
-                        context[paramName]['_objValue'] = "%s.%s" % (protVar.getObjValue(), protVar.getExtended())
+                        pointerValue = "%s.%s" % (protVar.getObjValue(), protVar.getExtended()) if protVar.getExtended() else ''
+                        context[paramName]['_objValue'] = pointerValue
                         context[paramName]['default'] = context[paramName]['_objValue']
                     else:
                         context[paramName]['_objValue'] = protVar.get() if protVar.get() is not None else ""
@@ -635,7 +660,7 @@ class ProjectService:
 
             return context
         except Exception as ex:
-            print("ERROR with param: " + paramName)
+            logger.error("ERROR with param: " + paramName)
             raise ex
 
     def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
