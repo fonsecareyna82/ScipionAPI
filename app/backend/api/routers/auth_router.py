@@ -27,8 +27,8 @@
 
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.backend.api.schemas.user import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
-                                          UserUpdate)
+from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
+                                                 UserUpdate)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.utils.email import sendVerificationEmail

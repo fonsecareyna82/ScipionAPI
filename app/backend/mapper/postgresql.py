@@ -325,11 +325,11 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cur.fetchone()["id"]
 
-    def getProtocolById(self, protocolId: int) -> Optional[Dict]:
+    def getProtocolByProtocolId(self, protocolId: int, projectId: int) -> Optional[Dict]:
         """Retrieve a protocol by id."""
         return self.db.fetchOne(
-            'SELECT * FROM protocols WHERE "id"=%s',
-            (protocolId,)
+            'SELECT * FROM protocols WHERE "protocolId" = %s AND "projectId" = %s',
+            (str(protocolId), projectId)
         )
 
     def getProtocols(self, projectId: Optional[int] = None) -> List[Dict]:
@@ -380,3 +380,7 @@ class PostgresqlFlatMapper(Mapper):
             (protocolId,)
         )
         return cursor.rowcount > 0
+
+    def updateProtocolDependencies(self, protocolId: str, parentIds: list, childIds: list):
+        query ='UPDATE protocols SET "parentIds" = %s, "childIds" = %s, "updatedAt" = NOW() WHERE "protocolId" = %s'
+        self.db.execute(query, (parentIds, childIds, protocolId))

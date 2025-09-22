@@ -25,12 +25,13 @@
 # ******************************************************************************
 # models/protocol_model.py
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
 from pydantic import BaseModel, ConfigDict
 from typing import Any
+from app.backend.models.project_model import Project
 
 # ------------------------ SQLAlchemy model ------------------------
 class Protocol(Base):
@@ -42,6 +43,8 @@ class Protocol(Base):
     protocolClassName = Column(String, nullable=False)
     params = Column(JSON, nullable=True)
     status = Column(String, default="pending")
+    parentIds = Column(ARRAY(Integer), default=[])
+    childIds = Column(ARRAY(Integer), default=[])
     createdAt = Column(DateTime(timezone=True), server_default=func.now())
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now())
 
