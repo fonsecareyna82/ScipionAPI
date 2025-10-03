@@ -93,8 +93,7 @@ async def loadProtocol(
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
-    return service.getProtocolParams(protocolId)
+    return service.getProtocolParams(projectId, protocolId)
 
 
 @router.get("/{projectId}/protclass/{protClassName}", response_model=Any)
