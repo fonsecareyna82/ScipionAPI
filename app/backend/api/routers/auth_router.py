@@ -26,14 +26,14 @@
 # routers/auth_router.py
 
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
                                                  UserUpdate)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.utils.email import sendVerificationEmail
 from app.backend.utils.security import hashPassword, verifyPassword
-from app.backend.utils.jwt import createAccessToken
+from app.backend.utils.jwt import createAccessToken, createRefreshToken, verifyToken
 from app.backend.api.dependencies import getCurrentUser
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -139,8 +139,9 @@ def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Email not verified")
 
-    access_token = createAccessToken(data={"sub": user["email"]})
-    return LoginResponse(accessToken=access_token, tokenType="bearer")
+    accessToken = createAccessToken(data={"sub": user["email"]})
+    refreshToken = createRefreshToken(data={"sub": user["email"]})
+    return LoginResponse(accessToken=accessToken, refreshToken=refreshToken, tokenType="bearer")
 
 
 @router.get(
@@ -195,3 +196,18 @@ def updateMe(
         )
 
     return userProfile
+
+
+@router.post("/refresh")
+def refreshToken(payload: dict = Body(...)):
+    refresh_token = payload.get("token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Missing token")
+
+    decoded = verifyToken(refresh_token, expected_type="refresh")
+    user_email = decoded.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    new_access_token = createAccessToken(data={"sub": user_email})
+    return {"accessToken": new_access_token}

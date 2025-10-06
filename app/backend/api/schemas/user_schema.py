@@ -85,6 +85,7 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     accessToken: str
+    refreshToken: str
     tokenType: str
 
 
