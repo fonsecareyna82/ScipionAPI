@@ -451,7 +451,7 @@ class ProjectService:
                                 param.label.set('GPU IDs')
                                 param.condition.set(None)
                             elif paramName == 'runMode':
-                                param.choices = ['Continue', 'Restart']
+                                param.choices = ['continue', 'restart']
                             paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
                             if paramProcessed:
                                 if paramName == 'runName':
@@ -517,11 +517,11 @@ class ProjectService:
                 if parentId:
                     try:
                         parentProtocol = self.currentProject.getProtocol(int(parentId))
-                        param.set(value['editableValue'])
+                        param.set(value['value'])
                         protocol.setAttributeValue(key, parentProtocol)
-                        param.default.set(value['editableValue'])
+                        param.default.set(value['value'])
                         pointer = getattr(protocol, key)
-                        pointer.setExtended(value['editableValue'].split('.')[-1])
+                        pointer.setExtended(value['value'].split('.')[-1])
 
                         logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                     except Exception as e:
