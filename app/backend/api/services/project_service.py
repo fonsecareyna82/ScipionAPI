@@ -464,14 +464,14 @@ class ProjectService:
         context["definition"] = paramsData
         return context
 
-    def getNewProtocolParams(self, protocolClassName: str) -> dict:
+    def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
         """
         Returns the parameters of a new protocol given its class name.
         """
         protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
         if protClass:
             protocol = self.currentProject.newProtocol(protClass)
-            return self._buildProtocolContext(protocol)
+            return self._buildProtocolContext(projectId, protocol)
         return {}
 
     def getProtocolParams(self, projectId: int, protocolId: int) -> dict:
