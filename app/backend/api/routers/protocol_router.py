@@ -62,7 +62,7 @@ async def loadNewProtocol(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getNewProtocolParams(protClassName)
+    return service.getNewProtocolParams(projectId, protClassName)
 
 
 @router.post("/launch", response_model=Any)
