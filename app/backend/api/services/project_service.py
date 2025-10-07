@@ -533,7 +533,7 @@ class ProjectService:
                             param.set(None)
                     # MultiPointer validation
                     if newInputs.isEmpty() and not param.allowsNull.get():
-                        errorList.append(param.label.get() + ' it must not be empty.')
+                        errorList.append('**' + param.label.get() + '** it must not be empty.')
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
                     parentId = value.get("_parentId")
@@ -551,10 +551,10 @@ class ProjectService:
                             logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                         except Exception as e:
                             logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
-                    else: # Pointer without parentId, fallback
+                    else:  # Pointer without parentId, fallback
                         # MultiPointer validation
                         if not param.allowsNull.get():
-                            errorList.append(param.label.get() + ' it must not be empty.')
+                            errorList.append('**' + param.label.get() + '** it must not be empty.')
                         param.set(None)
         return errorList
 
@@ -590,7 +590,7 @@ class ProjectService:
             castedValue = self.castParamValue(param, rawValue)
             errors = param.validate(castedValue)
             if errors:
-                errorListAux = [param.label.get() + ' ' + error for error in errors]
+                errorListAux = ['**' + param.label.get() + '** ' + error for error in errors]
                 errorList += errorListAux
             param.set(castedValue)
             protocol.setAttributeValue(key, castedValue)
