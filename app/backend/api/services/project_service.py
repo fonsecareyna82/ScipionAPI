@@ -25,6 +25,8 @@
 # ******************************************************************************
 import logging
 
+from pyworkflow.object import PointerList, Pointer
+
 logger = logging.getLogger(__name__)
 
 import os
@@ -505,30 +507,56 @@ class ProjectService:
 
     def applyParamsToProtocol(self, protocol, params):
         """Apply pointer parameters to protocol."""
+        errorList = []
         for key, value in params.items():
             param = protocol.getParam(key)
             if param is None:
                 continue
 
             if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                parentId = value.get("_parentId")
-                rawValue = value.get("value")
 
-                if parentId:
-                    try:
-                        parentProtocol = self.currentProject.getProtocol(int(parentId))
-                        param.set(value['value'])
-                        protocol.setAttributeValue(key, parentProtocol)
-                        param.default.set(value['value'])
-                        pointer = getattr(protocol, key)
-                        pointer.setExtended(value['value'].split('.')[-1])
+                if isinstance(param, MultiPointerParam):
+                    newInputs = PointerList()
+                    for v in value:
+                        parentId = v.get("_parentId")
+                        rawValue = v.get("value")
+                        if parentId:
+                            try:
+                                parentProtocol = self.currentProject.getProtocol(int(parentId))
+                                extended = (v['_objValue'].split('.')[-1])
+                                newInputs.append(Pointer(parentProtocol, extended=extended))
+                                logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                            except Exception as e:
+                                logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                        else:
+                            # Pointer sin parentId, fallback
+                            param.set(None)
+                    # MultiPointer validation
+                    if newInputs.isEmpty() and not param.allowsNull.get():
+                        errorList.append(param.label.get() + ' it must not be empty.')
+                    protocol.setAttributeValue(key, newInputs)
+                elif isinstance(param, PointerParam):
+                    parentId = value.get("_parentId")
+                    rawValue = value.get("value")
+                    if parentId:
+                        try:
+                            parentProtocol = self.currentProject.getProtocol(int(parentId))
+                            val = value['value'] if 'value' in value else value['_objValue']
+                            param.set(val)
+                            protocol.setAttributeValue(key, parentProtocol)
+                            param.default.set(val)
+                            pointer = getattr(protocol, key)
+                            pointer.setExtended(val.split('.')[-1])
 
-                        logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
-                    except Exception as e:
-                        logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
-                else:
-                    # Pointer sin parentId, fallback
-                    param.set(None)
+                            logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                        except Exception as e:
+                            logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                    else: # Pointer without parentId, fallback
+                        # MultiPointer validation
+                        if not param.allowsNull.get():
+                            errorList.append(param.label.get() + ' it must not be empty.')
+                        param.set(None)
+        return errorList
 
     def setPointerParam(self, protocol, key, value, parentId):
         """Resolve and set a pointer param from parent protocol outputs."""
@@ -542,6 +570,7 @@ class ProjectService:
         param.default.set(value['editableValue'])
 
     def saveProtocol(self, mapper, protocolId, protocolClassName, params, setToSave=True):
+        errorList = []
         if not protocolId:  # new protocol
             protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
             protocol = self.currentProject.newProtocol(protClass)
@@ -559,12 +588,16 @@ class ProjectService:
 
             rawValue = value.get("value")
             castedValue = self.castParamValue(param, rawValue)
+            errors = param.validate(castedValue)
+            if errors:
+                errorListAux = [param.label.get() + ' ' + error for error in errors]
+                errorList += errorListAux
             param.set(castedValue)
             protocol.setAttributeValue(key, castedValue)
             logger.info(f"[INFO] Set param {key} = {castedValue}")
 
         # Apply pointer parameters
-        self.applyParamsToProtocol(protocol, params)
+        errorList += self.applyParamsToProtocol(protocol, params)
 
         if setToSave:
             protocol.setSaved()
@@ -586,14 +619,18 @@ class ProjectService:
         # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
         # self.saveProtocolDependencies(mapper, graphData._nodesDict)
 
-        return protocol
+        return protocol, errorList
 
     def launchProtocol(self, mapper, protocolId, protocolClassName, params):
         """Launch a protocol in RESTART mode, applying all params."""
 
         # Store & launch
-        protocol = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
-        self.currentProject.launchProtocol(protocol)
+        protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
+        errors += protocol._validate()
+        if not errors:
+            self.currentProject.launchProtocol(protocol)
+        else:
+            raise HTTPException(status_code=422, detail=errors)
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
@@ -697,17 +734,25 @@ class ProjectService:
                         defaultValueList = []
                         for pointer in protVar:
                             value = "%s.%s" % (pointer.getObjValue(), pointer.getExtended())
-                            valueList.append({'object': value, 'info': '---'})
-                            defaultValueList.append({'object': value, 'info': '---'})
+                            obj = {'object': value,
+                                   'info': str(pointer.get()),
+                                   '_objValue': value,
+                                   '_parentId': pointer.get().getObjParentId()}
+                            valueList.append(obj)
+                            defaultValueList.append(obj)
                         context[paramName]['_objValue'] = valueList
                         context[paramName]['default'] = defaultValueList
                     elif isinstance(param, PointerParam):
                         # TODO CHECK THIS LATER to display better when no _extended attribute
                         pointerValue = "%s.%s" % (protVar.getObjValue(), protVar.getExtended()) if protVar.getExtended() else ''
                         context[paramName]['_objValue'] = pointerValue
+                        context[paramName]['value'] = pointerValue
                         context[paramName]['default'] = context[paramName]['_objValue']
+                        if protVar.get() is not None:
+                            context[paramName]['_parentId'] = protVar.get().getObjParentId()
                     else:
                         context[paramName]['_objValue'] = protVar.get() if protVar.get() is not None else ""
+                        context[paramName]['value'] = str(context[paramName]['_objValue'])
                         context[paramName]['default'] = str(context[paramName]['_objValue'])
 
             return context
