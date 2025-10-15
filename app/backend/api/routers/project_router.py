@@ -129,6 +129,6 @@ async def saveProtocol(request: ProtocolRequest,
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
-        service.saveProtocol(protocolId, mapper, protocolClassName, params)
+        service.saveProtocol(mapper, protocolId, protocolClassName, params)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

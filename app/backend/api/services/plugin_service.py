@@ -53,7 +53,7 @@ class PluginService:
                         serializedPlugin = serializeToJson(pluginObj)
                         serializedPlugin['installed'] = True
                         serializedPlugin['toUpdate'] = False
-                        if pluginObj.latestRelease != pluginObj.pipVersion:
+                        if pluginObj.latestRelease > pluginObj.pipVersion:
                             serializedPlugin['toUpdate'] = True
                         logo = serializedPlugin['logo'].lstrip('/')
                         # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
