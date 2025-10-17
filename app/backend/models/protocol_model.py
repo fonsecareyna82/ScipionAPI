@@ -30,10 +30,12 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
 from pydantic import BaseModel, ConfigDict
-from typing import Any
+from typing import Any, Optional
 from app.backend.models.project_model import Project
 
 # ------------------------ SQLAlchemy model ------------------------
+
+
 class Protocol(Base):
     __tablename__ = "protocols"
 
@@ -51,6 +53,8 @@ class Protocol(Base):
     project = relationship("Project", back_populates="protocols")
 
 # ------------------------ Pydantic models ------------------------
+
+
 class ProtocolRequest(BaseModel):
     protocolId: str
     protocolClassName: str
@@ -66,12 +70,14 @@ class ProtocolRequest(BaseModel):
     def getProtocolClassName(self):
         return self.protocolClassName
 
+
 class ProtocolCreateRequest(BaseModel):
     protocolId: str
     projectId: int
     protocolClassName: str
     params: Any
     status: str = "pending"
+
 
 class ProtocolResponse(BaseModel):
     id: int
@@ -86,6 +92,15 @@ class ProtocolResponse(BaseModel):
     class Config:
         orm_mode = True
 
+
 class ProtocolUpdateRequest(BaseModel):
     params: Any
     status: str
+
+
+class ProtocolRenameIn(BaseModel):
+    name: str
+
+
+class ProtocolDuplicateIn(BaseModel):
+    name: Optional[str] = None
