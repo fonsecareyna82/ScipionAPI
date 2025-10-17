@@ -6,7 +6,7 @@ from app.backend.api.schemas.protocols_schema import ProtocolOut
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.protocol_model import ProtocolRequest
+from app.backend.models.protocol_model import ProtocolRequest, ProtocolRenameIn, ProtocolDuplicateIn
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -130,5 +130,108 @@ async def saveProtocol(request: ProtocolRequest,
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
         service.saveProtocol(mapper, protocolId, protocolClassName, params)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{projectId}/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
+def renameProtocol(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolRenameIn,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        return service.renameProtocol(protocolId, payload.name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{projectId}/{protocolId}/duplicate", response_model=Any, status_code=status.HTTP_201_CREATED)
+def duplicateProtocol(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolDuplicateIn = None,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    name = payload.name if payload else None
+    try:
+        return service.duplicateProtocol(protocolId, name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{projectId}/{protocolId}", status_code=status.HTTP_200_OK)
+def deleteProtocol(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        service.deleteProtocol(protocolId)
+        return {"status": "ok", "message": "Protocol deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{projectId}/{protocolId}/restart-all", status_code=status.HTTP_200_OK)
+def restartProtocolAll(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        service.restartProtocolAll(mapper, projectId, protocolId, currentUser)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{projectId}/{protocolId}/continue-all", status_code=status.HTTP_200_OK)
+def continueProtocolAll(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{projectId}/{protocolId}/reset-from", status_code=status.HTTP_200_OK)
+def resetProtocolFrom(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        service.resetProtocolFrom(mapper, projectId, protocolId, currentUser)
+        return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

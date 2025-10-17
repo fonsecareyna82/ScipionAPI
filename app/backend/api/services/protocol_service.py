@@ -47,19 +47,4 @@ class ProtocolService:
         project = self.projectService.getProjectById(mapper, projectId, currentUser)
         if not project:
             return None
-        return self.projectService.getNewProtocolParams(protClassName)
-
-    # -----------------------------
-    # Protocol Actions
-    # -----------------------------
-    def saveProtocol(self, request: ProtocolRequest):
-        protocolId = request.getProtocolId()
-        protocolClassName = request.getProtocolClassName()
-        params = request.getParams()
-        self.projectService.saveProtocol(protocolId, protocolClassName, params)
-
-    def launchProtocol(self, request: ProtocolRequest):
-        protocolId = request.getProtocolId()
-        protocolClassName = request.getProtocolClassName()
-        params = request.getParams()
-        self.projectService.launchProtocol(protocolId, protocolClassName, params)
+        return self.projectService.getNewProtocolParams(projectId, protClassName)

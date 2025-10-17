@@ -910,3 +910,36 @@ class ProjectService:
             "stderrOffset": new_offset_err,
         }
 
+    def renameProtocol(self, protocolId: int, newName: str):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        protocol.setObjLabel(newName)
+        self.currentProject._storeProtocol(protocol)
+        return {"status": "ok", "message": "Protocol renamed successfully"}
+
+    def duplicateProtocol(self, protocolId: int, newName: str):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            newProt = self.currentProject.copyProtocol(protocol)
+            newProt.setObjLabel(newName)
+            newProt.setSaved()
+            self.currentProject._storeProtocol(newProt)
+            return {"status": "ok", "message": "Protocol was duplicated successfully"}
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def deleteProtocol(self, protocolId: int):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            self.currentProject.deleteProtocol(protocol)
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def restartProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
+        raise NotImplementedError
+
+    def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
+        raise NotImplementedError
+
+    def resetProtocolFrom(self, mapper, projectId: int, protocolId: int, currentUser: dict):
+        raise NotImplementedError
+
