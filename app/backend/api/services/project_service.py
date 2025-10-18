@@ -928,9 +928,11 @@ class ProjectService:
 
     def deleteProtocol(self, protocols: Any):
         try:
+            protList = []
             for protocol in protocols:
-                delProt = self.currentProject.getProtocol(int(protocol))
-                self.currentProject.deleteProtocol(delProt)
+                protList.append(self.currentProject.getProtocol(int(protocol)))
+
+            self.currentProject.deleteProtocol(*protList)
         except Exception as e:
             HTTPException(status_code=500, detail=str(e))
 
