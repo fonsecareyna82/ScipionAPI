@@ -916,26 +916,33 @@ class ProjectService:
         self.currentProject._storeProtocol(protocol)
         return {"status": "ok", "message": "Protocol renamed successfully"}
 
-    def duplicateProtocol(self, protocolId: int, newName: str):
-        protocol = self.currentProject.getProtocol(int(protocolId))
+    def duplicateProtocol(self, protocols: Any):
         try:
-            newProt = self.currentProject.copyProtocol(protocol)
-            newProt.setObjLabel(newName)
-            newProt.setSaved()
-            self.currentProject._storeProtocol(newProt)
+            protList = []
+            for protocol in protocols:
+                protList.append(self.currentProject.getProtocol(int(protocol.id)))
+            self.currentProject.copyProtocol(protList)
             return {"status": "ok", "message": "Protocol was duplicated successfully"}
         except Exception as e:
             HTTPException(status_code=500, detail=str(e))
 
-    def deleteProtocol(self, protocolId: int):
-        protocol = self.currentProject.getProtocol(int(protocolId))
+    def deleteProtocol(self, protocols: Any):
         try:
-            self.currentProject.deleteProtocol(protocol)
+            for protocol in protocols:
+                delProt = self.currentProject.getProtocol(int(protocol))
+                self.currentProject.deleteProtocol(delProt)
         except Exception as e:
             HTTPException(status_code=500, detail=str(e))
 
-    def restartProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
-        raise NotImplementedError
+    def restartProtocolAll(self,protocolId: int):
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
+            errorList = []
+            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
+            return errorList
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
 
     def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
         raise NotImplementedError
