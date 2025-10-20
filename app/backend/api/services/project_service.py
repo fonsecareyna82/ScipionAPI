@@ -23,87 +23,151 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import logging
+
+from pyworkflow.object import PointerList, Pointer
+
+logger = logging.getLogger(__name__)
 
 import os
 import subprocess
-from typing import List, Any
-from datetime import datetime
 from pathlib import Path
-
+from datetime import datetime
+from typing import List, Optional, Any
+from fastapi import HTTPException, status
 import pyworkflow
-from pyworkflow.project import Manager, Project
-from pyworkflow.protocol import MODE_RESTART
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from pyworkflow import Config
+from pyworkflow.project import Manager, Project as ScipionProject
+from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
+                                        MultiPointerParam, RelationParam, MODE_RESTART)
+import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
+from app.backend.api.schemas.project_schema import ProjectCreate
 
-from app.backend.models.project_model import ProjectCreateRequest, ProjectUpdateRequest
+
+from app.backend.models.project_model import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
 class ProjectService:
-    """Service class to manage project operations"""
-
     def __init__(self):
-        """Initialize manager, in-memory store and preload projects."""
-        self.projectList = {}
-        self.currentId = 1
         self.manager = Manager()
         self.currentProject = None
-        self.loadProjects()
 
-    def getProjectList(self):
-        """Return the in-memory project index."""
-        return self.projectList
+    def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
+        # Check if a project with the same name already exists for this user
+        existingProjects = mapper.listProjects(ownerId=currentUser['id'])
+        if any(p['name'] == projectData.name for p in existingProjects):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A project with this name already exists for the current user"
+            )
 
-    def getCurrentProject(self):
-        """Return the currently loaded Scipion project."""
-        return self.currentProject
+        # Check if the project already exists in the file system (Scipion)
+        scipionPath = self.manager.getProjectPath(projectData.name)
+        if os.path.exists(scipionPath):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A project with this name already exists in the file system"
+            )
 
-    def createProject(self, project: ProjectCreateRequest) -> dict:
-        """Register a new project in memory."""
-        project_id = self.currentId
-        self.currentId += 1
+        # Create the project in Scipion
+        proj = self.manager.createProject(projectData.name)
+        proj.setComment(projectData.description or "")
 
-        self.projectList[project_id] = {
-            "id": project_id,
-            "name": project.name,
-            "description": project.description,
-            "created_at": datetime.now(),
-            "status": "created",
-            "protocolsCount": project.protocols,
-            "diskUsage": project.diskUsage
+        # Insert project metadata into PostgreSQL via mapper
+        dbProjectId = mapper.insertProject(
+            ownerId=currentUser['id'],
+            name=scipionPath,
+            description=projectData.description,
+            status=projectData.status
+        )
+
+        # Return the response payload
+        return {
+            "id": dbProjectId,
+            "name": projectData.name,
+            "description": projectData.description,
+            "createdAt": datetime.utcnow(),
+            "status": projectData.status,
+            "protocolsCount": 0,
+            "diskUsage": f"{0.0} GB"
         }
-        return self.projectList[project_id]
 
-    def listProjects(self) -> List[dict]:
-        """Return all stored projects as a list."""
-        return list(self.projectList.values())
+    def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
+        # Retrieve projects from PostgreSQL using the mapper
+        dbProjects = mapper.listProjects(ownerId=currentUser["id"])
+        result = []
 
-    def deleteProject(self, project_id: int) -> dict:
-        """Remove a project by its in-memory ID."""
-        if project_id not in self.projectList:
-            raise ValueError("Project not found")
-        del self.projectList[project_id]
-        return {"message": "Project deleted successfully"}
+        for dbProj in dbProjects:
+            path = self.manager.getProjectPath(dbProj['name'])
+            sizeGB = self.getProjectSize(path) / (1024 ** 3)
+            protCount = self.countProtocols(os.path.join(path, "Runs"))
 
-    def updateProject(self, project_id: int, updated: ProjectUpdateRequest) -> dict:
-        """Update name and description of an existing project."""
-        if project_id not in self.projectList:
-            raise ValueError("Project not found")
-        project = self.projectList[project_id]
-        project["name"] = updated.name
-        project["description"] = updated.description
+            result.append({
+                "id": dbProj['id'],
+                "name": os.path.basename(dbProj['name']),
+                "description": dbProj.get('description', ''),
+                "createdAt": dbProj.get('createdAt'),
+                "status": dbProj.get('status', 'active'),
+                "protocolsCount": str(protCount),
+                "diskUsage": f"{sizeGB:.2f} GB"
+            })
+
+        return result
+
+    def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
+        # Retrieve project from PostgreSQL using the mapper
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        if not dbProj:
+            return None
+        projectPath = dbProj['name']
+        if not os.path.exists(projectPath):
+            return None
+
+        return self.loadProject(dbProj, mapper)
+
+    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdateRequest):
+        project = self.getProjectById(mapper, projectId, currentUser)
+
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        self.manager.renameProject(project['name'], projectData.name)
+        mapper.updateProject(projectId, currentUser['id'],
+                             self.manager.getProjectPath(projectData.name),
+                             projectData.description)
+
         return project
+
+    def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
+        project = self.getProjectById(mapper, projectId, currentUser)
+        deleted = mapper.deleteProject(projectId, currentUser["id"])
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found"
+            )
+        path = self.manager.getProjectPath(project['name'])
+        if not os.path.exists(path):
+            return None
+
+        self.manager.deleteProject(path)
+
+        return {"message": "Project deleted successfully"}
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
-        """Compute total folder size in bytes without subprocess."""
         result = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, text=True)
-        return int(result.stdout.split()[0])
+        return int(result.stdout.split()[0]) if result.stdout else 0
 
     @staticmethod
     def countProtocols(path: str) -> int:
-        """Count subdirectories under the 'Runs' folder."""
-        return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        try:
+            return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        except Exception:
+            return 0
 
     def buildProtocolsGraph(self, runs) -> dict:
         """Assemble dependency graph of protocols and their status."""
@@ -117,31 +181,44 @@ class ProjectService:
             outputs = []
             cpuTime = ''
             elapsedTime = ''
+            isinteractive = False
+            numberOfSteps = 0
+            stepsDone = 0
             if nodeId != 'PROJECT':
                 protocol = self.currentProject.getProtocol(int(nodeId))
                 cpuTime = str(protocol.cpuTime)
                 elapsedTime = str(protocol.getElapsedTime().total_seconds()).split('.')[0]
+                isinteractive = protocol.isInteractive()
+                numberOfSteps = protocol.numberOfSteps
+                stepsDone = protocol.stepsDone
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
                 # Iterate over the inputs
-                # input = {}
-                # for key, attr in protocol.iterInputAttributes():
-                #     input.setdefault(key, {})
-                #     input[key]['_class'] = attr.__class__.__name__
-                #     input[key]['info'] = attr.__str__()
-                #     input[key]['_objValue'] = attr.get()
-                #     inputs.append(input)
+                for key, attr in protocol.iterInputAttributes():
+                    input = {}
+                    input.setdefault(key, {})
+                    try:
+                        input[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
+                        input[key]['info'] = str(attr.get())
+                    except Exception as e:
+                        input[key]['_class'] = ""
+                        input[key]['info'] = ""
+
+                    input[key]['_objValue'] ="%s.%s" % (attr.getObjValue(), attr.getExtended())
+                    input[key]['_parentId'] = attr.getObjValue().getObjId()
+                    inputs.append(input)
 
                 # Iterate over the outputs
-                output = {}
                 for key, attr in protocol.iterOutputAttributes():
+                    output = {}
                     output.setdefault(key, {})
                     output[key]['_class'] = attr.__class__.__name__
                     try:
                         output[key]['info'] = attr.__str__()
                     except Exception as e:
                         output[key]['info'] = ""
-                    output[key]['_objValue'] = "%s.%s" % (nodeObj.getLabel(), key)
+                    output[key]['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
+                    output[key]['_parentId'] = protocol.getObjId()
                     outputs.append(output)
 
             graphData[nodeId] = {
@@ -154,50 +231,40 @@ class ProjectService:
                 "inputs": inputs,
                 "outputs": outputs,
                 "cpuTime": cpuTime,
-                "elapsedTime": elapsedTime
+                "elapsedTime": elapsedTime,
+                "isInteractive": isinteractive,
+                "numberOfSteps": numberOfSteps,
+                "stepsDone": stepsDone
             }
         return graphData
 
-    def loadProject(self, projectId: str) -> Any:
-        """
-        Load a Scipion project from disk, build its protocol graph,
-        and return metadata + graph structure.
-        """
-        from pyworkflow import Config
-        projPath = self.manager.getProjectPath(projectId)
-        if os.path.exists(projPath):
-            Config.setDomain("pwem")
-            Config.getDomain()
-            self.currentProject = Project(pyworkflow.Config.getDomain(), projPath)
-            self.currentProject.load(dbPath=self.currentProject.getDbPath())
-            runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
-            graphData = self.buildProtocolsGraph(runs)
+    def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None) -> dict:
+        projPath = dbProj['name']
+        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
+        self.currentProject.load(dbPath=self.currentProject.getDbPath())
+        runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
+        graphData = self.buildProtocolsGraph(runs)
+        # self.saveProtocolDependencies(mapper, graphData)
 
-            return {
-                "id": self.currentProject.getName(),
-                "name": self.currentProject.getName(),
-                "created_at": str(self.currentProject.getCreationTime()),
-                "path": projPath,
-                "protocols": graphData
-            }
-        return None
+        return {
+            "id": dbProj['id'],
+            "name": dbProj['name'],
+            "shortName": os.path.basename(dbProj['name']),
+            "createdAt": str(dbProj['createdAt']),
+            "status": str(dbProj['status']),
+            "path": projPath,
+            "protocols": graphData
+        }
 
-    def loadProjects(self) -> None:
-        """Discover on-disk projects and cache their metadata in memory."""
-        projects = self.manager.listProjects()
-        self.currentProject = None
-        for project in projects:
-            projectSize = self.getProjectSize(project.path) / (1024 ** 3)
-            protocolCount = self.countProtocols(os.path.join(project.path, 'Runs'))
-            self.projectList[project.getName()] = {
-                "id": project.getName(),
-                "name": project.getName(),
-                "description": project.getName(),
-                "created_at": project.getCreationTime(),
-                "status": "created",
-                "protocolsCount": f"{protocolCount}",
-                "diskUsage": f"Total size: {projectSize:.2f} GB"
-            }
+    def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
+        for nodeId, nodeInfo in graphData.items():
+            parentIds = [int(pid) for pid in nodeInfo['parents'] if pid != 'PROJECT']
+            childIds = [int(cid) for cid in nodeInfo['children']]
+            mapper.updateProtocolDependencies(
+                protocolId=nodeId,
+                parentIds=parentIds,
+                childIds=childIds
+            )
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
@@ -208,173 +275,393 @@ class ProjectService:
             "aborted": "#F5CCCB",
             "running": "#FCCE62",
             "saved": "#D9F1FA",
-            "launched": "#FCCE62"
+            "launched": "#FCCE62",
+            "new": "#D9F1FA",
         }
         return status_colors.get(status.lower(), "#9e9e9e")
 
-    def getProtocolParams(self, projectName: str, protocolId: str) -> dict:
+    def _buildProtocolContext(self, projectId, protocol) -> dict:
         """
-        Retrieve protocol parameters, metadata, inputs/outputs,
-        and formatted help/citations for a given node ID.
+        Build the common context dictionary for a protocol,
+        including inputs, outputs, definition, status, color, logos, etc.
         """
         from pyworkflow.protocol import Line, Group
 
-        SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
-        OBJ_PARAMS = ['runName', 'comment']
-        context = {}
-        self.loadProject(projectName)
-        # Load the selected protocol
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.getPlugin()
-        hosts = self.currentProject.getHostNames()
-        self.currentProject._fixProtParamsConfiguration(protocol)
-
-        # Package logo
+        HEADER_PARAMS = ['runName',  '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
+        # Basic metadata
         package = protocol.getClassPackage()
+        hasExpert = protocol.hasExpert()
+        if hasExpert:
+            HEADER_PARAMS.append('expertLevel')
+        HEADER_PARAMS.append('runMode')
         logoPath = ''
         path = getattr(package, '_logo', '')
         if path != '':
-            logoPath = self.getResourceLogo(path)  # Logo
+            logoPath = self.getResourceLogo(path)
 
         protName = str(protocol)
-        status = protocol.getStatus()  # status
-        cite = protocol.citations()
-        help = protocol.getHelpText()
-        label = protocol._label if hasattr(protocol, '_label') else str(protocol)
+        status = protocol.getStatus()
+        label = protocol._label if hasattr(protocol, '_label') else protName
+        protocolClassName = protocol.getClassName()
+        hosts = self.currentProject.getHostNames()
 
         context = {
-            "id": protocolId,
+            "id": protocol.getObjId(),
             "label": label,
             "protocolName": protName,
             "status": status,
+            "expertLevel": hasExpert,
             "color": self.getProtocolColor(status),
             "projectName": self.currentProject.getName(),
+            "projectId": projectId,
             "packageLogo": logoPath,
             "protocolId": protocol.getObjId(),
             "hosts": hosts,
             "favicon": self.getResourceIcon('favicon'),
-            "cite": cite,
-            "help": help
+            "cite": protocol.citations(),
+            "help": protocol.getHelpText(),
+            "protocolClassName": protocolClassName,
+            "stdoutLog": protocol.getStdoutLog(),
+            "stderrLog": protocol.getStderrLog(),
+            "scheduleLog": protocol.getScheduleLog(),
+
         }
-
-        for paramName in SPECIAL_PARAMS:
-            context.setdefault(paramName, {})
-            attr = getattr(protocol, paramName, None)
-            if attr is not None:
-                context[paramName]['_class'] = attr.__class__.__name__
-                context[paramName]['_objValue'] = attr.get()
-
 
         # Detect available wizards and viewers
         wizards = self.findWizardsWeb(protocol)
         # viewers = findViewersWeb(protocol)
 
-        # Process citations and documentation
-        #protocol.htmlCitations = self.parseText(protocol.citations())
-        #protocol.htmlDoc = self.parseText(protocol.getDoc())
-
-        visualize = 0
-        viewerDict = None
-
+        # Inputs
         inputs = []
-        outputs = []
-
-        # Iterate over the inputs
-        input = {}
         for key, attr in protocol.iterInputAttributes():
-            input.setdefault(key, {})
-            input[key]['_class'] = attr.__class__.__name__
+            inp = {key: {}}
+            inp[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
             try:
-                input[key]['info'] = attr.__str__()
-            except Exception as e:
-                input[key]['info'] = ""
-            input[key]['_objValue'] = "%s.%s" % (protName, key)
-            inputs.append(input)
-
-        # Iterate over the outputs
-        output = {}
-        for key, attr in protocol.iterOutputAttributes():
-            output.setdefault(key, {})
-            output[key]['_class'] = attr.__class__.__name__
-            try:
-                output[key]['info'] = attr.__str__()
-            except Exception as e:
-                output[key]['info'] = ""
-            output[key]['_objValue'] = "%s.%s" % (protName, key)
-            outputs.append(output)
-
+                inp[key]['info'] = str(attr.get())
+            except Exception:
+                inp[key]['info'] = ""
+            inp[key]['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
+            inp[key]['_parentId'] = attr.getObjValue().getObjId()
+            inputs.append(inp)
         context['inputs'] = inputs
+
+        # Outputs
+        outputs = []
+        for key, attr in protocol.iterOutputAttributes():
+            outp = {key: {}}
+            outp[key]['_class'] = attr.__class__.__name__
+            try:
+                outp[key]['info'] = str(attr)
+            except Exception:
+                outp[key]['info'] = ""
+            outp[key]['_objValue'] = f"{protName}.{key}"
+            outp[key]['_parentId'] = protocol.getObjId()
+            outputs.append(outp)
         context['outputs'] = outputs
 
+        # Definition (params, sections, Line/Group)
         paramsData = []
         for section in protocol._definition.iterSections():
-            sectionData = {"name": section.getLabel(), "params": []}
-            for paramName, param in section.iterParams():
-                protVar = getattr(protocol, paramName, None)
-                if protVar is None:
-                    # Handle Group and Line special cases
-                    if isinstance(param, Group):
-                        group = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                        group[paramName]['children'] = []
-                        for paramGroupName, paramGroup in param.iterParams():
-                            protVar = getattr(protocol, paramGroupName, None)
-
-                            # LINE PARAM
-                            if isinstance(paramGroup, Line):
-                                for paramLineName, paramLine in paramGroup.iterParams():
-                                    protVar = getattr(protocol, paramLineName, None)
-
-                                    if protVar is None:
-                                        pass
-                                    else:
-                                        paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
-                                                                             protVar)
-                                        if paramChild:
-                                            group[paramName]['children'].append(paramChild)
-
-                            elif protVar is None:
-                                pass
-                            else:
-                                paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0, protVar)
-                                if paramChild:
-                                    group[paramName]['children'].append(paramChild)
-
-                        if group:
-                            sectionData["params"].append(group)
-
-                        # LINE PARAM
-                    if isinstance(param, Line):
-                        line = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                        line[paramName]['children'] = []
-                        for paramLineName, paramLine in param.iterParams():
-                            protVar = getattr(protocol, paramLineName, None)
-
+            if section.getLabel() != 'Parallelization':
+                sectionData = {"name": section.getLabel(), "params": []}
+                if section.getLabel() != 'General':
+                    for paramName, param in section.iterParams():
+                        if paramName not in HEADER_PARAMS:
+                            protVar = getattr(protocol, paramName, None)
                             if protVar is None:
-                                pass
+                                # Handle Group
+                                if isinstance(param, Group):
+                                    group = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                    group[paramName]['children'] = []
+                                    for paramGroupName, paramGroup in param.iterParams():
+                                        protVar = getattr(protocol, paramGroupName, None)
+
+                                        # LINE PARAM
+                                        if isinstance(paramGroup, Line):
+                                            for paramLineName, paramLine in paramGroup.iterParams():
+                                                protVar = getattr(protocol, paramLineName, None)
+                                                if protVar:
+                                                    paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None,
+                                                                                          0, protVar)
+                                                    if paramChild:
+                                                        group[paramName]['children'].append(paramChild)
+                                        elif protVar:
+                                            paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0,
+                                                                                  protVar)
+                                            if paramChild:
+                                                group[paramName]['children'].append(paramChild)
+                                    if group:
+                                        sectionData["params"].append(group)
+
+                                # Handle Line
+                                if isinstance(param, Line):
+                                    line = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                    line[paramName]['children'] = []
+                                    for paramLineName, paramLine in param.iterParams():
+                                        protVar = getattr(protocol, paramLineName, None)
+                                        if protVar:
+                                            paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
+                                                                                  protVar)
+                                            if paramChild:
+                                                line[paramName]['children'].append(paramChild)
+                                    if line:
+                                        sectionData["params"].append(line)
+
                             else:
-                                paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0, protVar)
-                                if paramChild:
-                                    line[paramName]['children'].append(paramChild)
+                                paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                if paramProcessed:
+                                    sectionData["params"].append(paramProcessed)
 
-                        if line:
-                            sectionData["params"].append(line)
+                if section.getLabel() == 'General':
+                    # Special params
+                    for paramName in HEADER_PARAMS:
+                        paramProcessed = {}
+                        paramValue = getattr(protocol, paramName, None)
+                        if paramName == '_objComment':
+                            paramProcessed.setdefault(paramName, {})
+                            paramProcessed[paramName]['label'] = 'Comment'
+                            paramProcessed[paramName]['expertLevel'] = 0
+                            paramProcessed[paramName]['condition'] = None
+                            paramProcessed[paramName]['_isImportant'] = True
+                            paramProcessed[paramName]['help'] = 'Protocol comments'
+                            paramProcessed[paramName]['_class'] = 'StringParam'
+                            paramProcessed[paramName]['_objValue'] = paramValue
+                            paramProcessed[paramName]['default'] = paramValue
+                            paramProcessed[paramName]['readOnly'] = False
+                            sectionData["params"].append(paramProcessed)
+                        elif paramName == '_useQueue':
+                            paramProcessed.setdefault(paramName, {})
+                            paramProcessed[paramName]['label'] = 'Use a queue engine?'
+                            paramProcessed[paramName]['expertLevel'] = 0
+                            paramProcessed[paramName]['condition'] = None
+                            paramProcessed[paramName]['_isImportant'] = True
+                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_USEQUEUE % (pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG)
+                            paramProcessed[paramName]['_class'] = 'BooleanParam'
+                            paramProcessed[paramName]['_objValue'] = paramValue
+                            paramProcessed[paramName]['default'] = paramValue
+                            paramProcessed[paramName]['readOnly'] = False
+                            sectionData["params"].append(paramProcessed)
+                        elif paramName == '_prerequisites':
+                            paramProcessed.setdefault(paramName, {})
+                            paramProcessed[paramName]['label'] = 'Wait for'
+                            paramProcessed[paramName]['expertLevel'] = 0
+                            paramProcessed[paramName]['condition'] = None
+                            paramProcessed[paramName]['_isImportant'] = True
+                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_WAIT_FOR % pyworkflow.DOCSITEURLS.WAIT_FOR
+                            paramProcessed[paramName]['_class'] = 'StringParam'
+                            paramProcessed[paramName]['_objValue'] = paramValue
+                            paramProcessed[paramName]['default'] = paramValue
+                            paramProcessed[paramName]['readOnly'] = False
+                            sectionData["params"].append(paramProcessed)
+                        elif paramName == 'expertLevel':
+                            paramProcessed.setdefault(paramName, {})
+                            paramProcessed[paramName]['label'] = 'Expert Level'
+                            paramProcessed[paramName]['display'] = 0
+                            paramProcessed[paramName]['choices'] = ['Normal', 'Advanced']
+                            paramProcessed[paramName]['condition'] = None
+                            paramProcessed[paramName]['_isImportant'] = True
+                            paramProcessed[paramName]['_class'] = 'EnumParam'
+                            paramProcessed[paramName]['_objValue'] = 0
+                            paramProcessed[paramName]['default'] = 0
+                            paramProcessed[paramName]['readOnly'] = False
+                            sectionData["params"].append(paramProcessed)
+                        else:
+                            param = protocol.getParam(paramName)
+                            if param is not None:
+                                if paramName == 'gpuList':
+                                    param.label.set('GPU IDs')
+                                    param.condition.set(None)
+                                elif paramName == 'runMode':
+                                    param.choices = ['Continue', 'Restart']
+                                    param.display = 0
+                                paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
+                                if paramProcessed:
+                                    if paramName == 'runName':
+                                        paramProcessed[paramName]['_objValue'] = protName
+                                        paramProcessed[paramName]['default'] = protName
+                                    sectionData["params"].append(paramProcessed)
 
-                else:
-                    param = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                    if param:
-                        sectionData["params"].append(param)
-
-            paramsData.append(sectionData)
+                paramsData.append(sectionData)
 
         context["definition"] = paramsData
-
         return context
 
-    def launchProtocol(self, protocolId, params):
-        """Launch a protocol in RESTART mode."""
+    def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
+        """
+        Returns the parameters of a new protocol given its class name.
+        """
+        protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
+        if protClass:
+            protocol = self.currentProject.newProtocol(protClass)
+            return self._buildProtocolContext(projectId, protocol)
+        return {}
+
+    def getProtocolParams(self, projectId: int, protocolId: int) -> dict:
+        """
+        Returns the parameters of an existing protocol given its ID.
+        """
         protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.runMode.set(MODE_RESTART)
-        self.currentProject.launchProtocol(protocol)
+        protocol.getPlugin()
+        self.currentProject._fixProtParamsConfiguration(protocol)
+        return self._buildProtocolContext(projectId, protocol)
+
+    def castParamValue(self, param, rawValue):
+        """Cast rawValue to the correct type depending on param type."""
+        if isinstance(param, EnumParam):
+            if isinstance(rawValue, int):
+                return rawValue
+            try:
+                return param.choices.index(str(rawValue))
+            except ValueError:
+                for index, choice in enumerate(param.choices):
+                    if str(choice).lower() == str(rawValue).lower():
+                        return index
+                return 0
+        elif isinstance(param, IntParam):
+            return int(rawValue) if rawValue not in (None, "") else None
+        elif isinstance(param, FloatParam):
+            return float(rawValue) if rawValue not in (None, "") else None
+        elif isinstance(param, BooleanParam):
+            return str(rawValue).lower() in ("true", "1", "yes", "y")
+        elif isinstance(param, (StringParam, EnumParam)):
+            return str(rawValue) if rawValue is not None else None
+        else:
+            return rawValue
+
+    def applyParamsToProtocol(self, protocol, params):
+        """Apply pointer parameters to protocol."""
+        errorList = []
+        for key, value in params.items():
+            param = protocol.getParam(key)
+            if param is None:
+                continue
+
+            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+
+                if isinstance(param, MultiPointerParam):
+                    newInputs = PointerList()
+                    for v in value:
+                        parentId = v.get("_parentId")
+                        rawValue = v.get("value")
+                        if parentId:
+                            try:
+                                parentProtocol = self.currentProject.getProtocol(int(parentId))
+                                extended = (v['_objValue'].split('.')[-1])
+                                newInputs.append(Pointer(parentProtocol, extended=extended))
+                                logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                            except Exception as e:
+                                logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                        else:
+                            # Pointer sin parentId, fallback
+                            param.set(None)
+                    # MultiPointer validation
+                    if newInputs.isEmpty() and not param.allowsNull.get():
+                        errorList.append('**' + param.label.get() + '** it must not be empty.')
+                    protocol.setAttributeValue(key, newInputs)
+                elif isinstance(param, PointerParam):
+                    parentId = value.get("_parentId")
+                    rawValue = value.get("value")
+                    if parentId:
+                        try:
+                            parentProtocol = self.currentProject.getProtocol(int(parentId))
+                            val = value['value'] if 'value' in value else value['_objValue']
+                            param.set(val)
+                            protocol.setAttributeValue(key, parentProtocol)
+                            param.default.set(val)
+                            pointer = getattr(protocol, key)
+                            pointer.setExtended(val.split('.')[-1])
+
+                            logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                        except Exception as e:
+                            logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                    else:  # Pointer without parentId, fallback
+                        # MultiPointer validation
+                        if not param.allowsNull.get():
+                            errorList.append('**' + param.label.get() + '** it must not be empty.')
+                        param.set(None)
+        return errorList
+
+    def setPointerParam(self, protocol, key, value, parentId):
+        """Resolve and set a pointer param from parent protocol outputs."""
+        param = protocol.getParam(key)
+        if not isinstance(param, PointerParam):
+            logger.warning(f"[WARN] Param {key} is not a PointerParam")
+            return
+        parentProtocol = self.currentProject.getProtocol(int(parentId))
+        param.set(value['editableValue'])
+        protocol.setAttributeValue(key, parentProtocol)
+        param.default.set(value['editableValue'])
+
+    def saveProtocol(self, mapper, protocolId, protocolClassName, params, setToSave=True):
+        errorList = []
+        if not protocolId:  # new protocol
+            protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
+            protocol = self.currentProject.newProtocol(protClass)
+        else:  # retrieve a protocol by id
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        # Set non-pointer parameters
+        for key, value in params.items():
+            param = protocol.getParam(key)
+            if param is None:
+                logger.warning(f"[WARN] Param not found: {key}")
+                continue
+
+            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
+            rawValue = value.get("value")
+            try:
+                castedValue = self.castParamValue(param, rawValue)
+                errors = param.validate(castedValue)
+                if errors:
+                    errorListAux = ['**' + param.label.get() + '** ' + error for error in errors]
+                    errorList += errorListAux
+                param.set(castedValue)
+                protocol.setAttributeValue(key, castedValue)
+                logger.info(f"[INFO] Set param {key} = {castedValue}")
+            except Exception as e:
+                import re
+                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>\!&|^%()\[\]{}_,.;:]', '', str(e))
+                errorList += ['**' + param.label.get() + '** ' + cleaned]
+
+        # Apply pointer parameters
+        errorList += self.applyParamsToProtocol(protocol, params)
+
+        if setToSave:
+            protocol.setSaved()
+
+        if protocol.hasObjId():
+            self.currentProject._storeProtocol(protocol)
+        else:
+            self.currentProject._setupProtocol(protocol)
+
+        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),
+                                                    projectId=27)
+        if not dbProtocol:
+            # Insert a new protocol
+            pass
+        else:
+            # Update parameters and status if exists
+            pass
+        # Save dependencies
+        # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
+        # self.saveProtocolDependencies(mapper, graphData._nodesDict)
+
+        return protocol, errorList
+
+    def launchProtocol(self, mapper, protocolId, protocolClassName, params):
+        """Launch a protocol in RESTART mode, applying all params."""
+
+        # Store & launch
+        protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
+        try:
+            errors += protocol._validate()
+        except Exception as e:
+            errors += ['**Other errors:**There are other validation errors that may be resolved by correcting the previous ones.']
+        if not errors:
+            self.currentProject.launchProtocol(protocol)
+        else:
+            raise HTTPException(status_code=422, detail=errors)
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
@@ -478,19 +765,208 @@ class ProjectService:
                         defaultValueList = []
                         for pointer in protVar:
                             value = "%s.%s" % (pointer.getObjValue(), pointer.getExtended())
-                            valueList.append({'object': value, 'info': '---'})
-                            defaultValueList.append({'object': value, 'info': '---'})
+                            obj = {'object': value,
+                                   'info': str(pointer.get()),
+                                   '_objValue': value,
+                                   '_parentId': pointer.get().getObjParentId()}
+                            valueList.append(obj)
+                            defaultValueList.append(obj)
                         context[paramName]['_objValue'] = valueList
                         context[paramName]['default'] = defaultValueList
                     elif isinstance(param, PointerParam):
                         # TODO CHECK THIS LATER to display better when no _extended attribute
-                        context[paramName]['_objValue'] = "%s.%s" % (protVar.getObjValue(), protVar.getExtended())
+                        pointerValue = "%s.%s" % (protVar.getObjValue(), protVar.getExtended()) if protVar.getExtended() else ''
+                        context[paramName]['_objValue'] = pointerValue
+                        context[paramName]['value'] = pointerValue
                         context[paramName]['default'] = context[paramName]['_objValue']
+                        if protVar.get() is not None:
+                            context[paramName]['_parentId'] = protVar.get().getObjParentId()
                     else:
                         context[paramName]['_objValue'] = protVar.get() if protVar.get() is not None else ""
+                        context[paramName]['value'] = str(context[paramName]['_objValue'])
                         context[paramName]['default'] = str(context[paramName]['_objValue'])
 
             return context
         except Exception as ex:
-            print("ERROR with param: " + paramName)
+            logger.error("ERROR with param: " + paramName)
             raise ex
+
+    def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
+        # Retrieve all protocols
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser['id'])
+        if not dbProj:
+            return None
+        from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
+        configProtocols = Config.SCIPION_PROTOCOLS
+        localDir = Config.SCIPION_LOCAL_CONFIG
+        protConf = os.path.join(localDir, configProtocols)
+        protocolsTree = ProtocolTreeConfig.load(self.currentProject.getDomain(),  protConf)
+        protocolsTree = serializeToJson(protocolsTree)
+        self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
+        return protocolsTree
+
+    def replaceDefaultProtocolText(self, node: dict, resolverFn):
+        # Determine type and extract text, tag, and children
+        if isinstance(node, dict):
+            text = node.get("text")
+            tag = node.get("tag")
+            children = node.get("childs", [])
+        else:  # assume ProtocolConfig
+            text = getattr(node, "text", None)
+            tag = getattr(node, "tag", None)
+            children = getattr(node, "childs", [])
+
+        # Replace text if conditions are met
+        if text == "default" and tag == "protocol":
+            newText = resolverFn(node)
+            if newText:
+                if isinstance(node, dict):
+                    node["text"] = newText
+                else:
+                    setattr(node, "text", newText)
+
+        # Recursively process children
+        for child in children:
+            self.replaceDefaultProtocolText(child, resolverFn)
+
+    def walkAndReplaceProtocols(self, data: dict, resolverFn):
+        """
+        Walk through the entire JSON/tree structure and replace 'default' texts for protocol nodes.
+
+        Parameters:
+        - data: the root of the tree (can be a dictionary or a list of nodes)
+        - resolverFn: a function to determine the new text for 'default' protocol nodes
+        """
+        if isinstance(data, dict):
+            # Iterate over key/value pairs in a dictionary
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    # If the value is a dict, check/replace its text
+                    self.replaceDefaultProtocolText(value, resolverFn)
+                elif isinstance(value, list):
+                    # If the value is a list, apply the function to each item
+                    for item in value:
+                        if isinstance(item, dict):
+                            self.replaceDefaultProtocolText(item, resolverFn)
+        elif isinstance(data, list):
+            # If the root itself is a list, iterate and apply the replacement
+            for item in data:
+                if isinstance(item, dict):
+                   self.replaceDefaultProtocolText(item, resolverFn)
+
+    def getProtocolName(self, node):
+        text = node.get('text')
+        if text:
+            value = node.get('value') if node.get('value') is not None else text
+            protClassName = value.split('.')[-1]  # Take last part
+            emProtocolsDict = self.currentProject.getDomain().getProtocols()
+            prot = emProtocolsDict.get(protClassName, None)
+
+            if node.get('tag') == 'protocol' and text == 'default':
+                if prot is None:
+                    logger.warning("Protocol className '%s' not found!!!. \n"
+                                   "Fix your config/protocols.conf configuration."
+                                   % protClassName)
+                    return
+
+                text = prot.getClassLabel()
+
+                return text
+
+        return 'default'
+
+    def getProtocolLogs(self, projectId: int, protocolId: int,
+                        offset: int = 0,
+                        errOffset: int = 0,
+                        scheduleOffset: int = 0):
+        protocol = self.getProtocolParams(projectId, protocolId)
+        logPath = protocol.get("stdoutLog")
+        errLogPath = protocol.get("stderrLog")
+        scheduleLogPath = protocol.get("scheduleLog")
+
+        stdout_content, stderr_content, schedule_content = "", "", ""
+        new_offset_out, new_offset_err, new_offset_schedule = offset, errOffset, scheduleOffset
+
+        # Handle stdout log
+        if logPath and os.path.exists(logPath):
+            with open(logPath, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(offset)
+                stdout_content = f.read()
+                new_offset_out = f.tell()
+
+        # Handle stderr log
+        if errLogPath and os.path.exists(errLogPath):
+            with open(errLogPath, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(errOffset)
+                stderr_content = f.read()
+                new_offset_err = f.tell()
+
+        if scheduleLogPath and os.path.exists(scheduleLogPath):
+            with open(scheduleLogPath, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(scheduleOffset)
+                schedule_content = f.read()
+                new_offset_schedule = f.tell()
+
+        if not stdout_content and not stderr_content and not schedule_content and not (
+                logPath and os.path.exists(logPath)
+        ) and not (errLogPath and os.path.exists(errLogPath)) and not (scheduleLogPath and os.path.exists(scheduleLogPath)):
+            raise HTTPException(status_code=404, detail="No logs found")
+
+        return {
+            "stdoutLog": stdout_content,
+            "stderrLog": stderr_content,
+            "stdoutOffset": new_offset_out,
+            "stderrOffset": new_offset_err,
+            "scheduleLog": schedule_content,
+            "scheduleOffset": new_offset_schedule,
+        }
+
+    def renameProtocol(self, protocolId: int, newName: str):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        protocol.setObjLabel(newName)
+        self.currentProject._storeProtocol(protocol)
+        return {"status": "ok", "message": "Protocol renamed successfully"}
+
+    def duplicateProtocol(self, protocols: Any):
+        try:
+            protList = []
+            for protocol in protocols:
+                protList.append(self.currentProject.getProtocol(int(protocol.id)))
+            self.currentProject.copyProtocol(protList)
+            return {"status": "ok", "message": "Protocol was duplicated successfully"}
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def deleteProtocol(self, protocols: Any):
+        try:
+            protList = []
+            for protocol in protocols:
+                protList.append(self.currentProject.getProtocol(int(protocol)))
+
+            self.currentProject.deleteProtocol(*protList)
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def restartProtocolAll(self,protocolId: int):
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
+            errorList = []
+            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
+            return errorList
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
+        raise NotImplementedError
+
+    def resetProtocolFrom(self, protocolId: int):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
+            errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
+            if errorProtList:
+                HTTPException(status_code=500, detail=errorProtList)
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+

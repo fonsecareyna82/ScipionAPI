@@ -23,12 +23,41 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+# models/protocol_model.py
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, ARRAY
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from app.backend.database import Base
 from pydantic import BaseModel, ConfigDict
-from typing import Any
+from typing import Any, Optional, List
+from app.backend.models.project_model import Project
+
+# ------------------------ SQLAlchemy model ------------------------
+
+
+class Protocol(Base):
+    __tablename__ = "protocols"
+
+    id = Column(Integer, primary_key=True, index=True)
+    protocolId = Column(String, nullable=False, unique=True)
+    projectId = Column(Integer, ForeignKey("projects.id"))
+    protocolClassName = Column(String, nullable=False)
+    params = Column(JSON, nullable=True)
+    status = Column(String, default="pending")
+    parentIds = Column(ARRAY(Integer), default=[])
+    childIds = Column(ARRAY(Integer), default=[])
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), onupdate=func.now())
+
+    project = relationship("Project", back_populates="protocols")
+
+# ------------------------ Pydantic models ------------------------
 
 
 class ProtocolRequest(BaseModel):
     protocolId: str
+    protocolClassName: str
     params: Any
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -37,3 +66,54 @@ class ProtocolRequest(BaseModel):
 
     def getParams(self):
         return self.params
+
+    def getProtocolClassName(self):
+        return self.protocolClassName
+
+
+class ProtocolCreateRequest(BaseModel):
+    protocolId: str
+    projectId: int
+    protocolClassName: str
+    params: Any
+    status: str = "pending"
+
+
+class ProtocolResponse(BaseModel):
+    id: int
+    protocolId: str
+    projectId: int
+    protocolClassName: str
+    params: Any
+    status: str
+    createdAt: datetime
+    updatedAt: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class ProtocolUpdateRequest(BaseModel):
+    params: Any
+    status: str
+
+
+class ProtocolRenameIn(BaseModel):
+    name: str
+
+
+class ProtocolDuplicateIn(BaseModel):
+    name: Optional[str] = None
+
+
+class DuplicateItem(BaseModel):
+    id: str
+    name: Optional[str] = None
+
+
+class DuplicatePayload(BaseModel):
+    items: List[DuplicateItem]
+
+
+class DeletePayload(BaseModel):
+    ids: List[str]

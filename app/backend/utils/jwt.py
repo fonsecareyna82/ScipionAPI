@@ -25,7 +25,9 @@
 # ******************************************************************************
 # utils/jwt.py
 
-from datetime import datetime, timedelta
+from http.client import HTTPException
+from datetime import datetime, timedelta, timezone
+from fastapi import HTTPException, status
 from jose import JWTError, jwt
 from typing import Optional
 import os
@@ -34,7 +36,7 @@ import os
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
-
+REFRESH_TOKEN_EXPIRE_DAYS = 7           # 7 days
 
 def createAccessToken(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     # Create a JWT token with expiration
@@ -51,3 +53,33 @@ def decodeAccessToken(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def createRefreshToken(data: dict) -> str:
+    """
+    Create a JWT refresh token (default: 7 days)
+    """
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verifyToken(token: str, expected_type: str = "access") -> dict:
+    """
+    Verify that the token is valid and of the expected type.
+    Raises HTTPException if invalid or expired.
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != expected_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token type: expected '{expected_type}'",
+            )
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )

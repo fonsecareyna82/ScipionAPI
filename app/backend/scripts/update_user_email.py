@@ -5,7 +5,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from app.backend.database import SessionLocal
-from app.backend.models.user import User
+from app.backend.models.user_model import User
 
 
 def update_email(username: str, new_email: str):
