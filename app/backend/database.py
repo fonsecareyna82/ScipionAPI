@@ -31,11 +31,16 @@ from sqlalchemy.orm import sessionmaker
 import os
 from dotenv import load_dotenv
 
+from app.backend.mapper.postgresql import PostgresqlFlatMapper, PostgresqlDb
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Get the database connection URL from the environment
 DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_NAME = os.getenv("DATABASE_NAME")
+DATABASE_USER = os.getenv("DATABASE_USER")
+DATABASE_PASS = os.getenv("DATABASE_PASS")
 
 # Create the SQLAlchemy engine using the database URL
 engine = create_engine(DATABASE_URL)
@@ -47,10 +52,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-# Dependency to get a database session in FastAPI routes
-def getDb():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def getMapper() -> PostgresqlFlatMapper:
+    db = PostgresqlDb(dbName=DATABASE_NAME, user=DATABASE_USER, password=DATABASE_PASS)
+    return PostgresqlFlatMapper(db)

@@ -23,13 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from concurrent.futures import ThreadPoolExecutor
-
-import subprocess
-import time
 import asyncio
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from starlette.concurrency import run_in_threadpool
+from fastapi import APIRouter, HTTPException
 
 from pyworkflow.project import Manager
 from typing import Any
