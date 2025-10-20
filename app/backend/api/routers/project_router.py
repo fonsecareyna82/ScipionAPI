@@ -232,7 +232,7 @@ def resetProtocolFrom(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     try:
-        service.resetProtocolFrom(mapper, projectId, protocolId, currentUser)
+        service.resetProtocolFrom(protocolId)
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

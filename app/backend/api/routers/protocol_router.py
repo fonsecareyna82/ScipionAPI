@@ -87,11 +87,13 @@ async def saveProtocol(request: ProtocolRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/logs/{projectId}/{protocolId}/{offset}", response_model=Any)
+@router.get("/logs/{projectId}/{protocolId}/{offset}/{errOffset}/{scheduleOffset}", response_model=Any)
 async def getProtocolLogs(
     projectId: int,
     protocolId: int,
     offset: int = 0,
+    errOffset: int = 0,
+    scheduleOffset: int = 0,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper)
 ):
@@ -99,4 +101,4 @@ async def getProtocolLogs(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getProtocolLogs(projectId, protocolId, offset)
+    return service.getProtocolLogs(projectId, protocolId, offset, errOffset, scheduleOffset)
