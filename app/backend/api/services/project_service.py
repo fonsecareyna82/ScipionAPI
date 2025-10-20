@@ -323,7 +323,7 @@ class ProjectService:
             "protocolClassName": protocolClassName,
             "stdoutLog": protocol.getStdoutLog(),
             "stderrLog": protocol.getStderrLog(),
-            "ScheduleLog": protocol.getScheduleLog(),
+            "scheduleLog": protocol.getScheduleLog(),
 
         }
 
@@ -335,7 +335,7 @@ class ProjectService:
         inputs = []
         for key, attr in protocol.iterInputAttributes():
             inp = {key: {}}
-            inp[key]['_class'] = attr.get().getClassName()
+            inp[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
             try:
                 inp[key]['info'] = str(attr.get())
             except Exception:
@@ -875,13 +875,17 @@ class ProjectService:
 
         return 'default'
 
-    def getProtocolLogs(self, projectId: int, protocolId: int, offset: int = 0):
+    def getProtocolLogs(self, projectId: int, protocolId: int,
+                        offset: int = 0,
+                        errOffset: int = 0,
+                        scheduleOffset: int = 0):
         protocol = self.getProtocolParams(projectId, protocolId)
         logPath = protocol.get("stdoutLog")
         errLogPath = protocol.get("stderrLog")
+        scheduleLogPath = protocol.get("scheduleLog")
 
-        stdout_content, stderr_content = "", ""
-        new_offset_out, new_offset_err = offset, offset
+        stdout_content, stderr_content, schedule_content = "", "", ""
+        new_offset_out, new_offset_err, new_offset_schedule = offset, errOffset, scheduleOffset
 
         # Handle stdout log
         if logPath and os.path.exists(logPath):
@@ -893,14 +897,19 @@ class ProjectService:
         # Handle stderr log
         if errLogPath and os.path.exists(errLogPath):
             with open(errLogPath, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(offset)
+                f.seek(errOffset)
                 stderr_content = f.read()
                 new_offset_err = f.tell()
 
-        # Si no existe ninguno de los dos, devolvemos 404
-        if not stdout_content and not stderr_content and not (
+        if scheduleLogPath and os.path.exists(scheduleLogPath):
+            with open(scheduleLogPath, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(scheduleOffset)
+                schedule_content = f.read()
+                new_offset_schedule = f.tell()
+
+        if not stdout_content and not stderr_content and not schedule_content and not (
                 logPath and os.path.exists(logPath)
-        ) and not (errLogPath and os.path.exists(errLogPath)):
+        ) and not (errLogPath and os.path.exists(errLogPath)) and not (scheduleLogPath and os.path.exists(scheduleLogPath)):
             raise HTTPException(status_code=404, detail="No logs found")
 
         return {
@@ -908,6 +917,8 @@ class ProjectService:
             "stderrLog": stderr_content,
             "stdoutOffset": new_offset_out,
             "stderrOffset": new_offset_err,
+            "scheduleLog": schedule_content,
+            "scheduleOffset": new_offset_schedule,
         }
 
     def renameProtocol(self, protocolId: int, newName: str):
@@ -949,6 +960,13 @@ class ProjectService:
     def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
         raise NotImplementedError
 
-    def resetProtocolFrom(self, mapper, projectId: int, protocolId: int, currentUser: dict):
-        raise NotImplementedError
+    def resetProtocolFrom(self, protocolId: int):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
+            errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
+            if errorProtList:
+                HTTPException(status_code=500, detail=errorProtList)
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
 
