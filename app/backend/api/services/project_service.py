@@ -276,6 +276,7 @@ class ProjectService:
             "running": "#FCCE62",
             "saved": "#D9F1FA",
             "launched": "#FCCE62",
+            "scheduled": "#918516",
             "new": "#D9F1FA",
         }
         return status_colors.get(status.lower(), "#9e9e9e")
@@ -967,6 +968,14 @@ class ProjectService:
             errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
             if errorProtList:
                 HTTPException(status_code=500, detail=errorProtList)
+        except Exception as e:
+            HTTPException(status_code=500, detail=str(e))
+
+    def stopProtocol(self, protocols: Any):
+        try:
+            for protocolId in protocols:
+                protocol = self.currentProject.getProtocol(int(protocolId))
+                self.currentProject.stopProtocol(protocol)
         except Exception as e:
             HTTPException(status_code=500, detail=str(e))
 
