@@ -936,7 +936,7 @@ class ProjectService:
             self.currentProject.copyProtocol(protList)
             return {"status": "ok", "message": "Protocol was duplicated successfully"}
         except Exception as e:
-            HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     def deleteProtocol(self, protocols: Any):
         try:
@@ -946,7 +946,7 @@ class ProjectService:
 
             self.currentProject.deleteProtocol(*protList)
         except Exception as e:
-            HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     def restartProtocolAll(self,protocolId: int):
         try:
@@ -956,7 +956,7 @@ class ProjectService:
             self.currentProject._restartWorkflow(errorList, workflowProtocolList)
             return errorList
         except Exception as e:
-            HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
         raise NotImplementedError
@@ -967,9 +967,9 @@ class ProjectService:
             workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
             errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
             if errorProtList:
-                HTTPException(status_code=500, detail=errorProtList)
+                raise HTTPException(status_code=500, detail=errorProtList)
         except Exception as e:
-            HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     def stopProtocol(self, protocols: Any):
         try:
@@ -977,5 +977,8 @@ class ProjectService:
                 protocol = self.currentProject.getProtocol(int(protocolId))
                 self.currentProject.stopProtocol(protocol)
         except Exception as e:
-            HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
+    def getProtocolPath(self, protocolId):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        return protocol.getPath()
