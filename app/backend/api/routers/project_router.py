@@ -1,13 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Path
-from typing import List, Any, Dict
+from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query
+from typing import List, Any, Union
 
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.schemas.protocols_schema import ProtocolOut
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.protocol_model import ProtocolRequest, ProtocolRenameIn, ProtocolDuplicateIn, DuplicatePayload, \
-    DeletePayload
+from app.backend.models.protocol_model import (
+    ProtocolRequest,
+    ProtocolRenameIn,
+    DuplicatePayload,
+    DeletePayload,
+)
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -71,7 +74,7 @@ def deleteProject(
     status_code=status.HTTP_200_OK,
 )
 def loadProtocols(
-    projectId: int = Path(..., ge=1, title="Numeric project ID"),
+    projectId: int = PathParam(..., ge=1, title="Numeric project ID"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
@@ -84,7 +87,7 @@ def loadProtocols(
     return protocols
 
 
-@router.get("/{projectId}/{protocolId}", response_model=Any)
+@router.get("/{projectId}/protocols/{protocolId}", response_model=Any)
 async def loadProtocol(
     projectId: int,
     protocolId: int,
@@ -135,7 +138,7 @@ async def saveProtocol(request: ProtocolRequest,
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{projectId}/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
+@router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
 def renameProtocol(
     projectId: int,
     protocolId: int,
@@ -185,7 +188,7 @@ def deleteProtocol(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{projectId}/{protocolId}/restart-all", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post("/{projectId}/protocols/{protocolId}/restart-all", response_model=Any, status_code=status.HTTP_200_OK)
 def restartProtocolAll(
     projectId: int,
     protocolId: int,
@@ -204,7 +207,7 @@ def restartProtocolAll(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{projectId}/{protocolId}/continue-all", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post("/{projectId}/protocols/{protocolId}/continue-all", response_model=Any, status_code=status.HTTP_200_OK)
 def continueProtocolAll(
     projectId: int,
     protocolId: int,
@@ -221,7 +224,7 @@ def continueProtocolAll(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/{projectId}/{protocolId}/reset-from", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post("/{projectId}/protocols/{protocolId}/reset-from", response_model=Any, status_code=status.HTTP_200_OK)
 def resetProtocolFrom(
     projectId: int,
     protocolId: int,
@@ -236,3 +239,86 @@ def resetProtocolFrom(
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{projectId}/protocols/stop", response_model=Any, status_code=status.HTTP_200_OK)
+def deleteProtocol(
+    projectId: int,
+    payload: DeletePayload = None,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    try:
+        service.stopProtocol(payload.ids)
+        return {"status": "ok", "message": "Protocol stoped"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
+async def getProtocolPath(
+    projectId: int,
+    protocolId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper)
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.getProtocolPath(protocolId)
+
+
+# ======================================================================
+#                FS REMOTE: list / preview / download
+# ======================================================================
+
+@router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
+async def listProtocolDir(
+    projectId: int,
+    protocolId: Union[int, str],
+    path: str = Query("", description="Relative path inside the protocol root"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    # Check project existence
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.listProtocolDir(protocolId, path)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
+async def previewProtocolText(
+    projectId: int,
+    protocolId: Union[int, str],
+    path: str = Query(..., description="Relative file path inside protocol root"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    # Check project existence
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.previewProtocolTextFile(protocolId, path)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
+async def previewProtocolImageFile(
+    projectId: int,
+    protocolId: Union[int, str],
+    path: str = Query(..., description="Relative file path inside protocol root"),
+    inline: bool = Query(False, description="If true, send Content-Disposition inline"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.previewProtocolImageFile(protocolId, path, inline)
