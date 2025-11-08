@@ -16,20 +16,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 from fastapi import HTTPException
 from fastapi.responses import Response, JSONResponse
-from fontTools.ttLib.tables.D__e_b_g import table_D__e_b_g
-from metadataviewer.dao.numpy_dao import NumpyDao
-from metadataviewer.model import ObjectManager
 
-# Reuse your base helpers & constants
-from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, SQLITE_EXTENSIONS, PDF_EXTENSIONS, TABLE_EXTENSIONS, \
-    ARCHIVE_EXTENSIONS
+from app.backend.utils.constants import (TEXT_FILE_EXTENSIONS, SQLITE_EXTENSIONS, PDF_EXTENSIONS, TABLE_EXTENSIONS,
+                                         ARCHIVE_EXTENSIONS)
 from app.backend.utils.file_handlers import FileHandlers
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import SetOfClasses2D, SetOfParticles, SetOfClasses3D, SetOfVolumes
 from pwem.viewers import RENDER
-from pwem.viewers.mdviewer.readers import ScipionImageReader
-from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
-from pwem.viewers.mdviewer.star_dao import StarFile
 from pwem.viewers.viewers_data import RegistryViewerConfig
 
 
@@ -292,139 +285,259 @@ class OutputsPreview(FileHandlers):
         return Response(content=filePath.read_bytes(), media_type=mediaType, headers=headers)
 
     def getPreviewOutput(self, objectManager) -> Response:
+        """
+        Entry point: choose the right preview strategy based on output type.
+        """
         config = RegistryViewerConfig.getConfig(type(self.output)) or {}
 
-        if isinstance(self.output, SetOfParticles) or isinstance(self.output, SetOfClasses2D):  # SetOfParticles, SetOfClasses2D
-            return self.getOutputPreviewParticles(config, objectManager)
-        elif isinstance(self.output, SetOfClasses3D) or isinstance(self.output, SetOfVolumes):  # SetOfClasses3D, SetOfVolumes
-            return self.getOutputPreviewSetOfClasses3D(config, objectManager)
+        if isinstance(self.output, (SetOfParticles, SetOfClasses2D)):
+            tiles, labels, cols, tileSize = self._collectParticlesOrClasses2D(config, objectManager)
+            filename = "particles_gallery.png"
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename)
 
-        # Later: SetOfClasses2D, etc.
+        if isinstance(self.output, (SetOfClasses3D, SetOfVolumes)):
+            tiles, labels, cols, tileSize = self._collectClasses3DOrVolumes(objectManager)
+            filename = "volumes_gallery.png"
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename)
+
+        # Fallback for unsupported types
         raise HTTPException(
             status_code=415,
             detail=f"Preview not implemented for output type {type(self.output).__name__}",
         )
 
-    # --------------- SetOfClasses3D, SetOfVolumes --------------------------
-    def getOutputPreviewSetOfClasses3D(self, config, objectManager):
-        """Return q gallery image preview to SetOfClasses3D"""
+    # --------------------------------------------------------------------
+    # Common helper to build Response from tiles
+    # --------------------------------------------------------------------
+    def _makeGalleryResponse(
+            self,
+            tiles: List[np.ndarray],
+            labels: List[str],
+            cols: int,
+            tileSize: int,
+            filename: str,
+    ) -> Response:
+        """
+        Build final PNG + HTTP response from collected tiles and labels.
+        """
+        if not tiles:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not extract any images for preview",
+            )
+
+        # Only pass labels if there is at least one non-empty label
+        useLabels: Optional[List[str]] = labels if any(l for l in labels) else None
+
+        pngBytes, meta = self.makeGalleryFromTiles(
+            tiles,
+            cols=cols,
+            tileSize=tileSize,
+            labels=useLabels,
+        )
+
+        metaWithMime = {"mime": "image/png", **meta}
+        previewHeaders = self._buildPreviewHeaders(metaWithMime)
+
+        return Response(
+            content=pngBytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                **previewHeaders,
+            },
+        )
+
+    # --------------------------------------------------------------------
+    # SetOfParticles / SetOfClasses2D
+    # --------------------------------------------------------------------
+    def _collectParticlesOrClasses2D(
+            self,
+            config,
+            objectManager,
+    ) -> Tuple[List[np.ndarray], List[str], int, int]:
+        """
+        Collect tiles for:
+          - SetOfParticles: take particles from a common stack.
+          - SetOfClasses2D: 2 cols, labels with class size when available.
+        """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
-        render = 'stack'
-        rows = objectManager.getRows(mainTable, 0, 32)  # take more, we filter later
+        rows = objectManager.getRows(mainTable, 0, 32)
         if not rows:
             raise HTTPException(status_code=404, detail="No particle rows available for preview")
 
-        renderIdx = self.getRenderColumnIndex(render, table.getColumns())
+        render = config.get(RENDER, "")
+        if not render:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing 'render' in viewer config for SetOfParticles/SetOfClasses2D",
+            )
+
+        columns = table.getColumns()
+        renderIdx = self.getRenderColumnIndex(render, columns)
+
+        maxTiles = 12
+        cols = 4
+        tileSize = 96
+        labels: List[str] = []
+
+        isClasses2D = isinstance(self.output, SetOfClasses2D)
+        renderSizeIdx: Optional[int] = None
+
+        # Adjust layout for SetOfClasses2D (bigger tiles, 2 columns, labels with size)
+        if isClasses2D:
+            cols = 2
+            tileSize = 70
+            renderSizeIdx = self.getRenderColumnIndex("_size", columns)
+
+        # Assume one shared stack for all rows (standard Scipion SetOfParticles behavior)
+        relPath, sliceIndex = self.extractPathFromRow(rows[0], renderIdx)
+        filePath = self.resolveFilePath(relPath)
+        if not filePath.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Stack file not found for particles preview",
+            )
+
+        try:
+            imgStk = ImageReadersRegistry.open(str(filePath))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not open image stack for preview: {e}",
+            )
 
         tiles: List[np.ndarray] = []
-        maxTiles = 12
-
-        labels = []
-        maxTiles = 12
-        cols = 2
-        tileSize = 70
-        isStack = False
-        if isinstance(self.output, SetOfClasses3D):
-            isStack = True
-            renderSize = self.getRenderColumnIndex('_size', table.getColumns())
 
         for row in rows:
             if len(tiles) >= maxTiles:
                 break
+
+            # Rows are usually 1-based; adjust to 0-based index.
+            rowId = getattr(row, "_id", None)
+            if rowId is None:
+                try:
+                    rowId = row.getId()
+                except Exception:
+                    continue
+            if rowId is None:
+                continue
+
+            try:
+                pilImg = imgStk.getImage(index=rowId - 1, pilImage=True)
+            except Exception:
+                continue
+
+            arr = np.array(pilImg)
+            if arr.ndim != 2:
+                continue
+
+            tiles.append(arr)
+
+            if isClasses2D and renderSizeIdx is not None:
+                try:
+                    sizeVal = row.getValues()[renderSizeIdx]
+                    labels.append(f"{sizeVal} particles")
+                except Exception:
+                    labels.append("")
+
+        if not tiles:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not extract any particle images for preview",
+            )
+
+        # Ensure labels length matches tiles length (for per-tile labels)
+        if labels and len(labels) < len(tiles):
+            labels.extend([""] * (len(tiles) - len(labels)))
+
+        return tiles, labels, cols, tileSize
+
+    # --------------------------------------------------------------------
+    # SetOfClasses3D / SetOfVolumes
+    # --------------------------------------------------------------------
+    def _collectClasses3DOrVolumes(
+            self,
+            objectManager,
+    ) -> Tuple[List[np.ndarray], List[str], int, int]:
+        """
+        Collect tiles for:
+          - SetOfClasses3D: central slice of each volume/stack + size label.
+          - SetOfVolumes: central slice of each volume.
+        """
+        mainTable = "objects"
+        table = objectManager.getTable(mainTable)
+        rows = objectManager.getRows(mainTable, 0, 32)
+        if not rows:
+            raise HTTPException(status_code=404, detail="No rows available for preview")
+
+        columns = table.getColumns()
+        # For 3D classes/volumes we expect a 'stack' (or equivalent) column.
+        renderIdx = self.getRenderColumnIndex("stack", columns)
+
+        tiles: List[np.ndarray] = []
+        labels: List[str] = []
+        maxTiles = 12
+        cols = 2
+        tileSize = 70
+
+        isClasses3D = isinstance(self.output, SetOfClasses3D)
+        renderSizeIdx: Optional[int] = None
+        if isClasses3D:
+            renderSizeIdx = self.getRenderColumnIndex("_size", columns)
+
+        for row in rows:
+            if len(tiles) >= maxTiles:
+                break
+
             relPath, sliceIndex = self.extractPathFromRow(row, renderIdx)
             filePath = self.resolveFilePath(relPath)
             if not filePath.exists():
                 continue
-            imgStk = ImageReadersRegistry().open(str(filePath))
-            pilImg = imgStk.getCentralImage(pilImage=True)
-            npImg = np.array(pilImg)
-            tiles.append(npImg)
-            if isStack:
-                labels.append("%s particles" % row.getValues()[renderSize])
+
+            try:
+                imgStk = ImageReadersRegistry.open(str(filePath))
+            except Exception as e:
+                continue
+
+            # Try central slice for 3D; fallback to first slice if needed.
+            try:
+                pilImg = imgStk.getCentralImage(pilImage=True)
+            except Exception as e:
+                try:
+                    pilImg = imgStk.getImage(index=0, pilImage=True)
+                except Exception as e:
+                    pilImg = None
+
+            if pilImg is None:
+                continue
+            arr = np.array(pilImg)
+            if arr.ndim != 2:
+                continue
+
+            tiles.append(arr)
+
+            if isClasses3D and renderSizeIdx is not None:
+                try:
+                    sizeVal = row.getValues()[renderSizeIdx]
+                    labels.append(f"{sizeVal} particles")
+                except Exception:
+                    labels.append("")
+            else:
+                # For SetOfVolumes you could add a simple label if desired, e.g. volume index.
+                labels.append("")
 
         if not tiles:
             raise HTTPException(
                 status_code=404,
-                detail="Could not extract any particle images for preview",
+                detail="Could not extract any class/volume images for preview",
             )
 
-        pngBytes, meta = self.makeGalleryFromTiles(tiles, cols=cols, tileSize=tileSize, labels=labels)
+        if labels and len(labels) < len(tiles):
+            labels.extend([""] * (len(tiles) - len(labels)))
 
-        metaWithMime = {"mime": "image/png", **meta}
-        previewHeaders = self._buildPreviewHeaders(metaWithMime)
-
-        return Response(
-            content=pngBytes,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": 'inline; filename="particles_gallery.png"',
-                **previewHeaders,
-            },
-        )
-
-    # --------------- SetOfParticles, SetOfClasses2D --------------------------
-    def getOutputPreviewParticles(self, config, objectManager):
-        """Return q gallery image preview to SetOfParticles"""
-        mainTable = "objects"
-        table = objectManager.getTable(mainTable)
-        render = config.get(RENDER, "")
-        rows = objectManager.getRows(mainTable, 0, 32)  # take more, we filter later
-        if not rows:
-            raise HTTPException(status_code=404, detail="No particle rows available for preview")
-
-        if not render:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing 'order' or 'render' in viewer config for SetOfParticles",
-            )
-
-        renderIdx = self.getRenderColumnIndex(render, table.getColumns())
-
-        tiles: List[np.ndarray] = []
-        labels = []
-        maxTiles = 12
-        cols = 4
-        tileSize = 96
-        isStack = False
-        if isinstance(self.output, SetOfClasses2D):
-            cols = 2
-            tileSize = 70
-            isStack = True
-            renderSize = self.getRenderColumnIndex('_size', table.getColumns())
-
-        relPath, sliceIndex = self.extractPathFromRow(rows[0], renderIdx)
-        filePath = self.resolveFilePath(relPath)
-        imgStk = ImageReadersRegistry().open(str(filePath))
-
-        for row in rows:
-            if len(tiles) >= maxTiles:
-                break
-            pilImg = imgStk.getImage(index=row._id-1, pilImage=True)
-            npImg = np.array(pilImg)
-            tiles.append(npImg)
-            if isStack:
-                labels.append("%s particles" % row.getValues()[renderSize])
-
-        if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any particle images for preview",
-            )
-
-        pngBytes, meta = self.makeGalleryFromTiles(tiles, cols=cols, tileSize=tileSize, labels=labels)
-
-        metaWithMime = {"mime": "image/png", **meta}
-        previewHeaders = self._buildPreviewHeaders(metaWithMime)
-
-        return Response(
-            content=pngBytes,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": 'inline; filename="particles_gallery.png"',
-                **previewHeaders,
-            },
-        )
+        return tiles, labels, cols, tileSize
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -517,7 +630,7 @@ class OutputsPreview(FileHandlers):
         # Font size as a good fraction of tile height so labels are clearly visible
         try:
             # Around 22–26% of tile height => large and readable
-            fontSize = max(12 * scale, int(cellPx * 0.24))
+            fontSize = max(16 * scale, int(cellPx * 0.44))
             font = ImageFont.truetype("arial.ttf", fontSize)
         except Exception:
             font = ImageFont.load_default()
