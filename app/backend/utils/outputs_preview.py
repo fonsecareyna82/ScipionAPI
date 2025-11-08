@@ -13,15 +13,18 @@ from pathlib import Path as FsPath, Path
 from typing import Union, List, Dict, Any, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 from fastapi import HTTPException
 from fastapi.responses import Response, JSONResponse
+
 
 from app.backend.utils.constants import (TEXT_FILE_EXTENSIONS, SQLITE_EXTENSIONS, PDF_EXTENSIONS, TABLE_EXTENSIONS,
                                          ARCHIVE_EXTENSIONS)
 from app.backend.utils.file_handlers import FileHandlers
 from pwem.emlib.image.image_readers import ImageReadersRegistry
-from pwem.objects import SetOfClasses2D, SetOfParticles, SetOfClasses3D, SetOfVolumes
+from pwem.objects import SetOfClasses2D, SetOfParticles, SetOfClasses3D, SetOfVolumes, SetOfFSCs
 from pwem.viewers import RENDER
 from pwem.viewers.viewers_data import RegistryViewerConfig
 
@@ -300,10 +303,160 @@ class OutputsPreview(FileHandlers):
             filename = "volumes_gallery.png"
             return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename)
 
+        if isinstance(self.output, SetOfFSCs):
+            filename = "fsc.png"
+            return self._makeFSCResponse(filename)
+
         # Fallback for unsupported types
         raise HTTPException(
             status_code=415,
             detail=f"Preview not implemented for output type {type(self.output).__name__}",
+        )
+
+    # --------------------------------------------------------------------
+    # Common helper to build Response from tiles
+    # --------------------------------------------------------------------
+    def _makeFSCResponse(self, filename: str = "fsc_preview.png") -> Response:
+        """
+        Render one or more FSC curves into a PNG and return as HTTP Response.
+
+        Expected self.output:
+          - Iterable of FSC-like objects with:
+            - getData() -> (x, y) or Nx2 array/list
+            - getObjLabel() -> str (optional)
+            - calculateResolution(threshold) -> float in Å (optional)
+        """
+        matplotlib.use("Agg")  # Non-interactive backend for server side
+        # Collect FSC objects + labels
+        fsc_items = []
+        for i, fsc in enumerate(self.output):
+            if fsc is None:
+                continue
+            clone = getattr(fsc, "clone", lambda: fsc)()
+            label = getattr(clone, "getObjLabel", lambda: None)() or f"FSC {i + 1}"
+            fsc_items.append((clone, label))
+
+        if not fsc_items:
+            raise HTTPException(status_code=404, detail="No FSC data available for preview")
+
+        def get_xy(fsc):
+            """Return (x, y) as float numpy arrays from FSC.getData()."""
+            data = fsc.getData()
+            # Accept both (x, y) tuple or Nx2-like array
+            if isinstance(data, (list, tuple)) and len(data) == 2:
+                x, y = data
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+            else:
+                arr = np.asarray(data, dtype=float)
+                if arr.ndim != 2 or arr.shape[1] < 2:
+                    raise ValueError("Invalid FSC data shape")
+                x, y = arr[:, 0], arr[:, 1]
+
+            mask = np.isfinite(x) & np.isfinite(y)
+            x = x[mask]
+            y = y[mask]
+            return x, y
+
+        def format_res_from_freq(value, pos):
+            """
+            Formatter for top axis:
+            given spatial frequency (1/Å), show resolution in Å.
+            """
+            if value <= 0:
+                return ""
+            inv = 1.0 / value
+            # Avoid silly large numbers
+            if inv > 999:
+                return ""
+            return f"{inv:.1f}"
+
+        # --- Plot setup ---
+        fig, ax = plt.subplots(figsize=(3.5, 3), dpi=120)
+
+        threshold = 0.143
+        max_x = 0.0
+
+        for fsc, base_label in fsc_items:
+            try:
+                x, y = get_xy(fsc)
+            except Exception:
+                continue
+
+            if x.size == 0:
+                continue
+
+            max_x = max(max_x, float(x.max()))
+
+            # Resolution at threshold (if available)
+            res = None
+            if hasattr(fsc, "calculateResolution"):
+                try:
+                    res = fsc.calculateResolution(threshold)
+                except Exception:
+                    res = None
+
+            # Label with resolution if valid
+            res = float(res)
+            if res and res > 0:
+                label = f"{base_label} ({res:.2f} Å)"
+            else:
+                label = base_label
+
+            ax.plot(x, y, linewidth=1.2, label=label)
+
+            # Vertical line at the resolution frequency (if inside x-range)
+            if res and res > 0:
+                freq = 1.0 / float(res)
+                if 0 < freq <= max_x * 1.01:
+                    ax.axvline(freq, linestyle="--", linewidth=0.6, alpha=0.6)
+
+        # Horizontal threshold line
+        ax.axhline(threshold, linestyle="--", linewidth=0.6, alpha=0.6)
+
+        if max_x <= 0:
+            max_x = 1.0
+
+        ax.set_xlim(0, max_x)
+        ax.set_ylim(0.0, 1.05)
+
+        ax.set_xlabel("Spatial frequency (1/Å)", fontsize=8)
+        ax.set_ylabel("FSC", fontsize=8)
+        ax.grid(True, linestyle="--", linewidth=0.3, alpha=0.3)
+
+        if len(fsc_items) > 1:
+            ax.legend(fontsize=6, loc="best")
+
+        # Top axis: show resolution in Å instead of frequency
+        ax_top = ax.twiny()
+        ax_top.set_xlim(ax.get_xlim())
+        ax_top.set_xlabel("Resolution (Å)", fontsize=8)
+        ax_top.xaxis.set_major_formatter(FuncFormatter(format_res_from_freq))
+
+        fig.tight_layout()
+
+        # Encode to PNG
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        png_bytes = buf.getvalue()
+
+        # Meta for your preview pipeline
+        meta = {
+            "mime": "image/png",
+            "kind": "image",
+            "note": "FSC curve",
+        }
+        # If ya tienes este helper como en otras vistas:
+        preview_headers = self._buildPreviewHeaders(meta)
+
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                **preview_headers,
+            },
         )
 
     # --------------------------------------------------------------------
