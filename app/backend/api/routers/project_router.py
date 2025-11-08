@@ -322,3 +322,17 @@ async def previewProtocolImageFile(
         raise HTTPException(status_code=404, detail="Project not found")
 
     return service.previewProtocolImageFile(protocolId, path, inline)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
+async def previewProtocolImageFile(
+        projectId: int,
+        protocolId: Union[int, str],
+        outputName: str,
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return service.outputPreview(protocolId, outputName)

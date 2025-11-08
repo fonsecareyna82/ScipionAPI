@@ -23,11 +23,17 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import io
 import logging
 
-from PIL import Image
+from metadataviewer.dao.numpy_dao import NumpyDao
+from metadataviewer.model import ObjectManager
 
+from app.backend.utils.file_handlers import FileHandlers
+from app.backend.utils.outputs_preview import OutputsPreview
+from pwem.viewers.mdviewer.readers import ScipionImageReader
+from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
+from pwem.viewers.mdviewer.star_dao import StarFile
+from pwem.viewers.viewers_data import RegistryViewerConfig
 from pyworkflow.object import PointerList, Pointer
 
 logger = logging.getLogger(__name__)
@@ -40,7 +46,6 @@ from typing import List, Optional, Any, Union
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
-from pwem.emlib.image.image_readers import ImageReadersRegistry
 import pyworkflow
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow import Config
@@ -60,6 +65,13 @@ class ProjectService:
     def __init__(self):
         self.manager = Manager()
         self.currentProject = None
+        self.objectManager = None
+
+    def initializeOrderManager(self):
+        self.objectManager.registerDAO(ScipionSetsDAO)
+        self.objectManager.registerDAO(StarFile)
+        self.objectManager.registerReader(ScipionImageReader)
+        NumpyDao.addCompatibleFileType('cs')
 
     def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
         # Check if a project with the same name already exists for this user
@@ -1020,262 +1032,16 @@ class ProjectService:
         return mt or "application/octet-stream"
 
     def listProtocolDir(self, protocolId: str, path: str):
-        root = self._protocolRoot(protocolId)
-        target = self._guardJoin(root, path)
-
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Path not found")
-        if not target.is_dir():
-            raise HTTPException(status_code=400, detail="Not a directory")
-
-        items = []
-        try:
-            for child in target.iterdir():
-                is_dir = child.is_dir()
-                item = {
-                    "name": child.name,
-                    "path": str(child.relative_to(root)).replace("\\", "/"),
-                    "isDir": is_dir,
-                }
-                if not is_dir:
-                    try:
-                        item["size"] = child.stat().st_size
-                    except Exception:
-                        item["size"] = None
-                    item["mime"] = self._guessMime(child)
-                items.append(item)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied")
-
-        # Directories first, then files; alpha by name
-        items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
-
-        cwd_rel = str(target.relative_to(root)).replace("\\", "/")
-        return {"cwd": cwd_rel, "items": items}
+        """Return the directory file list"""
+        listProjDir = FileHandlers(self.currentProject)
+        return listProjDir.listProtocolDir(protocolId, path)
 
     def previewProtocolTextFile(self, protocolId: str, path: str):
         """
         Return a lightweight preview for a file inside a protocol workspace.
-
-        Behaviors:
-        - Text-like files -> UTF-8 text/plain (capped size).
-        - Otherwise -> 415 (unsupported).
         """
-
-        root = self._protocolRoot(protocolId)
-        file_path: Path = self._guardJoin(root, path)
-
-        if not file_path.exists() or not file_path.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-
-        suffix = file_path.suffix.lower()
-        mime = self._guessMime(file_path)  # e.g. "text/plain", etc.
-
-        # -----------------------
-        # 1. Text-like preview
-        # -----------------------
-        textual = (
-                mime.startswith("text/")
-                or mime in (
-                    "application/json",
-                    "application/xml",
-                    "application/x-yaml",
-                    "text/x-log",
-                )
-                or suffix
-                in {
-                    ".txt",
-                    ".log",
-                    ".json",
-                    ".yaml",
-                    ".yml",
-                    ".md",
-                    ".csv",
-                    ".tsv",
-                    ".xml",
-                    ".star",
-                    ".coords",
-                    ".cbox",
-                    ".mdoc",
-                    ".tomostar",
-                    ".settings",
-                    ".com",
-                    ".tlt",
-                    ".xf",
-                    ".xtilt",
-                }
-        )
-
-        if textual:
-            # Size guard for text preview, e.g. 1 MB max
-            MAX_BYTES = 1 * 1024 * 1024
-            try:
-                size = file_path.stat().st_size
-                if size > MAX_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail="File too large to preview",
-                    )
-            except Exception:
-                # If stat fails, just continue and try a best-effort read
-                pass
-
-            try:
-                # Try UTF-8 read; ignore undecodable bytes
-                text = file_path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Could not read file as text",
-                )
-
-            return Response(
-                content=text,
-                media_type="text/plain; charset=utf-8",
-            )
-        # -----------------------
-        # 2 Unsupported type
-        # -----------------------
-        raise HTTPException(
-            status_code=415,
-            detail="Preview not available for this file type",
-        )
-
-    def _isPreviewableMrc(self, filePath):
-        """
-        Return True if this file is an .mrc-like volume we can render as PNG.
-        """
-        suf = filePath.suffix.lower()
-        return suf in (".mrc", ".map", ".mrcs", ".em", ".stk")
-
-    def _renderImageAsPngAndMeta(self, filePath):
-        """
-        Convert .mrc/.map to an 8-bit grayscale PNG (middle Z slice if 3D)
-        and build metadata (true volume dims, voxel size, etc.).
-        Returns (pngBytes, metaDict).
-        """
-        try:
-            imageStk = ImageReadersRegistry.open(str(filePath))
-            data = imageStk.getImages()
-            nx = data.shape[1]
-            ny = data.shape[2]
-            nz = data.shape[0]
-
-            vx = imageStk.getProperties().get("sr", 1.0)
-            vy = vx,
-            vz = vx
-
-            if data.ndim == 3:
-                midZ = nz // 2
-                img = imageStk.getCentralImage()
-                arr2d = imageStk.thumbnailSlice(img, nx, ny)
-
-                note = f"central slice (z={midZ}) rendered as 8-bit PNG"
-
-            elif data.ndim == 2:
-                arr2d = imageStk.normalizeSlice(data)
-                note = "2D MRC rendered as 8-bit PNG"
-            else:
-                raise HTTPException(
-                    status_code=415,
-                    detail="Unsupported MRC dimensionality (only 2D or 3D supported)"
-                )
-
-            img = Image.fromarray(arr2d, mode="L")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            pngBytes = buf.getvalue()
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not read/convert MRC file: {str(e)}"
-            )
-
-        meta = {
-            "mime": "volume/mrc",
-            "width": nx,
-            "height": ny,
-            "depth": nz,
-            "sizeBytes": filePath.stat().st_size,
-            "note": note,
-        }
-
-        if vx is not None and vy is not None and vz is not None:
-            try:
-                meta["voxelSize"] = [float(vx), float(vy), float(vz)]
-            except Exception:
-                pass
-
-        return pngBytes, meta
-
-    def _renderImageAndMeta(self, filePath):
-        """
-        Load a normal 2D image, gather width/height, return bytes + meta.
-        """
-        mediaType = self._guessMime(filePath)
-        rawBytes = filePath.read_bytes()
-
-        width = None
-        height = None
-        try:
-            with Image.open(io.BytesIO(rawBytes)) as im:
-                width, height = im.size
-        except Exception:
-            pass
-
-        meta = {
-            "mime": mediaType,
-            "width": width,
-            "height": height,
-            "sizeBytes": filePath.stat().st_size,
-        }
-        return rawBytes, mediaType, meta
-
-    def _buildPreviewHeaders(self, meta: dict):
-        """
-        Convert meta dict into custom headers so frontend can read them.
-        Also build Access-Control-Expose-Headers so browser will allow JS
-        to read these headers in a cross-origin fetch.
-        """
-        # Collect custom preview headers
-        previewHeaders = {}
-        if "mime" in meta and meta["mime"] is not None:
-            previewHeaders["X-Preview-Mime"] = str(meta["mime"])
-        if "width" in meta and meta["width"] is not None:
-            previewHeaders["X-Preview-Width"] = str(meta["width"])
-        if "height" in meta and meta["height"] is not None:
-            previewHeaders["X-Preview-Height"] = str(meta["height"])
-        if "depth" in meta and meta["depth"] is not None:
-            previewHeaders["X-Preview-Depth"] = str(meta["depth"])
-        if "sizeBytes" in meta and meta["sizeBytes"] is not None:
-            previewHeaders["X-Preview-SizeBytes"] = str(meta["sizeBytes"])
-        if "voxelSize" in meta and meta["voxelSize"] is not None:
-            try:
-                vx, vy, vz = meta["voxelSize"]
-                previewHeaders["X-Preview-VoxelSize"] = f"{vx},{vy},{vz}"
-            except Exception:
-                pass
-        if "note" in meta and meta["note"]:
-            previewHeaders["X-Preview-Note"] = meta["note"]
-
-        # Build Access-Control-Expose-Headers so the browser
-        # lets frontend JS read them.
-        exposeList = [
-            "Content-Disposition",
-            "X-Preview-Mime",
-            "X-Preview-Width",
-            "X-Preview-Height",
-            "X-Preview-Depth",
-            "X-Preview-SizeBytes",
-            "X-Preview-VoxelSize",
-            "X-Preview-Note",
-        ]
-        previewHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeList)
-
-        return previewHeaders
+        previewProtTextFile = FileHandlers(self.currentProject)
+        return previewProtTextFile.previewProtocolTextFile(protocolId, path)
 
     def previewProtocolImageFile(self, protocolId, path, inline: bool):
         """
@@ -1287,64 +1053,17 @@ class ProjectService:
               * if normal image -> raw image + X-Preview-* headers
               * else -> raw bytes + minimal headers
         """
-        root = self._protocolRoot(protocolId)
-        filePath = self._guardJoin(root, path)
+        previewProtImgFile = FileHandlers(self.currentProject)
+        return previewProtImgFile.previewProtocolImageFile(protocolId, path, inline)
 
-        if (not filePath.exists()) or (not filePath.is_file()):
-            raise HTTPException(status_code=404, detail="File not found")
-
-        if inline:
-            # MRC-like volume preview
-            if self._isPreviewableMrc(filePath):
-                pngBytes, meta = self._renderImageAsPngAndMeta(filePath)
-                baseHeaders = {
-                    "Content-Disposition": f'inline; filename="{filePath.stem}.png"'
-                }
-                previewHeaders = self._buildPreviewHeaders(meta)
-                return Response(
-                    content=pngBytes,
-                    media_type="image/png",
-                    headers={**baseHeaders, **previewHeaders},
-                )
-
-            # Regular image preview
-            mediaType = self._guessMime(filePath)
-            if mediaType.startswith("image/"):
-                imgBytes, realMediaType, meta = self._renderImageAndMeta(filePath)
-                baseHeaders = {
-                    "Content-Disposition": f'inline; filename="{filePath.name}"'
-                }
-                previewHeaders = self._buildPreviewHeaders(meta)
-                return Response(
-                    content=imgBytes,
-                    media_type=realMediaType,
-                    headers={**baseHeaders, **previewHeaders},
-                )
-
-            # Fallback: other file types inline
-            rawBytes = filePath.read_bytes()
-            meta = {
-                "mime": mediaType,
-                "sizeBytes": filePath.stat().st_size,
-            }
-            baseHeaders = {
-                "Content-Disposition": f'inline; filename="{filePath.name}"'
-            }
-            previewHeaders = self._buildPreviewHeaders(meta)
-            return Response(
-                content=rawBytes,
-                media_type=mediaType,
-                headers={**baseHeaders, **previewHeaders},
-            )
-
-        # attachment / download (inline == False)
-        mediaType = self._guessMime(filePath)
-        return Response(
-            content=filePath.read_bytes(),
-            media_type=mediaType,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filePath.name}"',
-                # expose Content-Disposition too just to be safe
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
-        )
+    def outputPreview(self, protocolId: int, outputName: str):
+        """
+        Return a preview for selected output
+        """
+        protocol = self.currentProject.getProtocol(protocolId)
+        output = getattr(protocol, outputName)
+        outputPath = output.getFileName()
+        outputPreview = OutputsPreview(self.currentProject, protocol, output)
+        self.objectManager = ObjectManager()
+        self.initializeOrderManager()
+        return outputPreview.preview(protocolId, outputPath, self.objectManager)
