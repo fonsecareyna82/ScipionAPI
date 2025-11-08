@@ -294,14 +294,14 @@ class OutputsPreview(FileHandlers):
         config = RegistryViewerConfig.getConfig(type(self.output)) or {}
 
         if isinstance(self.output, (SetOfParticles, SetOfClasses2D)):
-            tiles, labels, cols, tileSize = self._collectParticlesOrClasses2D(config, objectManager)
+            tiles, labels, cols, tileSize, summary = self._collectParticlesOrClasses2D(config, objectManager)
             filename = "particles_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
 
         if isinstance(self.output, (SetOfClasses3D, SetOfVolumes)):
-            tiles, labels, cols, tileSize = self._collectClasses3DOrVolumes(objectManager)
+            tiles, labels, cols, tileSize, summary = self._collectClasses3DOrVolumes(objectManager)
             filename = "volumes_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
 
         if isinstance(self.output, SetOfFSCs):
             filename = "fsc.png"
@@ -469,9 +469,11 @@ class OutputsPreview(FileHandlers):
             cols: int,
             tileSize: int,
             filename: str,
+            summary: Optional[str] = None,
     ) -> Response:
         """
         Build final PNG + HTTP response from collected tiles and labels.
+        Optionally adds a global summary text at the bottom of the gallery image.
         """
         if not tiles:
             raise HTTPException(
@@ -487,6 +489,7 @@ class OutputsPreview(FileHandlers):
             cols=cols,
             tileSize=tileSize,
             labels=useLabels,
+            summary=summary,
         )
 
         metaWithMime = {"mime": "image/png", **meta}
@@ -508,14 +511,18 @@ class OutputsPreview(FileHandlers):
             self,
             config,
             objectManager,
-    ) -> Tuple[List[np.ndarray], List[str], int, int]:
+    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
         """
         Collect tiles for:
           - SetOfParticles: take particles from a common stack.
           - SetOfClasses2D: 2 cols, labels with class size when available.
+
+        Returns:
+          tiles, labels, cols, tileSize, summaryText
         """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
+        rowCount = objectManager.getTableRowCount(mainTable) or 0
         rows = objectManager.getRows(mainTable, 0, 32)
         if not rows:
             raise HTTPException(status_code=404, detail="No particle rows available for preview")
@@ -531,20 +538,20 @@ class OutputsPreview(FileHandlers):
         renderIdx = self.getRenderColumnIndex(render, columns)
 
         maxTiles = 12
-        cols = 4
-        tileSize = 96
+        cols = 3
+        tileSize = 50
         labels: List[str] = []
 
         isClasses2D = isinstance(self.output, SetOfClasses2D)
         renderSizeIdx: Optional[int] = None
 
-        # Adjust layout for SetOfClasses2D (bigger tiles, 2 columns, labels with size)
+        # Layout override for SetOfClasses2D
         if isClasses2D:
             cols = 2
             tileSize = 70
             renderSizeIdx = self.getRenderColumnIndex("_size", columns)
 
-        # Assume one shared stack for all rows (standard Scipion SetOfParticles behavior)
+        # Assume one shared stack for all rows
         relPath, sliceIndex = self.extractPathFromRow(rows[0], renderIdx)
         filePath = self.resolveFilePath(relPath)
         if not filePath.exists():
@@ -567,7 +574,6 @@ class OutputsPreview(FileHandlers):
             if len(tiles) >= maxTiles:
                 break
 
-            # Rows are usually 1-based; adjust to 0-based index.
             rowId = getattr(row, "_id", None)
             if rowId is None:
                 try:
@@ -601,11 +607,17 @@ class OutputsPreview(FileHandlers):
                 detail="Could not extract any particle images for preview",
             )
 
-        # Ensure labels length matches tiles length (for per-tile labels)
+        # Ensure labels length matches tiles length
         if labels and len(labels) < len(tiles):
             labels.extend([""] * (len(tiles) - len(labels)))
 
-        return tiles, labels, cols, tileSize
+        total = rowCount or len(tiles)
+        if isClasses2D:
+            summary = f"{total} classes"
+        else:
+            summary = f"{total} particles"
+
+        return tiles, labels, cols, tileSize, summary
 
     # --------------------------------------------------------------------
     # SetOfClasses3D / SetOfVolumes
@@ -613,20 +625,23 @@ class OutputsPreview(FileHandlers):
     def _collectClasses3DOrVolumes(
             self,
             objectManager,
-    ) -> Tuple[List[np.ndarray], List[str], int, int]:
+    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
         """
         Collect tiles for:
           - SetOfClasses3D: central slice of each volume/stack + size label.
           - SetOfVolumes: central slice of each volume.
+
+        Returns:
+          tiles, labels, cols, tileSize, summaryText
         """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
+        rowCount = objectManager.getTableRowCount(mainTable) or 0
         rows = objectManager.getRows(mainTable, 0, 32)
         if not rows:
             raise HTTPException(status_code=404, detail="No rows available for preview")
 
         columns = table.getColumns()
-        # For 3D classes/volumes we expect a 'stack' (or equivalent) column.
         renderIdx = self.getRenderColumnIndex("stack", columns)
 
         tiles: List[np.ndarray] = []
@@ -651,20 +666,22 @@ class OutputsPreview(FileHandlers):
 
             try:
                 imgStk = ImageReadersRegistry.open(str(filePath))
-            except Exception as e:
+            except Exception:
                 continue
 
-            # Try central slice for 3D; fallback to first slice if needed.
+            # Central slice if possible, fallback to first slice
+            pilImg = None
             try:
                 pilImg = imgStk.getCentralImage(pilImage=True)
-            except Exception as e:
+            except Exception:
                 try:
                     pilImg = imgStk.getImage(index=0, pilImage=True)
-                except Exception as e:
+                except Exception:
                     pilImg = None
 
             if pilImg is None:
                 continue
+
             arr = np.array(pilImg)
             if arr.ndim != 2:
                 continue
@@ -678,7 +695,7 @@ class OutputsPreview(FileHandlers):
                 except Exception:
                     labels.append("")
             else:
-                # For SetOfVolumes you could add a simple label if desired, e.g. volume index.
+                # For SetOfVolumes we keep labels optional/blank for now
                 labels.append("")
 
         if not tiles:
@@ -690,7 +707,13 @@ class OutputsPreview(FileHandlers):
         if labels and len(labels) < len(tiles):
             labels.extend([""] * (len(tiles) - len(labels)))
 
-        return tiles, labels, cols, tileSize
+        total = rowCount or len(tiles)
+        if isClasses3D:
+            summary = f"{total} classes"
+        else:
+            summary = f"{total} volumes"
+
+        return tiles, labels, cols, tileSize, summary
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -755,15 +778,17 @@ class OutputsPreview(FileHandlers):
             cols: int = 4,
             tileSize: int = 76,
             labels: Optional[List[str]] = None,  # Optional per-tile label
+            summary: Optional[str] = None,  # Optional global summary line
             scale: int = 2,  # HiDPI factor for sharper labels
     ) -> Tuple[bytes, Dict[str, Any]]:
         """
         Build a gallery image from a list of 2D tiles.
 
         - Logical tile size: tileSize x tileSize.
-        - Rendered at: (tileSize * scale) to keep label text sharp.
-        - Each tile is fully used for the particle.
-        - A dark overlay bar is drawn at the bottom for the per-tile label.
+        - Rendered at: (tileSize * scale) to keep text sharp.
+        - Each tile is fully used for the particle content.
+        - A dark overlay bar is drawn at the bottom for per-tile labels.
+        - An optional summary text is rendered below the grid, scaled to remain clearly readable.
         - Tiles are assumed to be already normalized/8-bit.
         """
         if not tiles:
@@ -774,40 +799,83 @@ class OutputsPreview(FileHandlers):
         rows = math.ceil(maxTiles / cols)
 
         hasLabels = bool(labels)
+        hasSummary = bool(summary)
 
         # Layout units in real pixels (HiDPI)
         pad = 2
         padPx = pad * scale
         cellPx = tileSize * scale  # tile side in real pixels
 
-        # Font size as a good fraction of tile height so labels are clearly visible
+        # ---------- Per-tile label font ----------
         try:
-            # Around 22–26% of tile height => large and readable
-            fontSize = max(16 * scale, int(cellPx * 0.44))
-            font = ImageFont.truetype("arial.ttf", fontSize)
+            # Reasonable fraction of tile: readable but not huge
+            labelFontSize = max(12 * scale, int(cellPx * 0.22))
+            labelFont = ImageFont.truetype("arial.ttf", labelFontSize)
         except Exception:
-            font = ImageFont.load_default()
+            labelFont = ImageFont.load_default()
+            labelFontSize = getattr(labelFont, "size", 12 * scale)
 
-        # Compute label bar height only if labels exist
+        # ---------- Per-tile label bar ----------
         if hasLabels:
             sample = "0000"
-            bbox = font.getbbox(sample)
-            textH = bbox[3] - bbox[1] if bbox else fontSize
+            bbox = labelFont.getbbox(sample)
+            textH = bbox[3] - bbox[1] if bbox else labelFontSize
 
-            # Bar slightly taller than text
-            labelBarHeight = textH + 4 * scale
-
-            # Clamp: at least text height, at most ~40% of tile
             minBar = textH + 2 * scale
-            maxBar = int(cellPx * 0.4)
-            labelBarHeight = max(minBar, min(labelBarHeight, maxBar))
+            defaultBar = textH + 4 * scale
+            maxBar = int(cellPx * 0.40)
+            labelBarHeight = max(minBar, min(defaultBar, maxBar))
         else:
             labelBarHeight = 0
 
+        # ---------- Base canvas (grid only) ----------
         canvasW = cols * cellPx + (cols + 1) * padPx
-        canvasH = rows * cellPx + (rows + 1) * padPx
+        baseCanvasH = rows * cellPx + (rows + 1) * padPx
+
+        # ---------- Summary band (global text at bottom) ----------
+        summaryFont = None
+        summaryHeight = 0
+
+        if hasSummary:
+            try:
+                # Make summary clearly visible, especially for many columns.
+                # We scale with total width and cell size.
+                # For 4+ columns (typical SetOfParticles), we make it bigger.
+                if cols >= 4:
+                    # Aggressive scaling for large galleries
+                    baseFromWidth = canvasW * 0.07  # ~7% of width
+                    baseFromCell = cellPx * 0.55  # big, but still below tile height
+                else:
+                    # Softer scaling for 1–2 columns
+                    baseFromWidth = canvasW * 0.05
+                    baseFromCell = cellPx * 0.35
+
+                summaryFontSize = int(max(
+                    baseFromWidth,
+                    baseFromCell,
+                    18 * scale  # absolute minimum size
+                ) / 1.0)
+
+                # Clamp to avoid insane sizes on very large images
+                summaryFontSize = int(min(summaryFontSize, cellPx * 0.9))
+
+                summaryFont = ImageFont.truetype("arial.ttf", summaryFontSize)
+            except Exception:
+                summaryFont = labelFont
+                summaryFontSize = labelFontSize
+
+            sbbox = summaryFont.getbbox(summary)
+            sH = sbbox[3] - sbbox[1] if sbbox else summaryFontSize
+
+            # Vertical padding inside the summary band
+            summaryPadY = max(4 * scale, int(sH * 0.2))
+            summaryHeight = sH + 2 * summaryPadY
+
+        # Final canvas includes optional summary band
+        canvasH = baseCanvasH + summaryHeight
         canvas = Image.new("L", (canvasW, canvasH), color=255)
 
+        # ---------- Paste tiles ----------
         for i, arr in enumerate(tiles[:maxTiles]):
             if arr is None or arr.ndim != 2:
                 continue
@@ -819,7 +887,7 @@ class OutputsPreview(FileHandlers):
             if arr.dtype != np.uint8:
                 arr = arr.astype(np.uint8, copy=False)
 
-            # Scale particle to fit inside the full tile
+            # Scale to fit full square
             imgScale = min(cellPx / float(w), cellPx / float(h))
             if imgScale <= 0:
                 continue
@@ -832,20 +900,19 @@ class OutputsPreview(FileHandlers):
                 resample=Image.Resampling.BILINEAR,
             )
 
-            # Per-tile canvas
             tileCanvas = Image.new("L", (cellPx, cellPx), color=255)
 
-            # Center particle
+            # Center tile content
             x0 = (cellPx - newW) // 2
             y0 = (cellPx - newH) // 2
             tileCanvas.paste(tileImg, (x0, y0))
 
-            # Label overlay at the bottom
+            # Bottom label (per tile)
             if hasLabels and i < len(labels) and labels[i]:
                 text = str(labels[i])
                 draw = ImageDraw.Draw(tileCanvas)
 
-                bbox = draw.textbbox((0, 0), text, font=font)
+                bbox = draw.textbbox((0, 0), text, font=labelFont)
                 textW = bbox[2] - bbox[0]
                 textH = bbox[3] - bbox[1]
 
@@ -855,32 +922,52 @@ class OutputsPreview(FileHandlers):
                     ratio = maxWidth / float(textW)
                     maxChars = max(3, int(len(text) * ratio))
                     text = text[:maxChars]
-                    bbox = draw.textbbox((0, 0), text, font=font)
+                    bbox = draw.textbbox((0, 0), text, font=labelFont)
                     textW = bbox[2] - bbox[0]
                     textH = bbox[3] - bbox[1]
 
-                # Dark bar at the bottom (overlay)
-                barTop = cellPx - labelBarHeight
-                barTop = max(0, barTop)
+                barTop = max(0, cellPx - labelBarHeight)
                 barBottom = cellPx - 1
+
                 draw.rectangle(
                     [(0, barTop), (cellPx - 1, barBottom)],
                     fill=30,
                 )
 
-                # Center text in the bar
                 xText = max(3 * scale, (cellPx - textW) // 2)
                 yText = barTop + max(1 * scale, (labelBarHeight - textH) // 2)
 
-                draw.text((xText, yText), text, font=font, fill=255)
+                draw.text((xText, yText), text, font=labelFont, fill=255)
 
-            # Paste tile into the main canvas
+            # Paste tile into main canvas
             r = i // cols
             c = i % cols
             gx = padPx + c * (cellPx + padPx)
             gy = padPx + r * (cellPx + padPx)
             canvas.paste(tileCanvas, (gx, gy))
 
+        # ---------- Draw summary band ----------
+        if hasSummary and summaryFont is not None:
+            draw = ImageDraw.Draw(canvas)
+            sbbox = summaryFont.getbbox(summary)
+            sW = sbbox[2] - sbbox[0]
+            sH = sbbox[3] - sbbox[1]
+
+            bandTop = canvasH - summaryHeight
+            bandBottom = canvasH - 1
+
+            # Light band for contrast
+            draw.rectangle(
+                [(0, bandTop), (canvasW - 1, bandBottom)],
+                fill=230,
+            )
+
+            xSummary = max(padPx, (canvasW - sW) // 2)
+            ySummary = bandTop + max(2 * scale, (summaryHeight - sH) // 2)
+
+            draw.text((xSummary, ySummary), summary, font=summaryFont, fill=0)
+
+        # ---------- Encode ----------
         buf = io.BytesIO()
         canvas.save(buf, format="PNG")
         pngBytes = buf.getvalue()
@@ -893,7 +980,9 @@ class OutputsPreview(FileHandlers):
             "tileSize": tileSize,
             "scale": scale,
             "labelBarHeight": int(labelBarHeight),
-            "note": "SetOfParticles gallery with per-tile labels" if hasLabels else "SetOfParticles gallery",
+            "hasSummary": bool(hasSummary),
+            "note": "SetOfParticles gallery with per-tile labels"
+            if hasLabels else "SetOfParticles gallery",
         }
         return pngBytes, meta
 
