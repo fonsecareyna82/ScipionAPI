@@ -232,6 +232,8 @@ class FileHandlers:
                 from numpy import clip, uint8
                 arr2d = uint8(clip(arr2d, 0, 255))
 
+            arr2d = imageStk.highlightSlice(arr2d)
+            arr2d = imageStk.normalizeSlice(arr2d)
             img = Image.fromarray(arr2d, mode="L")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
