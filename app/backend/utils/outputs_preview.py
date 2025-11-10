@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 from fastapi import HTTPException
 from fastapi.responses import Response, JSONResponse
-
+from tomo.objects import SetOfTiltSeries
 
 from app.backend.utils.constants import (TEXT_FILE_EXTENSIONS, SQLITE_EXTENSIONS, PDF_EXTENSIONS, TABLE_EXTENSIONS,
                                          ARCHIVE_EXTENSIONS)
@@ -183,7 +183,6 @@ class OutputsPreview(FileHandlers):
         return self.getPreviewOutput(objectManager)
 
 
-
     # -------------------------
     # Tables (CSV/TSV/STAR)
     # -------------------------
@@ -303,14 +302,85 @@ class OutputsPreview(FileHandlers):
             filename = "volumes_gallery.png"
             return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
 
+        if isinstance(self.output, SetOfTiltSeries):
+            tiles, labels, cols, tileSize, summary = self._collectSetOfTiltSeries(objectManager)
+            filename = "volumes_gallery.png"
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+
         if isinstance(self.output, SetOfFSCs):
             filename = "fsc.png"
             return self._makeFSCResponse(filename)
 
-        # Fallback for unsupported types
-        raise HTTPException(
-            status_code=415,
-            detail=f"Preview not implemented for output type {type(self.output).__name__}",
+        # Fallback for unsupported types: return a simple "No Image Available" image
+        return self._makeNoPreviewImageResponse()
+
+    def _makeNoPreviewImageResponse(self) -> Response:
+        """
+        Build a simple 'No Image Available' PNG for unsupported preview types.
+        """
+
+        # Canvas size chosen to fit nicely in the UI preview panel
+        width, height = 140, 140
+        bg_color = 245  # light gray background
+        border_color = 200
+        text_color = 80
+
+        # Create grayscale image
+        img = Image.new("L", (width, height), color=bg_color)
+        draw = ImageDraw.Draw(img)
+
+        # Optional border
+        margin = 10
+        draw.rectangle([(margin, margin), (width - margin, height - margin)], outline=border_color, width=1)
+
+        # Main message
+        msg = "No Image Available"
+
+        # Try a decent font size; fallback to default if TTF not available
+        try:
+            font_size = 52
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+
+        # Measure text size
+        bbox = draw.textbbox((0, 0), msg, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+        # Center the text
+        x = (width - text_w) // 2
+        y = (height - text_h) // 2
+
+        draw.text((x, y), msg, font=font, fill=text_color)
+
+        # Encode as PNG
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        # Meta for frontend preview
+        meta = {
+            "mime": "image/png",
+            "kind": "image",
+            "width": width,
+            "height": height,
+            "note": f"No preview available for {type(self.output).__name__}",
+        }
+
+        # Use your existing header builder if available
+        if hasattr(self, "_buildPreviewHeaders"):
+            preview_headers = self._buildPreviewHeaders(meta)
+        else:
+            preview_headers = self.buildPreviewHeadersFallback(meta)
+
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": 'inline; filename="no_preview.png"',
+                **preview_headers,
+            },
         )
 
     # --------------------------------------------------------------------
@@ -372,7 +442,7 @@ class OutputsPreview(FileHandlers):
             return f"{inv:.1f}"
 
         # --- Plot setup ---
-        fig, ax = plt.subplots(figsize=(3.5, 3), dpi=120)
+        fig, ax = plt.subplots(figsize=(4, 3), dpi=120)
 
         threshold = 0.143
         max_x = 0.0
@@ -447,7 +517,6 @@ class OutputsPreview(FileHandlers):
             "kind": "image",
             "note": "FSC curve",
         }
-        # If ya tienes este helper como en otras vistas:
         preview_headers = self._buildPreviewHeaders(meta)
 
         return Response(
@@ -670,7 +739,6 @@ class OutputsPreview(FileHandlers):
                 continue
 
             # Central slice if possible, fallback to first slice
-            pilImg = None
             try:
                 pilImg = imgStk.getCentralImage(pilImage=True)
             except Exception:
@@ -683,6 +751,8 @@ class OutputsPreview(FileHandlers):
                 continue
 
             arr = np.array(pilImg)
+            arr = imgStk.highlightSlice(arr)
+            arr = imgStk.normalizeSlice(arr)
             if arr.ndim != 2:
                 continue
 
@@ -711,7 +781,7 @@ class OutputsPreview(FileHandlers):
         if isClasses3D:
             summary = f"{total} classes"
         else:
-            summary = f"{total} volumes"
+            summary = f"{total} items"
 
         return tiles, labels, cols, tileSize, summary
 
@@ -728,7 +798,7 @@ class OutputsPreview(FileHandlers):
                 return index
         raise HTTPException(
             status_code=400,
-            detail=f"Render field '{renderField}' not found in config['order']",
+            detail=f"Render field '{renderField}' not found in config",
         )
 
     def extractPathFromRow(self, row: Any, renderIdx: int) -> Tuple[Optional[str], Optional[int]]:
@@ -1012,3 +1082,75 @@ class OutputsPreview(FileHandlers):
         ]
         headers["Access-Control-Expose-Headers"] = ", ".join(expose)
         return headers
+
+    # --------------------------------------------------------------------
+    # SetOfTiltSeries
+    # --------------------------------------------------------------------
+    def _collectSetOfTiltSeries(
+            self,
+            objectManager,
+    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+        """
+        Collect tiles for:
+          - SetOfClasses3D: central slice of each volume/stack + size label.
+          - SetOfVolumes: central slice of each volume.
+
+        Returns:
+          tiles, labels, cols, tileSize, summaryText
+        """
+        mainTable = "objects"
+        tables = objectManager.getTables()
+        rowCount = objectManager.getTableRowCount(mainTable) or 0
+        summary = ''
+
+        if not rowCount:
+            raise HTTPException(status_code=404, detail="No rows available for preview")
+
+        tiles: List[np.ndarray] = []
+        labels: List[str] = []
+        maxTiles = 12
+        cols = 2
+        tileSize = 70
+        renderIdx = None
+
+        for name in tables.keys():
+            if '_Object' in name:
+                table = objectManager.getTable(name)
+                if len(tiles) >= maxTiles:
+                    break
+                if not renderIdx:
+                    columns = table.getColumns()
+                    renderIdx = self.getRenderColumnIndex("stack", columns)
+                row = objectManager.getRows(name, 0, 1)[0]
+                relPath, sliceIndex = self.extractPathFromRow(row, renderIdx)
+                filePath = self.resolveFilePath(relPath)
+                if not filePath.exists():
+                    continue
+                try:
+                    imgStk = ImageReadersRegistry.open(str(filePath))
+                except Exception as e:
+                    continue
+                try:
+                    pilImg = imgStk.getCentralImage(pilImage=True)  # Central slice if possible, fallback to first slice
+                except Exception as e:
+                    try:
+                        pilImg = imgStk.getImage(index=0, pilImage=True)
+                    except Exception as e:
+                        pilImg = None
+
+                if pilImg is None:
+                    continue
+
+                arr = np.array(pilImg)
+                arr = imgStk.highlightSlice(arr)
+                arr = imgStk.normalizeSlice(arr)
+                if arr.ndim != 2:
+                    continue
+                tiles.append(arr)
+        if not tiles:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not extract any class/volume images for preview",
+            )
+        summary = '%s items' % rowCount if rowCount > 1 else '1 item'
+        return tiles, labels, cols, tileSize, summary
