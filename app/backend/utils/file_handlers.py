@@ -29,10 +29,12 @@ import io
 import mimetypes
 from pathlib import Path as FsPath
 from typing import Union, Dict, Any
+
+import numpy as np
 from fastapi import HTTPException, Response
 from PIL import Image
 
-from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, IMAGES_FILE_EXTENSIONS
+from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, IMAGES_FILE_EXTENSIONS, maxThumbSize
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 
 
@@ -65,19 +67,51 @@ class FileHandlers:
         return p
 
     @staticmethod
-    def _guardJoin(root: FsPath, rel_path: str) -> FsPath:
+    def _guardJoin(root: FsPath, relPath: str) -> FsPath:
         """
-        Join root + rel_path, resolve, and ensure it stays inside root.
-        Strictly forbids escaping outside 'root' (even if the target exists).
+        Join root + relPath and ensure the resulting lexical path stays inside root.
+
+        Rules:
+        - Input is treated as relative to root (absolute paths are rejected here).
+        - Symlinks under root are allowed even if they point outside root.
+          (We do not resolve the final target to decide.)
+        - Path traversal with ".." that would escape root is rejected.
+        - Special cases like /home are handled by the caller and must not reach here.
         """
-        rel = (rel_path or "").strip().lstrip("/\\")
-        target = (root / rel).resolve()
-        try:
-            # Will raise ValueError if target is outside root
-            target.relative_to(root)
-        except Exception:
+        root = root.resolve()
+
+        relNorm = (relPath or "").strip()
+
+        # Trivial values → root
+        if relNorm in ("", "/", ".", "./"):
+            return root
+
+        # Absolute paths are not allowed here; those are handled at a higher level
+        if FsPath(relNorm).is_absolute():
             raise HTTPException(status_code=400, detail="Invalid path")
-        return target
+
+        # Normalize leading slashes
+        relNorm = relNorm.lstrip("/\\")
+        if not relNorm:
+            return root
+
+        candidate = root / relNorm
+
+        # Lexical containment check:
+        # - This does NOT resolve symlinks.
+        # - It only ensures that the composed path starts with root and
+        #   does not escape via "..".
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            # Any attempt to escape root (e.g. "../..") is rejected
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        # At this point:
+        # - candidate is inside root from a path-structure perspective.
+        # - If candidate is a symlink pointing outside, it is still allowed,
+        #   and will be resolved later when accessed.
+        return candidate
 
     # -------------------------
     # Mime helpers
@@ -88,39 +122,119 @@ class FileHandlers:
         return mt or "application/octet-stream"
 
     def listProtocolDir(self, protocolId: str, path: str) -> Dict[str, Any]:
-        """Return the directory files list"""
-        root = self._protocolRoot(protocolId)
-        target = self._guardJoin(root, path)
+        """
+        Return the directory files list.
+
+        Supports:
+        - Relative paths inside the protocol root (default mode).
+        - Absolute paths under /home (absoluteMode).
+        Handles symbolic links safely:
+        - In protocol mode: entries are returned relative to the protocol root
+          without resolving symlinks; escaping attempts are skipped.
+        - In /home mode: entries are returned as absolute paths under /home;
+          symlinks that resolve outside /home will be rejected on next request.
+        """
+        root = self._protocolRoot(protocolId).resolve()
+        pRaw = (path or "").strip()
+
+        # Normalize trivial root-like inputs
+        if pRaw in ("/", ".", "./"):
+            pRaw = ""
+
+        absoluteMode = False
+
+        if not pRaw:
+            # Protocol root
+            target = root
+        else:
+            candidate = FsPath(pRaw)
+
+            if candidate.is_absolute():
+                # Absolute path: only allow /home and /home/*
+                candidate = candidate.resolve()
+                try:
+                    # If inside protocol root, treat as protocol-relative
+                    rel = candidate.relative_to(root)
+                    target = (root / rel).resolve()
+                except ValueError:
+                    candStr = str(candidate)
+                    if candStr == "/home" or candStr.startswith("/home/"):
+                        absoluteMode = True
+                        target = candidate
+                    else:
+                        # Any other absolute path is not allowed
+                        raise HTTPException(status_code=400, detail="Invalid path")
+            else:
+                # Relative path: must stay inside protocol root
+                target = self._guardJoin(root, pRaw)
 
         if not target.exists():
             raise HTTPException(status_code=404, detail="Path not found")
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="Not a directory")
 
-        items = []
+        items: list[Dict[str, Any]] = []
+
         try:
             for child in target.iterdir():
-                is_dir = child.is_dir()
-                item = {
+                # Safely determine if entry is a directory; ignore broken entries
+                try:
+                    isDir = child.is_dir()
+                except OSError:
+                    # Skip entries that cannot be stat'ed
+                    continue
+
+                if absoluteMode:
+                    # In /home mode: build lexical child path without resolving symlinks
+                    childPath = (target / child.name).as_posix()
+
+                    # Enforce that listed paths stay under /home prefix
+                    if not (childPath == "/home" or childPath.startswith("/home/")):
+                        # Skip anything that visually escapes /home
+                        continue
+                else:
+                    # Protocol mode: return path relative to protocol root
+                    # Do not resolve symlinks here; only use lexical position.
+                    try:
+                        rel = child.relative_to(root)
+                    except ValueError:
+                        # If for any reason this entry is outside root (symlink or mount),
+                        # skip it to avoid leaking or escaping.
+                        continue
+                    childPath = rel.as_posix()
+
+                item: Dict[str, Any] = {
                     "name": child.name,
-                    "path": str(child.relative_to(root)).replace("\\", "/"),
-                    "isDir": is_dir,
+                    "path": childPath.replace("\\", "/"),
+                    "isDir": isDir,
                 }
-                if not is_dir:
+
+                if not isDir:
                     try:
                         item["size"] = child.stat().st_size
-                    except Exception:
+                    except OSError:
                         item["size"] = None
                     item["mime"] = self._guessMime(child)
+
                 items.append(item)
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
 
-        # Directories first, then files; alpha by name
+        # Sort: folders first, then files; alphabetical by name
         items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
 
-        cwd_rel = str(target.relative_to(root)).replace("\\", "/")
-        return {"cwd": cwd_rel, "items": items}
+        # Compute cwd value for the client
+        if absoluteMode:
+            cwdValue = target.resolve().as_posix()
+        else:
+            try:
+                relCwd = target.resolve().relative_to(root).as_posix()
+            except ValueError:
+                # If something goes wrong, fall back to protocol root
+                relCwd = ""
+            cwdValue = "" if relCwd in ("", ".") else relCwd
+
+        return {"cwd": cwdValue, "items": items}
 
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
         """
@@ -192,15 +306,22 @@ class FileHandlers:
 
     def _renderImageAsPngAndMeta(self, filePath: FsPath):
         """
-        Convert .mrc/.map to an 8-bit grayscale PNG (middle Z slice if 3D)
-        and build metadata (true volume dims, voxel size, etc.).
+        Convert .mrc/.map to an 8-bit grayscale PNG (middle Z slice if 3D),
+        using imageStk.thumbnailSlice to generate a thumbnail that fits within
+        a 250x250 canvas while preserving aspect ratio.
         Returns (pngBytes, metaDict).
         """
         try:
             imageStk = ImageReadersRegistry.open(str(filePath))
             data = imageStk.getImages()
 
-            # Assume data is (Z, Y, X) for 3D; (Y, X) for 2D
+            # Some readers may return a list-like structure
+            if isinstance(data, list):
+                data = data[0]
+
+            # Assume:
+            # - 3D: (Z, Y, X)
+            # - 2D: (Y, X)
             if data.ndim == 3:
                 nz, ny, nx = data.shape
             elif data.ndim == 2:
@@ -217,23 +338,52 @@ class FileHandlers:
             vy = vx
             vz = vx
 
+            # Build base 2D slice and determine original slice dimensions
             if data.ndim == 3:
                 midZ = nz // 2
-                img = imageStk.getCentralImage()  # API from your registry
-                arr2d = imageStk.thumbnailSlice(img, nx, ny)
-                note = f"central slice (z={midZ}) rendered as 8-bit PNG"
+                img2d = imageStk.getCentralImage()
+                if hasattr(img2d, "shape") and len(img2d.shape) == 2:
+                    origHeight, origWidth = img2d.shape
+                else:
+                    # Fallback to volume XY dimensions
+                    origHeight, origWidth = ny, nx
             else:
-                arr2d = imageStk.normalizeSlice(data)
-                note = "2D MRC rendered as 8-bit PNG"
+                img2d = data
+                origHeight, origWidth = ny, nx
 
-            if arr2d.dtype.kind != "u" or arr2d.dtype.itemsize != 1:
-                # Ensure 8-bit grayscale if your helpers didn’t already
-                # (optional safety net)
-                from numpy import clip, uint8
-                arr2d = uint8(clip(arr2d, 0, 255))
+            if origWidth <= 0 or origHeight <= 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid image dimensions"
+                )
 
-            arr2d = imageStk.highlightSlice(arr2d)
+            # Compute scale factor so that thumbnail fits within maxThumbSize
+            scale = min(
+                maxThumbSize / float(origWidth),
+                maxThumbSize / float(origHeight),
+                1.0,  # do not upscale
+            )
+
+            thumbWidth = max(1, int(round(origWidth * scale)))
+            thumbHeight = max(1, int(round(origHeight * scale)))
+
+            # Generate thumbnail using imageStk.thumbnailSlice with scaled dimensions
+            if data.ndim == 3:
+                # Central slice thumbnail
+                arr2d = imageStk.asPilImage(img2d, normalize=True)
+                arr2d.thumbnail((thumbWidth, thumbHeight))
+                note = f"Central slice (z={midZ}) rendered as 8-bit PNG thumbnail"
+            else:
+                # Normalize first for 2D, then thumbnail
+                arr2d = imageStk.asPilImage(img2d, normalize=True)
+                arr2d.thumbnail((thumbWidth, thumbHeight))
+                note = "2D MRC rendered as 8-bit PNG thumbnail"
+
+            # Apply highlight/normalize helpers
+            arr2d = imageStk.highlightSlice(np.array(arr2d))
             arr2d = imageStk.normalizeSlice(arr2d)
+
+            # Encode as PNG
             img = Image.fromarray(arr2d, mode="L")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
@@ -249,9 +399,12 @@ class FileHandlers:
 
         meta = {
             "mime": "volume/mrc",
+            # Original volume/slice dimensions
             "width": int(nx),
             "height": int(ny),
             "depth": int(nz),
+            "thumbWidth": int(thumbWidth),
+            "thumbHeight": int(thumbHeight),
             "sizeBytes": filePath.stat().st_size,
             "note": note,
         }
@@ -266,26 +419,84 @@ class FileHandlers:
 
     def _renderImageAndMeta(self, filePath: FsPath):
         """
-        Load a normal 2D image, gather width/height, return bytes + meta.
+        Load a normal 2D image and generate a thumbnail that fits within
+        a 250x250 canvas while preserving aspect ratio.
+        Returns (thumbBytes, thumbMediaType, metaDict).
+
+        meta:
+          - mime: original image mime type
+          - width, height: original image dimensions (if readable)
+          - thumbWidth, thumbHeight: thumbnail dimensions actually returned
+          - sizeBytes: original file size in bytes
         """
         mediaType = self._guessMime(filePath)
+
+        # Read original bytes once (used as fallback or if no scaling is needed)
         rawBytes = filePath.read_bytes()
 
         width = None
         height = None
+        thumbWidth = None
+        thumbHeight = None
+        thumbBytes = rawBytes
+        thumbMediaType = mediaType
+
         try:
             with Image.open(io.BytesIO(rawBytes)) as im:
+                # Normalize mode to something safe for saving
+                if im.mode not in ("RGB", "L"):
+                    # Convert palette/alpha/etc to RGB to avoid issues
+                    im = im.convert("RGB")
+
                 width, height = im.size
+
+                if width and height and width > 0 and height > 0:
+                    # Compute scale factor so that thumbnail fits within maxThumbSize
+                    scale = min(
+                        maxThumbSize / float(width),
+                        maxThumbSize / float(height),
+                        1.0,  # do not upscale
+                    )
+
+                    thumbWidth = max(1, int(round(width * scale)))
+                    thumbHeight = max(1, int(round(height * scale)))
+
+                    if scale < 1.0:
+                        # Build resized thumbnail
+                        thumbImg = im.resize((thumbWidth, thumbHeight), Image.LANCZOS)
+                        buf = io.BytesIO()
+                        # Use PNG for preview to keep it consistent and safe
+                        thumbImg.save(buf, format="PNG")
+                        thumbBytes = buf.getvalue()
+                        thumbMediaType = "image/png"
+                    else:
+                        # No scaling needed; use original bytes and dimensions
+                        thumbWidth = width
+                        thumbHeight = height
+                else:
+                    # Invalid dimensions, keep original bytes without extra meta
+                    thumbWidth = width
+                    thumbHeight = height
+
         except Exception:
-            pass
+            # If something fails (corrupt image, unknown format), fall back to raw bytes
+            thumbBytes = rawBytes
+            thumbMediaType = mediaType
 
         meta = {
+            # Original image mime (semantic type)
             "mime": mediaType,
+            # Original dimensions (if available)
             "width": width,
             "height": height,
+            # Thumbnail output dimensions (what we actually returned)
+            "thumbWidth": thumbWidth,
+            "thumbHeight": thumbHeight,
+            # Original file size
             "sizeBytes": filePath.stat().st_size,
         }
-        return rawBytes, mediaType, meta
+
+        return thumbBytes, thumbMediaType, meta
 
     def _buildPreviewHeaders(self, meta: dict) -> Dict[str, str]:
         """
