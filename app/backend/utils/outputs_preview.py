@@ -24,7 +24,7 @@ from app.backend.utils.constants import (TEXT_FILE_EXTENSIONS, SQLITE_EXTENSIONS
                                          ARCHIVE_EXTENSIONS)
 from app.backend.utils.file_handlers import FileHandlers
 from pwem.emlib.image.image_readers import ImageReadersRegistry
-from pwem.objects import SetOfClasses2D, SetOfParticles, SetOfClasses3D, SetOfVolumes, SetOfFSCs
+from pwem.objects import SetOfClasses2D, SetOfParticles, SetOfClasses3D, SetOfVolumes, SetOfFSCs, SetOfMicrographs
 from pwem.viewers import RENDER
 from pwem.viewers.viewers_data import RegistryViewerConfig
 
@@ -311,8 +311,152 @@ class OutputsPreview(FileHandlers):
             filename = "fsc.png"
             return self._makeFSCResponse(filename)
 
+        if isinstance(self.output, SetOfMicrographs):
+            tiles, labels, cols, tileSize, summary = self._collectSetOfMicrographs(objectManager)
+            filename = "micrographs_gallery.png"
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+
         # Fallback for unsupported types: return a simple "No Image Available" image
         return self._makeNoPreviewImageResponse()
+
+    def _collectSetOfMicrographs(self, objectManager) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+        """
+        Collect tiles for SetOfMicrographs:
+          - Each row points to a single 2D image file (MRC/TIF/PNG/...).
+          - Build up to 12 normalized tiles.
+          - Labels: base filename without extension.
+          - Layout: 3 columns, tile size ~100px (scaled later by makeGalleryFromTiles).
+
+        Returns:
+          tiles, labels, cols, tileSize, summaryText
+        """
+        mainTable = "objects"
+        table = objectManager.getTable(mainTable)
+        rowCount = objectManager.getTableRowCount(mainTable) or 0
+        if not rowCount:
+            raise HTTPException(status_code=404, detail="No rows available for preview")
+
+        # Resolve the render column (path to the image). Try config first, then safe fallbacks.
+        columns = table.getColumns()
+        cfg = RegistryViewerConfig.getConfig(type(self.output)) or {}
+        renderCandidates: List[str] = []
+
+        # Registry may provide a RENDER string (space-separated). Add common fallbacks.
+        try:
+            cfgRender = cfg.get(RENDER, "")
+            if isinstance(cfgRender, str) and cfgRender.strip():
+                renderCandidates.extend(cfgRender.split())
+        except Exception:
+            pass
+
+        # Pragmatic fallbacks for micrographs
+        renderCandidates.extend(["_filename", "micrograph", "micName", "file", "path", "stack"])
+
+        try:
+            renderIdx = self.getRenderColumnIndex(renderCandidates, columns)
+        except HTTPException:
+            # Final fallback: scan first column that contains filename/path.
+            renderIdx = -1
+            for i, col in enumerate(columns):
+                name = (col.getName() or "").lower()
+                if any(k in name for k in ("filename", "file", "path", "micrograph", "micname")):
+                    renderIdx = i
+                    break
+            if renderIdx < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Could not resolve a render/filename column for micrographs",
+                )
+
+        # Fetch a small page of rows and collect up to maxTiles
+        rows = objectManager.getRows(mainTable, 0, 32) or []
+        if not rows:
+            raise HTTPException(status_code=404, detail="No micrograph rows available for preview")
+
+        tiles: List[np.ndarray] = []
+        labels: List[str] = []
+        maxTiles = 12
+        cols = 3
+        tileSize = 54
+
+        for row in rows:
+            if len(tiles) >= maxTiles:
+                break
+
+            relPath, sliceIndex = self.extractPathFromRow(row, renderIdx)
+            if not relPath:
+                continue
+
+            filePath = self.resolveFilePath(relPath)
+            if not filePath.exists():
+                continue
+
+            # Open with ImageReadersRegistry to reuse normalization/highlight helpers.
+            try:
+                imgStk = ImageReadersRegistry.open(str(filePath))
+            except Exception:
+                continue
+
+            # Micrographs are 2D; if a slice index appears, honor it; else try first/central image.
+            pilImg = None
+            try:
+                if sliceIndex is not None:
+                    idx0 = max(0, int(sliceIndex) - 1)
+                    pilImg = imgStk.getImage(index=idx0, pilImage=True)
+                else:
+                    # For 2D files, index=0 is enough; fall back to central just in case.
+                    try:
+                        pilImg = imgStk.getImage(index=0, pilImage=True)
+                    except Exception:
+                        pilImg = imgStk.getCentralImage(pilImage=True)
+            except Exception:
+                pilImg = None
+
+            if pilImg is None:
+                continue
+
+            # Ensure grayscale 2D array
+            try:
+                arr = np.array(pilImg)
+                if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                    # Convert RGB/RGBA to L
+                    pilImg = pilImg.convert("L")
+                    arr = np.array(pilImg)
+                elif arr.ndim > 2:
+                    # Squeeze exotic shapes to 2D when possible
+                    arr = np.squeeze(arr)
+                    if arr.ndim != 2:
+                        continue
+            except Exception:
+                continue
+
+            try:
+                arr = imgStk.highlightSlice(arr)
+                arr = imgStk.normalizeSlice(arr)
+            except Exception:
+                # If helpers fail, still try to use the raw grayscale
+                if arr.ndim != 2:
+                    continue
+
+            if arr.ndim != 2 or arr.size == 0:
+                continue
+
+            tiles.append(arr)
+
+        if not tiles:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not extract any micrograph images for preview",
+            )
+
+        # Pad labels length to tiles length if needed
+        if labels and len(labels) < len(tiles):
+            labels.extend([""] * (len(tiles) - len(labels)))
+
+        total = rowCount or len(tiles)
+        summary = f"{total} micrographs" if total != 1 else "1 micrograph"
+
+        return tiles, labels, cols, tileSize, summary
 
     def _makeNoPreviewImageResponse(self) -> Response:
         """
@@ -596,13 +740,8 @@ class OutputsPreview(FileHandlers):
         if not rows:
             raise HTTPException(status_code=404, detail="No particle rows available for preview")
 
-        render = config.get(RENDER, "")
-        if not render:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing 'render' in viewer config for SetOfParticles/SetOfClasses2D",
-            )
-
+        render = config.get(RENDER, "").split(' ')
+        render.extend(['stack', '_filename'])
         columns = table.getColumns()
         renderIdx = self.getRenderColumnIndex(render, columns)
 
@@ -658,6 +797,8 @@ class OutputsPreview(FileHandlers):
                 continue
 
             arr = np.array(pilImg)
+            arr = imgStk.highlightSlice(arr)
+            arr = imgStk.normalizeSlice(arr)
             if arr.ndim != 2:
                 continue
 
@@ -794,7 +935,7 @@ class OutputsPreview(FileHandlers):
         Fallbacks to '_filename' if needed.
         """
         for index, column in enumerate(columns):
-            if column.getName() == renderField:
+            if column.getName() in renderField:
                 return index
         raise HTTPException(
             status_code=400,
