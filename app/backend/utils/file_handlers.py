@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 import io
+import os
 import mimetypes
 from pathlib import Path as FsPath
 from typing import Union, Dict, Any
@@ -36,6 +37,11 @@ from PIL import Image
 
 from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, IMAGES_FILE_EXTENSIONS, maxThumbSize
 from pwem.emlib.image.image_readers import ImageReadersRegistry
+
+# Color maps for volume thumbnails
+import matplotlib
+matplotlib.use("Agg")  # headless-safe
+from matplotlib import cm as mplCm
 
 
 class FileHandlers:
@@ -49,7 +55,7 @@ class FileHandlers:
         mimetypes.init()
 
     def getProtocolPath(self, protocolId):
-        """Return  the protocol paths"""
+        """Return the protocol paths"""
         protocol = self.currentProject.getProtocol(int(protocolId))
         return protocol.getPath()
 
@@ -299,16 +305,62 @@ class FileHandlers:
 
     def _isPreviewableMrc(self, filePath: FsPath) -> bool:
         """
-        Return True if this file is an .mrc-like volume we can render as PNG.
+        Return True if this file is an mrc-like image/volume we can render as PNG.
         """
         suf = filePath.suffix.lower()
         return suf in IMAGES_FILE_EXTENSIONS
 
+    # -------------------------
+    # Colormap helpers for volumes
+    # -------------------------
+    def _colormapName(self) -> str:
+        """
+        Decide which colormap to use for volume thumbnails.
+        Env var SCIPION_THUMB_COLORMAP overrides; default 'inferno'.
+        Examples:
+        inferno (default, perceptually uniform)
+        magma, plasma, viridis
+        cividis (colorblind-friendly)
+        turbo, cubehelix, bone, gist_earth, gray (if you want to return to gray)
+        """
+        return os.getenv("SCIPION_THUMB_COLORMAP", "inferno")
+
+    def _applyColormap(self, grayTile: np.ndarray, cmapName: str = "inferno") -> np.ndarray:
+        """
+        Apply a matplotlib colormap to a 2D tile (float/uint8).
+        Returns RGB uint8 array (H, W, 3). Robust to NaNs/constant arrays.
+        """
+        if grayTile is None or grayTile.ndim != 2:
+            return grayTile
+
+        arr = grayTile.astype(np.float32, copy=False)
+
+        # Replace NaNs/inf with median (or 0 if all invalid)
+        if not np.isfinite(arr).all():
+            finite = np.isfinite(arr)
+            fill = float(np.nanmedian(arr[finite])) if finite.any() else 0.0
+            arr[~finite] = fill
+
+        aMin = float(np.min(arr))
+        aMax = float(np.max(arr))
+        if not np.isfinite(aMin) or not np.isfinite(aMax) or aMax <= aMin:
+            arr = np.zeros_like(arr, dtype=np.float32)
+        else:
+            arr = (arr - aMin) / (aMax - aMin)
+
+        try:
+            cmap = mplCm.get_cmap(cmapName)
+        except Exception:
+            cmap = mplCm.get_cmap("inferno")
+
+        rgba = cmap(np.clip(arr, 0.0, 1.0), bytes=True)  # uint8 RGBA
+        rgb = rgba[..., :3].copy()
+        return rgb
+
     def _renderImageAsPngAndMeta(self, filePath: FsPath):
         """
-        Convert .mrc/.map to an 8-bit grayscale PNG (middle Z slice if 3D),
-        using imageStk.thumbnailSlice to generate a thumbnail that fits within
-        a 250x250 canvas while preserving aspect ratio.
+        Convert .mrc/.map to an RGB PNG thumbnail (middle Z slice if 3D),
+        colorized with a microscopy-friendly colormap (default: inferno).
         Returns (pngBytes, metaDict).
         """
         try:
@@ -334,7 +386,8 @@ class FileHandlers:
                 )
 
             # Try to read voxel size (fallback 1.0)
-            vx = imageStk.getProperties().get("sr", 1.0)
+            props = imageStk.getProperties() or {}
+            vx = props.get("sr", 1.0)
             vy = vx
             vz = vx
 
@@ -347,9 +400,11 @@ class FileHandlers:
                 else:
                     # Fallback to volume XY dimensions
                     origHeight, origWidth = ny, nx
+                note = f"Central slice (z={midZ}) rendered as color PNG thumbnail"
             else:
                 img2d = data
                 origHeight, origWidth = ny, nx
+                note = "2D MRC rendered as color PNG thumbnail"
 
             if origWidth <= 0 or origHeight <= 0:
                 raise HTTPException(
@@ -367,24 +422,24 @@ class FileHandlers:
             thumbWidth = max(1, int(round(origWidth * scale)))
             thumbHeight = max(1, int(round(origHeight * scale)))
 
-            # Generate thumbnail using imageStk.thumbnailSlice with scaled dimensions
-            if data.ndim == 3:
-                # Central slice thumbnail
-                arr2d = imageStk.asPilImage(img2d, normalize=True)
-                arr2d.thumbnail((thumbWidth, thumbHeight))
-                note = f"Central slice (z={midZ}) rendered as 8-bit PNG thumbnail"
-            else:
-                # Normalize first for 2D, then thumbnail
-                arr2d = imageStk.asPilImage(img2d, normalize=True)
-                arr2d.thumbnail((thumbWidth, thumbHeight))
-                note = "2D MRC rendered as 8-bit PNG thumbnail"
+            # Generate grayscale PIL (normalized) and downscale
+            pilGray = imageStk.asPilImage(img2d, normalize=True)  # 'L'
+            pilGray.thumbnail((thumbWidth, thumbHeight))          # in-place, keeps aspect
 
-            # Apply highlight/normalize helpers
-            arr2d = imageStk.highlightSlice(np.array(arr2d))
-            arr2d = imageStk.normalizeSlice(arr2d)
+            # Optional highlight/normalize again on the downscaled data
+            arrGray = np.array(pilGray)
+            try:
+                arrGray = imageStk.highlightSlice(arrGray)
+                arrGray = imageStk.normalizeSlice(arrGray)
+            except Exception:
+                pass
+
+            # Colorize → RGB uint8
+            cmapName = self._colormapName()
+            rgb = self._applyColormap(arrGray, cmapName=cmapName)
 
             # Encode as PNG
-            img = Image.fromarray(arr2d, mode="L")
+            img = Image.fromarray(rgb, mode="RGB")
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             pngBytes = buf.getvalue()
@@ -406,7 +461,7 @@ class FileHandlers:
             "thumbWidth": int(thumbWidth),
             "thumbHeight": int(thumbHeight),
             "sizeBytes": filePath.stat().st_size,
-            "note": note,
+            "note": f"{note} (cmap={cmapName})",
         }
 
         if vx is not None and vy is not None and vz is not None:
@@ -544,7 +599,7 @@ class FileHandlers:
             - attachment download (binary as-is)
         inline == True:
             - preview mode:
-              * if MRC/volume -> PNG slice + X-Preview-* headers
+              * if MRC/volume -> PNG slice + X-Preview-* headers (RGB colorized)
               * if normal image -> raw image + X-Preview-* headers
               * else -> raw bytes + minimal headers
         """
