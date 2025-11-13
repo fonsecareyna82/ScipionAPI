@@ -1056,14 +1056,15 @@ class ProjectService:
         previewProtImgFile = FileHandlers(self.currentProject)
         return previewProtImgFile.previewProtocolImageFile(protocolId, path, inline)
 
-    def outputPreview(self, protocolId: int, outputName: str):
+    def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
         """
         Return a preview for selected output
         """
         protocol = self.currentProject.getProtocol(protocolId)
         output = getattr(protocol, outputName)
         outputPath = output.getFileName()
-        outputPreview = OutputsPreview(self.currentProject, protocol, output)
+        outputPreview = OutputsPreview(self.currentProject, protocol, output, requestHeaders=requestHeaders,
+                                       colormapOverride=colormap,)
         self.objectManager = ObjectManager()
         self.initializeOrderManager()
         return outputPreview.preview(protocolId, outputPath, self.objectManager)

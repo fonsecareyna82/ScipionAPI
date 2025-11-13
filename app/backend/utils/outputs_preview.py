@@ -5,11 +5,10 @@ import csv
 import io
 import math
 import os
-import os.path
-import tarfile
-import zipfile
 import re
 import shlex
+import tarfile
+import zipfile
 from pathlib import Path as FsPath, Path
 from typing import Union, List, Dict, Any, Optional, Tuple
 
@@ -29,7 +28,7 @@ from app.backend.utils.constants import (
     TABLE_EXTENSIONS,
     ARCHIVE_EXTENSIONS,
 )
-from app.backend.utils.file_handlers import FileHandlers
+from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import (
     SetOfClasses2D,
@@ -50,11 +49,27 @@ class OutputsPreview(FileHandlers):
     delegating images/MRC and text previews to the parent to avoid duplication.
     """
 
-    def __init__(self, currentProject, protocol, output):
+    def __init__(
+        self,
+        currentProject,
+        protocol,
+        output,
+        requestHeaders: Optional[Dict[str, str]] = None,
+        colormapOverride: Optional[str] = None,
+    ):
         super().__init__(currentProject)
         self.currentProject = currentProject
         self.protocol = protocol
         self.output = output
+
+        # Keep a lowercased copy of incoming request headers (if any)
+        self.requestHeaders: Dict[str, str] = {k.lower(): v for k, v in (requestHeaders or {}).items()}
+
+        # Programmatic colormap override (has highest priority)
+        self.colormapOverride = colormapOverride
+
+        # Optional note to echo back if a header was invalid
+        self._cmapNote: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Entry router
@@ -67,9 +82,17 @@ class OutputsPreview(FileHandlers):
         inline: bool = True,
         table: Optional[str] = None,
         limit: int = 200,
+        headers: Optional[Dict[str, str]] = None,
     ):
-        filePath = FsPath(path)
+        """
+        Main entry point for file previews outside the typed-output flow.
+        If 'headers' are provided here, they are merged and may carry UI hints
+        such as the preferred colormap (e.g., X-Scipion-Colormap: turbo).
+        """
+        if headers:
+            self._mergeHeaders(headers)
 
+        filePath = FsPath(path)
         if (not filePath.exists()) or (not filePath.is_file()):
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -86,7 +109,7 @@ class OutputsPreview(FileHandlers):
         if suffix in PDF_EXTENSIONS or mime == "application/pdf":
             return self._previewPdf(filePath, inline=inline)
 
-        # 3) Archives (index as JSON when inline=True)
+        # 3) Archives
         if self._isArchiveSuffix(suffix):
             return self._previewArchive(filePath, inline=inline)
 
@@ -94,7 +117,7 @@ class OutputsPreview(FileHandlers):
         if suffix in SQLITE_EXTENSIONS:
             return self._previewSqlite(filePath, objectManager)
 
-        # 5) Tables (CSV/TSV/STAR) -> JSON table
+        # 5) Tables (CSV/TSV/STAR)
         if suffix in TABLE_EXTENSIONS:
             return self._previewTableFile(filePath, limit=limit)
 
@@ -124,9 +147,7 @@ class OutputsPreview(FileHandlers):
     # Archives (ZIP/TAR)
     # -------------------------
     def _isArchiveSuffix(self, suffix: str) -> bool:
-        return suffix in ARCHIVE_EXTENSIONS or any(
-            str(suffix).endswith(ext) for ext in ARCHIVE_EXTENSIONS
-        )
+        return suffix in ARCHIVE_EXTENSIONS or any(str(suffix).endswith(ext) for ext in ARCHIVE_EXTENSIONS)
 
     def _previewArchive(self, filePath: FsPath, inline: bool):
         if not inline:
@@ -157,13 +178,7 @@ class OutputsPreview(FileHandlers):
             try:
                 with tarfile.open(filePath, "r:*") as tf:
                     for m in tf.getmembers():
-                        entries.append(
-                            {
-                                "name": m.name,
-                                "isDir": m.isdir(),
-                                "size": None if m.isdir() else m.size,
-                            }
-                        )
+                        entries.append({"name": m.name, "isDir": m.isdir(), "size": None if m.isdir() else m.size})
                 kind = "tar"
             except tarfile.ReadError:
                 raise HTTPException(status_code=415, detail="Unsupported archive format")
@@ -195,12 +210,9 @@ class OutputsPreview(FileHandlers):
     def _previewTableFile(self, filePath: FsPath, limit: int = 200) -> JSONResponse:
         suffix = filePath.suffix.lower()
         if suffix == ".csv" or suffix == ".tsv":
-            return self._previewCsvTsv(
-                filePath, limit=limit, delimiter=("\t" if suffix == ".tsv" else ",")
-            )
+            return self._previewCsvTsv(filePath, limit=limit, delimiter=("\t" if suffix == ".tsv" else ","))
         if suffix == ".star":
             return self._previewStar(filePath, limit=limit)
-
         raise HTTPException(status_code=415, detail="Unsupported table format")
 
     def _previewCsvTsv(self, filePath: FsPath, limit: int, delimiter: str) -> JSONResponse:
@@ -293,39 +305,36 @@ class OutputsPreview(FileHandlers):
         config = RegistryViewerConfig.getConfig(type(self.output)) or {}
 
         if isinstance(self.output, (SetOfParticles, SetOfClasses2D)):
-            tiles, labels, cols, tileSize, summary = self._collectParticlesOrClasses2D(
-                config, objectManager
-            )
-            filename = "particles_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+            tiles, labels, cols, tileSize, summary = self._collectParticlesOrClasses2D(config, objectManager)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, "particles_gallery.png", summary)
 
         if isinstance(self.output, (SetOfClasses3D, SetOfVolumes)):
             tiles, labels, cols, tileSize, summary = self._collectClasses3DOrVolumes(objectManager)
-            filename = "volumes_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, "volumes_gallery.png", summary)
 
         if isinstance(self.output, SetOfTiltSeries):
             tiles, labels, cols, tileSize, summary = self._collectSetOfTiltSeries(objectManager)
-            filename = "volumes_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, "volumes_gallery.png", summary)
 
         if isinstance(self.output, SetOfFSCs):
-            filename = "fsc.png"
-            return self._makeFSCResponse(filename)
+            return self._makeFSCResponse("fsc.png")
 
         if isinstance(self.output, SetOfMicrographs):
             tiles, labels, cols, tileSize, summary = self._collectSetOfMicrographs(objectManager)
-            filename = "micrographs_gallery.png"
-            return self._makeGalleryResponse(tiles, labels, cols, tileSize, filename, summary)
+            return self._makeGalleryResponse(tiles, labels, cols, tileSize, "micrographs_gallery.png", summary)
 
         return self._makeNoPreviewImageResponse()
 
     # ------------------------------------------------------------------ #
     # Micrographs (2D, grayscale)
     # ------------------------------------------------------------------ #
-    def _collectSetOfMicrographs(
-        self, objectManager
-    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+    def _collectSetOfMicrographs(self, objectManager) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+        """
+        Collect a representative set of micrographs:
+        - Deterministic sampling across the full table span.
+        - Read each 2D image (slice if needed), normalize, and build small tiles.
+        - Labels: basename without extension (truncated).
+        """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
         rowCount = objectManager.getTableRowCount(mainTable) or 0
@@ -335,22 +344,17 @@ class OutputsPreview(FileHandlers):
         columns = table.getColumns()
         cfg = RegistryViewerConfig.getConfig(type(self.output)) or {}
         cfgRenderRaw = cfg.get(RENDER, "")
-        cfgTokens = []
-        if isinstance(cfgRenderRaw, str) and cfgRenderRaw.strip():
-            cfgTokens = [t for t in re.split(r"[,\s]+", cfgRenderRaw) if t]
+        cfgTokens = [t for t in re.split(r"[,\s]+", cfgRenderRaw) if t] if isinstance(cfgRenderRaw, str) else []
         candidates = cfgTokens + ["_filename", "micrograph", "micName", "file", "path", "stack"]
 
         renderIdx = self.getRenderColumnIndex(candidates, columns)
-
-        rows = objectManager.getRows(mainTable, 0, 32) or []
+        rows = self._pickSampleRows(objectManager, mainTable, want=32)
         if not rows:
             raise HTTPException(status_code=404, detail="No micrograph rows available for preview")
 
         tiles: List[np.ndarray] = []
         labels: List[str] = []
-        maxTiles = 12
-        cols = 3
-        tileSize = 54
+        maxTiles, cols, tileSize = 12, 3, 54
 
         for row in rows:
             if len(tiles) >= maxTiles:
@@ -369,13 +373,11 @@ class OutputsPreview(FileHandlers):
                 continue
 
             tiles.append(arr)
-            labels.append(Path(filePath).stem or "")
+            base = Path(filePath).stem or ""
+            labels.append(base[:28] + ("..." if len(base) > 28 else ""))
 
         if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any micrograph images for preview",
-            )
+            raise HTTPException(status_code=404, detail="Could not extract any micrograph images for preview")
 
         if labels and len(labels) < len(tiles):
             labels.extend([""] * (len(tiles) - len(labels)))
@@ -392,50 +394,46 @@ class OutputsPreview(FileHandlers):
         config,
         objectManager,
     ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+        """
+        Particles:
+          - One common stack; we pull individual particle images by rowId.
+        Classes2D:
+          - Same, but we show 2 columns and label with class size when available.
+        Deterministic sampling is used for representativeness.
+        """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
         rowCount = objectManager.getTableRowCount(mainTable) or 0
-        rows = objectManager.getRows(mainTable, 0, 32)
+        rows = self._pickSampleRows(objectManager, mainTable, want=32)
         if not rows:
             raise HTTPException(status_code=404, detail="No particle rows available for preview")
 
         renderRaw = config.get(RENDER, "")
-        renderTokens = []
-        if isinstance(renderRaw, str) and renderRaw.strip():
-            renderTokens = [t for t in re.split(r"[,\s]+", renderRaw) if t]
+        renderTokens = [t for t in re.split(r"[,\s]+", renderRaw) if t] if isinstance(renderRaw, str) else []
         renderTokens += ["stack", "_filename"]
 
         columns = table.getColumns()
         renderIdx = self.getRenderColumnIndex(renderTokens, columns)
 
-        maxTiles = 12
-        cols = 3
-        tileSize = 50
+        maxTiles, cols, tileSize = 12, 3, 50
         labels: List[str] = []
 
         isClasses2D = isinstance(self.output, SetOfClasses2D)
         renderSizeIdx: Optional[int] = None
-
         if isClasses2D:
-            cols = 2
-            tileSize = 70
+            cols, tileSize = 2, 70
             renderSizeIdx = self.getRenderColumnIndex(["_size"], columns)
 
+        # Open the common stack once
         relPath, _ = self.extractPathFromRow(rows[0], renderIdx)
         filePath = self.resolveFilePath(relPath)
         if not filePath.exists():
-            raise HTTPException(
-                status_code=404,
-                detail="Stack file not found for particles preview",
-            )
+            raise HTTPException(status_code=404, detail="Stack file not found for particles preview")
 
         try:
             imgStk = ImageReadersRegistry.open(str(filePath))
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not open image stack for preview: {e}",
-            )
+            raise HTTPException(status_code=500, detail=f"Could not open image stack for preview: {e}")
 
         tiles: List[np.ndarray] = []
 
@@ -471,10 +469,7 @@ class OutputsPreview(FileHandlers):
                     labels.append("")
 
         if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any particle images for preview",
-            )
+            raise HTTPException(status_code=404, detail="Could not extract any particle images for preview")
 
         if labels and len(labels) < len(tiles):
             labels.extend([""] * (len(tiles) - len(labels)))
@@ -486,21 +481,19 @@ class OutputsPreview(FileHandlers):
     # ------------------------------------------------------------------ #
     # Classes3D / Volumes (colorized with colormap)
     # ------------------------------------------------------------------ #
-    def _collectClasses3DOrVolumes(
-        self,
-        objectManager,
-    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+    def _collectClasses3DOrVolumes(self, objectManager) -> Tuple[List[np.ndarray], List[str], int, int, str]:
         """
         Collect tiles for:
           - SetOfClasses3D: central slice of each volume + size label.
           - SetOfVolumes: central slice of each volume.
 
-        For both, tiles are colorized using a colormap (default 'inferno').
+        For both, tiles are colorized using a colormap (default 'viridis').
+        Deterministic sampling is used for representativeness.
         """
         mainTable = "objects"
         table = objectManager.getTable(mainTable)
         rowCount = objectManager.getTableRowCount(mainTable) or 0
-        rows = objectManager.getRows(mainTable, 0, 32)
+        rows = self._pickSampleRows(objectManager, mainTable, want=24)
         if not rows:
             raise HTTPException(status_code=404, detail="No rows available for preview")
 
@@ -509,9 +502,7 @@ class OutputsPreview(FileHandlers):
 
         tiles: List[np.ndarray] = []
         labels: List[str] = []
-        maxTiles = 12
-        cols = 2
-        tileSize = 70
+        maxTiles, cols, tileSize = 12, 2, 70
 
         isClasses3D = isinstance(self.output, SetOfClasses3D)
         renderSizeIdx: Optional[int] = None
@@ -533,7 +524,6 @@ class OutputsPreview(FileHandlers):
             if gray is None:
                 continue
 
-            # Always colorize for these output types
             color = self._applyColormap(gray, cmapName or "viridis")
             tiles.append(color)
 
@@ -547,10 +537,7 @@ class OutputsPreview(FileHandlers):
                 labels.append("")
 
         if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any class/volume images for preview",
-            )
+            raise HTTPException(status_code=404, detail="Could not extract any class/volume images for preview")
 
         if labels and len(labels) < len(tiles):
             labels.extend([""] * (len(tiles) - len(labels)))
@@ -562,10 +549,10 @@ class OutputsPreview(FileHandlers):
     # ------------------------------------------------------------------ #
     # TiltSeries (grayscale)
     # ------------------------------------------------------------------ #
-    def _collectSetOfTiltSeries(
-        self,
-        objectManager,
-    ) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+    def _collectSetOfTiltSeries(self, objectManager) -> Tuple[List[np.ndarray], List[str], int, int, str]:
+        """
+        Collect a single representative slice per tilt-series object table.
+        """
         mainTable = "objects"
         tables = objectManager.getTables()
         rowCount = objectManager.getTableRowCount(mainTable) or 0
@@ -575,9 +562,7 @@ class OutputsPreview(FileHandlers):
 
         tiles: List[np.ndarray] = []
         labels: List[str] = []
-        maxTiles = 12
-        cols = 2
-        tileSize = 70
+        maxTiles, cols, tileSize = 12, 2, 70
         renderIdx = None
 
         for name in tables.keys():
@@ -607,10 +592,7 @@ class OutputsPreview(FileHandlers):
             tiles.append(arr)
 
         if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any class/volume images for preview",
-            )
+            raise HTTPException(status_code=404, detail="Could not extract any class/volume images for preview")
 
         summary = f"{rowCount} items" if rowCount > 1 else "1 item"
         return tiles, labels, cols, tileSize, summary
@@ -618,12 +600,41 @@ class OutputsPreview(FileHandlers):
     # ------------------------------------------------------------------ #
     # Helpers (robust)
     # ------------------------------------------------------------------ #
+    def _pickSampleRows(self, objectManager, tableName: str, want: int) -> list:
+        """
+        Deterministically sample up to `want` rows from a table, spreading them
+        across the full rowCount range. This avoids biased previews toward the
+        first page while keeping the output stable across calls.
+        """
+        rowCount = objectManager.getTableRowCount(tableName) or 0
+        if rowCount <= 0:
+            return []
+
+        n = max(1, min(want, rowCount))
+        if rowCount <= n:
+            return objectManager.getRows(tableName, 0, n) or []
+
+        rows = []
+        for k in range(n):
+            idx = k
+            chunk = objectManager.getRows(tableName, idx, 1) or []
+            if chunk:
+                rows.append(chunk[0])
+        return rows
+
     def getRenderColumnIndex(self, renderField: Union[str, List[str]], columns) -> int:
+        """
+        Resolve which column index to use as render source.
+        - Accepts str or list[str] of candidate names.
+        - Case-insensitive; allows substring match.
+        - Falls back through common names if needed.
+        """
         if isinstance(renderField, str):
             tokens = [t.strip() for t in re.split(r"[,\s]+", renderField) if t.strip()]
         else:
             tokens = [str(t).strip() for t in (renderField or []) if str(t).strip()]
 
+        # Pragmatic fallbacks
         for fb in ["stack", "_filename", "micrograph", "micName", "file", "path"]:
             if fb not in tokens:
                 tokens.append(fb)
@@ -631,25 +642,25 @@ class OutputsPreview(FileHandlers):
         colNames = [(c.getName() or "") for c in columns]
         colLower = [n.lower() for n in colNames]
 
+        # Exact (case-sensitive)
         for cand in tokens:
             if cand in colNames:
                 return colNames.index(cand)
 
+        # Exact (case-insensitive)
         for cand in tokens:
             cl = cand.lower()
             if cl in colLower:
                 return colLower.index(cl)
 
+        # Substring (case-insensitive)
         for cand in tokens:
             cl = cand.lower()
             for i, name in enumerate(colLower):
                 if cl in name and colNames[i]:
                     return i
 
-        raise HTTPException(
-            status_code=400,
-            detail=f"Render field not found. Tried: {', '.join(tokens)}",
-        )
+        raise HTTPException(status_code=400, detail=f"Render field not found. Tried: {', '.join(tokens)}")
 
     def extractPathFromRow(self, row: Any, renderIdx: int) -> Tuple[Optional[str], Optional[int]]:
         values = getattr(row, "_values", None)
@@ -679,8 +690,9 @@ class OutputsPreview(FileHandlers):
         if p.is_absolute():
             return p
 
-        candidates = []
+        candidates: List[Path] = []
 
+        # Prefer protocol-local roots
         for attr in ("getWorkingDir", "getTmpPath", "getPath"):
             if hasattr(self.protocol, attr):
                 try:
@@ -690,6 +702,7 @@ class OutputsPreview(FileHandlers):
                 except Exception:
                     pass
 
+        # Project-level roots
         for attr in ("getPath", "path", "projPath", "projDir", "projectPath"):
             if hasattr(self.currentProject, attr):
                 try:
@@ -700,6 +713,7 @@ class OutputsPreview(FileHandlers):
                 except Exception:
                     pass
 
+        # Fallback to CWD
         candidates.append(Path.cwd())
 
         for root in candidates:
@@ -728,7 +742,7 @@ class OutputsPreview(FileHandlers):
         if not tiles:
             raise HTTPException(status_code=404, detail="No tiles to build gallery")
 
-        # If we know we're showing volumes/classes3D, force RGB canvas (color colormap)
+        # If colorized volumes/classes3D, the canvas must be RGB
         if forceRgb:
             isRgb = True
         else:
@@ -746,6 +760,7 @@ class OutputsPreview(FileHandlers):
         padPx = pad * scale
         cellPx = tileSize * scale
 
+        # Label font
         try:
             labelFontSize = max(12 * scale, int(cellPx * 0.22))
             labelFont = ImageFont.truetype("arial.ttf", labelFontSize)
@@ -753,6 +768,7 @@ class OutputsPreview(FileHandlers):
             labelFont = ImageFont.load_default()
             labelFontSize = getattr(labelFont, "size", 12 * scale)
 
+        # Bottom label bar height
         if hasLabels:
             sample = "0000"
             bbox = labelFont.getbbox(sample)
@@ -767,6 +783,7 @@ class OutputsPreview(FileHandlers):
         canvasW = cols * cellPx + (cols + 1) * padPx
         baseCanvasH = rows * cellPx + (rows + 1) * padPx
 
+        # Summary band
         summaryFont = None
         summaryHeight = 0
         if hasSummary:
@@ -778,8 +795,7 @@ class OutputsPreview(FileHandlers):
                     baseFromWidth = canvasW * 0.05
                     baseFromCell = cellPx * 0.35
 
-                summaryFontSize = int(max(baseFromWidth, baseFromCell, 18 * scale))
-                summaryFontSize = int(min(summaryFontSize, cellPx * 0.9))
+                summaryFontSize = int(min(max(baseFromWidth, baseFromCell, 18 * scale), cellPx * 0.9))
                 summaryFont = ImageFont.truetype("arial.ttf", summaryFontSize)
             except Exception:
                 summaryFont = labelFont
@@ -806,7 +822,7 @@ class OutputsPreview(FileHandlers):
             if arr is None:
                 continue
 
-            # Normalize dtype/shape for mode
+            # Normalize dtype/shape for canvas mode
             if isRgb:
                 if isinstance(arr, np.ndarray) and arr.ndim == 2:
                     arr = np.stack([arr, arr, arr], axis=-1)
@@ -818,7 +834,7 @@ class OutputsPreview(FileHandlers):
                 if not (isinstance(arr, np.ndarray) and arr.ndim == 2):
                     continue
 
-            # dimensions
+            # Dimensions
             if arr.ndim == 2:
                 h, w = arr.shape
             else:
@@ -846,6 +862,7 @@ class OutputsPreview(FileHandlers):
             y0 = (cellPx - newH) // 2
             tileCanvas.paste(tileImg, (x0, y0))
 
+            # Per-tile label
             if hasLabels and i < len(labels) and labels[i]:
                 text = str(labels[i])
                 draw = ImageDraw.Draw(tileCanvas)
@@ -877,6 +894,7 @@ class OutputsPreview(FileHandlers):
             gy = padPx + r * (cellPx + padPx)
             canvas.paste(tileCanvas, (gx, gy))
 
+        # Summary band
         if hasSummary and summaryFont is not None:
             draw = ImageDraw.Draw(canvas)
             sbbox = summaryFont.getbbox(summary)
@@ -887,10 +905,8 @@ class OutputsPreview(FileHandlers):
             bandBottom = canvasH - 1
 
             draw.rectangle([(0, bandTop), (canvasW - 1, bandBottom)], fill=summaryBand)
-
             xSummary = max(padPx, (canvasW - sW) // 2)
             ySummary = bandTop + max(2 * scale, (summaryHeight - sH) // 2)
-
             draw.text((xSummary, ySummary), summary, font=summaryFont, fill=textDark)
 
         buf = io.BytesIO()
@@ -922,16 +938,9 @@ class OutputsPreview(FileHandlers):
             headers["X-Preview-Tiles"] = str(meta["tiles"])
         if meta.get("note"):
             headers["X-Preview-Note"] = str(meta["note"])
-
-        expose = [
-            "Content-Disposition",
-            "X-Preview-Mime",
-            "X-Preview-Width",
-            "X-Preview-Height",
-            "X-Preview-Tiles",
-            "X-Preview-Note",
-        ]
-        headers["Access-Control-Expose-Headers"] = ", ".join(expose)
+        headers["Access-Control-Expose-Headers"] = ", ".join(
+            ["Content-Disposition", "X-Preview-Mime", "X-Preview-Width", "X-Preview-Height", "X-Preview-Tiles", "X-Preview-Note"]
+        )
         return headers
 
     # ------------------------------------------------------------------ #
@@ -939,9 +948,7 @@ class OutputsPreview(FileHandlers):
     # ------------------------------------------------------------------ #
     def _makeNoPreviewImageResponse(self) -> Response:
         width, height = 140, 140
-        bgColor = 245
-        borderColor = 200
-        textColor = 80
+        bgColor, borderColor, textColor = 245, 200, 80
 
         img = Image.new("L", (width, height), color=bgColor)
         draw = ImageDraw.Draw(img)
@@ -951,16 +958,13 @@ class OutputsPreview(FileHandlers):
 
         msg = "No Image Available"
         try:
-            fontSize = 52
-            font = ImageFont.truetype("arial.ttf", fontSize)
+            font = ImageFont.truetype("arial.ttf", 52)
         except Exception:
             font = ImageFont.load_default()
 
         bbox = draw.textbbox((0, 0), msg, font=font)
-        textW = bbox[2] - bbox[0]
-        textH = bbox[3] - bbox[1]
-        x = (width - textW) // 2
-        y = (height - textH) // 2
+        x = (width - (bbox[2] - bbox[0])) // 2
+        y = (height - (bbox[3] - bbox[1])) // 2
         draw.text((x, y), msg, font=font, fill=textColor)
 
         buf = io.BytesIO()
@@ -970,21 +974,18 @@ class OutputsPreview(FileHandlers):
         meta = {"mime": "image/png", "kind": "image", "width": width, "height": height, "note": f"No preview available for {type(self.output).__name__}"}
         previewHeaders = self._buildPreviewHeaders(meta) if hasattr(self, "_buildPreviewHeaders") else self.buildPreviewHeadersFallback(meta)
 
-        return Response(
-            content=pngBytes,
-            media_type="image/png",
-            headers={"Content-Disposition": 'inline; filename="no_preview.png"', **previewHeaders},
-        )
+        return Response(content=pngBytes, media_type="image/png", headers={"Content-Disposition": 'inline; filename="no_preview.png"', **previewHeaders})
 
     # ------------------------------------------------------------------ #
     # Tile readers & colormap
     # ------------------------------------------------------------------ #
-    def _read2dTile(
-        self,
-        filePath: Path,
-        sliceIndex: Optional[int] = None,
-        preferCentral: bool = False,
-    ) -> Optional[np.ndarray]:
+    def _read2dTile(self, filePath: Path, sliceIndex: Optional[int] = None, preferCentral: bool = False) -> Optional[np.ndarray]:
+        """
+        Open an image/stack and extract a single 2D slice as uint8 tile.
+        - Honors sliceIndex (1-based in tables) if provided.
+        - Otherwise takes first or central slice depending on preferCentral.
+        - Applies highlight/normalize defensively.
+        """
         try:
             if not filePath or not Path(filePath).exists():
                 return None
@@ -1017,6 +1018,10 @@ class OutputsPreview(FileHandlers):
         return self._pilTo2dTile(imgStk, pilImg)
 
     def _pilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
+        """
+        Convert a PIL image to a 2D uint8 tile, trying to preserve contrast.
+        Falls back gracefully if normalization fails.
+        """
         try:
             arr = np.array(pilImg)
 
@@ -1033,7 +1038,7 @@ class OutputsPreview(FileHandlers):
             except Exception:
                 pass
 
-            # safe stretch to uint8
+            # Safe stretch to uint8
             aMin = float(np.nanmin(arr)) if arr.size else 0.0
             aMax = float(np.nanmax(arr)) if arr.size else 1.0
             if (not np.isfinite(aMin)) or (not np.isfinite(aMax)) or (aMax <= aMin):
@@ -1048,7 +1053,7 @@ class OutputsPreview(FileHandlers):
 
     def _applyColormap(self, grayTile: np.ndarray, cmapName: str = "inferno") -> np.ndarray:
         """
-        Apply a matplotlib colormap to a 2D uint8 (or float) tile.
+        Apply a matplotlib colormap to a 2D tile (uint8 or float).
         Returns RGB uint8 array (H, W, 3).
         """
         if grayTile is None or grayTile.ndim != 2:
@@ -1056,15 +1061,17 @@ class OutputsPreview(FileHandlers):
 
         arr = grayTile.astype(np.float32)
 
-        # handle NaNs / constants robustly
+        # Handle NaNs robustly
         if not np.isfinite(arr).all():
-            nanMask = ~np.isfinite(arr)
-            arr[nanMask] = np.nanmedian(arr[np.isfinite(arr)]) if np.any(np.isfinite(arr)) else 0.0
+            if np.any(np.isfinite(arr)):
+                arr[~np.isfinite(arr)] = np.nanmedian(arr[np.isfinite(arr)])
+            else:
+                arr = np.zeros_like(arr, dtype=np.float32)
 
         aMin = float(np.nanmin(arr))
         aMax = float(np.nanmax(arr))
-        if not np.isfinite(aMin) or not np.isfinite(aMax) or aMax <= aMin:
-            arr = np.zeros_like(arr, dtype=np.float32)  # avoid division by zero
+        if (not np.isfinite(aMin)) or (not np.isfinite(aMax)) or aMax <= aMin:
+            arr = np.zeros_like(arr, dtype=np.float32)
         else:
             arr = (arr - aMin) / (aMax - aMin)
 
@@ -1076,24 +1083,66 @@ class OutputsPreview(FileHandlers):
             cmap = mpl_cm.get_cmap("inferno")
 
         rgba = cmap(np.clip(arr, 0.0, 1.0), bytes=True)  # uint8 RGBA
-        rgb = rgba[..., :3].copy()
-        return rgb
+        return rgba[..., :3].copy()
 
-    def _resolveColormapForOutputType(self, defaultCmap: str = "inferno") -> Optional[str]:
+    # ------------------------------------------------------------------ #
+    # Colormap resolution (unified and de-duplicated)
+    # ------------------------------------------------------------------ #
+    def _mergeHeaders(self, newHeaders: Dict[str, str]) -> None:
+        """Merge/normalize headers into self.requestHeaders (keys lowercased)."""
+        for k, v in (newHeaders or {}).items():
+            if isinstance(k, str):
+                self.requestHeaders[k.lower()] = v
+
+    def _getHeader(self, *names: str) -> Optional[str]:
+        """Return first present header value (case-insensitive)."""
+        for name in names:
+            v = self.requestHeaders.get(name.lower())
+            if v:
+                return str(v).strip()
+        return None
+
+    def _resolveColormapForOutputType(self, defaultCmap: str = "viridis") -> Optional[str]:
         """
         Decide which colormap to use for volume thumbnails.
-        Env var SCIPION_THUMB_COLORMAP overrides; default 'inferno'.
-        Examples:
-        inferno (default, perceptually uniform)
-        magma, plasma, viridis
-        cividis (colorblind-friendly)
-        turbo, cubehelix, bone, gist_earth, gray (if you want to return to gray)
+        Priority:
+          1) self.colormapOverride
+          2) Request headers (X-Scipion-Colormap, X-Preview-Colormap, X-Colormap, Scipion-Colormap, Colormap)
+          3) RegistryViewerConfig (optional 'colormap'/'cmap')
+          4) Environment var SCIPION_GALLERY_COLORMAP
+          5) defaultCmap
+        Only applies to SetOfClasses3D / SetOfVolumes.
         """
         if not isinstance(self.output, (SetOfClasses3D, SetOfVolumes)):
             return None
+
+        # 1) Explicit override from constructor/service
+        if self.colormapOverride:
+            return self.colormapOverride
+
+        # 2) Headers (validate name)
+        raw = self._getHeader("X-Scipion-Colormap", "X-Preview-Colormap", "X-Colormap", "Scipion-Colormap", "Colormap")
+        if raw:
+            try:
+                from matplotlib import cm as mpl_cm
+                _ = mpl_cm.get_cmap(raw)  # raises if invalid
+                return raw
+            except Exception:
+                self._cmapNote = f"Invalid colormap '{raw}', falling back to default."
+
+        # 3) Registry config
         cfg = RegistryViewerConfig.getConfig(type(self.output)) or {}
-        cm = cfg.get("colormap") or cfg.get("cmap") or os.getenv("SCIPION_GALLERY_COLORMAP")
-        return (cm or defaultCmap)
+        cm = cfg.get("colormap") or cfg.get("cmap")
+        if cm:
+            return cm
+
+        # 4) Environment fallback
+        envCm = os.getenv("SCIPION_GALLERY_COLORMAP")
+        if envCm:
+            return envCm
+
+        # 5) Default
+        return defaultCmap
 
     # ------------------------------------------------------------------ #
     # Final HTTP response builder for galleries
@@ -1108,39 +1157,44 @@ class OutputsPreview(FileHandlers):
         summary: Optional[str] = None,
     ) -> Response:
         if not tiles:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not extract any images for preview",
-            )
+            raise HTTPException(status_code=404, detail="Could not extract any images for preview")
 
-        # Decide if we must force RGB canvas (for colorized volumes/classes3D)
+        # Force RGB canvas when we colorize 3D (classes3D/volumes)
         forceRgb = isinstance(self.output, (SetOfClasses3D, SetOfVolumes))
 
         useLabels: Optional[List[str]] = labels if any(l for l in labels) else None
 
         pngBytes, meta = self.makeGalleryFromTiles(
-            tiles,
-            cols=cols,
-            tileSize=tileSize,
-            labels=useLabels,
-            summary=summary,
-            forceRgb=forceRgb,
+            tiles, cols=cols, tileSize=tileSize, labels=useLabels, summary=summary, forceRgb=forceRgb
         )
 
         metaWithMime = {"mime": "image/png", **meta}
         previewHeaders = self._buildPreviewHeaders(metaWithMime)
 
+        # If we applied a colormap (3D/volumes), expose which one and any note
+        extraHeaders: Dict[str, str] = {}
+        if forceRgb:
+            usedCmap = self._resolveColormapForOutputType(defaultCmap="viridis")
+            if usedCmap:
+                extraHeaders["X-Preview-Colormap"] = usedCmap
+            if self._cmapNote:
+                extraHeaders["X-Preview-Colormap-Note"] = self._cmapNote
+            # Ensure browser can read these custom headers
+            expose = previewHeaders.get("Access-Control-Expose-Headers", "")
+            exposeList = [h.strip() for h in expose.split(",") if h.strip()]
+            for k in ("X-Preview-Colormap", "X-Preview-Colormap-Note"):
+                if k not in exposeList:
+                    exposeList.append(k)
+            previewHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeList)
+
         return Response(
             content=pngBytes,
             media_type="image/png",
-            headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
-                **previewHeaders,
-            },
+            headers={"Content-Disposition": f'inline; filename="{filename}"', **previewHeaders, **extraHeaders},
         )
 
     # ------------------------------------------------------------------ #
-    # FSC plot (unchanged except backend)
+    # FSC plot
     # ------------------------------------------------------------------ #
     def _makeFSCResponse(self, filename: str = "fsc_preview.png") -> Response:
         matplotlib.use("Agg")
@@ -1233,8 +1287,4 @@ class OutputsPreview(FileHandlers):
         meta = {"mime": "image/png", "kind": "image", "note": "FSC curve"}
         previewHeaders = self._buildPreviewHeaders(meta)
 
-        return Response(
-            content=pngBytes,
-            media_type="image/png",
-            headers={"Content-Disposition": f'inline; filename="{filename}"', **previewHeaders},
-        )
+        return Response(content=pngBytes, media_type="image/png", headers={"Content-Disposition": f'inline; filename="{filename}"', **previewHeaders})

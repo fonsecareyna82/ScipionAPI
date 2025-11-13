@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query, Request
 from typing import List, Any, Union
 
 from app.backend.api.dependencies import getCurrentUser
@@ -326,13 +326,30 @@ async def previewProtocolImageFile(
 
 @router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
 async def previewProtocolImageFile(
-        projectId: int,
-        protocolId: Union[int, str],
-        outputName: str,
-        currentUser=Depends(getCurrentUser),
-        mapper: PostgresqlFlatMapper = Depends(getMapper),
+    projectId: int,
+    protocolId: Union[int, str],
+    outputName: str,
+    request: Request,
+    currentUser=Depends(getCurrentUser),
+    mapper=Depends(getMapper),
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return service.outputPreview(protocolId, outputName)
+
+    # Prefer header; fallback to query param (?cmap=viridis)
+    cmap = (
+        request.headers.get("x-scipion-colormap")
+        or request.headers.get("x-preview-colormap")
+        or request.headers.get("x-colormap")
+        or request.headers.get("scipion-colormap")
+        or request.headers.get("colormap")
+        or request.query_params.get("cmap")
+    )
+
+    return service.outputPreview(
+        protocolId=protocolId,
+        outputName=outputName,
+        requestHeaders=dict(request.headers),
+        colormap=cmap,
+    )
