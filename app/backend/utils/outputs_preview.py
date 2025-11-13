@@ -518,7 +518,7 @@ class OutputsPreview(FileHandlers):
         if isClasses3D:
             renderSizeIdx = self.getRenderColumnIndex(["_size"], columns)
 
-        cmapName = self._resolveColormapForOutputType(defaultCmap="inferno")
+        cmapName = self._resolveColormapForOutputType(defaultCmap="viridis")
 
         for row in rows:
             if len(tiles) >= maxTiles:
@@ -534,7 +534,7 @@ class OutputsPreview(FileHandlers):
                 continue
 
             # Always colorize for these output types
-            color = self._applyColormap(gray, cmapName or "inferno")
+            color = self._applyColormap(gray, cmapName or "viridis")
             tiles.append(color)
 
             if isClasses3D and renderSizeIdx is not None:

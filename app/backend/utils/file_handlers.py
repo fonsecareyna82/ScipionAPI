@@ -323,7 +323,7 @@ class FileHandlers:
         cividis (colorblind-friendly)
         turbo, cubehelix, bone, gist_earth, gray (if you want to return to gray)
         """
-        return os.getenv("SCIPION_THUMB_COLORMAP", "inferno")
+        return os.getenv("SCIPION_THUMB_COLORMAP", "viridis")
 
     def _applyColormap(self, grayTile: np.ndarray, cmapName: str = "inferno") -> np.ndarray:
         """
@@ -435,7 +435,7 @@ class FileHandlers:
                 pass
 
             # Colorize → RGB uint8
-            cmapName = self._colormapName()
+            cmapName = self._colormapName() if data.ndim == 3 else 'gray'
             rgb = self._applyColormap(arrGray, cmapName=cmapName)
 
             # Encode as PNG
