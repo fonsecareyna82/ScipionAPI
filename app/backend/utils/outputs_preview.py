@@ -40,6 +40,33 @@ from pwem.objects import (
 )
 from pwem.viewers import RENDER
 from pwem.viewers.viewers_data import RegistryViewerConfig
+from functools import lru_cache
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class _VolSig:
+    path: str
+    mtime_ns: int
+    size: int
+
+def _stat_sig(p: Path) -> _VolSig:
+    st = p.stat()
+    return _VolSig(str(p), st.st_mtime_ns, st.st_size)
+
+@lru_cache(maxsize=8)
+def _read_volume_cached(sig: _VolSig) -> tuple[np.ndarray, dict]:
+    """Disk → numpy only once per (path, mtime, size)."""
+    imgStk = ImageReadersRegistry.open(sig.path)
+    data = np.asarray(imgStk.getImages())
+    if data.ndim not in (2, 3):
+        data = np.squeeze(data)
+        if data.ndim not in (2, 3):
+            raise ValueError(f"Unsupported dimensionality: {data.shape}")
+    try:
+        props = imgStk.getProperties() or {}
+    except Exception:
+        props = {}
+    return data, props
 
 
 class OutputsPreview(FileHandlers):
@@ -1192,6 +1219,337 @@ class OutputsPreview(FileHandlers):
             media_type="image/png",
             headers={"Content-Disposition": f'inline; filename="{filename}"', **previewHeaders, **extraHeaders},
         )
+
+    # ======================================================================
+    # Volumes API (list / info / slice)
+    # ======================================================================
+
+    def listOutputVolumes(self) -> List[Dict[str, Any]]:
+        """
+        Return a list of volume entries for the current output.
+        Each entry: { id: int, name: str, relPath: str }
+        - id is 0-based index to be used by getVolumeInfo/renderVolumeSlice
+        """
+        protRoot = Path(self.protocol.getPath()).resolve()
+        paths = self._collectVolumePaths()
+        items: List[Dict[str, Any]] = []
+        for i, p in enumerate(paths):
+            items.append({
+                "id": i,
+                "name": p.name,
+                "relPath": self._relPathInside(protRoot, p),
+            })
+        return items
+
+    def getVolumeInfo(self, volumeId: Union[int, str]) -> Dict[str, Any]:
+        """
+        Return metadata for a specific volume: dims (x,y,z), voxel size, sizeBytes, etc.
+        """
+        protRoot = Path(self.protocol.getPath()).resolve()
+        paths = self._collectVolumePaths()
+        if not paths:
+            raise HTTPException(status_code=404, detail="No volume files found in this output")
+
+        try:
+            idx = int(volumeId)
+        except Exception:
+            idx = 0
+        if idx < 0 or idx >= len(paths):
+            raise HTTPException(status_code=404, detail="Volume index out of range")
+
+        absPath = paths[idx]
+        relPath = self._relPathInside(protRoot, absPath)
+
+        # Read dims + voxel
+        dims = None
+        voxel = (None, None, None)
+        try:
+            arr, props = self._readVolumeArray(absPath)
+            if arr.ndim == 3:
+                # arr is (Z, Y, X)
+                dims = (int(arr.shape[2]), int(arr.shape[1]), int(arr.shape[0]))
+            elif arr.ndim == 2:
+                dims = (int(arr.shape[1]), int(arr.shape[0]), 1)
+            voxel = self._extractVoxelFromProps(props)
+        except Exception:
+            pass
+
+        try:
+            sizeBytes = absPath.stat().st_size
+        except Exception:
+            sizeBytes = None
+
+        return {
+            "id": idx,
+            "name": absPath.name,
+            "relPath": relPath,
+            "type": "Volume",
+            "dims": dims,            # (x, y, z) if available
+            "voxelSize": voxel,      # (vx, vy, vz) raw header units (often Å)
+            "sizeBytes": sizeBytes,
+        }
+
+    def renderVolumeSlice(
+            self,
+            volumeId: Union[int, str],
+            sliceIndex: int,
+            axis: str = "z",
+            colormap: Optional[str] = None,
+            normalize: str = "minmax",
+            scale: float = 1.0,
+            inline: bool = True,
+    ) -> Response:
+        axis = (axis or "z").lower()
+        if axis not in ("z", "y", "x"):
+            axis = "z"
+
+        protRoot = Path(self.protocol.getPath()).resolve()
+        paths = self._collectVolumePaths()
+        if not paths:
+            raise HTTPException(status_code=404, detail="No volume files found in this output")
+
+        try:
+            idx = int(volumeId)
+        except Exception:
+            idx = 0
+        if idx < 0 or idx >= len(paths):
+            raise HTTPException(status_code=404, detail="Volume index out of range")
+
+        absPath = paths[idx]
+        relPath = self._relPathInside(protRoot, absPath)
+        usedCmap = colormap or self._resolveColormapForOutputType(defaultCmap="viridis") or "viridis"
+
+        # ---------- FAST PATH: Z slice sin cargar el volumen completo ----------
+        if axis == "z":
+            try:
+                reader = ImageReadersRegistry.open(str(absPath))
+                k = max(0, int(sliceIndex))
+                # intenta la slice pedida; si falla, central; si falla, la 0
+                try:
+                    pilImg = reader.getImage(index=k, pilImage=True)
+                except Exception:
+                    try:
+                        pilImg = reader.getCentralImage(pilImage=True)
+                    except Exception:
+                        pilImg = reader.getImage(index=0, pilImage=True)
+
+                gray = self._pilTo2dTile(reader, pilImg)
+                if gray is None:
+                    raise RuntimeError("Empty/invalid image slice")
+
+                gray = self._normMode2D(gray, mode=normalize or "minmax")
+                rgb = self._applyColormap(gray, usedCmap)
+                rgb = self._resizeIfNeeded(rgb, scale or 1.0)
+
+                img = Image.fromarray(rgb, mode="RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+
+                # depth si el reader lo expone
+                zdim = None
+                try:
+                    getN = getattr(reader, "getNumberOfImages", None)
+                    if callable(getN):
+                        zdim = int(getN())
+                except Exception:
+                    pass
+
+                headers = {
+                    "X-Preview-Mime": "image/png",
+                    "X-Preview-Width": str(img.width),
+                    "X-Preview-Height": str(img.height),
+                    "X-Preview-Colormap": usedCmap,
+                    "X-Preview-Note": f"slice axis=z index={k}",
+                    "Access-Control-Expose-Headers": ", ".join([
+                        "Content-Disposition", "X-Preview-Mime", "X-Preview-Width",
+                        "X-Preview-Height", "X-Preview-Colormap", "X-Preview-Note",
+                    ]),
+                }
+                if zdim is not None:
+                    headers["X-Preview-Depth"] = str(zdim)
+                    headers["Access-Control-Expose-Headers"] += ", X-Preview-Depth"
+
+                headers[
+                    "Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
+                return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
+            except Exception:
+                # cae al slow path de abajo
+                pass
+
+        # ---------- SLOW PATH: y/x (o fallback) ----------
+        try:
+            vol3d, props = self._readVolumeArray(absPath)
+            if vol3d.ndim == 2:
+                vol3d = vol3d[None, ...]
+            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
+
+            if axis == "z":
+                k = max(0, min(int(sliceIndex), zdim - 1))
+                slice2d = vol3d[k, :, :]
+            elif axis == "y":
+                k = max(0, min(int(sliceIndex), ydim - 1))
+                slice2d = vol3d[:, k, :]
+            else:  # x
+                k = max(0, min(int(sliceIndex), xdim - 1))
+                slice2d = vol3d[:, :, k]
+
+            gray = self._normMode2D(slice2d, mode=normalize or "minmax")
+            rgb = self._applyColormap(gray, usedCmap)
+            rgb = self._resizeIfNeeded(rgb, scale or 1.0)
+
+            img = Image.fromarray(rgb, mode="RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+
+            voxel = self._extractVoxelFromProps(props)
+            headers = {
+                "X-Preview-Mime": "image/png",
+                "X-Preview-Width": str(img.width),
+                "X-Preview-Height": str(img.height),
+                "X-Preview-Depth": str(zdim),
+                "X-Preview-Colormap": usedCmap,
+                "X-Preview-Note": f"slice axis={axis} index={k}",
+                "Access-Control-Expose-Headers": ", ".join([
+                    "Content-Disposition", "X-Preview-Mime", "X-Preview-Width", "X-Preview-Height",
+                    "X-Preview-Depth", "X-Preview-Colormap", "X-Preview-Note", "X-Preview-VoxelSize",
+                ]),
+            }
+            if all(v is not None for v in voxel):
+                headers["X-Preview-VoxelSize"] = f"{voxel[0]},{voxel[1]},{voxel[2]}"
+
+            headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
+            return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
+
+        except Exception as e:
+            try:
+                return self.previewProtocolImageFile(self.protocol.getObjId(), relPath, inline=True)
+            except Exception:
+                raise HTTPException(status_code=500, detail=f"Slice render failed: {e}")
+
+    # -------------------------
+    # Private helpers (volumes)
+    # -------------------------
+
+    def _collectVolumePaths(self) -> List[Path]:
+        """
+        Collect absolute paths for a volume-like output:
+        - Single volume objects (getFileName)
+        - SetOfVolumes via iterItems()/iteration
+        """
+        out = self.output
+        paths: List[Path] = []
+
+        if hasattr(out, "getFileName"):
+            try:
+                p = out.getFileName()
+                if p and os.path.isfile(p):
+                    paths.append(Path(p).resolve())
+            except Exception:
+                pass
+
+        def _push(item):
+            try:
+                if hasattr(item, "getFileName"):
+                    fp = item.getFileName()
+                    if fp:
+                        paths.append(Path(fp).resolve())
+            except Exception:
+                pass
+
+        if hasattr(out, "iterItems") and callable(getattr(out, "iterItems")):
+            try:
+                for it in out.iterItems():
+                    _push(it)
+            except Exception:
+                pass
+        else:
+            try:
+                for it in out:  # type: ignore
+                    _push(it)
+            except Exception:
+                pass
+
+        # De-duplicate keeping order
+        seen = set()
+        dedup: List[Path] = []
+        for p in paths:
+            if str(p) not in seen:
+                seen.add(str(p))
+                dedup.append(p)
+        return dedup
+
+    def _readVolumeArray(self, absPath: Path) -> Tuple[np.ndarray, Dict[str, Any]]:
+        sig = _stat_sig(absPath)
+        arr, props = _read_volume_cached(sig)
+        return arr, props
+
+    def _extractVoxelFromProps(self, props: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        """
+        Try common keys used by EM stack readers to encode sampling/voxel size.
+        Returns (vx, vy, vz) or (None, None, None).
+        """
+        if not isinstance(props, dict):
+            return (None, None, None)
+
+        # Common candidates: 'sr', 'samplingRate', 'pixelSize', 'voxel', 'voxelSize'
+        for key in ("voxelSize", "voxel", "samplingRate", "pixelSize", "sr"):
+            if key in props:
+                val = props[key]
+                try:
+                    if isinstance(val, (list, tuple)) and len(val) >= 3:
+                        return (float(val[0]), float(val[1]), float(val[2]))
+                    f = float(val)
+                    return (f, f, f)
+                except Exception:
+                    continue
+        return (None, None, None)
+
+    def _normMode2D(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
+        """
+        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
+        """
+        if a.ndim != 2:
+            raise ValueError("Expected 2D slice")
+        arr = a.astype(np.float32, copy=False)
+
+        if mode == "zscore":
+            mu = float(np.mean(arr))
+            sd = float(np.std(arr)) or 1.0
+            arr = (arr - mu) / sd
+            arr = np.clip(arr, -3.0, 3.0)
+            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
+
+        if mode == "none":
+            amin, amax = float(np.min(arr)), float(np.max(arr))
+            if amax <= amin:
+                return np.zeros_like(arr, dtype=np.uint8)
+            arr = (arr - amin) / (amax - amin + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
+
+        # default: minmax
+        amin, amax = float(np.min(arr)), float(np.max(arr))
+        if amax <= amin:
+            return np.zeros_like(arr, dtype=np.uint8)
+        arr = (arr - amin) / (amax - amin + 1e-12)
+        return (255.0 * arr).astype(np.uint8)
+
+    def _resizeIfNeeded(self, imgArr: np.ndarray, scale: float) -> np.ndarray:
+        if abs(scale - 1.0) < 1e-6:
+            return imgArr
+        pil = Image.fromarray(imgArr)
+        newW = max(1, int(round(pil.width * scale)))
+        newH = max(1, int(round(pil.height * scale)))
+        pil = pil.resize((newW, newH), Image.BILINEAR)
+        return np.array(pil, copy=False)
+
+    def _relPathInside(self, root: Path, absPath: Path) -> str:
+        try:
+            rel = absPath.resolve().relative_to(root.resolve())
+            return rel.as_posix()
+        except Exception:
+            return absPath.name
+
 
     # ------------------------------------------------------------------ #
     # FSC plot

@@ -23,17 +23,20 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import io
 import logging
+import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
 from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.outputs_preview import OutputsPreview
+from pwem.emlib.image.image_readers import ImageReadersRegistry
+from pwem.objects import SetOfVolumes
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
-from pwem.viewers.viewers_data import RegistryViewerConfig
 from pyworkflow.object import PointerList, Pointer
 
 logger = logging.getLogger(__name__)
@@ -42,7 +45,7 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Any, Union
+from typing import List, Optional, Any, Union, Tuple
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
@@ -55,6 +58,7 @@ from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, Stri
 import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project_schema import ProjectCreate
+from app.backend.utils.file_handlers import FileHandlers
 
 
 from app.backend.models.project_model import ProjectUpdateRequest
@@ -66,6 +70,9 @@ class ProjectService:
         self.manager = Manager()
         self.currentProject = None
         self.objectManager = None
+
+    def clearCurrentProject(self):
+        self.currentProject = None
 
     def initializeOrderManager(self):
         self.objectManager.registerDAO(ScipionSetsDAO)
@@ -1068,3 +1075,47 @@ class ProjectService:
         self.objectManager = ObjectManager()
         self.initializeOrderManager()
         return outputPreview.preview(protocolId, outputPath, self.objectManager)
+
+    # ======================================================================
+    # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
+    # ======================================================================
+
+    def _resolveOutputForVolumes(self, protocolId: int, outputName: str):
+        """Resolve protocol + output object or raise 404 with a clear message."""
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol")
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(status_code=404, detail=f"Output '{outputName}' is empty")
+
+        return protocol, output
+
+    def listOutputVolumesService(self, projectId: int, protocolId: int, outputName: str):
+        """List available volume files for the given output."""
+        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.listOutputVolumes()
+
+    def getVolumeInfoService(self, projectId: int, protocolId: int, outputName: str, volumeId: int):
+        """Return metadata (dims, voxel, size) for a specific volume."""
+        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.getVolumeInfo(volumeId)
+
+    def renderVolumeSliceService(
+            self, projectId: int, protocolId: int, outputName: str, volumeId: int,
+            sliceIndex: int, axis: str, colormap: Optional[str], normalize: str,
+            scale: float, inline: bool,
+            fmt: str = "webp", thumb: Optional[int] = None, fast: bool = False, quality: int = 75,
+    ) -> Response:
+        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.renderVolumeSlice(
+            volumeId=volumeId, sliceIndex=sliceIndex, axis=axis,
+            colormap=colormap, normalize=normalize, scale=scale, inline=inline)

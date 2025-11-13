@@ -44,7 +44,32 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://localhost:5174"],  # o ["*"] para desarrollo
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=[
+        "*",
+        "Authorization",
+        "Content-Type",
+        "X-Requested-With",
+        "X-Scipion-Colormap",
+        "X-Preview-Colormap",
+        "X-Colormap",
+        "Scipion-Colormap",
+        "Colormap",
+    ],
+    expose_headers=[
+        "Content-Disposition",
+        "X-Preview-Mime",
+        "X-Preview-Width",
+        "X-Preview-Height",
+        "X-Preview-Depth",
+        "X-Preview-Colormap",
+        "X-Preview-Colormap-Note",
+        "X-Preview-Tiles",
+        "X-Preview-SizeBytes",
+        "X-Preview-Columns",
+        "X-Preview-RowCount",
+        "X-Archive-Kind",
+        "X-Preview-VoxelSize",
+    ],
 )
 
 prepareEnvironment()
