@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query, Request
-from typing import List, Any, Union
+from typing import List, Any, Union, Optional
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
@@ -242,7 +242,7 @@ def resetProtocolFrom(
 
 
 @router.post("/{projectId}/protocols/stop", response_model=Any, status_code=status.HTTP_200_OK)
-def deleteProtocol(
+def stopProtocol(
     projectId: int,
     payload: DeletePayload = None,
     currentUser=Depends(getCurrentUser),
@@ -352,4 +352,66 @@ async def previewProtocolImageFile(
         outputName=outputName,
         requestHeaders=dict(request.headers),
         colormap=cmap,
+    )
+
+
+# ==============================================================================
+#                ANALYZE RESULTS: VOLUMES (Volume / VolumeMask / SetOfVolumes)
+# ==============================================================================
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes", response_model=Any, status_code=status.HTTP_200_OK)
+def listOutputVolumes(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    return service.listOutputVolumesService(projectId, protocolId, outputName)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/info", response_model=Any, status_code=status.HTTP_200_OK)
+def getVolumeInfo(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    volumeId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    return service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice", response_model=None)
+def renderVolumeSlice(
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        volumeId: int,
+        index: int = Query(0, ge=0),
+        axis: str = Query("z", pattern="^(x|y|z)$"),
+        cmap: Optional[str] = Query('viridis'),
+        normalize: str = Query(None),
+        scale: float = Query(1.0, gt=0),
+        inline: bool = Query(True),
+        # NEW:
+        format: Optional[str] = Query("webp", pattern="^(png|webp|jpeg)$"),
+        thumb: Optional[int] = Query(None, ge=32, le=2048),
+        fast: bool = Query(False),
+        quality: int = Query(75, ge=1, le=100),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    return service.renderVolumeSliceService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        volumeId=volumeId,
+        sliceIndex=index,
+        axis=axis,
+        colormap=cmap,
+        normalize=normalize,
+        scale=scale,
+        inline=inline,
+        fmt=format, thumb=thumb, fast=fast, quality=quality,
     )
