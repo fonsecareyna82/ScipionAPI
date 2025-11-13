@@ -36,7 +36,7 @@ from pwem.objects import (
     SetOfClasses3D,
     SetOfVolumes,
     SetOfFSCs,
-    SetOfMicrographs,
+    SetOfMicrographs, EMSet,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.viewers_data import RegistryViewerConfig
@@ -1298,6 +1298,7 @@ class OutputsPreview(FileHandlers):
             normalize: str = "minmax",
             scale: float = 1.0,
             inline: bool = True,
+            **_unused  # <-- Accept future options (fmt, thumb, fast, quality)
     ) -> Response:
         axis = (axis or "z").lower()
         if axis not in ("z", "y", "x"):
@@ -1324,7 +1325,6 @@ class OutputsPreview(FileHandlers):
             try:
                 reader = ImageReadersRegistry.open(str(absPath))
                 k = max(0, int(sliceIndex))
-                # intenta la slice pedida; si falla, central; si falla, la 0
                 try:
                     pilImg = reader.getImage(index=k, pilImage=True)
                 except Exception:
@@ -1439,7 +1439,7 @@ class OutputsPreview(FileHandlers):
         out = self.output
         paths: List[Path] = []
 
-        if hasattr(out, "getFileName"):
+        if not isinstance(out, EMSet):
             try:
                 p = out.getFileName()
                 if p and os.path.isfile(p):
@@ -1449,14 +1449,13 @@ class OutputsPreview(FileHandlers):
 
         def _push(item):
             try:
-                if hasattr(item, "getFileName"):
-                    fp = item.getFileName()
-                    if fp:
-                        paths.append(Path(fp).resolve())
+                fp = item.getFileName()
+                if fp:
+                    paths.append(Path(fp).resolve())
             except Exception:
                 pass
 
-        if hasattr(out, "iterItems") and callable(getattr(out, "iterItems")):
+        if isinstance(out, EMSet):
             try:
                 for it in out.iterItems():
                     _push(it)
