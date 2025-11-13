@@ -75,6 +75,8 @@ class ProjectService:
         self.currentProject = None
 
     def initializeOrderManager(self):
+        if self.objectManager is None:
+            self.objectManager = ObjectManager()
         self.objectManager.registerDAO(ScipionSetsDAO)
         self.objectManager.registerDAO(StarFile)
         self.objectManager.registerReader(ScipionImageReader)
@@ -1081,20 +1083,34 @@ class ProjectService:
     # ======================================================================
 
     def _resolveOutputForVolumes(self, protocolId: int, outputName: str):
-        """Resolve protocol + output object or raise 404 with a clear message."""
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
             raise HTTPException(status_code=404, detail="Protocol not found")
 
-        if not hasattr(protocol, outputName):
-            raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol")
+        # Try exact + common alternates (singular/plural/alias)
+        candidates = [outputName]
+        alias = {
+            "outputVolumes": "outputVolume",
+            "outputVolume": "outputVolumes",
+            "outputMasks": "outputMask",
+            "outputMask": "outputMasks",
+        }
+        if outputName in alias:
+            candidates.append(alias[outputName])
+        # Generic singular/plural fallbacks
+        if outputName.endswith("s"):
+            candidates.append(outputName[:-1])
+        else:
+            candidates.append(outputName + "s")
 
-        output = getattr(protocol, outputName)
-        if output is None:
-            raise HTTPException(status_code=404, detail=f"Output '{outputName}' is empty")
+        for name in candidates:
+            if hasattr(protocol, name):
+                out = getattr(protocol, name)
+                if out is not None:
+                    return protocol, out
 
-        return protocol, output
+        raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol (tried {candidates})")
 
     def listOutputVolumesService(self, projectId: int, protocolId: int, outputName: str):
         """List available volume files for the given output."""

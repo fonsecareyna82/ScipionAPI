@@ -78,6 +78,9 @@ def loadProtocols(
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
     protocols = service.getProtocols(mapper, projectId, currentUser)
     if not protocols:
         raise HTTPException(
