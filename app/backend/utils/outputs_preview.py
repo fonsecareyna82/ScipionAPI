@@ -43,15 +43,18 @@ from pwem.viewers.viewers_data import RegistryViewerConfig
 from functools import lru_cache
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class _VolSig:
     path: str
     mtime_ns: int
     size: int
 
+
 def _stat_sig(p: Path) -> _VolSig:
     st = p.stat()
     return _VolSig(str(p), st.st_mtime_ns, st.st_size)
+
 
 @lru_cache(maxsize=8)
 def _read_volume_cached(sig: _VolSig) -> tuple[np.ndarray, dict]:
@@ -630,8 +633,7 @@ class OutputsPreview(FileHandlers):
     def _pickSampleRows(self, objectManager, tableName: str, want: int) -> list:
         """
         Deterministically sample up to `want` rows from a table, spreading them
-        across the full rowCount range. This avoids biased previews toward the
-        first page while keeping the output stable across calls.
+        across the full rowCount range. This keeps output stable across calls.
         """
         rowCount = objectManager.getTableRowCount(tableName) or 0
         if rowCount <= 0:
@@ -642,6 +644,7 @@ class OutputsPreview(FileHandlers):
             return objectManager.getRows(tableName, 0, n) or []
 
         rows = []
+        # Simple deterministic selection (first n)
         for k in range(n):
             idx = k
             chunk = objectManager.getRows(tableName, idx, 1) or []
@@ -1226,51 +1229,55 @@ class OutputsPreview(FileHandlers):
 
     def listOutputVolumes(self) -> List[Dict[str, Any]]:
         """
-        Return a list of volume entries for the current output.
-        Each entry: { id: int, name: str, relPath: str }
-        - id is 0-based index to be used by getVolumeInfo/renderVolumeSlice
+        Return items with stable 0..N-1 IDs so the UI can call /{volumeId}/info and /slice.
         """
-        protRoot = Path(self.protocol.getPath()).resolve()
         paths = self._collectVolumePaths()
-        items: List[Dict[str, Any]] = []
+        if not paths:
+            return []
+        out = []
         for i, p in enumerate(paths):
-            items.append({
-                "id": i,
+            out.append({
+                "id": str(i),     #
+                "label": p.name,
                 "name": p.name,
-                "relPath": self._relPathInside(protRoot, p),
             })
-        return items
+        return out
 
     def getVolumeInfo(self, volumeId: Union[int, str]) -> Dict[str, Any]:
         """
-        Return metadata for a specific volume: dims (x,y,z), voxel size, sizeBytes, etc.
+        Return metadata for a specific volume.
+        Critical: provide dims and dimsOrder='zyx' so the UI maps correctly.
         """
         protRoot = Path(self.protocol.getPath()).resolve()
         paths = self._collectVolumePaths()
         if not paths:
             raise HTTPException(status_code=404, detail="No volume files found in this output")
 
-        try:
-            idx = int(volumeId)
-        except Exception:
-            idx = 0
-        if idx < 0 or idx >= len(paths):
-            raise HTTPException(status_code=404, detail="Volume index out of range")
-
+        idx = self._resolveVolumeIndex(volumeId, paths)
         absPath = paths[idx]
         relPath = self._relPathInside(protRoot, absPath)
 
-        # Read dims + voxel
-        dims = None
-        voxel = (None, None, None)
+        # Defaults
+        dims: Tuple[int, int, int] = (0, 0, 0)
+        voxel: Tuple[Optional[float], Optional[float], Optional[float]] = (None, None, None)
+        dtype: Optional[str] = None
+
         try:
-            arr, props = self._readVolumeArray(absPath)
-            if arr.ndim == 3:
-                # arr is (Z, Y, X)
-                dims = (int(arr.shape[2]), int(arr.shape[1]), int(arr.shape[0]))
-            elif arr.ndim == 2:
-                dims = (int(arr.shape[1]), int(arr.shape[0]), 1)
-            voxel = self._extractVoxelFromProps(props)
+            reader = ImageReadersRegistry.open(str(absPath))
+            images = reader.getImages()          # numpy array already in memory
+            # Most readers: images.shape = (Z, Y, X)
+            if hasattr(images, "shape") and len(images.shape) >= 3:
+                z, y, x = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+                dims = (z, y, x)                 # <-- zyx
+            # props
+            try:
+                props = reader.getProperties() or {}
+                voxel = self._extractVoxelFromProps(props)  # (vx, vy, vz)
+                dtype = props.get("dtype") or getattr(images, "dtype", None)
+                if dtype is not None:
+                    dtype = str(dtype)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1284,198 +1291,200 @@ class OutputsPreview(FileHandlers):
             "name": absPath.name,
             "relPath": relPath,
             "type": "Volume",
-            "dims": dims,            # (x, y, z) if available
-            "voxelSize": voxel,      # (vx, vy, vz) raw header units (often Å)
+            "dims": [dims[0], dims[1], dims[2]],  # z,y,x
+            "dimsOrder": "zyx",                   # <-- CLAVE para el front
+            "voxelSize": voxel,                   # (vx,vy,vz)
+            "dtype": dtype,
             "sizeBytes": sizeBytes,
         }
 
     def renderVolumeSlice(
-            self,
-            volumeId: Union[int, str],
-            sliceIndex: int,
-            axis: str = "z",
-            colormap: Optional[str] = None,
-            normalize: str = "minmax",
-            scale: float = 1.0,
-            inline: bool = True,
-            **_unused  # <-- Accept future options (fmt, thumb, fast, quality)
+        self,
+        volumeId: Union[int, str],
+        sliceIndex: int,
+        axis: str = "z",
+        colormap: Optional[str] = "viridis",
+        normalize: Optional[str] = None,
+        scale: float = 1.0,
+        inline: bool = True,
+        fmt: str = "webp",
+        thumb: Optional[int] = None,
+        fast: bool = False,
+        quality: int = 75,
     ) -> Response:
-        axis = (axis or "z").lower()
-        if axis not in ("z", "y", "x"):
-            axis = "z"
-
+        """
+        Render a single slice. Index is 0-based from the UI.
+        Supports axis in {'z','y','x'} and passes through format/quality.
+        """
         protRoot = Path(self.protocol.getPath()).resolve()
         paths = self._collectVolumePaths()
         if not paths:
             raise HTTPException(status_code=404, detail="No volume files found in this output")
 
-        try:
-            idx = int(volumeId)
-        except Exception:
-            idx = 0
-        if idx < 0 or idx >= len(paths):
-            raise HTTPException(status_code=404, detail="Volume index out of range")
-
+        idx = self._resolveVolumeIndex(volumeId, paths)
         absPath = paths[idx]
-        relPath = self._relPathInside(protRoot, absPath)
-        usedCmap = colormap or self._resolveColormapForOutputType(defaultCmap="viridis") or "viridis"
 
-        # ---------- FAST PATH: Z slice sin cargar el volumen completo ----------
+        # Load volume
+        reader = ImageReadersRegistry.open(str(absPath))
+        vol = reader.getImages()  # (Z, Y, X)
+        if vol is None or not hasattr(vol, "shape") or len(vol.shape) < 3:
+            raise HTTPException(status_code=415, detail="Unsupported volume data")
+
+        z, y, x = int(vol.shape[0]), int(vol.shape[1]), int(vol.shape[2])
+
+        # Choose the plane by axis
         if axis == "z":
-            try:
-                reader = ImageReadersRegistry.open(str(absPath))
-                k = max(0, int(sliceIndex))
-                try:
-                    pilImg = reader.getImage(index=k, pilImage=True)
-                except Exception:
-                    try:
-                        pilImg = reader.getCentralImage(pilImage=True)
-                    except Exception:
-                        pilImg = reader.getImage(index=0, pilImage=True)
+            dim = z
+            if not (0 <= sliceIndex < dim):
+                raise HTTPException(status_code=404, detail=f"Slice out of range for axis z (0..{dim-1})")
+            plane = vol[sliceIndex, :, :]
+        elif axis == "y":
+            dim = y
+            if not (0 <= sliceIndex < dim):
+                raise HTTPException(status_code=404, detail=f"Slice out of range for axis y (0..{dim-1})")
+            plane = vol[:, sliceIndex, :]
+        else:  # axis == "x"
+            dim = x
+            if not (0 <= sliceIndex < dim):
+                raise HTTPException(status_code=404, detail=f"Slice out of range for axis x (0..{dim-1})")
+            plane = vol[:, :, sliceIndex]
 
-                gray = self._pilTo2dTile(reader, pilImg)
-                if gray is None:
-                    raise RuntimeError("Empty/invalid image slice")
+        # Normalize (optional)
+        import numpy as np
+        arr = np.asarray(plane)
+        if normalize == "minmax":
+            mn, mx = float(np.min(arr)), float(np.max(arr))
+            if mx > mn:
+                arr = (arr - mn) / (mx - mn)
+        elif normalize == "zscore":
+            mu, sd = float(np.mean(arr)), float(np.std(arr))
+            if sd > 0:
+                arr = (arr - mu) / sd
+                arr = 0.5 + 0.2 * arr
+        # clamp to 0..1
+        arr = np.clip(arr, 0.0, 1.0)
 
-                gray = self._normMode2D(gray, mode=normalize or "minmax")
-                rgb = self._applyColormap(gray, usedCmap)
-                rgb = self._resizeIfNeeded(rgb, scale or 1.0)
+        # Colormap
+        import matplotlib
+        import matplotlib.cm as cm
+        cmap = cm.get_cmap(colormap or "viridis")
+        rgba = (cmap(arr) * 255).astype("uint8")  # HxWx4
 
-                img = Image.fromarray(rgb, mode="RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
+        # To image
+        from PIL import Image
+        img = Image.fromarray(rgba, mode="RGBA")
 
-                # depth si el reader lo expone
-                zdim = None
-                try:
-                    getN = getattr(reader, "getNumberOfImages", None)
-                    if callable(getN):
-                        zdim = int(getN())
-                except Exception:
-                    pass
+        # Optional thumb scaling (longest side)
+        if thumb and thumb > 0:
+            w, h = img.size
+            if max(w, h) != thumb:
+                if w >= h:
+                    new_w = thumb
+                    new_h = max(1, int(round(h * (thumb / float(w)))))
+                else:
+                    new_h = thumb
+                    new_w = max(1, int(round(w * (thumb / float(h)))))
+                img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
-                headers = {
-                    "X-Preview-Mime": "image/png",
-                    "X-Preview-Width": str(img.width),
-                    "X-Preview-Height": str(img.height),
-                    "X-Preview-Colormap": usedCmap,
-                    "X-Preview-Note": f"slice axis=z index={k}",
-                    "Access-Control-Expose-Headers": ", ".join([
-                        "Content-Disposition", "X-Preview-Mime", "X-Preview-Width",
-                        "X-Preview-Height", "X-Preview-Colormap", "X-Preview-Note",
-                    ]),
-                }
-                if zdim is not None:
-                    headers["X-Preview-Depth"] = str(zdim)
-                    headers["Access-Control-Expose-Headers"] += ", X-Preview-Depth"
-
-                headers[
-                    "Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
-                return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
-            except Exception:
-                # cae al slow path de abajo
-                pass
-
-        # ---------- SLOW PATH: y/x (o fallback) ----------
-        try:
-            vol3d, props = self._readVolumeArray(absPath)
-            if vol3d.ndim == 2:
-                vol3d = vol3d[None, ...]
-            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
-
-            if axis == "z":
-                k = max(0, min(int(sliceIndex), zdim - 1))
-                slice2d = vol3d[k, :, :]
-            elif axis == "y":
-                k = max(0, min(int(sliceIndex), ydim - 1))
-                slice2d = vol3d[:, k, :]
-            else:  # x
-                k = max(0, min(int(sliceIndex), xdim - 1))
-                slice2d = vol3d[:, :, k]
-
-            gray = self._normMode2D(slice2d, mode=normalize or "minmax")
-            rgb = self._applyColormap(gray, usedCmap)
-            rgb = self._resizeIfNeeded(rgb, scale or 1.0)
-
-            img = Image.fromarray(rgb, mode="RGB")
-            buf = io.BytesIO()
+        # Encode
+        from io import BytesIO
+        buf = BytesIO()
+        fmt_lower = (fmt or "webp").lower()
+        if fmt_lower == "png":
             img.save(buf, format="PNG")
+            mime = "image/png"
+        elif fmt_lower in ("jpg", "jpeg"):
+            img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=quality)
+            mime = "image/jpeg"
+        else:
+            # WEBP (default)
+            img.save(buf, format="WEBP", quality=quality, method=6)
+            mime = "image/webp"
+        data = buf.getvalue()
 
-            voxel = self._extractVoxelFromProps(props)
-            headers = {
-                "X-Preview-Mime": "image/png",
-                "X-Preview-Width": str(img.width),
-                "X-Preview-Height": str(img.height),
-                "X-Preview-Depth": str(zdim),
-                "X-Preview-Colormap": usedCmap,
-                "X-Preview-Note": f"slice axis={axis} index={k}",
-                "Access-Control-Expose-Headers": ", ".join([
-                    "Content-Disposition", "X-Preview-Mime", "X-Preview-Width", "X-Preview-Height",
-                    "X-Preview-Depth", "X-Preview-Colormap", "X-Preview-Note", "X-Preview-VoxelSize",
-                ]),
-            }
-            if all(v is not None for v in voxel):
-                headers["X-Preview-VoxelSize"] = f"{voxel[0]},{voxel[1]},{voxel[2]}"
+        # Headers for the front preview widget
+        headers = {
+            "Content-Type": mime,
+            "X-Preview-Width": str(img.size[0]),
+            "X-Preview-Height": str(img.size[1]),
+            "X-Preview-Depth": str(z),
+            "X-Preview-Colormap": (colormap or "viridis"),
+            "X-Preview-Format": fmt_lower,
+        }
+        disp = "inline" if inline else "attachment"
+        headers["Content-Disposition"] = f'{disp}; filename="{absPath.name}.{fmt_lower}"'
 
-            headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
-            return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
-
-        except Exception as e:
-            try:
-                return self.previewProtocolImageFile(self.protocol.getObjId(), relPath, inline=True)
-            except Exception:
-                raise HTTPException(status_code=500, detail=f"Slice render failed: {e}")
+        return Response(content=data, media_type=mime, headers=headers)
 
     # -------------------------
     # Private helpers (volumes)
     # -------------------------
 
+    def _resolveVolumeIndex(self, volumeId: Union[int, str], paths: List[Path]) -> int:
+        """
+        Accept either a numeric index (0-based) or a filename; return 0-based index.
+        """
+        s = str(volumeId)
+        # 1) try numeric
+        try:
+            idx = int(s)
+            if 0 <= idx < len(paths):
+                return idx
+        except Exception:
+            pass
+        # 2) try match by basename or full path
+        for i, p in enumerate(paths):
+            if p.name == s or str(p) == s:
+                return i
+        raise HTTPException(status_code=404, detail="Volume not found")
+
     def _collectVolumePaths(self) -> List[Path]:
         """
-        Collect absolute paths for a volume-like output:
-        - Single volume objects (getFileName)
-        - SetOfVolumes via iterItems()/iteration
+        Robust path collector for Volume / SetOfVolumes.
+        - Resolve relative paths against protocol/project roots.
+        - Keep only existing files.
+        - De-duplicate keeping order.
         """
         out = self.output
         paths: List[Path] = []
 
+        def _push_file(fp: Optional[str]):
+            if not fp:
+                return
+            try:
+                p = self.resolveFilePath(fp)
+                if p.exists() and p.is_file():
+                    paths.append(p)
+            except Exception:
+                pass
+
+        # Single volume (object-level getFileName)
         if not isinstance(out, EMSet):
             try:
-                p = out.getFileName()
-                if p and os.path.isfile(p):
-                    paths.append(Path(p).resolve())
+               _push_file(out.getFileName())
             except Exception:
                 pass
 
-        def _push(item):
-            try:
-                fp = item.getFileName()
-                if fp:
-                    paths.append(Path(fp).resolve())
-            except Exception:
-                pass
-
+        # Iterate sets/iterables
+        iters = []
         if isinstance(out, EMSet):
             try:
-                for it in out.iterItems():
-                    _push(it)
+                iters = list(out.iterItems())
             except Exception:
-                pass
+                iters = []
         else:
             try:
-                for it in out:  # type: ignore
-                    _push(it)
+                iters = list(out)  # type: ignore
             except Exception:
-                pass
+                iters = []
 
-        # De-duplicate keeping order
-        seen = set()
-        dedup: List[Path] = []
-        for p in paths:
-            if str(p) not in seen:
-                seen.add(str(p))
-                dedup.append(p)
-        return dedup
+        for it in iters:
+            try:
+                _push_file(it.getFileName())
+            except Exception:
+                continue
+        return paths
 
     def _readVolumeArray(self, absPath: Path) -> Tuple[np.ndarray, Dict[str, Any]]:
         sig = _stat_sig(absPath)
@@ -1548,7 +1557,6 @@ class OutputsPreview(FileHandlers):
             return rel.as_posix()
         except Exception:
             return absPath.name
-
 
     # ------------------------------------------------------------------ #
     # FSC plot
