@@ -287,7 +287,6 @@ async def listProtocolDir(
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    # Check project existence
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -303,7 +302,6 @@ async def previewProtocolText(
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    # Check project existence
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -328,7 +326,7 @@ async def previewProtocolImageFile(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
-async def previewProtocolImageFile(
+async def previewOutput(
     projectId: int,
     protocolId: Union[int, str],
     outputName: str,
@@ -340,21 +338,21 @@ async def previewProtocolImageFile(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Prefer header; fallback to query param (?cmap=viridis)
-    cmap = (
+    # Prefer header; fallback to query param (?cmap=viridis or ?colormap=viridis)
+    cmapHeader = (
         request.headers.get("x-scipion-colormap")
         or request.headers.get("x-preview-colormap")
         or request.headers.get("x-colormap")
         or request.headers.get("scipion-colormap")
         or request.headers.get("colormap")
-        or request.query_params.get("cmap")
     )
+    cmapQuery = request.query_params.get("cmap") or request.query_params.get("colormap")
 
     return service.outputPreview(
         protocolId=protocolId,
         outputName=outputName,
         requestHeaders=dict(request.headers),
-        colormap=cmap,
+        colormap=cmapHeader or cmapQuery,
     )
 
 
@@ -373,38 +371,46 @@ def listOutputVolumes(
     return service.listOutputVolumesService(projectId, protocolId, outputName)
 
 
-@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/info", response_model=Any, status_code=status.HTTP_200_OK)
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/info",
+            response_model=Any, status_code=status.HTTP_200_OK)
 def getVolumeInfo(
     projectId: int,
     protocolId: int,
     outputName: str,
-    volumeId: int,
+    volumeId: Union[int, str],  # <-- aceptar string o int
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
     return service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
 
 
-@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice", response_model=None)
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice",
+            response_model=None)
 def renderVolumeSlice(
-        projectId: int,
-        protocolId: int,
-        outputName: str,
-        volumeId: int,
-        index: int = Query(0, ge=0),
-        axis: str = Query("z", pattern="^(x|y|z)$"),
-        cmap: Optional[str] = Query('viridis'),
-        normalize: str = Query(None),
-        scale: float = Query(1.0, gt=0),
-        inline: bool = Query(True),
-        # NEW:
-        format: Optional[str] = Query("webp", pattern="^(png|webp|jpeg)$"),
-        thumb: Optional[int] = Query(None, ge=32, le=2048),
-        fast: bool = Query(False),
-        quality: int = Query(75, ge=1, le=100),
-        currentUser=Depends(getCurrentUser),
-        mapper: PostgresqlFlatMapper = Depends(getMapper),
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    volumeId: Union[int, str],  # <-- aceptar string o int
+    index: int = Query(0, ge=0),  # 0-based
+    axis: str = Query("z", pattern="^(x|y|z)$"),
+    # Aceptar BOTH pero resolvemos a 'cmap' (front ya solo manda cmap)
+    cmapParam: Optional[str] = Query(None, alias="cmap"),
+    colormapParam: Optional[str] = Query(None, alias="colormap"),
+    # Aceptar BOTH pero resolvemos a 'fmt'
+    formatParam: Optional[str] = Query(None, alias="format"),
+    fmtParam: Optional[str] = Query(None, alias="fmt"),
+    normalize: Optional[str] = Query(None),
+    scale: float = Query(1.0, gt=0),
+    inline: bool = Query(True),
+    thumb: Optional[int] = Query(None, ge=32, le=2048),
+    fast: bool = Query(False),
+    quality: int = Query(75, ge=1, le=100),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
+    cmap = cmapParam or colormapParam or "viridis"
+    fmt = fmtParam or formatParam or "webp"
+
     return service.renderVolumeSliceService(
         projectId=projectId,
         protocolId=protocolId,
@@ -416,5 +422,8 @@ def renderVolumeSlice(
         normalize=normalize,
         scale=scale,
         inline=inline,
-        fmt=format, thumb=thumb, fast=fast, quality=quality,
+        fmt=fmt,
+        thumb=thumb,
+        fast=fast,
+        quality=quality,
     )

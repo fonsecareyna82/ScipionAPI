@@ -1113,25 +1113,34 @@ class ProjectService:
         raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol (tried {candidates})")
 
     def listOutputVolumesService(self, projectId: int, protocolId: int, outputName: str):
-        """List available volume files for the given output."""
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.listOutputVolumes()
 
     def getVolumeInfoService(self, projectId: int, protocolId: int, outputName: str, volumeId: int):
-        """Return metadata (dims, voxel, size) for a specific volume."""
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.getVolumeInfo(volumeId)
 
     def renderVolumeSliceService(
             self, projectId: int, protocolId: int, outputName: str, volumeId: int,
-            sliceIndex: int, axis: str, colormap: Optional[str], normalize: str,
-            scale: float, inline: bool,
-            fmt: str = "webp", thumb: Optional[int] = None, fast: bool = False, quality: int = 75,
+            sliceIndex: int, axis: str, colormap: Optional[str], normalize: Optional[str],
+            scale: float, inline: bool, fmt: str = "webp",
+            thumb: Optional[int] = None, fast: bool = False, quality: int = 75,
     ) -> Response:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
+        # IMPORTANT: forward all args (antes no pasaba fmt/fast/quality)
         return op.renderVolumeSlice(
-            volumeId=volumeId, sliceIndex=sliceIndex, axis=axis,
-            colormap=colormap, normalize=normalize, scale=scale, inline=inline)
+            volumeId=volumeId,
+            sliceIndex=sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize,
+            scale=scale,
+            inline=inline,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
+        )
