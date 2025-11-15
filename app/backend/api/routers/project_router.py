@@ -368,7 +368,14 @@ def listOutputVolumes(
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    return service.listOutputVolumesService(projectId, protocolId, outputName)
+    items = service.listOutputVolumesService(projectId, protocolId, outputName)
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(items)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["X-Debug-VolumeCount"] = str(len(items or []))
+    resp.headers["Vary"] = "Authorization"
+    return resp
 
 
 @router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/info",
@@ -381,7 +388,13 @@ def getVolumeInfo(
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
-    return service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
+    info = service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(info)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
 
 
 @router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice",
@@ -411,7 +424,7 @@ def renderVolumeSlice(
     cmap = cmapParam or colormapParam or "viridis"
     fmt = fmtParam or formatParam or "webp"
 
-    return service.renderVolumeSliceService(
+    resp = service.renderVolumeSliceService(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
@@ -427,3 +440,7 @@ def renderVolumeSlice(
         fast=fast,
         quality=quality,
     )
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
