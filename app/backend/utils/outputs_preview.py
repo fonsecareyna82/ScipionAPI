@@ -27,7 +27,7 @@ from app.backend.utils.constants import (
     SQLITE_EXTENSIONS,
     PDF_EXTENSIONS,
     TABLE_EXTENSIONS,
-    ARCHIVE_EXTENSIONS,
+    ARCHIVE_EXTENSIONS, maxThumbSize,
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
 from pwem.emlib.image.image_readers import ImageReadersRegistry
@@ -1071,7 +1071,18 @@ class OutputsPreview(FileHandlers):
         Falls back gracefully if normalization fails.
         """
         try:
+            ny, nx = pilImg.size
+            scale = min(
+                maxThumbSize / float(nx),
+                maxThumbSize / float(ny),
+                1.0,  # do not upscale
+            )
+            thumbWidth = max(1, int(round(nx * scale)))
+            thumbHeight = max(1, int(round(ny * scale)))
             arr = np.array(pilImg)
+            pilGray = imgStk.asPilImage(arr, normalize=True)  # 'L'
+            pilGray.thumbnail((thumbWidth, thumbHeight))
+            arr = np.array(pilGray)
 
             if arr.ndim == 3 and arr.shape[-1] in (3, 4):
                 arr = np.array(pilImg.convert("L"))
