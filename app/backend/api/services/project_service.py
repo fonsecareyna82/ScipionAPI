@@ -30,10 +30,7 @@ import numpy as np
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
-from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.outputs_preview import OutputsPreview
-from pwem.emlib.image.image_readers import ImageReadersRegistry
-from pwem.objects import SetOfVolumes
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
@@ -69,18 +66,35 @@ class ProjectService:
     def __init__(self):
         self.manager = Manager()
         self.currentProject = None
+        # Keep objectManager attribute for backward compatibility,
+        # but new HTTP endpoints use a fresh ObjectManager per request.
         self.objectManager = None
 
     def clearCurrentProject(self):
         self.currentProject = None
 
-    def initializeOrderManager(self):
-        if self.objectManager is None:
-            self.objectManager = ObjectManager()
-        self.objectManager.registerDAO(ScipionSetsDAO)
-        self.objectManager.registerDAO(StarFile)
-        self.objectManager.registerReader(ScipionImageReader)
+    def _createObjectManager(self) -> ObjectManager:
+        """Create and configure a fresh ObjectManager instance.
+
+        A new instance is returned on each call to avoid sharing
+        SQLite connections across threads.
+        """
+        objMgr = ObjectManager()
+        objMgr.registerDAO(ScipionSetsDAO)
+        objMgr.registerDAO(StarFile)
+        objMgr.registerReader(ScipionImageReader)
         NumpyDao.addCompatibleFileType('cs')
+        return objMgr
+
+    def initializeOrderManager(self):
+        """Kept for backward compatibility with older code paths.
+
+        New HTTP endpoints should call _createObjectManager() instead
+        of relying on a shared instance.
+        """
+        if self.objectManager is None:
+            self.objectManager = self._createObjectManager()
+        return self.objectManager
 
     def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
         # Check if a project with the same name already exists for this user
@@ -1067,16 +1081,18 @@ class ProjectService:
 
     def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
         """
-        Return a preview for selected output
+        Return a preview for selected output.
+
+        A fresh ObjectManager is created for every request to keep
+        underlying DAOs (and SQLite connections) thread-safe.
         """
         protocol = self.currentProject.getProtocol(protocolId)
         output = getattr(protocol, outputName)
         outputPath = output.getFileName()
         outputPreview = OutputsPreview(self.currentProject, protocol, output, requestHeaders=requestHeaders,
                                        colormapOverride=colormap,)
-        self.objectManager = ObjectManager()
-        self.initializeOrderManager()
-        return outputPreview.preview(protocolId, outputPath, self.objectManager)
+        objMgr = self._createObjectManager()
+        return outputPreview.preview(protocolId, outputPath, objMgr)
 
     # ======================================================================
     # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
@@ -1144,3 +1160,722 @@ class ProjectService:
             fast=fast,
             quality=quality,
         )
+
+    # ======================================================================
+    # Internal helpers for metadata tables (STAR / SQLITE / etc.)
+    # ======================================================================
+
+    def _resolveOutputForMetadata(self, protocolId: int, outputName: str):
+        """
+        Resolve protocol and output object for metadata operations.
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol"
+            )
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None"
+            )
+
+        getFileNameFn = getattr(output, "getFileName", None)
+        if not callable(getFileNameFn):
+            raise HTTPException(
+                status_code=404,
+                detail="Output has no metadata file (getFileName not available)"
+            )
+
+        metaPath = getFileNameFn()
+        if not metaPath or not os.path.exists(metaPath):
+            raise HTTPException(
+                status_code=404,
+                detail="Metadata file not found for this output"
+            )
+
+        return protocol, output, metaPath
+
+    def _getMetadataObjectManager(self, metaPath: str) -> ObjectManager:
+        """
+        Configure ObjectManager to work over the given metadata file.
+
+        A fresh ObjectManager is created per call to avoid sharing
+        SQLite connections between threads.
+        """
+        objMgr = self._createObjectManager()
+        # Follow the same pattern used in OutputsPreview._previewSqlite
+        objMgr._fileName = FsPath(metaPath)
+        objMgr._dao = None
+        objMgr._tables = {}
+        objMgr.selectDAO()
+        objMgr.getTables()
+        return objMgr
+
+    def _openMetadataTable(self, protocolId: int, outputName: str, tableName: str):
+        """
+        Resolve (ObjectManager, Table) for a given output + tableName.
+        """
+        _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+        objMgr = self._getMetadataObjectManager(metaPath)
+        table = objMgr.getTable(tableName)
+        if table is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Metadata table '{tableName}' not found"
+            )
+        return objMgr, table
+
+    def _rendererTypeFromInstance(self, renderer) -> str:
+        """
+        Map renderer class name to a simple type label for the API.
+        """
+        name = renderer.__class__.__name__
+        mapping = {
+            "IntRenderer": "int",
+            "FloatRenderer": "float",
+            "BoolRenderer": "bool",
+            "MatrixRender": "matrix",
+            "ImageRenderer": "image",
+            "StrRenderer": "str",
+        }
+        return mapping.get(name, "str")
+
+    def _convertCellForPage(self, renderer, rawValue, rowValues):
+        """
+        Convert a raw cell value + renderer into something JSON friendly for page API.
+        - image  -> { kind: "image", path: "..." }
+        - matrix -> { kind: "matrix", value: [[...], ...] }
+        - others -> primitive (int/float/bool/str) when possible
+        """
+        clsName = renderer.__class__.__name__
+
+        # Image cells: do not materialize the image here, just mark as image
+        if clsName == "ImageRenderer":
+            return {
+                "kind": "image",
+                "path": "" if rawValue is None else str(rawValue),
+            }
+
+        # Matrix cells: render and convert ndarray to list
+        if clsName == "MatrixRender":
+            try:
+                rendered = renderer.render(rawValue, rowValues)
+            except Exception:
+                rendered = rawValue
+            if isinstance(rendered, np.ndarray):
+                renderedVal = rendered.tolist()
+            else:
+                renderedVal = rendered
+            return {
+                "kind": "matrix",
+                "value": renderedVal,
+            }
+
+        # Default: just render and ensure JSON-friendly
+        try:
+            rendered = renderer.render(rawValue, rowValues)
+        except Exception:
+            rendered = rawValue
+
+        if isinstance(rendered, np.ndarray):
+            rendered = rendered.tolist()
+        if isinstance(rendered, np.generic):
+            rendered = rendered.item()
+
+        return rendered
+
+    # ======================================================================
+    # ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
+    # ======================================================================
+
+    def listOutputMetadataTablesService(self, projectId: int,
+                                        protocolId: int,
+                                        outputName: str):
+        """
+        List logical metadata tables associated with an output.
+        Used by:
+          GET /projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables
+        """
+        _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+        objMgr = self._getMetadataObjectManager(metaPath)
+
+        tables = objMgr.getTables() or {}
+        items = []
+        for name, table in tables.items():
+            try:
+                rowCount = objMgr.getTableRowCount(name) or 0
+            except Exception:
+                rowCount = 0
+            hasColumnId = True
+            try:
+                hasColumnId = table.hasColumnId()
+            except Exception:
+                pass
+
+            items.append({
+                "name": name,
+                "alias": table.getAlias(),
+                "rowCount": int(rowCount),
+                "hasColumnId": bool(hasColumnId),
+            })
+
+        return items
+
+    def getMetadataTableSchemaService(self, projectId: int,
+                                      protocolId: int,
+                                      outputName: str,
+                                      tableName: str):
+        """
+        Return logical schema for one metadata table: columns, renderers, flags.
+        Used by:
+          GET /projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/schema
+        """
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+
+        try:
+            hasColumnId = table.hasColumnId()
+        except Exception:
+            hasColumnId = True
+
+        columns = list(table.getColumns())
+        schema = {
+            "name": tableName,
+            "alias": table.getAlias(),
+            "hasColumnId": bool(hasColumnId),
+            "columns": [],
+        }
+
+        for idx, col in enumerate(columns):
+            try:
+                col.setIndex(idx)
+            except Exception:
+                pass
+
+            renderer = col.getRenderer()
+            rendererType = self._rendererTypeFromInstance(renderer)
+
+            decimals = None
+            if hasattr(renderer, "getDecimalsNumber"):
+                try:
+                    decimals = renderer.getDecimalsNumber()
+                except Exception:
+                    decimals = None
+
+            hasTransformation = False
+            if hasattr(renderer, "hasTransformation"):
+                try:
+                    hasTransformation = bool(renderer.hasTransformation())
+                except Exception:
+                    hasTransformation = False
+
+            sortable = True
+            if hasattr(col, "isSorteable"):
+                try:
+                    sortable = bool(col.isSorteable())
+                except Exception:
+                    sortable = True
+
+            visible = True
+            if hasattr(col, "isVisible"):
+                try:
+                    visible = bool(col.isVisible())
+                except Exception:
+                    visible = True
+
+            schema["columns"].append({
+                "name": col.getName(),
+                "alias": col.getAlias() or col.getName(),
+                "index": idx,
+                "sortable": sortable,
+                "visible": visible,
+                "rendererType": rendererType,
+                "decimals": decimals,
+                "hasTransformation": hasTransformation,
+            })
+
+        return schema
+
+    def getMetadataTablePageService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        tableName: str,
+        page: int,
+        pageSize: int,
+        sortBy: str,
+        asc: bool,
+        selectionOnly: bool,
+    ):
+        """
+        Return one logical page of rows for a metadata table.
+        Sorting is currently delegated to the underlying DAO default order.
+        """
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        columns = list(table.getColumns())
+
+        # Selection-only mode: use Table.Selection if present
+        if selectionOnly:
+            rows: list = []
+            totalRows = 0
+            try:
+                selection = table.getSelection()
+                if selection and not selection.isEmpty():
+                    allIds = sorted(selection.getSelection().keys())
+                    totalRows = len(allIds)
+                    start = max(0, (page - 1) * pageSize)
+                    end = start + pageSize
+                    sliceIds = allIds[start:end]
+                    for rid in sliceIds:
+                        idx0 = max(0, int(rid) - 1)
+                        chunk = objMgr.getRows(tableName, idx0, 1) or []
+                        if chunk:
+                            rows.append(chunk[0])
+                else:
+                    totalRows = 0
+                    rows = []
+            except Exception:
+                totalRows = 0
+                rows = []
+        else:
+            # Normal pagination: offset + limit
+            try:
+                totalRows = objMgr.getTableRowCount(tableName) or 0
+            except Exception:
+                totalRows = 0
+
+            if totalRows <= 0:
+                rows = []
+            else:
+                offset = max(0, (page - 1) * pageSize)
+                if offset >= totalRows:
+                    rows = []
+                else:
+                    rows = objMgr.getRows(tableName, offset, pageSize) or []
+
+        resultRows = []
+        for row in rows:
+            try:
+                rowId = row.getId()
+            except Exception:
+                rowId = None
+            rowValues = row.getValues()
+
+            valuesPayload = []
+            for idx, rawVal in enumerate(rowValues):
+                if idx >= len(columns):
+                    break
+                col = columns[idx]
+                renderer = col.getRenderer()
+                cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                valuesPayload.append(cell)
+
+            resultRows.append({
+                "id": rowId,
+                "values": valuesPayload,
+            })
+
+        return {
+            "pageNumber": page,
+            "pageSize": pageSize,
+            "totalRows": int(totalRows),
+            "rows": resultRows,
+        }
+
+    def exportMetadataTableService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        tableName: str,
+        fmt: str,
+        selectionOnly: bool,
+        ids: Optional[List[int]],
+    ) -> Response:
+        """
+        Export metadata table as CSV or XLSX.
+
+        - If ids is provided -> export those ids.
+        - Else if selectionOnly -> try server-side selection.
+        - Else -> export whole table.
+        """
+        import csv  # local import to avoid touching module header
+
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        columns = list(table.getColumns())
+        colNames = [c.getName() for c in columns]
+
+        # Determine row ids to export
+        rowIds: Optional[List[int]] = None
+
+        if ids:
+            rowIds = [int(x) for x in ids]
+        elif selectionOnly:
+            try:
+                selection = table.getSelection()
+                if selection and not selection.isEmpty():
+                    rowIds = sorted(selection.getSelection().keys())
+                else:
+                    rowIds = []
+            except Exception:
+                rowIds = []
+        else:
+            rowIds = None  # will export whole table
+
+        # Collect rows to export
+        rowsToExport = []
+        if rowIds is not None:
+            for rid in rowIds:
+                idx0 = max(0, int(rid) - 1)
+                chunk = objMgr.getRows(tableName, idx0, 1) or []
+                if chunk:
+                    rowsToExport.append(chunk[0])
+        else:
+            try:
+                totalRows = objMgr.getTableRowCount(tableName) or 0
+            except Exception:
+                totalRows = 0
+            if totalRows > 0:
+                rowsToExport = objMgr.getRows(tableName, 0, totalRows) or []
+
+        fmtLower = (fmt or "csv").lower()
+        if fmtLower not in ("csv", "xlsx"):
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported export format. Use 'csv' or 'xlsx'.",
+            )
+
+        if fmtLower == "csv":
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(colNames)
+
+            for row in rowsToExport:
+                rowValues = row.getValues()
+                outRow = []
+                for idx, colName in enumerate(colNames):
+                    if idx >= len(rowValues):
+                        outRow.append("")
+                        continue
+                    rawVal = rowValues[idx]
+                    renderer = columns[idx].getRenderer()
+                    try:
+                        v = renderer.render(rawVal, rowValues)
+                    except Exception:
+                        v = rawVal
+                    if isinstance(v, np.ndarray):
+                        v = v.tolist()
+                    if isinstance(v, np.generic):
+                        v = v.item()
+                    if not isinstance(v, (str, int, float, bool)):
+                        v = str(v)
+                    outRow.append(v)
+                writer.writerow(outRow)
+
+            contentBytes = buf.getvalue().encode("utf-8")
+            mediaType = "text/csv; charset=utf-8"
+            ext = "csv"
+        else:
+            # XLSX export requires openpyxl
+            try:
+                from openpyxl import Workbook
+            except ImportError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="XLSX export requires 'openpyxl' to be installed.",
+                )
+
+            wb = Workbook()
+            ws = wb.active
+            ws.append(colNames)
+
+            for row in rowsToExport:
+                rowValues = row.getValues()
+                outRow = []
+                for idx, colName in enumerate(colNames):
+                    if idx >= len(rowValues):
+                        outRow.append(None)
+                        continue
+                    rawVal = rowValues[idx]
+                    renderer = columns[idx].getRenderer()
+                    try:
+                        v = renderer.render(rawVal, rowValues)
+                    except Exception:
+                        v = rawVal
+                    if isinstance(v, np.ndarray):
+                        v = v.tolist()
+                    if isinstance(v, np.generic):
+                        v = v.item()
+                    if not isinstance(v, (str, int, float, bool)):
+                        v = str(v)
+                    outRow.append(v)
+                ws.append(outRow)
+
+            bio = io.BytesIO()
+            wb.save(bio)
+            contentBytes = bio.getvalue()
+            mediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ext = "xlsx"
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{tableName}.{ext}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+        return Response(content=contentBytes, media_type=mediaType, headers=headers)
+
+    def renderMetadataImageCellService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            rowId: Union[int, str, None],
+            columnName: str,
+            size: int,
+            applyTransform: bool,
+            inline: bool,
+            fmt: str,
+            rowIndex: Optional[int] = None,
+    ) -> Response:
+        """
+        Render one image cell from a metadata table using ImageRenderer.
+
+        The row can be located either by:
+        - rowIndex (preferred for virtual scrolling): 0-based index in the current table order
+        - rowId (legacy): logical row id, interpreted as 1-based index
+        """
+        from PIL import Image as PILImage  # local import
+
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        columns = list(table.getColumns())
+
+        # Resolve column index
+        colIndex = table.getColumnIndexFromLabel(columnName)
+        if colIndex < 0 or colIndex >= len(columns):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Column '{columnName}' not found in table '{tableName}'",
+            )
+
+        # Decide which row index to use in objMgr.getRows
+        if rowIndex is not None:
+            try:
+                idx0 = int(rowIndex)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowIndex must be an integer",
+                )
+            if idx0 < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowIndex must be >= 0",
+                )
+        else:
+            if rowId is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Either rowIndex or rowId must be provided",
+                )
+            try:
+                rowIdInt = int(rowId)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowId must be an integer",
+                )
+            if rowIdInt <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowId must be >= 1",
+                )
+            # Legacy behaviour: logical id treated as 1-based index
+            idx0 = rowIdInt - 1
+
+        # Fetch the corresponding row
+        rows = objMgr.getRows(tableName, idx0, 1) or []
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Row index {idx0} not found in table '{tableName}'",
+            )
+
+        row = rows[0]
+        rowValues = row.getValues()
+        if colIndex >= len(rowValues):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Column index {colIndex} out of range for this row",
+            )
+
+        rawValue = rowValues[colIndex]
+        column = columns[colIndex]
+        renderer = column.getRenderer()
+
+        # Ensure renderer behaves like ImageRenderer
+        if hasattr(renderer, "setSize"):
+            renderer.setSize(size)
+        if hasattr(renderer, "setApplyTransformation"):
+            renderer.setApplyTransformation(applyTransform)
+
+        try:
+            img = renderer.render(rawValue, rowValues)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cannot render image cell: {e}",
+            )
+
+        if img is None:
+            raise HTTPException(status_code=404, detail="No image for this cell")
+
+        # If renderer returns ndarray, convert to PIL.Image
+        if isinstance(img, np.ndarray):
+            if img.ndim == 2:
+                mode = "L"
+            elif img.ndim == 3 and img.shape[-1] == 3:
+                mode = "RGB"
+            else:
+                mode = "L"
+            img = PILImage.fromarray(img, mode=mode)
+
+        if not hasattr(img, "save"):
+            raise HTTPException(
+                status_code=500,
+                detail="Renderer did not return a PIL image",
+            )
+
+        try:
+            img.thumbnail((size, size))
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+
+        img.save(buf, format=pilFormat)
+
+        disp = "inline" if inline else "attachment"
+        # For backwards compat, include the logical id if present; else fall back to 1-based index
+        filenameId = rowId if rowId is not None else (idx0 + 1)
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{filenameId}.{fmtLower}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def getMetadataTableWindowService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            offset: int,
+            limit: int,
+            selectionOnly: bool,
+    ):
+        """
+        Return a window of rows for a metadata table using offset + limit.
+
+        IMPORTANT:
+        - `offset` / `limit` are 0-based indices in the current table order.
+        - Each returned row uses `id` as the 0-based row index (stable for the viewer),
+          and also exposes `rowId` with the logical DAO id (which may be sparse).
+        """
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        columns = list(table.getColumns())
+
+        # Normalize offset/limit
+        offset = max(0, int(offset or 0))
+        limit = max(1, int(limit or 1))
+
+        # Total rows
+        try:
+            totalRows = objMgr.getTableRowCount(tableName) or 0
+        except Exception:
+            totalRows = 0
+
+        if totalRows <= 0:
+            rows = []
+        else:
+            # Selection-only mode: map offset/limit over selection ids
+            if selectionOnly:
+                rows = []
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        allIds = sorted(selection.getSelection().keys())
+                        totalRows = len(allIds)
+                        if offset < totalRows:
+                            end = min(offset + limit, totalRows)
+                            sliceIds = allIds[offset:end]
+                            for rid in sliceIds:
+                                idx0 = max(0, int(rid) - 1)
+                                chunk = objMgr.getRows(tableName, idx0, 1) or []
+                                if chunk:
+                                    rows.append(chunk[0])
+                    else:
+                        rows = []
+                except Exception:
+                    rows = []
+            else:
+                # Normal case: offset + limit sobre la tabla completa
+                if offset >= totalRows:
+                    rows = []
+                else:
+                    rows = objMgr.getRows(tableName, offset, limit) or []
+
+        resultRows = []
+        for local_index, row in enumerate(rows):
+            try:
+                logical_id = row.getId()
+            except Exception:
+                logical_id = None
+            rowValues = row.getValues()
+
+            valuesPayload = []
+            for idx, rawVal in enumerate(rowValues):
+                if idx >= len(columns):
+                    break
+                col = columns[idx]
+                renderer = col.getRenderer()
+                cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                valuesPayload.append(cell)
+
+            global_index = offset + local_index
+
+            resultRows.append({
+                # 0-based row index for the viewer (used to request images).
+                "id": global_index,
+                "index": global_index,
+                # Logical DAO id (may be non-consecutive); kept for future selection/export logic.
+                "rowId": logical_id,
+                "values": valuesPayload,
+            })
+
+        return {
+            "offset": offset,
+            "limit": limit,
+            "totalRows": int(totalRows),
+            "rows": resultRows,
+        }
+
+
