@@ -444,3 +444,314 @@ def renderVolumeSlice(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
+
+
+# ==============================================================================
+#            ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
+# ==============================================================================
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listOutputMetadataTables(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    List logical metadata tables (blocks) associated with a given output.
+    Typical use case: STAR blocks, SQLITE tables, etc.
+
+    Expected response (example):
+    [
+      {
+        "name": "data_particles",
+        "alias": "Particles",
+        "rowCount": 123456,
+        "hasColumnId": true
+      },
+      ...
+    ]
+    """
+    items = service.listOutputMetadataTablesService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(items)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/schema",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getMetadataTableSchema(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return logical schema for one metadata table: columns, renderers, flags.
+
+    Expected response (example):
+    {
+      "name": "data_particles",
+      "alias": "Particles",
+      "hasColumnId": true,
+      "columns": [
+        {
+          "name": "id",
+          "alias": "id",
+          "index": 0,
+          "sortable": true,
+          "visible": true,
+          "rendererType": "int",          # int|float|bool|matrix|image|str
+          "decimals": null,
+          "hasTransformation": false
+        },
+        ...
+      ]
+    }
+    """
+    schema = service.getMetadataTableSchemaService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+    )
+
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(schema)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/page",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getMetadataTablePage(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    page: int = Query(1, ge=1, description="1-based page number"),
+    pageSize: int = Query(100, ge=1, le=5000),
+    sortBy: str = Query("id", description="Column name used for sorting"),
+    asc: bool = Query(True, description="Sort ascending if true"),
+    selectionOnly: bool = Query(
+        False,
+        description="If true, return only rows currently selected in this table (if implemented)",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return one logical page of rows for a metadata table.
+
+    Expected response (example):
+    {
+      "pageNumber": 1,
+      "pageSize": 100,
+      "totalRows": 123456,
+      "rows": [
+        {
+          "id": 1,
+          "values": [
+            1,             # int / float / bool / string
+            "A value",
+            { "kind": "image", "path": "path/to/img.mrc" },
+            { "kind": "matrix", "value": [[1.0, 2.0], [3.0, 4.0]] }
+          ]
+        },
+        ...
+      ]
+    }
+    """
+    pageData = service.getMetadataTablePageService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        page=page,
+        pageSize=pageSize,
+        sortBy=sortBy,
+        asc=asc,
+        selectionOnly=selectionOnly,
+    )
+
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(pageData)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/export",
+    response_model=None,
+)
+def exportMetadataTable(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    fmt: str = Query(
+        "csv",
+        alias="format",
+        pattern="^(csv|xlsx)$",
+        description="Export format: csv or xlsx",
+    ),
+    selectionOnly: bool = Query(
+        False,
+        description="If true, export only selected rows (server-side selection, if implemented).",
+    ),
+    ids: Optional[str] = Query(
+        None,
+        description="Optional comma-separated row ids to export; if provided, takes precedence over selectionOnly.",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Export a metadata table (full or subset) as CSV/XLSX.
+
+    - If `ids` is provided → use those ids.
+    - Else if `selectionOnly` is true → use server-side selection.
+    - Else → export the whole table.
+    """
+    idList: Optional[List[int]] = None
+    if ids:
+        try:
+            idList = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid 'ids' parameter. Expected comma-separated integers.",
+            )
+
+    resp = service.exportMetadataTableService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        fmt=fmt,
+        selectionOnly=selectionOnly,
+        ids=idList,
+    )
+    # resp should be a StreamingResponse / FileResponse
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image",
+    response_model=None,
+)
+def renderMetadataImageCell(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    rowId: Optional[Union[int, str]] = Query(
+        None,
+        description="Logical row id (for selection/export workflows; optional in virtual scroll).",
+    ),
+    rowIndex: Optional[int] = Query(
+        None,
+        ge=0,
+        description="0-based row index in the current table order (preferred for virtual scroll).",
+    ),
+    column: str = Query(
+        ...,
+        description="Column name that contains the image path or reference.",
+    ),
+    size: int = Query(
+        256,
+        ge=16,
+        le=2048,
+        description="Target thumbnail size in pixels.",
+    ),
+    applyTransform: bool = Query(
+        False,
+        description="If true, apply geometric transformation (rotation) if available.",
+    ),
+    inline: bool = Query(
+        True,
+        description="If true, send Content-Disposition inline (for browser display).",
+    ),
+    fmt: str = Query(
+        "png",
+        description="Image format to generate (png, jpeg, webp, etc.), implementation-dependent.",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Render one image cell from a metadata table using the same logic as ImageRenderer:
+    - Resize / normalize
+    - Optional rotation / transformation
+
+    Frontend will use this endpoint for cells whose rendererType == 'image'.
+    """
+    resp = service.renderMetadataImageCellService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        rowId=rowId,
+        rowIndex=rowIndex,
+        columnName=column,
+        size=size,
+        applyTransform=applyTransform,
+        inline=inline,
+        fmt=fmt,
+    )
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/rows"
+)
+def get_metadata_window(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, gt=0),
+    selectionOnly: bool = Query(False),
+    currentUser=Depends(getCurrentUser),
+):
+    return service.getMetadataTableWindowService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        offset=offset,
+        limit=limit,
+        selectionOnly=selectionOnly,
+    )
+
