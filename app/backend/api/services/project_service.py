@@ -30,7 +30,9 @@ import numpy as np
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
+from app.backend.utils.constants import SQLITE_OBJECT_TABLE
 from app.backend.utils.outputs_preview import OutputsPreview
+from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
@@ -1340,6 +1342,41 @@ class ProjectService:
         """
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
 
+        visibleLabels = []
+        orderLabels = []
+        renderLabels = []
+
+        # It is only possible to manage the main table("object").
+        if table.getName() == SQLITE_OBJECT_TABLE:
+            from pwem.viewers.viewers_data import RegistryViewerConfig
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            output = getattr(protocol, outputName)
+
+            # Get viewer config or fall back to empty dict
+            config = RegistryViewerConfig.getConfig(type(output)) or {}
+
+            fileNameLabel = ' _filename'
+            stackLabel = ' stack'
+
+            # Read raw label strings with safe defaults
+            visibleLabelsStr = config.get(VISIBLE, '')
+            orderLabelsStr = config.get(ORDER, '')
+            renderLabelsStr = config.get(RENDER, '')
+
+            # Replace only the first filename occurrence by stack
+            orderLabelsStr = orderLabelsStr.replace(fileNameLabel, stackLabel, 1)
+            renderLabelsStr = renderLabelsStr.replace(fileNameLabel, stackLabel, 1)
+
+            # Ensure stack is rendered if filename was visible
+            if fileNameLabel in visibleLabelsStr and stackLabel not in renderLabelsStr:
+                renderLabelsStr += stackLabel
+                visibleLabelsStr += stackLabel
+
+            # Convert space-separated strings to lists
+            visibleLabels = visibleLabelsStr.split()
+            orderLabels = orderLabelsStr.split()
+            renderLabels = renderLabelsStr.split()
+
         try:
             hasColumnId = table.hasColumnId()
         except Exception:
@@ -1383,10 +1420,9 @@ class ProjectService:
                 except Exception:
                     sortable = True
 
-            visible = True
             if hasattr(col, "isVisible"):
                 try:
-                    visible = bool(col.isVisible())
+                    visible = col.getName() in visibleLabels if visibleLabels else True
                 except Exception:
                     visible = True
 
