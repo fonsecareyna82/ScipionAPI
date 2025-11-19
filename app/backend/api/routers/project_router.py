@@ -334,9 +334,6 @@ async def previewOutput(
     currentUser=Depends(getCurrentUser),
     mapper=Depends(getMapper),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
 
     # Prefer header; fallback to query param (?cmap=viridis or ?colormap=viridis)
     cmapHeader = (
