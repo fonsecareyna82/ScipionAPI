@@ -32,6 +32,7 @@ from metadataviewer.model import ObjectManager
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE
 from app.backend.utils.outputs_preview import OutputsPreview
+from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import SetOfVolumes
 from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -1839,6 +1840,13 @@ class ProjectService:
 
         try:
             img.thumbnail((size, size))
+            # Normalize image
+            arr = np.array(img)
+            iMax = arr.max()
+            iMin = arr.min()
+            im255 = ((arr - iMin) / (iMax - iMin) * 255).astype(np.uint8)
+            img = PILImage.fromarray(im255, mode="L")
+
         except Exception:
             pass
 
