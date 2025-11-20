@@ -381,7 +381,7 @@ def getVolumeInfo(
     projectId: int,
     protocolId: int,
     outputName: str,
-    volumeId: Union[int, str],  # <-- aceptar string o int
+    volumeId: Union[int, str],  # <-- accept string or int
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
@@ -394,19 +394,63 @@ def getVolumeInfo(
     return resp
 
 
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/histogram",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getVolumeHistogram(
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        volumeId: Union[int, str],
+        bins: int = Query(
+            128,
+            ge=4,
+            le=8192,
+            description="Number of histogram bins",
+        ),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return intensity histogram for one volume.
+
+    Expected response (example):
+    {
+      "binEdges": [e0, e1, ..., eN],   # or backend may use bin_edges
+      "counts":   [c0, c1, ..., cN-1]  # or values
+    }
+    """
+    hist = service.getVolumeHistogramService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        volumeId=volumeId,
+        bins=bins,
+    )
+
+    from fastapi.responses import JSONResponse
+    resp = JSONResponse(hist or {"binEdges": [], "counts": []})
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
 @router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice",
             response_model=None)
 def renderVolumeSlice(
     projectId: int,
     protocolId: int,
     outputName: str,
-    volumeId: Union[int, str],  # <-- aceptar string o int
+    volumeId: Union[int, str],  # <-- accept string or int
     index: int = Query(0, ge=0),  # 0-based
     axis: str = Query("z", pattern="^(x|y|z)$"),
-    # Aceptar BOTH pero resolvemos a 'cmap' (front ya solo manda cmap)
+    # Accept BOTH but resolve to 'cmap' (front already sends cmap)
     cmapParam: Optional[str] = Query(None, alias="cmap"),
     colormapParam: Optional[str] = Query(None, alias="colormap"),
-    # Aceptar BOTH pero resolvemos a 'fmt'
+    # Accept BOTH but resolve to 'fmt'
     formatParam: Optional[str] = Query(None, alias="format"),
     fmtParam: Optional[str] = Query(None, alias="fmt"),
     normalize: Optional[str] = Query(None),
@@ -751,4 +795,3 @@ def get_metadata_window(
         limit=limit,
         selectionOnly=selectionOnly,
     )
-
