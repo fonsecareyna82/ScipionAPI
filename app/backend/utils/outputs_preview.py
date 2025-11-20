@@ -1622,6 +1622,39 @@ class OutputsPreview(FileHandlers):
         except Exception:
             return absPath.name
 
+    def getVolumeHistogram(self, volumePath, bins: int = 128):
+        """
+        Return a simple intensity histogram for the selected volume.
+
+        Output:
+        {
+          "binEdges": [float, ...],
+          "counts":   [int,   ...]
+        }
+        """
+        # You probably already have some internal helper to open the
+        # volume as a numpy array when computing min/max/mean/std.
+        # Reuse it here. Example name:
+        imgStk = ImageReadersRegistry.open(volumePath)
+        data = np.asarray(imgStk.getImages())
+
+        if data is None:
+            return {"binEdges": [], "counts": []}
+
+        arr = np.asarray(data, dtype=np.float32).ravel()
+        # Filter non-finite values if any
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return {"binEdges": [], "counts": []}
+
+        # Compute histogram
+        counts, binEdges = np.histogram(arr, bins=bins)
+
+        return {
+            "binEdges": binEdges.tolist(),
+            "counts": counts.tolist(),
+        }
+
     # ------------------------------------------------------------------ #
     # FSC plot
     # ------------------------------------------------------------------ #

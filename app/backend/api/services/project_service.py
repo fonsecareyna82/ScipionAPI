@@ -32,6 +32,7 @@ from metadataviewer.model import ObjectManager
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE
 from app.backend.utils.outputs_preview import OutputsPreview
+from pwem.objects import SetOfVolumes
 from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
@@ -1139,6 +1140,53 @@ class ProjectService:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.getVolumeInfo(volumeId)
+
+    def getVolumeHistogramService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            bins: int = 128,
+    ):
+        """
+        Compute or retrieve an intensity histogram for a single volume.
+
+        It delegates to OutputsPreview so all volume handling stays in one place.
+        The result is normalized to always expose:
+        {
+          "binEdges": [...],
+          "counts":   [...]
+        }
+        """
+        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        op = OutputsPreview(self.currentProject, protocol, output)
+
+        # This expects OutputsPreview to expose `getVolumeHistogram`
+        if isinstance(output, SetOfVolumes):
+            output = output.getItem('_objId', volumeId+1)
+        raw = op.getVolumeHistogram(volumePath=output.getFileName(), bins=bins)
+
+        if not raw:
+            return {"binEdges": [], "counts": []}
+
+        # Accept a couple of variants from OutputsPreview and normalize
+        binEdges = raw.get("binEdges") or raw.get("bin_edges") or []
+        counts = raw.get("counts") or raw.get("values") or []
+
+        try:
+            binEdges = list(binEdges)
+        except Exception:
+            binEdges = []
+        try:
+            counts = list(counts)
+        except Exception:
+            counts = []
+
+        return {
+            "binEdges": binEdges,
+            "counts": counts,
+        }
 
     def renderVolumeSliceService(
             self, projectId: int, protocolId: int, outputName: str, volumeId: int,
