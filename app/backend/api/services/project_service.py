@@ -46,7 +46,7 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Any, Union, Tuple
+from typing import List, Optional, Any, Union, Tuple, Dict
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
@@ -64,6 +64,43 @@ from app.backend.utils.file_handlers import FileHandlers
 
 from app.backend.models.project_model import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
+
+from dataclasses import dataclass
+from functools import lru_cache
+from threading import RLock
+
+_VOLUME3D_LOCK = RLock()
+
+
+@dataclass(frozen=True)
+class _VolSig:
+    path: str
+    mtime_ns: int
+    size: int
+
+
+def _statSig(p: FsPath) -> _VolSig:
+    st = p.stat()
+    return _VolSig(str(p), st.st_mtime_ns, st.st_size)
+
+
+@lru_cache(maxsize=8)
+def _readVolumeCached(sig: _VolSig) -> Any:
+    """Disk -> numpy only once per (path, mtime, size)."""
+    imgStk = ImageReadersRegistry.open(sig.path)
+    data = np.asarray(imgStk.getImages())
+
+    if data.ndim not in (2, 3):
+        data = np.squeeze(data)
+        if data.ndim not in (2, 3):
+            raise ValueError(f"Unsupported dimensionality: {data.shape}")
+
+    try:
+        props = imgStk.getProperties() or {}
+    except Exception:
+        props = {}
+
+    return np.asarray(data, dtype=np.float32), props
 
 
 class ProjectService:
@@ -1212,6 +1249,221 @@ class ProjectService:
             quality=quality,
         )
 
+    def _readVolumeArray3d(self, volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Read a volume using ImageReadersRegistry (same as OutputsPreview),
+        returning:
+          - arr: float32 numpy array (Z, Y, X)
+          - props: dict with reader properties
+        Cached by (path, mtime_ns, size).
+        """
+        p = FsPath(volumePath)
+        if not p.exists():
+            raise HTTPException(status_code=404, detail="Volume file not found on disk")
+
+        sig = _statSig(p)
+
+        # Guard cache access in case multiple threads hit it at once
+        with _VOLUME3D_LOCK:
+            arr, props = _readVolumeCached(sig)
+
+        if arr.ndim == 2:
+            arr = arr[None, ...]  # (1, Y, X)
+
+        return arr, props
+
+    def getVolumeData3dService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            maxDim: int = 160,
+            method: str = "binning",
+    ):
+        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        volumePath = self._getVolumePathFromOutput(output, volumeId)
+
+        vol, _props = self._readVolumeArray3d(volumePath)  # Z,Y,X
+        volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
+
+        z, y, x = volSmall.shape
+        return {
+            "dims": [int(z), int(y), int(x)],
+            "values": volSmall.ravel(order="C").astype(np.float32).tolist(),
+        }
+
+    def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
+        """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
+        if isinstance(output, SetOfVolumes):
+            try:
+                vid = int(volumeId)
+            except Exception:
+                raise HTTPException(status_code=400, detail="volumeId must be an integer")
+
+            # Frontend volumeId is 0-based index; Scipion items are 1-based in this context.
+            item = output.getItem('_objId', vid + 1)
+            if item is None:
+                raise HTTPException(status_code=404, detail="Volume not found in SetOfVolumes")
+            volumePath = item.getFileName()
+        else:
+            getFileNameFn = getattr(output, "getFileName", None)
+            if not callable(getFileNameFn):
+                raise HTTPException(status_code=404, detail="Output has no getFileName()")
+            volumePath = getFileNameFn()
+
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(status_code=404, detail="Volume file not found on disk")
+
+        return volumePath
+
+    def _readVolumeAsNumpy(self, volumePath: str) -> np.ndarray:
+        """
+        Read a volume file into a numpy array (Z,Y,X).
+        Tries Scipion/pwem readers first, falls back to mrcfile/numpy when possible.
+        """
+        ext = os.path.splitext(volumePath)[1].lower()
+
+        # Numpy formats
+        if ext in (".npy",):
+            arr = np.load(volumePath)
+            return np.asarray(arr, dtype=np.float32)
+
+        if ext in (".npz",):
+            zf = np.load(volumePath)
+            # try common keys
+            for k in ("data", "volume", "arr_0"):
+                if k in zf:
+                    return np.asarray(zf[k], dtype=np.float32)
+            # fallback to first key
+            firstKey = list(zf.keys())[0]
+            return np.asarray(zf[firstKey], dtype=np.float32)
+
+        # Try Scipion image readers registry
+        try:
+            reader = ImageReadersRegistry.getReader(volumePath)
+            if reader is not None:
+                data = reader.read(volumePath)
+                return np.asarray(data, dtype=np.float32)
+        except Exception:
+            pass
+
+        # Try pwem ImageHandler (common in Scipion)
+        try:
+            from pwem.emlib.image import ImageHandler
+            ih = ImageHandler()
+            ih.read(volumePath)
+            data = ih.getData()
+            return np.asarray(data, dtype=np.float32)
+        except Exception:
+            pass
+
+        # Last resort: mrcfile if available
+        try:
+            import mrcfile
+            with mrcfile.open(volumePath, permissive=True) as m:
+                data = m.data
+            return np.asarray(data, dtype=np.float32)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cannot read volume file '{volumePath}': {e}",
+            )
+
+    def _downsampleVolumePreview(
+            self,
+            vol: np.ndarray,
+            maxDim: int,
+            method: str = "binning",
+    ) -> np.ndarray:
+        """
+        Downsample a volume to a preview size suitable for web 3D rendering.
+        - binning: real-space average pooling with integer factor
+        - linear: scipy.ndimage.zoom (if available), else binning
+        - fourier: Fourier crop + inverse FFT
+        """
+        if vol is None or vol.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
+
+        z, y, x = vol.shape
+        m = max(z, y, x)
+
+        if m <= maxDim:
+            return vol.astype(np.float32)
+
+        methodLower = (method or "binning").lower()
+
+        if methodLower == "fourier":
+            return self._resizeVolumeFourier(vol, maxDim)
+
+        if methodLower == "linear":
+            try:
+                from scipy.ndimage import zoom
+                scale = maxDim / float(m)
+                small = zoom(vol, zoom=scale, order=1, prefilter=False)
+                return np.asarray(small, dtype=np.float32)
+            except Exception:
+                # Fallback to binning if scipy is not installed
+                pass
+
+        # Default: binning
+        factor = int(np.ceil(m / float(maxDim)))
+        return self._binVolume(vol, factor)
+
+    def _binVolume(self, vol: np.ndarray, factor: int) -> np.ndarray:
+        """Real-space average binning by an integer factor."""
+        if factor <= 1:
+            return vol.astype(np.float32)
+
+        z, y, x = vol.shape
+        z2 = (z // factor) * factor
+        y2 = (y // factor) * factor
+        x2 = (x // factor) * factor
+
+        volC = vol[:z2, :y2, :x2]
+
+        binned = volC.reshape(
+            z2 // factor, factor,
+            y2 // factor, factor,
+            x2 // factor, factor
+        ).mean(axis=(1, 3, 5))
+
+        return np.asarray(binned, dtype=np.float32)
+
+    def _resizeVolumeFourier(self, vol: np.ndarray, maxDim: int) -> np.ndarray:
+        """Fourier crop downsample (low-pass) preserving global structure."""
+        z, y, x = vol.shape
+        m = max(z, y, x)
+        if m <= maxDim:
+            return vol.astype(np.float32)
+
+        scale = maxDim / float(m)
+        tz = max(8, int(z * scale))
+        ty = max(8, int(y * scale))
+        tx = max(8, int(x * scale))
+
+        f = np.fft.fftn(vol)
+        fshift = np.fft.fftshift(f)
+
+        cropped = self._centerCrop3d(fshift, (tz, ty, tx))
+
+        out = np.fft.ifftn(np.fft.ifftshift(cropped)).real
+        out *= (z * y * x) / float(tz * ty * tx)
+
+        return np.asarray(out, dtype=np.float32)
+
+    def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
+        """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""
+        tz, ty, tx = targetShape
+        z, y, x = fshift.shape
+
+        z0 = max(0, (z - tz) // 2)
+        y0 = max(0, (y - ty) // 2)
+        x0 = max(0, (x - tx) // 2)
+
+        return fshift[z0:z0 + tz, y0:y0 + ty, x0:x0 + tx]
+
+
     # ======================================================================
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
     # ======================================================================
@@ -1969,5 +2221,4 @@ class ProjectService:
             "totalRows": int(totalRows),
             "rows": resultRows,
         }
-
 

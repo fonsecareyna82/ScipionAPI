@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query, Request
-from typing import List, Any, Union, Optional
+from typing import List, Any, Union, Optional, Literal, Dict
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
+from app.backend.models.data_model import Volume3dResponse
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -485,6 +486,30 @@ def renderVolumeSlice(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
+
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/data3d",
+    summary="Get downsampled 3D volume data for Plotly preview",
+)
+def getVolumeData3d(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    volumeId: Union[int, str],
+    maxDim: int = Query(160, ge=32, le=512, alias="maxDim"),
+    method: Literal["binning", "stride", "none"] = Query("binning"),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    currentUser: Dict[str, Any] = Depends(getCurrentUser),
+):
+
+    return service.getVolumeData3dService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        volumeId=volumeId,
+        maxDim=maxDim,
+        method=method,
+    )
 
 
 # ==============================================================================
