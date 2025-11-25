@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query, Request
+from fastapi.responses import JSONResponse
 from typing import List, Any, Union, Optional, Literal, Dict
 
 from app.backend.api.dependencies import getCurrentUser
@@ -510,6 +511,175 @@ def getVolumeData3d(
         maxDim=maxDim,
         method=method,
     )
+# ==============================================================================
+#        ANALYZE RESULTS: COORDINATES3D (SetOfCoordinates3D)
+# ==============================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listCoordinates3dTomograms(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    List tomograms referenced by a SetOfCoordinates3D output.
+
+    Response example:
+    [
+      { "id": "TS_1", "name": "TS_1" },
+      { "id": "TS_2", "name": "TS_2" }
+    ]
+    """
+    items = service.listCoordinates3dTomogramsService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+    from fastapi.responses import JSONResponse
+
+    resp = JSONResponse(items or [])
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(
+        getattr(currentUser, "id", currentUser.get("id", ""))
+    )
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getCoordinates3dPoints(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tomogramId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return all 3D coordinates for one tomogram inside a SetOfCoordinates3D.
+
+    Response example (backend currently returns a flat array of points):
+    [
+      { "x": 123.4, "y": 56.7, "z": 89.0, "id": 1, "score": 3.4, "tomoId": "TS_1" },
+      ...
+    ]
+    """
+    pts = service.getCoordinates3dPointsService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tomogramId=tomogramId,
+    )
+
+    from fastapi.responses import JSONResponse
+
+    resp = JSONResponse(pts or [])
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(
+        getattr(currentUser, "id", currentUser.get("id", ""))
+    )
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}/slice",
+    status_code=status.HTTP_200_OK,
+)
+def renderCoords3dTomogramSlice(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tomogramId: str,
+    index: int = Query(
+        ...,
+        ge=0,
+        description="0-based slice index along the selected axis",
+    ),
+    axis: str = Query(
+        "z",
+        description="Axis along which to slice the tomogram: x, y or z",
+    ),
+    cmap: Optional[str] = Query(
+        None,
+        alias="cmap",
+        description="Optional colormap name (e.g. 'gray', 'viridis')",
+    ),
+    normalize: Optional[str] = Query(
+        "minmax",
+        description="Normalization mode: 'minmax' or 'zscore'",
+    ),
+    scale: float = Query(
+        1.0,
+        description="Optional scaling factor applied to the 2D slice",
+    ),
+    inline: bool = Query(
+        True,
+        description="If true, returns the image as inline preview",
+    ),
+    fmt: str = Query(
+        "webp",
+        alias="format",
+        description="Output image format: png | webp | jpeg",
+    ),
+    thumb: Optional[int] = Query(
+        None,
+        description="If set, max thumbnail size (pixels) for the longest dimension",
+    ),
+    fast: bool = Query(
+        False,
+        description="Reserved flag for potential faster/approximate rendering",
+    ),
+    quality: int = Query(
+        75,
+        description="JPEG/WEBP quality (1–100) when applicable",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
+
+    The response is an image (PNG/WEBP/JPEG) similar in spirit to
+    the volume slice endpoint, with X-Preview-* headers describing
+    width/height/format/etc.
+    """
+    resp = service.renderCoords3dTomogramSliceService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tomogramId=tomogramId,
+        sliceIndex=index,
+        axis=axis,
+        colormap=cmap,
+        normalize=normalize,
+        scale=scale,
+        inline=inline,
+        fmt=fmt,
+        thumb=thumb,
+        fast=fast,
+        quality=quality,
+    )
+
+    # Keep auth-related headers consistent with the rest of the API
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(
+        getattr(currentUser, "id", currentUser.get("id", ""))
+    )
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
 
 
 # ==============================================================================

@@ -29,6 +29,7 @@ import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
+from tomo.constants import SCIPION, BOTTOM_LEFT_CORNER
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE
 from app.backend.utils.outputs_preview import OutputsPreview
@@ -1462,6 +1463,436 @@ class ProjectService:
         x0 = max(0, (x - tx) // 2)
 
         return fshift[z0:z0 + tz, y0:y0 + ty, x0:x0 + tx]
+
+    # ----------------------------------------------------------------------
+    # Analyze Results: Coordinates3D
+    # ----------------------------------------------------------------------
+
+    def listCoordinates3dTomogramsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        """
+        Return a list of tomograms referenced by the SetOfCoordinates3D output.
+
+        Normalized shape:
+        [
+          { "id": <tomoId>, "name": "<label>" },
+          ...
+        ]
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        setOfCoordinates3D = getattr(protocol, outputName, None)
+        if setOfCoordinates3D is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        tomogramList: List[Dict[str, Any]] = []
+        tomos_iter = None
+
+        for attr_name in ("iterTomograms", "iterVolumes"):
+            func = getattr(setOfCoordinates3D, attr_name, None)
+            if callable(func):
+                try:
+                    tomos_iter = func()
+                    break
+                except Exception:
+                    tomos_iter = None
+
+        if tomos_iter is None:
+            get_tomos = getattr(setOfCoordinates3D, "getTomograms", None)
+            if callable(get_tomos):
+                try:
+                    tomos = get_tomos()
+                    tomos_iter = (
+                        tomos.iterItems() if hasattr(tomos, "iterItems") else iter(tomos)
+                    )
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to iterate tomograms: {e}",
+                    )
+
+        if tomos_iter is None:
+            raise HTTPException(
+                status_code=500,
+                detail="SetOfCoordinates3D does not expose tomograms iterator",
+            )
+
+        if hasattr(tomos_iter, "iterItems"):
+            iterator = tomos_iter.iterItems()
+        else:
+            iterator = iter(tomos_iter)
+
+        for index, tomo in enumerate(iterator):
+            tomo_id = None
+            for fn_name in ("getTsId", "getObjId"):
+                fn = getattr(tomo, fn_name, None)
+                if callable(fn):
+                    try:
+                        tomo_id = fn()
+                        if tomo_id is not None:
+                            break
+                    except Exception:
+                        continue
+            if tomo_id is None:
+                tomo_id = index
+
+            label = None
+            for fn_name in ("getObjLabel", "getNameId", "getFileName"):
+                fn = getattr(tomo, fn_name, None)
+                if callable(fn):
+                    try:
+                        label = fn()
+                        if label:
+                            break
+                    except Exception:
+                        continue
+
+            if not label:
+                label = str(tomo_id)
+
+            sr = tomo.getSamplingRate()
+
+            tomogramList.append(
+                {
+                    "id": tomo_id,
+                    "name": str(label),
+                    "label": tomo_id,
+                    "dims": list(tomo.getDim()),
+                    "voxelSize": [sr, sr, sr],
+                }
+            )
+
+        return tomogramList
+
+    def getCoordinates3dPointsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+    ):
+        """
+        Return a flat list of 3D points for one tomogram.
+        Each point is {x, y, z, ...optional fields}.
+
+        Shape devuelto:
+        [
+          {
+            "x": number,
+            "y": number,
+            "z": number,
+            "id"?: number | str,
+            "classId"?: number,
+            "label"?: string,
+            "score"?: number,
+            "weight"?: number,
+            "radius"?: number,
+            "tomoId"?: number | str,
+          },
+          ...
+        ]
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        setOfCoordinates3D = getattr(protocol, outputName, None)
+        if setOfCoordinates3D is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        try:
+            sr = float(setOfCoordinates3D.getSamplingRate())
+        except Exception:
+            sr = None
+
+        key: Union[int, str] = tomogramId
+        if isinstance(tomogramId, str):
+            try:
+                key = int(tomogramId)
+            except ValueError:
+                key = tomogramId
+
+        try:
+            tomogram = setOfCoordinates3D._getTomogram(key)
+        except Exception:
+            tomogram = None
+
+        if tomogram is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tomogram '{tomogramId}' not found in SetOfCoordinates3D",
+            )
+
+        try:
+            tomoId = tomogram.getTsId()
+        except Exception:
+            tomoId = getattr(tomogram, "getObjId", lambda: None)()
+
+        points: List[Dict[str, Any]] = []
+
+        try:
+            coordsIter = setOfCoordinates3D.iterCoordinates(tomogram)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to iterate coordinates: {e}",
+            )
+
+        for coord in coordsIter:
+            try:
+                x = int(coord.getX(BOTTOM_LEFT_CORNER))
+                y = int(coord.getY(BOTTOM_LEFT_CORNER))
+                z = int(coord.getZ(BOTTOM_LEFT_CORNER))
+            except Exception:
+                continue
+
+            p: Dict[str, Any] = {"x": x, "y": y, "z": z}
+
+            get_id_fn = getattr(coord, "getObjId", None)
+            if callable(get_id_fn):
+                try:
+                    objId = get_id_fn()
+                    if objId is not None:
+                        p["id"] = objId
+                except Exception:
+                    pass
+
+            get_class_fn = getattr(coord, "getClassId", None)
+            if callable(get_class_fn):
+                try:
+                    classId = get_class_fn()
+                    if classId is not None:
+                        p["classId"] = classId
+                except Exception:
+                    pass
+
+            label = getattr(coord, "_objLabel", None)
+            if not label and hasattr(coord, "getObjLabel"):
+                try:
+                    label = coord.getObjLabel()
+                except Exception:
+                    label = None
+            if label not in (None, ""):
+                p["label"] = str(label)
+
+            score = getattr(coord, "_score", None)
+            if score is None and hasattr(coord, "getScore"):
+                try:
+                    score = coord.getScore()
+                except Exception:
+                    score = None
+            if score is not None:
+                try:
+                    p["score"] = float(score)
+                except Exception:
+                    pass
+
+            get_weight_fn = getattr(coord, "getWeight", None)
+            if callable(get_weight_fn):
+                try:
+                    w = get_weight_fn()
+                    if w is not None:
+                        p["weight"] = float(w)
+                except Exception:
+                    pass
+
+            if sr is not None:
+                p["radius"] = float(sr)
+
+            p["tomoId"] = tomoId
+
+            points.append(p)
+
+        return points
+
+    def renderCoords3dTomogramSliceService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str = "z",
+            colormap: Optional[str] = None,
+            normalize: Optional[str] = "minmax",
+            scale: float = 1.0,
+            inline: bool = True,
+            fmt: str = "webp",
+            thumb: Optional[int] = None,
+            fast: bool = False,
+            quality: int = 75,
+    ) -> Response:
+        """
+        Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
+
+        This is similar in spirit to renderVolumeSliceService, but it takes the
+        tomogram from the SetOfCoordinates3D instead of from a Volume/SetOfVolumes
+        output. The response is an image (PNG/JPEG/WEBP) ready to be consumed by
+        the frontend as <img src="..."> or as an object URL.
+        """
+        from PIL import Image as PILImage  # local import
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        setOfCoordinates3D = getattr(protocol, outputName, None)
+        if setOfCoordinates3D is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        try:
+            tomogram = setOfCoordinates3D._getTomogram(tomogramId)
+        except Exception:
+            tomogram = None
+
+        if tomogram is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tomogram '{tomogramId}' not found in SetOfCoordinates3D",
+            )
+
+        getFileNameFn = getattr(tomogram, "getFileName", None)
+        if not callable(getFileNameFn):
+            raise HTTPException(
+                status_code=404,
+                detail="Tomogram object has no getFileName()",
+            )
+
+        volumePath = getFileNameFn()
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(
+                status_code=404,
+                detail="Tomogram file not found on disk",
+            )
+
+        vol3d, _props = self._readVolumeArray3d(volumePath)  # Z, Y, X
+
+        axis = (axis or "z").lower()
+        if axis not in ("x", "y", "z"):
+            axis = "z"
+
+        # Check slice index bounds and extract the 2D slice
+        if axis == "z":
+            dim = vol3d.shape[0]
+        elif axis == "y":
+            dim = vol3d.shape[1]
+        else:
+            dim = vol3d.shape[2]
+
+        if sliceIndex < 0 or sliceIndex >= dim:
+            raise HTTPException(status_code=400, detail="Slice index out of range")
+
+        if axis == "z":
+            slice2d = vol3d[sliceIndex, :, :]
+        elif axis == "y":
+            slice2d = vol3d[:, sliceIndex, :]
+        else:
+            slice2d = vol3d[:, :, sliceIndex]
+
+        slice2d = np.asarray(slice2d, dtype=np.float32)
+
+        # Optional scaling factor (keep it simple, best effort)
+        if scale is not None and scale != 1.0:
+            try:
+                from scipy.ndimage import zoom
+                slice2d = zoom(slice2d, zoom=float(scale), order=1, prefilter=False)
+            except Exception:
+                # If scipy is not available, ignore scale
+                pass
+
+        # Normalize to 0..1 for display
+        normalize = (normalize or "minmax").lower()
+        if normalize == "zscore":
+            mean = float(slice2d.mean())
+            std = float(slice2d.std()) or 1.0
+            slice2d = (slice2d - mean) / std
+
+        vmin = float(slice2d.min())
+        vmax = float(slice2d.max())
+        if vmax > vmin:
+            sliceNorm = (slice2d - vmin) / (vmax - vmin)
+        else:
+            sliceNorm = np.zeros_like(slice2d, dtype=np.float32)
+
+        # Optional thumbnail: enforce max size in pixels
+        if thumb is not None and thumb > 0:
+            imgTmp = (sliceNorm * 255.0).clip(0, 255).astype(np.uint8)
+            pilTmp = PILImage.fromarray(imgTmp, mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            sliceNorm = np.asarray(pilTmp, dtype=np.float32) / 255.0
+
+        # Map to 0..255 and optionally apply colormap
+        imgArray = (sliceNorm * 255.0).clip(0, 255).astype(np.uint8)
+        pilMode = "L"
+
+        if colormap:
+            try:
+                import matplotlib.cm as cm
+                cmapObj = cm.get_cmap(colormap)
+                rgba = cmapObj(sliceNorm)  # 0..1 RGBA
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                # If matplotlib is not available or colormap fails, fall back to grayscale
+                pilMode = "L"
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        # Encode image into requested format
+        buf = io.BytesIO()
+        fmtLower = (fmt or "png").lower()
+
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        img.save(buf, format=pilFormat, **saveKw)
+
+        # HTTP headers (similar style to other preview endpoints)
+        disp = "inline" if inline else "attachment"
+        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceIndex}.{fmtLower}"
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Preview-Mime, X-Preview-Width, X-Preview-Height, X-Preview-Depth, X-Preview-Colormap, X-Preview-Format, X-Preview-TomogramId",
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": "1",
+            "X-Preview-Colormap": colormap or "",
+            "X-Preview-Format": pilFormat,
+            "X-Preview-TomogramId": str(tomogramId),
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
 
     # ======================================================================

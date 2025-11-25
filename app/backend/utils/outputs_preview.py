@@ -1338,7 +1338,11 @@ class OutputsPreview(FileHandlers):
             normalize: str = "minmax",
             scale: float = 1.0,
             inline: bool = True,
-            **_unused  # <-- Accept future options (fmt, thumb, fast, quality)
+            fmt: str = "png",
+            thumb: Optional[int] = None,
+            fast: bool = True,
+            quality: int = 75,
+            **_unused,  # Accept future options
     ) -> Response:
         axis = (axis or "z").lower()
         if axis not in ("z", "y", "x"):
@@ -1358,119 +1362,157 @@ class OutputsPreview(FileHandlers):
 
         absPath = paths[idx]
         relPath = self._relPathInside(protRoot, absPath)
+
+        # Colormap: explicit argument wins; then config/env; then default
         usedCmap = colormap or self._resolveColormapForOutputType(defaultCmap="viridis") or "viridis"
 
-        # ---------- FAST PATH: Z slice con clamp y depth ----------
-        if axis == "z":
+        # Output format negotiation
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        gray = None
+        props = None
+        zdim = ydim = xdim = 0
+        k = max(0, int(sliceIndex))
+
+        # -------- FAST PATH: z axis + fast=True (single-slice read) --------
+        if axis == "z" and fast:
             try:
                 reader = ImageReadersRegistry.open(str(absPath))
 
-                # compute dims once; clamp index
+                # Try to infer dims and clamp index
                 try:
                     imgs = reader.getImages()
-                    if imgs.ndim == 3:
+                    if hasattr(imgs, "ndim") and imgs.ndim == 3:
                         zdim, ydim, xdim = int(imgs.shape[0]), int(imgs.shape[1]), int(imgs.shape[2])
-                    elif imgs.ndim == 2:
+                    elif hasattr(imgs, "ndim") and imgs.ndim == 2:
                         zdim, ydim, xdim = 1, int(imgs.shape[0]), int(imgs.shape[1])
                     else:
                         zdim, ydim, xdim = 1, 0, 0
                 except Exception:
                     zdim, ydim, xdim = 1, 0, 0
 
-                k = max(0, int(sliceIndex))
                 if zdim > 0:
                     k = min(k, zdim - 1)
+                else:
+                    k = 0
 
                 try:
                     pilImg = reader.getImage(index=k, pilImage=True)
                 except Exception:
                     try:
                         pilImg = reader.getCentralImage(pilImage=True)
+                        k = max(0, min(int(zdim // 2), max(zdim - 1, 0)))
                     except Exception:
                         pilImg = reader.getImage(index=0, pilImage=True)
+                        k = 0
 
                 gray = self._pilTo2dTile(reader, pilImg)
                 if gray is None:
                     raise RuntimeError("Empty/invalid image slice")
 
                 gray = self._normMode2D(gray, mode=normalize or "minmax")
-                rgb = self._applyColormap(gray, usedCmap)
-                rgb = self._resizeIfNeeded(rgb, scale or 1.0)
-
-                img = Image.fromarray(rgb, mode="RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-
-                headers = {
-                    "X-Preview-Mime": "image/png",
-                    "X-Preview-Width": str(img.width),
-                    "X-Preview-Height": str(img.height),
-                    "X-Preview-Colormap": usedCmap,
-                    "X-Preview-Note": f"slice axis=z index={k}",
-                    "Access-Control-Expose-Headers": ", ".join([
-                        "Content-Disposition", "X-Preview-Mime", "X-Preview-Width",
-                        "X-Preview-Height", "X-Preview-Colormap", "X-Preview-Note",
-                    ]),
-                }
-                if zdim and zdim > 0:
-                    headers["X-Preview-Depth"] = str(zdim)
-                    headers["Access-Control-Expose-Headers"] += ", X-Preview-Depth"
-
-                headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
-                return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
             except Exception:
-                # cae al slow path de abajo
-                pass
+                # If fast path fails, fall back to slow path below
+                gray = None
 
-        # ---------- SLOW PATH: y/x (o fallback) ----------
-        try:
-            vol3d, props = self._readVolumeArray(absPath)
-            if vol3d.ndim == 2:
-                vol3d = vol3d[None, ...]
-            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
-
-            if axis == "z":
-                k = max(0, min(int(sliceIndex), zdim - 1))
-                slice2d = vol3d[k, :, :]
-            elif axis == "y":
-                k = max(0, min(int(sliceIndex), ydim - 1))
-                slice2d = vol3d[:, k, :]
-            else:  # x
-                k = max(0, min(int(sliceIndex), xdim - 1))
-                slice2d = vol3d[:, :, k]
-
-            gray = self._normMode2D(slice2d, mode=normalize or "minmax")
-            rgb = self._applyColormap(gray, usedCmap)
-            rgb = self._resizeIfNeeded(rgb, scale or 1.0)
-
-            img = Image.fromarray(rgb, mode="RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-
-            voxel = self._extractVoxelFromProps(props)
-            headers = {
-                "X-Preview-Mime": "image/png",
-                "X-Preview-Width": str(img.width),
-                "X-Preview-Height": str(img.height),
-                "X-Preview-Depth": str(zdim),
-                "X-Preview-Colormap": usedCmap,
-                "X-Preview-Note": f"slice axis={axis} index={k}",
-                "Access-Control-Expose-Headers": ", ".join([
-                    "Content-Disposition", "X-Preview-Mime", "X-Preview-Width", "X-Preview-Height",
-                    "X-Preview-Depth", "X-Preview-Colormap", "X-Preview-Note", "X-Preview-VoxelSize",
-                ]),
-            }
-            if all(v is not None for v in voxel):
-                headers["X-Preview-VoxelSize"] = f"{voxel[0]},{voxel[1]},{voxel[2]}"
-
-            headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{absPath.name}.png"'
-            return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
-
-        except Exception as e:
+        # -------- SLOW PATH: full 3D read (y/x, or z if fast path failed) --------
+        if gray is None:
             try:
-                return self.previewProtocolImageFile(self.protocol.getObjId(), relPath, inline=True)
-            except Exception:
-                raise HTTPException(status_code=500, detail=f"Slice render failed: {e}")
+                vol3d, props = self._readVolumeArray(absPath)
+                if vol3d.ndim == 2:
+                    vol3d = vol3d[None, ...]
+                if vol3d.ndim != 3:
+                    raise ValueError(f"Unsupported volume shape {vol3d.shape}, expected 2D or 3D")
+
+                zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
+
+                if axis == "z":
+                    dim = zdim
+                elif axis == "y":
+                    dim = ydim
+                else:
+                    dim = xdim
+
+                if dim <= 0:
+                    raise ValueError("Empty volume")
+
+                k = max(0, min(int(sliceIndex), dim - 1))
+
+                if axis == "z":
+                    slice2d = vol3d[k, :, :]
+                elif axis == "y":
+                    slice2d = vol3d[:, k, :]
+                else:  # x
+                    slice2d = vol3d[:, :, k]
+
+                gray = self._normMode2D(slice2d, mode=normalize or "minmax")
+            except Exception as e:
+                # Final fallback: generic preview logic
+                try:
+                    return self.previewProtocolImageFile(self.protocol.getObjId(), relPath, inline=True)
+                except Exception:
+                    raise HTTPException(status_code=500, detail=f"Slice render failed: {e}")
+
+        # -------- Thumbnail BEFORE colormap/scale (for huge images) --------
+        if thumb is not None and thumb > 0:
+            pilTmp = Image.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.array(pilTmp, copy=False)
+
+        # -------- Colormap + scale --------
+        rgb = self._applyColormap(gray, usedCmap)
+        rgb = self._resizeIfNeeded(rgb, scale or 1.0)
+
+        img = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        # Voxel size only when we came from _readVolumeArray and props is available
+        voxel = (None, None, None)
+        if props is not None:
+            voxel = self._extractVoxelFromProps(props)
+
+        headers = {
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": str(zdim or 0),
+            "X-Preview-Colormap": usedCmap,
+            "X-Preview-Note": f"slice axis={axis} index={k}",
+            "Access-Control-Expose-Headers": ", ".join(
+                [
+                    "Content-Disposition",
+                    "X-Preview-Mime",
+                    "X-Preview-Width",
+                    "X-Preview-Height",
+                    "X-Preview-Depth",
+                    "X-Preview-Colormap",
+                    "X-Preview-Note",
+                    "X-Preview-VoxelSize",
+                ]
+            ),
+        }
+        if all(v is not None for v in voxel):
+            headers["X-Preview-VoxelSize"] = f"{voxel[0]},{voxel[1]},{voxel[2]}"
+
+        disp = "inline" if inline else "attachment"
+        filename = f"{absPath.name}_axis-{axis}_slice-{k}.{fmtLower}"
+        headers["Content-Disposition"] = f'{disp}; filename="{filename}"'
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
     # -------------------------
     # Private helpers (volumes)
