@@ -1,12 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Path as PathParam, Query, Request
-from fastapi.responses import JSONResponse
 from typing import List, Any, Union, Optional, Literal, Dict
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.data_model import Volume3dResponse
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -459,7 +457,7 @@ def renderVolumeSlice(
     scale: float = Query(1.0, gt=0),
     inline: bool = Query(True),
     thumb: Optional[int] = Query(None, ge=32, le=2048),
-    fast: bool = Query(False),
+    fast: bool = Query(True),
     quality: int = Query(75, ge=1, le=100),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -602,49 +600,16 @@ def renderCoords3dTomogramSlice(
     protocolId: int,
     outputName: str,
     tomogramId: str,
-    index: int = Query(
-        ...,
-        ge=0,
-        description="0-based slice index along the selected axis",
-    ),
-    axis: str = Query(
-        "z",
-        description="Axis along which to slice the tomogram: x, y or z",
-    ),
-    cmap: Optional[str] = Query(
-        None,
-        alias="cmap",
-        description="Optional colormap name (e.g. 'gray', 'viridis')",
-    ),
-    normalize: Optional[str] = Query(
-        "minmax",
-        description="Normalization mode: 'minmax' or 'zscore'",
-    ),
-    scale: float = Query(
-        1.0,
-        description="Optional scaling factor applied to the 2D slice",
-    ),
-    inline: bool = Query(
-        True,
-        description="If true, returns the image as inline preview",
-    ),
-    fmt: str = Query(
-        "webp",
-        alias="format",
-        description="Output image format: png | webp | jpeg",
-    ),
-    thumb: Optional[int] = Query(
-        None,
-        description="If set, max thumbnail size (pixels) for the longest dimension",
-    ),
-    fast: bool = Query(
-        False,
-        description="Reserved flag for potential faster/approximate rendering",
-    ),
-    quality: int = Query(
-        75,
-        description="JPEG/WEBP quality (1–100) when applicable",
-    ),
+    index: int = Query(..., ge=0, description="0-based slice index along the selected axis", ),
+    axis: str = Query("z", description="Axis along which to slice the tomogram: x, y or z",),
+    cmap: Optional[str] = Query(None, alias="cmap", description="Optional colormap name (e.g. 'gray', 'viridis')",),
+    normalize: Optional[str] = Query("minmax", description="Normalization mode: 'minmax' or 'zscore'",),
+    scale: float = Query(1.0, description="Optional scaling factor applied to the 2D slice", ),
+    inline: bool = Query(True, description="If true, returns the image as inline preview", ),
+    fmt: str = Query("webp", alias="format", description="Output image format: png | webp | jpeg",),
+    thumb: Optional[int] = Query(None, description="If set, max thumbnail size (pixels) for the longest dimension",),
+    fast: bool = Query(True, description="Reserved flag for potential faster/approximate rendering",),
+    quality: int = Query(75, description="JPEG/WEBP quality (1–100) when applicable",),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
@@ -777,10 +742,9 @@ def getMetadataTableSchema(
     return resp
 
 
-@router.get(
-    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/page",
-    response_model=Any,
-    status_code=status.HTTP_200_OK,
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/page",
+            response_model=Any,
+            status_code=status.HTTP_200_OK,
 )
 def getMetadataTablePage(
     projectId: int,
@@ -840,10 +804,8 @@ def getMetadataTablePage(
     return resp
 
 
-@router.get(
-    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/export",
-    response_model=None,
-)
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/export",
+            response_model=None,)
 def exportMetadataTable(
     projectId: int,
     protocolId: int,
@@ -855,14 +817,8 @@ def exportMetadataTable(
         pattern="^(csv|xlsx)$",
         description="Export format: csv or xlsx",
     ),
-    selectionOnly: bool = Query(
-        False,
-        description="If true, export only selected rows (server-side selection, if implemented).",
-    ),
-    ids: Optional[str] = Query(
-        None,
-        description="Optional comma-separated row ids to export; if provided, takes precedence over selectionOnly.",
-    ),
+    selectionOnly: bool = Query(False, description="If true, export only selected rows (server-side selection, if implemented).",),
+    ids: Optional[str] = Query(None, description="Optional comma-separated row ids to export; if provided, takes precedence over selectionOnly.",),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
@@ -899,46 +855,20 @@ def exportMetadataTable(
     return resp
 
 
-@router.get(
-    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image",
-    response_model=None,
-)
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image",
+            response_model=None,)
 def renderMetadataImageCell(
     projectId: int,
     protocolId: int,
     outputName: str,
     tableName: str,
-    rowId: Optional[Union[int, str]] = Query(
-        None,
-        description="Logical row id (for selection/export workflows; optional in virtual scroll).",
-    ),
-    rowIndex: Optional[int] = Query(
-        None,
-        ge=0,
-        description="0-based row index in the current table order (preferred for virtual scroll).",
-    ),
-    column: str = Query(
-        ...,
-        description="Column name that contains the image path or reference.",
-    ),
-    size: int = Query(
-        256,
-        ge=16,
-        le=2048,
-        description="Target thumbnail size in pixels.",
-    ),
-    applyTransform: bool = Query(
-        False,
-        description="If true, apply geometric transformation (rotation) if available.",
-    ),
-    inline: bool = Query(
-        True,
-        description="If true, send Content-Disposition inline (for browser display).",
-    ),
-    fmt: str = Query(
-        "png",
-        description="Image format to generate (png, jpeg, webp, etc.), implementation-dependent.",
-    ),
+    rowId: Optional[Union[int, str]] = Query(None, description="Logical row id (for selection/export workflows; optional in virtual scroll).",),
+    rowIndex: Optional[int] = Query(None, ge=0, description="0-based row index in the current table order (preferred for virtual scroll).",),
+    column: str = Query(..., description="Column name that contains the image path or reference.",),
+    size: int = Query(256, ge=16, le=2048, description="Target thumbnail size in pixels.",),
+    applyTransform: bool = Query(False, description="If true, apply geometric transformation (rotation) if available.",),
+    inline: bool = Query(True, description="If true, send Content-Disposition inline (for browser display).",),
+    fmt: str = Query("png", description="Image format to generate (png, jpeg, webp, etc.), implementation-dependent.",),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
 ):
@@ -968,9 +898,7 @@ def renderMetadataImageCell(
     return resp
 
 
-@router.get(
-    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/rows"
-)
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/rows")
 def get_metadata_window(
     projectId: int,
     protocolId: int,

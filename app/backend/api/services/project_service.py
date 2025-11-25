@@ -31,7 +31,7 @@ from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from tomo.constants import SCIPION, BOTTOM_LEFT_CORNER
 
-from app.backend.utils.constants import SQLITE_OBJECT_TABLE
+from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import SetOfVolumes
@@ -1235,7 +1235,6 @@ class ProjectService:
     ) -> Response:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
-        # IMPORTANT: forward all args (antes no pasaba fmt/fast/quality)
         return op.renderVolumeSlice(
             volumeId=volumeId,
             sliceIndex=sliceIndex,
@@ -1719,6 +1718,94 @@ class ProjectService:
 
         return points
 
+    def _coords3dPilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
+        """
+        Convert a PIL tomogram slice into a small 2D float array.
+        Uses Scipion helpers (asPilImage, highlightSlice, normalizeSlice)
+        and downsamples to at most maxThumbSize, ready for further normalization.
+        """
+        try:
+            # PIL size is (width, height)
+            ny, nx = pilImg.size
+            scale = min(
+                maxThumbSize / float(nx),
+                maxThumbSize / float(ny),
+                1.0,  # do not upscale
+            )
+            thumbWidth = max(1, int(round(nx * scale)))
+            thumbHeight = max(1, int(round(ny * scale)))
+
+            arr = np.array(pilImg)
+
+            # Try Scipion helper to convert to grayscale and normalize
+            try:
+                pilGray = imgStk.asPilImage(arr, normalize=True)  # usually 'L'
+            except Exception:
+                # Fallback: manual grayscale if RGB
+                if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                    pilGray = pilImg.convert("L")
+                else:
+                    pilGray = pilImg
+
+            # Resize to thumbnail
+            pilGray.thumbnail((thumbWidth, thumbHeight))
+            arr = np.array(pilGray)
+
+            # Ensure 2D grayscale
+            if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                arr = np.array(pilGray.convert("L"))
+
+            arr = np.squeeze(arr)
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+
+            # Try to use Scipion contrast helpers if available
+            try:
+                arr = imgStk.highlightSlice(arr)
+                arr = imgStk.normalizeSlice(arr)
+            except Exception:
+                pass
+
+            return arr.astype(np.float32, copy=False)
+        except Exception:
+            return None
+
+    def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
+        """
+        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
+        This mimics OutputsPreview._normMode2D behavior.
+        """
+        if a.ndim != 2:
+            raise ValueError("Expected 2D slice")
+
+        arr = a.astype(np.float32, copy=False)
+        mode = (mode or "minmax").lower()
+
+        if mode == "zscore":
+            mu = float(np.mean(arr))
+            sd = float(np.std(arr)) or 1.0
+            arr = (arr - mu) / sd
+            arr = np.clip(arr, -3.0, 3.0)
+            amin, amax = float(arr.min()), float(arr.max())
+            if amax <= amin:
+                return np.zeros_like(arr, dtype=np.uint8)
+            arr = (arr - amin) / (amax - amin + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
+
+        if mode == "none":
+            amin, amax = float(arr.min()), float(arr.max())
+            if amax <= amin:
+                return np.zeros_like(arr, dtype=np.uint8)
+            arr = (arr - amin) / (amax - amin + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
+
+        # Default: minmax
+        amin, amax = float(arr.min()), float(arr.max())
+        if amax <= amin:
+            return np.zeros_like(arr, dtype=np.uint8)
+        arr = (arr - amin) / (amax - amin + 1e-12)
+        return (255.0 * arr).astype(np.uint8)
+
     def renderCoords3dTomogramSliceService(
             self,
             projectId: int,
@@ -1728,24 +1815,29 @@ class ProjectService:
             sliceIndex: int,
             axis: str = "z",
             colormap: Optional[str] = None,
-            normalize: Optional[str] = "minmax",
+            normalize: Optional[str] = "zscore",
             scale: float = 1.0,
             inline: bool = True,
             fmt: str = "webp",
-            thumb: Optional[int] = None,
-            fast: bool = False,
+            thumb: Optional[int] = 128,
+            fast: bool = True,
             quality: int = 75,
     ) -> Response:
         """
         Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
 
-        This is similar in spirit to renderVolumeSliceService, but it takes the
-        tomogram from the SetOfCoordinates3D instead of from a Volume/SetOfVolumes
-        output. The response is an image (PNG/JPEG/WEBP) ready to be consumed by
-        the frontend as <img src="..."> or as an object URL.
-        """
-        from PIL import Image as PILImage  # local import
+        Fast path:
+          - axis == 'z' and fast == True
+          - Uses ImageReadersRegistry.open + getImage(pilImage=True)
+          - Uses Scipion helpers to enhance contrast.
 
+        Slow path:
+          - Other axes or fast path failure
+          - Uses cached _readVolumeArray3d to avoid reloading on each request.
+        """
+        from PIL import Image as PILImage
+
+        # Resolve protocol and SetOfCoordinates3D
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
@@ -1758,6 +1850,7 @@ class ProjectService:
                 detail=f"Output '{outputName}' not found in protocol",
             )
 
+        # Resolve tomogram object
         try:
             tomogram = setOfCoordinates3D._getTomogram(tomogramId)
         except Exception:
@@ -1783,84 +1876,12 @@ class ProjectService:
                 detail="Tomogram file not found on disk",
             )
 
-        vol3d, _props = self._readVolumeArray3d(volumePath)  # Z, Y, X
-
+        # Axis and output format
         axis = (axis or "z").lower()
         if axis not in ("x", "y", "z"):
             axis = "z"
 
-        # Check slice index bounds and extract the 2D slice
-        if axis == "z":
-            dim = vol3d.shape[0]
-        elif axis == "y":
-            dim = vol3d.shape[1]
-        else:
-            dim = vol3d.shape[2]
-
-        if sliceIndex < 0 or sliceIndex >= dim:
-            raise HTTPException(status_code=400, detail="Slice index out of range")
-
-        if axis == "z":
-            slice2d = vol3d[sliceIndex, :, :]
-        elif axis == "y":
-            slice2d = vol3d[:, sliceIndex, :]
-        else:
-            slice2d = vol3d[:, :, sliceIndex]
-
-        slice2d = np.asarray(slice2d, dtype=np.float32)
-
-        # Optional scaling factor (keep it simple, best effort)
-        if scale is not None and scale != 1.0:
-            try:
-                from scipy.ndimage import zoom
-                slice2d = zoom(slice2d, zoom=float(scale), order=1, prefilter=False)
-            except Exception:
-                # If scipy is not available, ignore scale
-                pass
-
-        # Normalize to 0..1 for display
-        normalize = (normalize or "minmax").lower()
-        if normalize == "zscore":
-            mean = float(slice2d.mean())
-            std = float(slice2d.std()) or 1.0
-            slice2d = (slice2d - mean) / std
-
-        vmin = float(slice2d.min())
-        vmax = float(slice2d.max())
-        if vmax > vmin:
-            sliceNorm = (slice2d - vmin) / (vmax - vmin)
-        else:
-            sliceNorm = np.zeros_like(slice2d, dtype=np.float32)
-
-        # Optional thumbnail: enforce max size in pixels
-        if thumb is not None and thumb > 0:
-            imgTmp = (sliceNorm * 255.0).clip(0, 255).astype(np.uint8)
-            pilTmp = PILImage.fromarray(imgTmp, mode="L")
-            pilTmp.thumbnail((thumb, thumb))
-            sliceNorm = np.asarray(pilTmp, dtype=np.float32) / 255.0
-
-        # Map to 0..255 and optionally apply colormap
-        imgArray = (sliceNorm * 255.0).clip(0, 255).astype(np.uint8)
-        pilMode = "L"
-
-        if colormap:
-            try:
-                import matplotlib.cm as cm
-                cmapObj = cm.get_cmap(colormap)
-                rgba = cmapObj(sliceNorm)  # 0..1 RGBA
-                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
-                imgArray = rgb
-                pilMode = "RGB"
-            except Exception:
-                # If matplotlib is not available or colormap fails, fall back to grayscale
-                pilMode = "L"
-
-        img = PILImage.fromarray(imgArray, mode=pilMode)
-
-        # Encode image into requested format
-        buf = io.BytesIO()
         fmtLower = (fmt or "png").lower()
-
         if fmtLower in ("jpg", "jpeg"):
             pilFormat = "JPEG"
             mediaType = "image/jpeg"
@@ -1874,26 +1895,185 @@ class ProjectService:
             mediaType = "image/png"
             saveKw = {}
 
+        usedColormap = colormap
+        gray: Optional[np.ndarray] = None
+        sliceUsed = max(0, int(sliceIndex or 0))
+        depth = 1
+
+        # ---------------------------------------------------------------
+        # Fast path: single-slice read using ImageReadersRegistry
+        # ---------------------------------------------------------------
+        if axis == "z" and fast:
+            try:
+                reader = ImageReadersRegistry.open(volumePath)
+
+                # Infer dimensions from reader (cached internally)
+                try:
+                    images = reader.getImages()
+                    if hasattr(images, "ndim") and images.ndim == 3:
+                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+                    elif hasattr(images, "ndim") and images.ndim == 2:
+                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
+                    else:
+                        zdim, ydim, xdim = 1, 0, 0
+                except Exception:
+                    zdim, ydim, xdim = 1, 0, 0
+
+                depth = max(zdim, 1)
+
+                k = int(sliceIndex or 0)
+                if zdim > 0:
+                    k = max(0, min(k, zdim - 1))
+                else:
+                    k = max(0, k)
+
+                # Try requested slice, then central, then first
+                try:
+                    pilImg = reader.getImage(index=k, pilImage=True)
+                except Exception:
+                    try:
+                        pilImg = reader.getCentralImage(pilImage=True)
+                        if zdim > 0:
+                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
+                        else:
+                            k = 0
+                    except Exception:
+                        pilImg = reader.getImage(index=0, pilImage=True)
+                        k = 0
+
+                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
+                if arr2d is None:
+                    arrRaw = np.array(pilImg)
+                    if arrRaw.ndim == 3:
+                        arr2d = arrRaw.mean(axis=-1)
+                    else:
+                        arr2d = arrRaw.astype(np.float32, copy=False)
+
+                gray = self._normalize2dSlice(arr2d, mode=normalize)
+                sliceUsed = k
+            except Exception:
+                gray = None
+
+        # ---------------------------------------------------------------
+        # Slow path: full 3D read + slicing (x / y / fallback)
+        # ---------------------------------------------------------------
+        if gray is None:
+            try:
+                vol3d, _props = self._readVolumeArray3d(volumePath)  # Z, Y, X
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read tomogram volume: {e}",
+                )
+
+            if vol3d.ndim == 2:
+                vol3d = vol3d[None, ...]
+            if vol3d.ndim != 3:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid tomogram volume shape {vol3d.shape}",
+                )
+
+            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
+            depth = max(zdim, 1)
+
+            if axis == "z":
+                dim = zdim
+            elif axis == "y":
+                dim = ydim
+            else:
+                dim = xdim
+
+            if dim <= 0:
+                raise HTTPException(status_code=500, detail="Empty tomogram volume")
+
+            k = int(sliceIndex or 0)
+            k = max(0, min(k, dim - 1))
+
+            if axis == "z":
+                slice2d = vol3d[k, :, :]
+            elif axis == "y":
+                slice2d = vol3d[:, k, :]
+            else:
+                slice2d = vol3d[:, :, k]
+
+            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            sliceUsed = k
+
+        # ---------------------------------------------------------------
+        # Thumbnail (before colormap/scale)
+        # ---------------------------------------------------------------
+        if thumb is not None and thumb > 0:
+            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.asarray(pilTmp, copy=False)
+
+        # ---------------------------------------------------------------
+        # Colormap and scaling
+        # ---------------------------------------------------------------
+        imgArray = gray.astype(np.uint8, copy=False)
+        pilMode = "L"
+
+        if usedColormap:
+            try:
+                import matplotlib.cm as cm
+                sliceNorm = imgArray.astype(np.float32) / 255.0
+                cmapObj = cm.get_cmap(usedColormap)
+                rgba = cmapObj(sliceNorm)  # 0..1 RGBA
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                # If matplotlib is not available or colormap fails, fall back to grayscale
+                usedColormap = None
+                imgArray = gray.astype(np.uint8, copy=False)
+                pilMode = "L"
+
+        # Optional scaling factor (after colormap)
+        if scale is not None and scale != 1.0:
+            try:
+                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
+                newW = max(1, int(round(pilScale.width * float(scale))))
+                newH = max(1, int(round(pilScale.height * float(scale))))
+                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
+                imgArray = np.asarray(pilScale, copy=False)
+            except Exception:
+                pass
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        # Encode image into requested format
+        buf = io.BytesIO()
         img.save(buf, format=pilFormat, **saveKw)
 
-        # HTTP headers (similar style to other preview endpoints)
+        # HTTP headers (similar style as before)
         disp = "inline" if inline else "attachment"
-        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceIndex}.{fmtLower}"
+        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
 
         headers = {
             "Content-Disposition": f'{disp}; filename="{filename}"',
-            "Access-Control-Expose-Headers": "Content-Disposition, X-Preview-Mime, X-Preview-Width, X-Preview-Height, X-Preview-Depth, X-Preview-Colormap, X-Preview-Format, X-Preview-TomogramId",
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, "
+                "X-Preview-Mime, "
+                "X-Preview-Width, "
+                "X-Preview-Height, "
+                "X-Preview-Depth, "
+                "X-Preview-Colormap, "
+                "X-Preview-Format, "
+                "X-Preview-TomogramId"
+            ),
             "X-Preview-Mime": mediaType,
             "X-Preview-Width": str(img.width),
             "X-Preview-Height": str(img.height),
-            "X-Preview-Depth": "1",
-            "X-Preview-Colormap": colormap or "",
+            "X-Preview-Depth": str(depth),
+            "X-Preview-Colormap": usedColormap or "",
             "X-Preview-Format": pilFormat,
             "X-Preview-TomogramId": str(tomogramId),
         }
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
-
 
     # ======================================================================
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
