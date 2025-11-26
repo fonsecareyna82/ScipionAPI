@@ -1726,16 +1726,16 @@ class ProjectService:
         """
         try:
             # PIL size is (width, height)
-            ny, nx = pilImg.size
+            width, height = pilImg.size
             scale = min(
-                maxThumbSize / float(nx),
-                maxThumbSize / float(ny),
+                maxThumbSize / float(width),
+                maxThumbSize / float(height),
                 1.0,  # do not upscale
             )
-            thumbWidth = max(1, int(round(nx * scale)))
-            thumbHeight = max(1, int(round(ny * scale)))
+            thumbWidth = max(1, int(round(width * scale)))
+            thumbHeight = max(1, int(round(height * scale)))
 
-            arr = np.array(pilImg)
+            arr = np.asarray(pilImg)
 
             # Try Scipion helper to convert to grayscale and normalize
             try:
@@ -1747,13 +1747,16 @@ class ProjectService:
                 else:
                     pilGray = pilImg
 
-            # Resize to thumbnail
-            pilGray.thumbnail((thumbWidth, thumbHeight))
-            arr = np.array(pilGray)
+            # Resize to thumbnail only if needed
+            if thumbWidth < width or thumbHeight < height:
+                pilGray = pilGray.copy()
+                pilGray.thumbnail((thumbWidth, thumbHeight))
+
+            arr = np.asarray(pilGray)
 
             # Ensure 2D grayscale
             if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                arr = np.array(pilGray.convert("L"))
+                arr = np.asarray(pilGray.convert("L"))
 
             arr = np.squeeze(arr)
             if arr.ndim != 2 or arr.size == 0:
@@ -1897,12 +1900,19 @@ class ProjectService:
 
         usedColormap = colormap
         gray: Optional[np.ndarray] = None
-        sliceUsed = max(0, int(sliceIndex or 0))
         depth = 1
+
+        # Normalize and clamp requested slice index once
+        try:
+            requestedIndex = int(sliceIndex or 0)
+        except Exception:
+            requestedIndex = 0
+        requestedIndex = max(0, requestedIndex)
 
         # ---------------------------------------------------------------
         # Fast path: single-slice read using ImageReadersRegistry
         # ---------------------------------------------------------------
+        sliceUsed = requestedIndex
         if axis == "z" and fast:
             try:
                 reader = ImageReadersRegistry.open(volumePath)
@@ -1921,11 +1931,9 @@ class ProjectService:
 
                 depth = max(zdim, 1)
 
-                k = int(sliceIndex or 0)
+                k = requestedIndex
                 if zdim > 0:
                     k = max(0, min(k, zdim - 1))
-                else:
-                    k = max(0, k)
 
                 # Try requested slice, then central, then first
                 try:
@@ -1943,7 +1951,7 @@ class ProjectService:
 
                 arr2d = self._coords3dPilTo2dTile(reader, pilImg)
                 if arr2d is None:
-                    arrRaw = np.array(pilImg)
+                    arrRaw = np.asarray(pilImg)
                     if arrRaw.ndim == 3:
                         arr2d = arrRaw.mean(axis=-1)
                     else:
@@ -1989,8 +1997,7 @@ class ProjectService:
             if dim <= 0:
                 raise HTTPException(status_code=500, detail="Empty tomogram volume")
 
-            k = int(sliceIndex or 0)
-            k = max(0, min(k, dim - 1))
+            k = max(0, min(requestedIndex, dim - 1))
 
             if axis == "z":
                 slice2d = vol3d[k, :, :]
