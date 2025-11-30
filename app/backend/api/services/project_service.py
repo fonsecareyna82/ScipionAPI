@@ -1231,7 +1231,7 @@ class ProjectService:
             self, projectId: int, protocolId: int, outputName: str, volumeId: int,
             sliceIndex: int, axis: str, colormap: Optional[str], normalize: Optional[str],
             scale: float, inline: bool, fmt: str = "webp",
-            thumb: Optional[int] = None, fast: bool = False, quality: int = 75,
+            thumb: Optional[int] = None, fast: bool = True, quality: int = 75,
     ) -> Response:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
@@ -1614,9 +1614,9 @@ class ProjectService:
             )
 
         try:
-            sr = float(setOfCoordinates3D.getSamplingRate())
+            boxSixe = float(setOfCoordinates3D.getBoxSize())
         except Exception:
-            sr = None
+            boxSixe = None
 
         key: Union[int, str] = tomogramId
         if isinstance(tomogramId, str):
@@ -1653,9 +1653,9 @@ class ProjectService:
 
         for coord in coordsIter:
             try:
-                x = int(coord.getX(BOTTOM_LEFT_CORNER))
-                y = int(coord.getY(BOTTOM_LEFT_CORNER))
-                z = int(coord.getZ(BOTTOM_LEFT_CORNER))
+                x = float(coord.getX(BOTTOM_LEFT_CORNER))
+                y = float(coord.getY(BOTTOM_LEFT_CORNER))
+                z = float(coord.getZ(BOTTOM_LEFT_CORNER))
             except Exception:
                 continue
 
@@ -1709,8 +1709,8 @@ class ProjectService:
                 except Exception:
                     pass
 
-            if sr is not None:
-                p["radius"] = float(sr)
+            if boxSixe is not None:
+                p["radius"] = float(boxSixe)
 
             p["tomoId"] = tomoId
 
@@ -1721,11 +1721,13 @@ class ProjectService:
     def _coords3dPilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
         """
         Convert a PIL tomogram slice into a small 2D float array.
-        Uses Scipion helpers (asPilImage, highlightSlice, normalizeSlice)
-        and downsamples to at most maxThumbSize, ready for further normalization.
+
+        - Downsamples to <= maxThumbSize without upscaling.
+        - Converts to grayscale if needed.
+        - Applies highlightSlice/normalizeSlice at most once.
+        - Returns float32 2D array; caller can decide final uint8/colormap.
         """
         try:
-            # PIL size is (width, height)
             width, height = pilImg.size
             scale = min(
                 maxThumbSize / float(width),
@@ -1735,34 +1737,24 @@ class ProjectService:
             thumbWidth = max(1, int(round(width * scale)))
             thumbHeight = max(1, int(round(height * scale)))
 
-            arr = np.asarray(pilImg)
+            # Ensure grayscale PIL
+            if pilImg.mode not in ("L", "I;16", "F"):
+                pilGray = pilImg.convert("L")
+            else:
+                pilGray = pilImg
 
-            # Try Scipion helper to convert to grayscale and normalize
-            try:
-                pilGray = imgStk.asPilImage(arr, normalize=True)  # usually 'L'
-            except Exception:
-                # Fallback: manual grayscale if RGB
-                if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                    pilGray = pilImg.convert("L")
-                else:
-                    pilGray = pilImg
-
-            # Resize to thumbnail only if needed
+            # Resize only if needed
             if thumbWidth < width or thumbHeight < height:
                 pilGray = pilGray.copy()
                 pilGray.thumbnail((thumbWidth, thumbHeight))
 
-            arr = np.asarray(pilGray)
-
-            # Ensure 2D grayscale
-            if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                arr = np.asarray(pilGray.convert("L"))
+            arr = np.asarray(pilGray, dtype=np.float32)
 
             arr = np.squeeze(arr)
             if arr.ndim != 2 or arr.size == 0:
                 return None
 
-            # Try to use Scipion contrast helpers if available
+            # Single contrast enhancement pass (if available)
             try:
                 arr = imgStk.highlightSlice(arr)
                 arr = imgStk.normalizeSlice(arr)
@@ -1776,17 +1768,38 @@ class ProjectService:
     def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
         """
         Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
-        This mimics OutputsPreview._normMode2D behavior.
+
+        Safeguards:
+        - Accepts any numeric dtype.
+        - If already uint8 and mode in ('minmax', 'none'), returns a copy directly.
+        - Handles NaNs and constant arrays without blowing up.
         """
         if a.ndim != 2:
             raise ValueError("Expected 2D slice")
 
-        arr = a.astype(np.float32, copy=False)
+        arr = np.asarray(a)
+
+        # If it is already 0-255 uint8, avoid re-normalizing for display-only modes.
+        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
+            return arr.copy()
+
+        arr = arr.astype(np.float32, copy=False)
         mode = (mode or "minmax").lower()
+
+        # Clean NaNs / infs
+        finiteMask = np.isfinite(arr)
+        if not finiteMask.all():
+            if finiteMask.any():
+                fillVal = float(np.nanmedian(arr[finiteMask]))
+            else:
+                fillVal = 0.0
+            arr = np.where(finiteMask, arr, fillVal)
 
         if mode == "zscore":
             mu = float(np.mean(arr))
-            sd = float(np.std(arr)) or 1.0
+            sd = float(np.std(arr))
+            if sd == 0.0 or not np.isfinite(sd):
+                return np.zeros_like(arr, dtype=np.uint8)
             arr = (arr - mu) / sd
             arr = np.clip(arr, -3.0, 3.0)
             amin, amax = float(arr.min()), float(arr.max())
@@ -1795,17 +1808,11 @@ class ProjectService:
             arr = (arr - amin) / (amax - amin + 1e-12)
             return (255.0 * arr).astype(np.uint8)
 
-        if mode == "none":
-            amin, amax = float(arr.min()), float(arr.max())
-            if amax <= amin:
-                return np.zeros_like(arr, dtype=np.uint8)
-            arr = (arr - amin) / (amax - amin + 1e-12)
-            return (255.0 * arr).astype(np.uint8)
-
-        # Default: minmax
+        # For 'none' and 'minmax' we still need 0-255 for display, but avoid crazy scaling
         amin, amax = float(arr.min()), float(arr.max())
-        if amax <= amin:
+        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
             return np.zeros_like(arr, dtype=np.uint8)
+
         arr = (arr - amin) / (amax - amin + 1e-12)
         return (255.0 * arr).astype(np.uint8)
 
@@ -1818,7 +1825,7 @@ class ProjectService:
             sliceIndex: int,
             axis: str = "z",
             colormap: Optional[str] = None,
-            normalize: Optional[str] = "zscore",
+            normalize: Optional[str] = "minmax",
             scale: float = 1.0,
             inline: bool = True,
             fmt: str = "webp",

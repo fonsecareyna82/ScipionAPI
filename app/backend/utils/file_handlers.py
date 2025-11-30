@@ -367,13 +367,9 @@ class FileHandlers:
             imageStk = ImageReadersRegistry.open(str(filePath))
             data = imageStk.getImages()
 
-            # Some readers may return a list-like structure
             if isinstance(data, list):
                 data = data[0]
 
-            # Assume:
-            # - 3D: (Z, Y, X)
-            # - 2D: (Y, X)
             if data.ndim == 3:
                 nz, ny, nx = data.shape
             elif data.ndim == 2:
@@ -385,61 +381,62 @@ class FileHandlers:
                     detail="Unsupported MRC dimensionality (only 2D or 3D supported)"
                 )
 
-            # Try to read voxel size (fallback 1.0)
+            # Voxel size
             props = imageStk.getProperties() or {}
             vx = props.get("sr", 1.0)
             vy = vx
             vz = vx
 
-            # Build base 2D slice and determine original slice dimensions
+            # Central slice as raw float
             if data.ndim == 3:
                 midZ = nz // 2
-                img2d = imageStk.getCentralImage()
-                if hasattr(img2d, "shape") and len(img2d.shape) == 2:
-                    origHeight, origWidth = img2d.shape
-                else:
-                    # Fallback to volume XY dimensions
-                    origHeight, origWidth = ny, nx
+                img2d = data[midZ, :, :]
                 note = f"Central slice (z={midZ}) rendered as color PNG thumbnail"
             else:
                 img2d = data
-                origHeight, origWidth = ny, nx
                 note = "2D MRC rendered as color PNG thumbnail"
 
-            if origWidth <= 0 or origHeight <= 0:
+            arr = np.asarray(img2d, dtype=np.float32)
+            if arr.ndim != 2 or arr.size == 0:
                 raise HTTPException(
                     status_code=500,
                     detail="Invalid image dimensions"
                 )
 
-            # Compute scale factor so that thumbnail fits within maxThumbSize
-            scale = min(
-                maxThumbSize / float(origWidth),
-                maxThumbSize / float(origHeight),
-                1.0,  # do not upscale
-            )
-
-            thumbWidth = max(1, int(round(origWidth * scale)))
-            thumbHeight = max(1, int(round(origHeight * scale)))
-
-            # Generate grayscale PIL (normalized) and downscale
-            pilGray = imageStk.asPilImage(img2d, normalize=True)  # 'L'
-            pilGray.thumbnail((thumbWidth, thumbHeight))          # in-place, keeps aspect
-
-            # Optional highlight/normalize again on the downscaled data
-            arrGray = np.array(pilGray)
+            # Optional highlight/normalize in real space
             try:
-                arrGray = imageStk.highlightSlice(arrGray)
-                arrGray = imageStk.normalizeSlice(arrGray)
+                arr = imageStk.highlightSlice(arr)
+                arr = imageStk.normalizeSlice(arr)
             except Exception:
                 pass
 
-            # Colorize → RGB uint8
-            cmapName = self._colormapName() if data.ndim == 3 else 'gray'
-            rgb = self._applyColormap(arrGray, cmapName=cmapName)
+            # Downscale using PIL
+            origHeight, origWidth = arr.shape
+            scale = min(
+                maxThumbSize / float(origWidth),
+                maxThumbSize / float(origHeight),
+                1.0,
+            )
+            thumbWidth = max(1, int(round(origWidth * scale)))
+            thumbHeight = max(1, int(round(origHeight * scale)))
 
-            # Encode as PNG
+            # To uint8 for colormap
+            amin, amax = float(np.min(arr)), float(np.max(arr))
+            if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
+                arrNorm = np.zeros_like(arr, dtype=np.uint8)
+            else:
+                arrNorm = (arr - amin) / (amax - amin + 1e-12)
+                arrNorm = (255.0 * arrNorm).astype(np.uint8)
+
+            pilGray = Image.fromarray(arrNorm, mode="L")
+            if thumbWidth < origWidth or thumbHeight < origHeight:
+                pilGray = pilGray.resize((thumbWidth, thumbHeight), Image.LANCZOS)
+
+            # Colorize
+            cmapName = self._colormapName() if data.ndim == 3 else "gray"
+            rgb = self._applyColormap(np.array(pilGray, dtype=np.float32), cmapName=cmapName)
             img = Image.fromarray(rgb, mode="RGB")
+
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             pngBytes = buf.getvalue()
@@ -454,7 +451,6 @@ class FileHandlers:
 
         meta = {
             "mime": "volume/mrc",
-            # Original volume/slice dimensions
             "width": int(nx),
             "height": int(ny),
             "depth": int(nz),

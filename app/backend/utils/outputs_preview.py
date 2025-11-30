@@ -1067,46 +1067,53 @@ class OutputsPreview(FileHandlers):
 
     def _pilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
         """
-        Convert a PIL image to a 2D uint8 tile, trying to preserve contrast.
-        Falls back gracefully if normalization fails.
+        Convert a PIL image from a stack into a 2D uint8 tile.
+
+        - Downsamples to <= maxThumbSize.
+        - Converts to grayscale.
+        - Runs highlightSlice/normalizeSlice at most once.
+        - Final output is uint8 [0, 255] so we can avoid re-normalizing later.
         """
         try:
-            ny, nx = pilImg.size
+            width, height = pilImg.size
             scale = min(
-                maxThumbSize / float(nx),
-                maxThumbSize / float(ny),
+                maxThumbSize / float(width),
+                maxThumbSize / float(height),
                 1.0,  # do not upscale
             )
-            thumbWidth = max(1, int(round(nx * scale)))
-            thumbHeight = max(1, int(round(ny * scale)))
-            arr = np.array(pilImg)
-            pilGray = imgStk.asPilImage(arr, normalize=True)  # 'L'
-            pilGray.thumbnail((thumbWidth, thumbHeight))
-            arr = np.array(pilGray)
+            thumbWidth = max(1, int(round(width * scale)))
+            thumbHeight = max(1, int(round(height * scale)))
 
-            if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-                arr = np.array(pilImg.convert("L"))
+            # Ensure grayscale
+            if pilImg.mode not in ("L", "I;16", "F"):
+                pilGray = pilImg.convert("L")
+            else:
+                pilGray = pilImg
 
+            # Downscale if needed
+            if thumbWidth < width or thumbHeight < height:
+                pilGray = pilGray.copy()
+                pilGray.thumbnail((thumbWidth, thumbHeight))
+
+            arr = np.asarray(pilGray, dtype=np.float32)
             arr = np.squeeze(arr)
             if arr.ndim != 2 or arr.size == 0:
                 return None
 
+            # Single contrast enhancement pass
             try:
                 arr = imgStk.highlightSlice(arr)
                 arr = imgStk.normalizeSlice(arr)
             except Exception:
                 pass
 
-            # Safe stretch to uint8
-            aMin = float(np.nanmin(arr)) if arr.size else 0.0
-            aMax = float(np.nanmax(arr)) if arr.size else 1.0
-            if (not np.isfinite(aMin)) or (not np.isfinite(aMax)) or (aMax <= aMin):
-                arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
-            else:
-                if arr.dtype != np.uint8 or aMax > 255.0 or aMin < 0.0:
-                    arr = ((arr - aMin) / (aMax - aMin) * 255.0).astype(np.uint8, copy=False)
+            # Bring to uint8 for display; _normMode2D will see this and not touch it again
+            amin, amax = float(np.min(arr)), float(np.max(arr))
+            if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
+                return np.zeros_like(arr, dtype=np.uint8)
 
-            return arr
+            arr = (arr - amin) / (amax - amin + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
         except Exception:
             return None
 
@@ -1620,31 +1627,47 @@ class OutputsPreview(FileHandlers):
 
     def _normMode2D(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
         """
-        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
+        Normalize a 2D slice into uint8: 'minmax' | 'zscore' | 'none'.
+
+        If input is already uint8 and mode in ('minmax', 'none'),
+        it is returned as is.
         """
         if a.ndim != 2:
             raise ValueError("Expected 2D slice")
-        arr = a.astype(np.float32, copy=False)
+        arr = np.asarray(a)
+
+        # Already display-ready: do not touch for basic modes
+        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
+            return arr.copy()
+
+        arr = arr.astype(np.float32, copy=False)
+        mode = (mode or "minmax").lower()
+
+        finiteMask = np.isfinite(arr)
+        if not finiteMask.all():
+            if finiteMask.any():
+                fillVal = float(np.nanmedian(arr[finiteMask]))
+            else:
+                fillVal = 0.0
+            arr = np.where(finiteMask, arr, fillVal)
 
         if mode == "zscore":
             mu = float(np.mean(arr))
-            sd = float(np.std(arr)) or 1.0
+            sd = float(np.std(arr))
+            if sd == 0.0 or not np.isfinite(sd):
+                return np.zeros_like(arr, dtype=np.uint8)
             arr = (arr - mu) / sd
             arr = np.clip(arr, -3.0, 3.0)
-            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-12)
-            return (255.0 * arr).astype(np.uint8)
-
-        if mode == "none":
-            amin, amax = float(np.min(arr)), float(np.max(arr))
+            amin, amax = float(arr.min()), float(arr.max())
             if amax <= amin:
                 return np.zeros_like(arr, dtype=np.uint8)
             arr = (arr - amin) / (amax - amin + 1e-12)
             return (255.0 * arr).astype(np.uint8)
 
-        # default: minmax
-        amin, amax = float(np.min(arr)), float(np.max(arr))
-        if amax <= amin:
+        amin, amax = float(arr.min()), float(arr.max())
+        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
             return np.zeros_like(arr, dtype=np.uint8)
+
         arr = (arr - amin) / (amax - amin + 1e-12)
         return (255.0 * arr).astype(np.uint8)
 
