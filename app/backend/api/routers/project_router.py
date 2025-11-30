@@ -918,3 +918,66 @@ def get_metadata_window(
         limit=limit,
         selectionOnly=selectionOnly,
     )
+
+
+@router.get("/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/rows",
+            response_model=Any,
+            status_code=status.HTTP_200_OK,
+)
+def getMetadataTableWindow(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    offset: int = Query(
+        0,
+        ge=0,
+        description="0-based starting row index in the current table order",
+    ),
+    limit: int = Query(
+        2000,
+        ge=1,
+        le=10000,
+        description="Maximum number of rows to return in this window",
+    ),
+    selectionOnly: bool = Query(
+        False,
+        description="If true, use server-side selection instead of the full table",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """
+    Return a window (offset + limit) of rows for a metadata table.
+
+    This endpoint is intended for virtual scrolling:
+    - `offset` and `limit` are 0-based indices in the current table order.
+    - The response exposes `totalRows` so the frontend can know the global size.
+    - Each returned row has:
+        - `id` / `index`: 0-based global index (stable for the viewer)
+        - `rowId`: logical DAO id (if available)
+        - `values`: JSON-friendly cell payloads
+    """
+    # Ensure project exists and belongs to the current user
+    # project = service.getProjectById(mapper, projectId, currentUser)
+    # if not project:
+    #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    windowData = service.getMetadataTableWindowService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        offset=offset,
+        limit=limit,
+        selectionOnly=selectionOnly,
+    )
+
+    from fastapi.responses import JSONResponse
+
+    resp = JSONResponse(windowData)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
