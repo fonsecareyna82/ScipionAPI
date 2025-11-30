@@ -33,6 +33,7 @@ from tomo.constants import SCIPION, BOTTOM_LEFT_CORNER
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.volume_utils import readVolumeArray3d
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import SetOfVolumes
 from pwem.viewers import VISIBLE, ORDER, RENDER
@@ -62,46 +63,8 @@ from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2,
 from app.backend.api.schemas.project_schema import ProjectCreate
 from app.backend.utils.file_handlers import FileHandlers
 
-
 from app.backend.models.project_model import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
-
-from dataclasses import dataclass
-from functools import lru_cache
-from threading import RLock
-
-_VOLUME3D_LOCK = RLock()
-
-
-@dataclass(frozen=True)
-class _VolSig:
-    path: str
-    mtime_ns: int
-    size: int
-
-
-def _statSig(p: FsPath) -> _VolSig:
-    st = p.stat()
-    return _VolSig(str(p), st.st_mtime_ns, st.st_size)
-
-
-@lru_cache(maxsize=8)
-def _readVolumeCached(sig: _VolSig) -> Any:
-    """Disk -> numpy only once per (path, mtime, size)."""
-    imgStk = ImageReadersRegistry.open(sig.path)
-    data = np.asarray(imgStk.getImages())
-
-    if data.ndim not in (2, 3):
-        data = np.squeeze(data)
-        if data.ndim not in (2, 3):
-            raise ValueError(f"Unsupported dimensionality: {data.shape}")
-
-    try:
-        props = imgStk.getProperties() or {}
-    except Exception:
-        props = {}
-
-    return np.asarray(data, dtype=np.float32), props
 
 
 class ProjectService:
@@ -277,29 +240,29 @@ class ProjectService:
                 stepsDone = protocol.stepsDone
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
-                # Iterate over the inputs
+                # Iterate over inputs
                 for key, attr in protocol.iterInputAttributes():
                     input = {}
                     input.setdefault(key, {})
                     try:
                         input[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
                         input[key]['info'] = str(attr.get())
-                    except Exception as e:
+                    except Exception:
                         input[key]['_class'] = ""
                         input[key]['info'] = ""
 
-                    input[key]['_objValue'] ="%s.%s" % (attr.getObjValue(), attr.getExtended())
+                    input[key]['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
                     input[key]['_parentId'] = attr.getObjValue().getObjId()
                     inputs.append(input)
 
-                # Iterate over the outputs
+                # Iterate over outputs
                 for key, attr in protocol.iterOutputAttributes():
                     output = {}
                     output.setdefault(key, {})
                     output[key]['_class'] = attr.__class__.__name__
                     try:
                         output[key]['info'] = attr.__str__()
-                    except Exception as e:
+                    except Exception:
                         output[key]['info'] = ""
                     output[key]['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
                     output[key]['_parentId'] = protocol.getObjId()
@@ -353,7 +316,7 @@ class ProjectService:
     @staticmethod
     def getProtocolColor(status: str) -> str:
         """Return hex color based on protocol status."""
-        status_colors = {
+        statusColors = {
             "finished": "#D2F5CB",
             "failed": "#F5CCCB",
             "aborted": "#F5CCCB",
@@ -363,7 +326,7 @@ class ProjectService:
             "scheduled": "#918516",
             "new": "#D9F1FA",
         }
-        return status_colors.get(status.lower(), "#9e9e9e")
+        return statusColors.get(status.lower(), "#9e9e9e")
 
     def _buildProtocolContext(self, projectId, protocol) -> dict:
         """
@@ -372,13 +335,13 @@ class ProjectService:
         """
         from pyworkflow.protocol import Line, Group
 
-        HEADER_PARAMS = ['runName',  '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
+        headerParams = ['runName', '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
         # Basic metadata
         package = protocol.getClassPackage()
         hasExpert = protocol.hasExpert()
         if hasExpert:
-            HEADER_PARAMS.append('expertLevel')
-        HEADER_PARAMS.append('runMode')
+            headerParams.append('expertLevel')
+        headerParams.append('runMode')
         logoPath = ''
         path = getattr(package, '_logo', '')
         if path != '':
@@ -409,7 +372,6 @@ class ProjectService:
             "stdoutLog": protocol.getStdoutLog(),
             "stderrLog": protocol.getStderrLog(),
             "scheduleLog": protocol.getScheduleLog(),
-
         }
 
         # Detect available wizards and viewers
@@ -451,7 +413,7 @@ class ProjectService:
                 sectionData = {"name": section.getLabel(), "params": []}
                 if section.getLabel() != 'General':
                     for paramName, param in section.iterParams():
-                        if paramName not in HEADER_PARAMS:
+                        if paramName not in headerParams:
                             protVar = getattr(protocol, paramName, None)
                             if protVar is None:
                                 # Handle Group
@@ -461,18 +423,20 @@ class ProjectService:
                                     for paramGroupName, paramGroup in param.iterParams():
                                         protVar = getattr(protocol, paramGroupName, None)
 
-                                        # LINE PARAM
+                                        # Line param
                                         if isinstance(paramGroup, Line):
                                             for paramLineName, paramLine in paramGroup.iterParams():
                                                 protVar = getattr(protocol, paramLineName, None)
                                                 if protVar:
-                                                    paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None,
-                                                                                          0, protVar)
+                                                    paramChild = self.PreprocessParamForm(
+                                                        paramLine, paramLineName, wizards, None, 0, protVar
+                                                    )
                                                     if paramChild:
                                                         group[paramName]['children'].append(paramChild)
                                         elif protVar:
-                                            paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0,
-                                                                                  protVar)
+                                            paramChild = self.PreprocessParamForm(
+                                                paramGroup, paramGroupName, wizards, None, 0, protVar
+                                            )
                                             if paramChild:
                                                 group[paramName]['children'].append(paramChild)
                                     if group:
@@ -485,8 +449,9 @@ class ProjectService:
                                     for paramLineName, paramLine in param.iterParams():
                                         protVar = getattr(protocol, paramLineName, None)
                                         if protVar:
-                                            paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
-                                                                                  protVar)
+                                            paramChild = self.PreprocessParamForm(
+                                                paramLine, paramLineName, wizards, None, 0, protVar
+                                            )
                                             if paramChild:
                                                 line[paramName]['children'].append(paramChild)
                                     if line:
@@ -499,7 +464,7 @@ class ProjectService:
 
                 if section.getLabel() == 'General':
                     # Special params
-                    for paramName in HEADER_PARAMS:
+                    for paramName in headerParams:
                         paramProcessed = {}
                         paramValue = getattr(protocol, paramName, None)
                         if paramName == '_objComment':
@@ -520,7 +485,9 @@ class ProjectService:
                             paramProcessed[paramName]['expertLevel'] = 0
                             paramProcessed[paramName]['condition'] = None
                             paramProcessed[paramName]['_isImportant'] = True
-                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_USEQUEUE % (pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG)
+                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_USEQUEUE % (
+                                pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
+                            )
                             paramProcessed[paramName]['_class'] = 'BooleanParam'
                             paramProcessed[paramName]['_objValue'] = paramValue
                             paramProcessed[paramName]['default'] = paramValue
@@ -532,7 +499,9 @@ class ProjectService:
                             paramProcessed[paramName]['expertLevel'] = 0
                             paramProcessed[paramName]['condition'] = None
                             paramProcessed[paramName]['_isImportant'] = True
-                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_WAIT_FOR % pyworkflow.DOCSITEURLS.WAIT_FOR
+                            paramProcessed[paramName]['help'] = pwutils.Message.HELP_WAIT_FOR % (
+                                pyworkflow.DOCSITEURLS.WAIT_FOR
+                            )
                             paramProcessed[paramName]['_class'] = 'StringParam'
                             paramProcessed[paramName]['_objValue'] = paramValue
                             paramProcessed[paramName]['default'] = paramValue
@@ -637,7 +606,7 @@ class ProjectService:
                             except Exception as e:
                                 logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
                         else:
-                            # Pointer sin parentId, fallback
+                            # Pointer without parentId, fallback
                             param.set(None)
                     # MultiPointer validation
                     if newInputs.isEmpty() and not param.allowsNull.get():
@@ -659,8 +628,8 @@ class ProjectService:
                             logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                         except Exception as e:
                             logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
-                    else:  # Pointer without parentId, fallback
-                        # MultiPointer validation
+                    else:
+                        # Pointer without parentId, fallback
                         if not param.allowsNull.get():
                             errorList.append('**' + param.label.get() + '** it must not be empty.')
                         param.set(None)
@@ -736,13 +705,13 @@ class ProjectService:
 
     def launchProtocol(self, mapper, protocolId, protocolClassName, params):
         """Launch a protocol in RESTART mode, applying all params."""
-
-        # Store & launch
         protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
         try:
             errors += protocol._validate()
-        except Exception as e:
-            errors += ['**Other errors:**There are other validation errors that may be resolved by correcting the previous ones.']
+        except Exception:
+            errors += [
+                '**Other errors:**There are other validation errors that may be resolved by correcting the previous ones.'
+            ]
         if not errors:
             self.currentProject.launchProtocol(protocol)
         else:
@@ -750,7 +719,7 @@ class ProjectService:
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
-        """Stub for finding web‐based wizards (to be implemented)."""
+        """Stub for finding web-based wizards (to be implemented)."""
         return {}
 
     def getResourceIcon(self, icon):
@@ -768,9 +737,6 @@ class ProjectService:
         otherwise return two empty strings.
         """
         if protVar.hasValue():
-            # if protVar.get() is None:
-            #    raise Exception("protVar.hasValue...and .get() is None")
-            # TODO: CHECK THIS LATER to display better when _extended attribute
             return protVar.getObjValue().getNameId(), '%s::%s' % (protVar.getObjValue().getObjId(),
                                                                   protVar._extended.get())
         return '', ''
@@ -814,7 +780,6 @@ class ProjectService:
             splitLines = text.splitlines(True)
             for lineText in splitLines:
                 parsedText += parseHyperText(lineText, func) + '<br />'
-        #        parsedText = parseHyperText(text, func)
         return parsedText[:-6]
 
     def PreprocessParamForm(self, param, paramName, wizards, viewerDict, visualize, protVar):
@@ -824,14 +789,9 @@ class ProjectService:
         try:
             context = {}
             from pyworkflow.protocol import MultiPointerParam, PointerParam, RelationParam, Boolean
-            # RELATION PARAM
+            # RelationParam
             if isinstance(param, RelationParam):
                 pass
-                # param.htmlValue, param.htmlIdValue = self.getPointerHtml(protVar)
-                # param.relationName = param.getName()
-                # param.attributeName = param.getAttributeName()
-                # param.direction = param.getDirection()
-
             else:
                 context.setdefault(paramName, {})
                 # Public attributes
@@ -845,7 +805,6 @@ class ProjectService:
                 context[paramName]['_class'] = param.__class__.__name__
                 if protVar is not None:
                     if isinstance(param, MultiPointerParam):
-                        # TODO CHECK THIS LATER to display better when no _extended attribute
                         valueList = []
                         defaultValueList = []
                         for pointer in protVar:
@@ -859,7 +818,6 @@ class ProjectService:
                         context[paramName]['_objValue'] = valueList
                         context[paramName]['default'] = defaultValueList
                     elif isinstance(param, PointerParam):
-                        # TODO CHECK THIS LATER to display better when no _extended attribute
                         pointerValue = "%s.%s" % (protVar.getObjValue(), protVar.getExtended()) if protVar.getExtended() else ''
                         context[paramName]['_objValue'] = pointerValue
                         context[paramName]['value'] = pointerValue
@@ -885,7 +843,7 @@ class ProjectService:
         configProtocols = Config.SCIPION_PROTOCOLS
         localDir = Config.SCIPION_LOCAL_CONFIG
         protConf = os.path.join(localDir, configProtocols)
-        protocolsTree = ProtocolTreeConfig.load(self.currentProject.getDomain(),  protConf)
+        protocolsTree = ProtocolTreeConfig.load(self.currentProject.getDomain(), protConf)
         protocolsTree = serializeToJson(protocolsTree)
         self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
         return protocolsTree
@@ -896,7 +854,7 @@ class ProjectService:
             text = node.get("text")
             tag = node.get("tag")
             children = node.get("childs", [])
-        else:  # assume ProtocolConfig
+        else:
             text = getattr(node, "text", None)
             tag = getattr(node, "tag", None)
             children = getattr(node, "childs", [])
@@ -926,24 +884,21 @@ class ProjectService:
             # Iterate over key/value pairs in a dictionary
             for key, value in data.items():
                 if isinstance(value, dict):
-                    # If the value is a dict, check/replace its text
                     self.replaceDefaultProtocolText(value, resolverFn)
                 elif isinstance(value, list):
-                    # If the value is a list, apply the function to each item
                     for item in value:
                         if isinstance(item, dict):
                             self.replaceDefaultProtocolText(item, resolverFn)
         elif isinstance(data, list):
-            # If the root itself is a list, iterate and apply the replacement
             for item in data:
                 if isinstance(item, dict):
-                   self.replaceDefaultProtocolText(item, resolverFn)
+                    self.replaceDefaultProtocolText(item, resolverFn)
 
     def getProtocolName(self, node):
         text = node.get('text')
         if text:
             value = node.get('value') if node.get('value') is not None else text
-            protClassName = value.split('.')[-1]  # Take last part
+            protClassName = value.split('.')[-1]
             emProtocolsDict = self.currentProject.getDomain().getProtocols()
             prot = emProtocolsDict.get(protClassName, None)
 
@@ -955,7 +910,6 @@ class ProjectService:
                     return
 
                 text = prot.getClassLabel()
-
                 return text
 
         return 'default'
@@ -969,41 +923,41 @@ class ProjectService:
         errLogPath = protocol.get("stderrLog")
         scheduleLogPath = protocol.get("scheduleLog")
 
-        stdout_content, stderr_content, schedule_content = "", "", ""
-        new_offset_out, new_offset_err, new_offset_schedule = offset, errOffset, scheduleOffset
+        stdoutContent, stderrContent, scheduleContent = "", "", ""
+        newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
 
         # Handle stdout log
         if logPath and os.path.exists(logPath):
             with open(logPath, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(offset)
-                stdout_content = f.read()
-                new_offset_out = f.tell()
+                stdoutContent = f.read()
+                newOffsetOut = f.tell()
 
         # Handle stderr log
         if errLogPath and os.path.exists(errLogPath):
             with open(errLogPath, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(errOffset)
-                stderr_content = f.read()
-                new_offset_err = f.tell()
+                stderrContent = f.read()
+                newOffsetErr = f.tell()
 
         if scheduleLogPath and os.path.exists(scheduleLogPath):
             with open(scheduleLogPath, "r", encoding="utf-8", errors="ignore") as f:
                 f.seek(scheduleOffset)
-                schedule_content = f.read()
-                new_offset_schedule = f.tell()
+                scheduleContent = f.read()
+                newOffsetSchedule = f.tell()
 
-        if not stdout_content and not stderr_content and not schedule_content and not (
+        if not stdoutContent and not stderrContent and not scheduleContent and not (
                 logPath and os.path.exists(logPath)
         ) and not (errLogPath and os.path.exists(errLogPath)) and not (scheduleLogPath and os.path.exists(scheduleLogPath)):
             raise HTTPException(status_code=404, detail="No logs found")
 
         return {
-            "stdoutLog": stdout_content,
-            "stderrLog": stderr_content,
-            "stdoutOffset": new_offset_out,
-            "stderrOffset": new_offset_err,
-            "scheduleLog": schedule_content,
-            "scheduleOffset": new_offset_schedule,
+            "stdoutLog": stdoutContent,
+            "stderrLog": stderrContent,
+            "stdoutOffset": newOffsetOut,
+            "stderrOffset": newOffsetErr,
+            "scheduleLog": scheduleContent,
+            "scheduleOffset": newOffsetSchedule,
         }
 
     def renameProtocol(self, protocolId: int, newName: str):
@@ -1027,12 +981,11 @@ class ProjectService:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol)))
-
             self.currentProject.deleteProtocol(*protList)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def restartProtocolAll(self,protocolId: int):
+    def restartProtocolAll(self, protocolId: int):
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
             workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
@@ -1067,22 +1020,21 @@ class ProjectService:
         protocol = self.currentProject.getProtocol(int(protocolId))
         return protocol.getPath()
 
-    def _protocolRoot(self, protocol_id: Union[int, str]) -> FsPath:
+    def _protocolRoot(self, protocolId: Union[int, str]) -> FsPath:
         """
         Resolve the absolute root folder for a protocol, using your service.
         """
-        root = self.getProtocolPath(str(protocol_id))
+        root = self.getProtocolPath(str(protocolId))
         if not root:
             raise HTTPException(status_code=404, detail="Protocol path not found")
         return FsPath(root).resolve()
 
     @staticmethod
-    def _guardJoin(root: FsPath, rel_path: str) -> FsPath:
+    def _guardJoin(root: FsPath, relPath: str) -> FsPath:
         """
-        Join root + rel_path, resolve, and ensure it stays inside root.
+        Join root + relPath, resolve, and ensure it stays inside root.
         """
-        # Treat incoming path as relative to the protocol root
-        rel = (rel_path or "").strip().lstrip("/\\")
+        rel = (relPath or "").strip().lstrip("/\\")
         target = (root / rel).resolve()
         try:
             target.relative_to(root)
@@ -1097,7 +1049,7 @@ class ProjectService:
         return mt or "application/octet-stream"
 
     def listProtocolDir(self, protocolId: str, path: str):
-        """Return the directory file list"""
+        """Return the directory file list."""
         listProjDir = FileHandlers(self.currentProject)
         return listProjDir.listProtocolDir(protocolId, path)
 
@@ -1131,8 +1083,13 @@ class ProjectService:
         protocol = self.currentProject.getProtocol(protocolId)
         output = getattr(protocol, outputName)
         outputPath = output.getFileName()
-        outputPreview = OutputsPreview(self.currentProject, protocol, output, requestHeaders=requestHeaders,
-                                       colormapOverride=colormap,)
+        outputPreview = OutputsPreview(
+            self.currentProject,
+            protocol,
+            output,
+            requestHeaders=requestHeaders,
+            colormapOverride=colormap,
+        )
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
 
@@ -1156,7 +1113,6 @@ class ProjectService:
         }
         if outputName in alias:
             candidates.append(alias[outputName])
-        # Generic singular/plural fallbacks
         if outputName.endswith("s"):
             candidates.append(outputName[:-1])
         else:
@@ -1201,15 +1157,13 @@ class ProjectService:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
 
-        # This expects OutputsPreview to expose `getVolumeHistogram`
         if isinstance(output, SetOfVolumes):
-            output = output.getItem('_objId', volumeId+1)
+            output = output.getItem('_objId', volumeId + 1)
         raw = op.getVolumeHistogram(volumePath=output.getFileName(), bins=bins)
 
         if not raw:
             return {"binEdges": [], "counts": []}
 
-        # Accept a couple of variants from OutputsPreview and normalize
         binEdges = raw.get("binEdges") or raw.get("bin_edges") or []
         counts = raw.get("counts") or raw.get("values") or []
 
@@ -1249,29 +1203,6 @@ class ProjectService:
             quality=quality,
         )
 
-    def _readVolumeArray3d(self, volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """
-        Read a volume using ImageReadersRegistry (same as OutputsPreview),
-        returning:
-          - arr: float32 numpy array (Z, Y, X)
-          - props: dict with reader properties
-        Cached by (path, mtime_ns, size).
-        """
-        p = FsPath(volumePath)
-        if not p.exists():
-            raise HTTPException(status_code=404, detail="Volume file not found on disk")
-
-        sig = _statSig(p)
-
-        # Guard cache access in case multiple threads hit it at once
-        with _VOLUME3D_LOCK:
-            arr, props = _readVolumeCached(sig)
-
-        if arr.ndim == 2:
-            arr = arr[None, ...]  # (1, Y, X)
-
-        return arr, props
-
     def getVolumeData3dService(
             self,
             projectId: int,
@@ -1284,7 +1215,15 @@ class ProjectService:
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
-        vol, _props = self._readVolumeArray3d(volumePath)  # Z,Y,X
+        try:
+            vol, _props = readVolumeArray3d(volumePath)  # Z, Y, X
+        except HTTPException:
+            raise
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Volume file not found on disk")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
+
         volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
 
         z, y, x = volSmall.shape
@@ -1301,7 +1240,6 @@ class ProjectService:
             except Exception:
                 raise HTTPException(status_code=400, detail="volumeId must be an integer")
 
-            # Frontend volumeId is 0-based index; Scipion items are 1-based in this context.
             item = output.getItem('_objId', vid + 1)
             if item is None:
                 raise HTTPException(status_code=404, detail="Volume not found in SetOfVolumes")
@@ -1331,11 +1269,9 @@ class ProjectService:
 
         if ext in (".npz",):
             zf = np.load(volumePath)
-            # try common keys
             for k in ("data", "volume", "arr_0"):
                 if k in zf:
                     return np.asarray(zf[k], dtype=np.float32)
-            # fallback to first key
             firstKey = list(zf.keys())[0]
             return np.asarray(zf[firstKey], dtype=np.float32)
 
@@ -1348,7 +1284,7 @@ class ProjectService:
         except Exception:
             pass
 
-        # Try pwem ImageHandler (common in Scipion)
+        # Try pwem ImageHandler
         try:
             from pwem.emlib.image import ImageHandler
             ih = ImageHandler()
@@ -1403,10 +1339,8 @@ class ProjectService:
                 small = zoom(vol, zoom=scale, order=1, prefilter=False)
                 return np.asarray(small, dtype=np.float32)
             except Exception:
-                # Fallback to binning if scipy is not installed
                 pass
 
-        # Default: binning
         factor = int(np.ceil(m / float(maxDim)))
         return self._binVolume(vol, factor)
 
@@ -1495,23 +1429,23 @@ class ProjectService:
             )
 
         tomogramList: List[Dict[str, Any]] = []
-        tomos_iter = None
+        tomosIter = None
 
-        for attr_name in ("iterTomograms", "iterVolumes"):
-            func = getattr(setOfCoordinates3D, attr_name, None)
+        for attrName in ("iterTomograms", "iterVolumes"):
+            func = getattr(setOfCoordinates3D, attrName, None)
             if callable(func):
                 try:
-                    tomos_iter = func()
+                    tomosIter = func()
                     break
                 except Exception:
-                    tomos_iter = None
+                    tomosIter = None
 
-        if tomos_iter is None:
-            get_tomos = getattr(setOfCoordinates3D, "getTomograms", None)
-            if callable(get_tomos):
+        if tomosIter is None:
+            getTomos = getattr(setOfCoordinates3D, "getTomograms", None)
+            if callable(getTomos):
                 try:
-                    tomos = get_tomos()
-                    tomos_iter = (
+                    tomos = getTomos()
+                    tomosIter = (
                         tomos.iterItems() if hasattr(tomos, "iterItems") else iter(tomos)
                     )
                 except Exception as e:
@@ -1520,34 +1454,34 @@ class ProjectService:
                         detail=f"Failed to iterate tomograms: {e}",
                     )
 
-        if tomos_iter is None:
+        if tomosIter is None:
             raise HTTPException(
                 status_code=500,
                 detail="SetOfCoordinates3D does not expose tomograms iterator",
             )
 
-        if hasattr(tomos_iter, "iterItems"):
-            iterator = tomos_iter.iterItems()
+        if hasattr(tomosIter, "iterItems"):
+            iterator = tomosIter.iterItems()
         else:
-            iterator = iter(tomos_iter)
+            iterator = iter(tomosIter)
 
         for index, tomo in enumerate(iterator):
-            tomo_id = None
-            for fn_name in ("getTsId", "getObjId"):
-                fn = getattr(tomo, fn_name, None)
+            tomoId = None
+            for fnName in ("getTsId", "getObjId"):
+                fn = getattr(tomo, fnName, None)
                 if callable(fn):
                     try:
-                        tomo_id = fn()
-                        if tomo_id is not None:
+                        tomoId = fn()
+                        if tomoId is not None:
                             break
                     except Exception:
                         continue
-            if tomo_id is None:
-                tomo_id = index
+            if tomoId is None:
+                tomoId = index
 
             label = None
-            for fn_name in ("getObjLabel", "getNameId", "getFileName"):
-                fn = getattr(tomo, fn_name, None)
+            for fnName in ("getObjLabel", "getNameId", "getFileName"):
+                fn = getattr(tomo, fnName, None)
                 if callable(fn):
                     try:
                         label = fn()
@@ -1557,15 +1491,15 @@ class ProjectService:
                         continue
 
             if not label:
-                label = str(tomo_id)
+                label = str(tomoId)
 
             sr = tomo.getSamplingRate()
 
             tomogramList.append(
                 {
-                    "id": tomo_id,
+                    "id": tomoId,
                     "name": str(label),
-                    "label": tomo_id,
+                    "label": tomoId,
                     "dims": list(tomo.getDim()),
                     "voxelSize": [sr, sr, sr],
                 }
@@ -1584,7 +1518,7 @@ class ProjectService:
         Return a flat list of 3D points for one tomogram.
         Each point is {x, y, z, ...optional fields}.
 
-        Shape devuelto:
+        Returned shape:
         [
           {
             "x": number,
@@ -1614,9 +1548,9 @@ class ProjectService:
             )
 
         try:
-            boxSixe = float(setOfCoordinates3D.getBoxSize())
+            boxSize = float(setOfCoordinates3D.getBoxSize())
         except Exception:
-            boxSixe = None
+            boxSize = None
 
         key: Union[int, str] = tomogramId
         if isinstance(tomogramId, str):
@@ -1661,19 +1595,19 @@ class ProjectService:
 
             p: Dict[str, Any] = {"x": x, "y": y, "z": z}
 
-            get_id_fn = getattr(coord, "getObjId", None)
-            if callable(get_id_fn):
+            getIdFn = getattr(coord, "getObjId", None)
+            if callable(getIdFn):
                 try:
-                    objId = get_id_fn()
+                    objId = getIdFn()
                     if objId is not None:
                         p["id"] = objId
                 except Exception:
                     pass
 
-            get_class_fn = getattr(coord, "getClassId", None)
-            if callable(get_class_fn):
+            getClassFn = getattr(coord, "getClassId", None)
+            if callable(getClassFn):
                 try:
-                    classId = get_class_fn()
+                    classId = getClassFn()
                     if classId is not None:
                         p["classId"] = classId
                 except Exception:
@@ -1700,17 +1634,17 @@ class ProjectService:
                 except Exception:
                     pass
 
-            get_weight_fn = getattr(coord, "getWeight", None)
-            if callable(get_weight_fn):
+            getWeightFn = getattr(coord, "getWeight", None)
+            if callable(getWeightFn):
                 try:
-                    w = get_weight_fn()
+                    w = getWeightFn()
                     if w is not None:
                         p["weight"] = float(w)
                 except Exception:
                     pass
 
-            if boxSixe is not None:
-                p["radius"] = float(boxSixe)
+            if boxSize is not None:
+                p["radius"] = float(boxSize)
 
             p["tomoId"] = tomoId
 
@@ -1732,18 +1666,16 @@ class ProjectService:
             scale = min(
                 maxThumbSize / float(width),
                 maxThumbSize / float(height),
-                1.0,  # do not upscale
+                1.0,
             )
             thumbWidth = max(1, int(round(width * scale)))
             thumbHeight = max(1, int(round(height * scale)))
 
-            # Ensure grayscale PIL
             if pilImg.mode not in ("L", "I;16", "F"):
                 pilGray = pilImg.convert("L")
             else:
                 pilGray = pilImg
 
-            # Resize only if needed
             if thumbWidth < width or thumbHeight < height:
                 pilGray = pilGray.copy()
                 pilGray.thumbnail((thumbWidth, thumbHeight))
@@ -1754,7 +1686,6 @@ class ProjectService:
             if arr.ndim != 2 or arr.size == 0:
                 return None
 
-            # Single contrast enhancement pass (if available)
             try:
                 arr = imgStk.highlightSlice(arr)
                 arr = imgStk.normalizeSlice(arr)
@@ -1779,14 +1710,12 @@ class ProjectService:
 
         arr = np.asarray(a)
 
-        # If it is already 0-255 uint8, avoid re-normalizing for display-only modes.
         if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
             return arr.copy()
 
         arr = arr.astype(np.float32, copy=False)
         mode = (mode or "minmax").lower()
 
-        # Clean NaNs / infs
         finiteMask = np.isfinite(arr)
         if not finiteMask.all():
             if finiteMask.any():
@@ -1808,7 +1737,6 @@ class ProjectService:
             arr = (arr - amin) / (amax - amin + 1e-12)
             return (255.0 * arr).astype(np.uint8)
 
-        # For 'none' and 'minmax' we still need 0-255 for display, but avoid crazy scaling
         amin, amax = float(arr.min()), float(arr.max())
         if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
             return np.zeros_like(arr, dtype=np.uint8)
@@ -1843,11 +1771,10 @@ class ProjectService:
 
         Slow path:
           - Other axes or fast path failure
-          - Uses cached _readVolumeArray3d to avoid reloading on each request.
+          - Uses cached readVolumeArray3d to avoid reloading on each request.
         """
         from PIL import Image as PILImage
 
-        # Resolve protocol and SetOfCoordinates3D
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
@@ -1860,7 +1787,6 @@ class ProjectService:
                 detail=f"Output '{outputName}' not found in protocol",
             )
 
-        # Resolve tomogram object
         try:
             tomogram = setOfCoordinates3D._getTomogram(tomogramId)
         except Exception:
@@ -1886,7 +1812,6 @@ class ProjectService:
                 detail="Tomogram file not found on disk",
             )
 
-        # Axis and output format
         axis = (axis or "z").lower()
         if axis not in ("x", "y", "z"):
             axis = "z"
@@ -1909,22 +1834,17 @@ class ProjectService:
         gray: Optional[np.ndarray] = None
         depth = 1
 
-        # Normalize and clamp requested slice index once
         try:
             requestedIndex = int(sliceIndex or 0)
         except Exception:
             requestedIndex = 0
         requestedIndex = max(0, requestedIndex)
 
-        # ---------------------------------------------------------------
-        # Fast path: single-slice read using ImageReadersRegistry
-        # ---------------------------------------------------------------
         sliceUsed = requestedIndex
         if axis == "z" and fast:
             try:
                 reader = ImageReadersRegistry.open(volumePath)
 
-                # Infer dimensions from reader (cached internally)
                 try:
                     images = reader.getImages()
                     if hasattr(images, "ndim") and images.ndim == 3:
@@ -1942,7 +1862,6 @@ class ProjectService:
                 if zdim > 0:
                     k = max(0, min(k, zdim - 1))
 
-                # Try requested slice, then central, then first
                 try:
                     pilImg = reader.getImage(index=k, pilImage=True)
                 except Exception:
@@ -1969,22 +1888,22 @@ class ProjectService:
             except Exception:
                 gray = None
 
-        # ---------------------------------------------------------------
-        # Slow path: full 3D read + slicing (x / y / fallback)
-        # ---------------------------------------------------------------
         if gray is None:
             try:
-                vol3d, _props = self._readVolumeArray3d(volumePath)  # Z, Y, X
+                vol3d, _props = readVolumeArray3d(str(volumePath))  # Z, Y, X
             except HTTPException:
                 raise
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Tomogram file not found on disk",
+                )
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to read tomogram volume: {e}",
                 )
 
-            if vol3d.ndim == 2:
-                vol3d = vol3d[None, ...]
             if vol3d.ndim != 3:
                 raise HTTPException(
                     status_code=500,
@@ -2016,17 +1935,11 @@ class ProjectService:
             gray = self._normalize2dSlice(slice2d, mode=normalize)
             sliceUsed = k
 
-        # ---------------------------------------------------------------
-        # Thumbnail (before colormap/scale)
-        # ---------------------------------------------------------------
         if thumb is not None and thumb > 0:
             pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
             pilTmp.thumbnail((thumb, thumb))
             gray = np.asarray(pilTmp, copy=False)
 
-        # ---------------------------------------------------------------
-        # Colormap and scaling
-        # ---------------------------------------------------------------
         imgArray = gray.astype(np.uint8, copy=False)
         pilMode = "L"
 
@@ -2035,17 +1948,15 @@ class ProjectService:
                 import matplotlib.cm as cm
                 sliceNorm = imgArray.astype(np.float32) / 255.0
                 cmapObj = cm.get_cmap(usedColormap)
-                rgba = cmapObj(sliceNorm)  # 0..1 RGBA
+                rgba = cmapObj(sliceNorm)
                 rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
                 imgArray = rgb
                 pilMode = "RGB"
             except Exception:
-                # If matplotlib is not available or colormap fails, fall back to grayscale
                 usedColormap = None
                 imgArray = gray.astype(np.uint8, copy=False)
                 pilMode = "L"
 
-        # Optional scaling factor (after colormap)
         if scale is not None and scale != 1.0:
             try:
                 pilScale = PILImage.fromarray(imgArray, mode=pilMode)
@@ -2058,11 +1969,9 @@ class ProjectService:
 
         img = PILImage.fromarray(imgArray, mode=pilMode)
 
-        # Encode image into requested format
         buf = io.BytesIO()
         img.save(buf, format=pilFormat, **saveKw)
 
-        # HTTP headers (similar style as before)
         disp = "inline" if inline else "attachment"
         filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
 
@@ -2139,7 +2048,6 @@ class ProjectService:
         SQLite connections between threads.
         """
         objMgr = self._createObjectManager()
-        # Follow the same pattern used in OutputsPreview._previewSqlite
         objMgr._fileName = FsPath(metaPath)
         objMgr._dao = None
         objMgr._tables = {}
@@ -2185,14 +2093,12 @@ class ProjectService:
         """
         clsName = renderer.__class__.__name__
 
-        # Image cells: do not materialize the image here, just mark as image
         if clsName == "ImageRenderer":
             return {
                 "kind": "image",
                 "path": "" if rawValue is None else str(rawValue),
             }
 
-        # Matrix cells: render and convert ndarray to list
         if clsName == "MatrixRender":
             try:
                 rendered = renderer.render(rawValue, rowValues)
@@ -2207,7 +2113,6 @@ class ProjectService:
                 "value": renderedVal,
             }
 
-        # Default: just render and ensure JSON-friendly
         try:
             rendered = renderer.render(rawValue, rowValues)
         except Exception:
@@ -2229,8 +2134,6 @@ class ProjectService:
                                         outputName: str):
         """
         List logical metadata tables associated with an output.
-        Used by:
-          GET /projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables
         """
         _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
         objMgr = self._getMetadataObjectManager(metaPath)
@@ -2263,8 +2166,6 @@ class ProjectService:
                                       tableName: str):
         """
         Return logical schema for one metadata table: columns, renderers, flags.
-        Used by:
-          GET /projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/schema
         """
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
 
@@ -2272,33 +2173,27 @@ class ProjectService:
         orderLabels = []
         renderLabels = []
 
-        # It is only possible to manage the main table("object").
         if table.getName() == SQLITE_OBJECT_TABLE:
             from pwem.viewers.viewers_data import RegistryViewerConfig
             protocol = self.currentProject.getProtocol(int(protocolId))
             output = getattr(protocol, outputName)
 
-            # Get viewer config or fall back to empty dict
             config = RegistryViewerConfig.getConfig(type(output)) or {}
 
             fileNameLabel = ' _filename'
             stackLabel = ' stack'
 
-            # Read raw label strings with safe defaults
             visibleLabelsStr = config.get(VISIBLE, '')
             orderLabelsStr = config.get(ORDER, '')
             renderLabelsStr = config.get(RENDER, '')
 
-            # Replace only the first filename occurrence by stack
             orderLabelsStr = orderLabelsStr.replace(fileNameLabel, stackLabel, 1)
             renderLabelsStr = renderLabelsStr.replace(fileNameLabel, stackLabel, 1)
 
-            # Ensure stack is rendered if filename was visible
             if fileNameLabel in visibleLabelsStr and stackLabel not in renderLabelsStr:
                 renderLabelsStr += stackLabel
                 visibleLabelsStr += stackLabel
 
-            # Convert space-separated strings to lists
             visibleLabels = visibleLabelsStr.split()
             orderLabels = orderLabelsStr.split()
             renderLabels = renderLabelsStr.split()
@@ -2346,11 +2241,10 @@ class ProjectService:
                 except Exception:
                     sortable = True
 
-            if hasattr(col, "isVisible"):
-                try:
-                    visible = col.getName() in visibleLabels if visibleLabels else True
-                except Exception:
-                    visible = True
+            try:
+                visible = col.getName() in visibleLabels if visibleLabels else True
+            except Exception:
+                visible = True
 
             schema["columns"].append({
                 "name": col.getName(),
@@ -2384,7 +2278,6 @@ class ProjectService:
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
         columns = list(table.getColumns())
 
-        # Selection-only mode: use Table.Selection if present
         if selectionOnly:
             rows: list = []
             totalRows = 0
@@ -2408,7 +2301,6 @@ class ProjectService:
                 totalRows = 0
                 rows = []
         else:
-            # Normal pagination: offset + limit
             try:
                 totalRows = objMgr.getTableRowCount(tableName) or 0
             except Exception:
@@ -2469,13 +2361,12 @@ class ProjectService:
         - Else if selectionOnly -> try server-side selection.
         - Else -> export whole table.
         """
-        import csv  # local import to avoid touching module header
+        import csv
 
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
         columns = list(table.getColumns())
         colNames = [c.getName() for c in columns]
 
-        # Determine row ids to export
         rowIds: Optional[List[int]] = None
 
         if ids:
@@ -2490,9 +2381,8 @@ class ProjectService:
             except Exception:
                 rowIds = []
         else:
-            rowIds = None  # will export whole table
+            rowIds = None
 
-        # Collect rows to export
         rowsToExport = []
         if rowIds is not None:
             for rid in rowIds:
@@ -2546,7 +2436,6 @@ class ProjectService:
             mediaType = "text/csv; charset=utf-8"
             ext = "csv"
         else:
-            # XLSX export requires openpyxl
             try:
                 from openpyxl import Workbook
             except ImportError:
@@ -2614,12 +2503,11 @@ class ProjectService:
         - rowIndex (preferred for virtual scrolling): 0-based index in the current table order
         - rowId (legacy): logical row id, interpreted as 1-based index
         """
-        from PIL import Image as PILImage  # local import
+        from PIL import Image as PILImage
 
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
         columns = list(table.getColumns())
 
-        # Resolve column index
         colIndex = table.getColumnIndexFromLabel(columnName)
         if colIndex < 0 or colIndex >= len(columns):
             raise HTTPException(
@@ -2627,7 +2515,6 @@ class ProjectService:
                 detail=f"Column '{columnName}' not found in table '{tableName}'",
             )
 
-        # Decide which row index to use in objMgr.getRows
         if rowIndex is not None:
             try:
                 idx0 = int(rowIndex)
@@ -2659,10 +2546,8 @@ class ProjectService:
                     status_code=400,
                     detail="rowId must be >= 1",
                 )
-            # Legacy behaviour: logical id treated as 1-based index
             idx0 = rowIdInt - 1
 
-        # Fetch the corresponding row
         rows = objMgr.getRows(tableName, idx0, 1) or []
         if not rows:
             raise HTTPException(
@@ -2682,7 +2567,6 @@ class ProjectService:
         column = columns[colIndex]
         renderer = column.getRenderer()
 
-        # Ensure renderer behaves like ImageRenderer
         if hasattr(renderer, "setSize"):
             renderer.setSize(size)
         if hasattr(renderer, "setApplyTransformation"):
@@ -2699,7 +2583,6 @@ class ProjectService:
         if img is None:
             raise HTTPException(status_code=404, detail="No image for this cell")
 
-        # If renderer returns ndarray, convert to PIL.Image
         if isinstance(img, np.ndarray):
             if img.ndim == 2:
                 mode = "L"
@@ -2717,13 +2600,11 @@ class ProjectService:
 
         try:
             img.thumbnail((size, size))
-            # Normalize image
             arr = np.array(img)
             iMax = arr.max()
             iMin = arr.min()
             im255 = ((arr - iMin) / (iMax - iMin) * 255).astype(np.uint8)
             img = PILImage.fromarray(im255, mode="L")
-
         except Exception:
             pass
 
@@ -2742,7 +2623,6 @@ class ProjectService:
         img.save(buf, format=pilFormat)
 
         disp = "inline" if inline else "attachment"
-        # For backwards compat, include the logical id if present; else fall back to 1-based index
         filenameId = rowId if rowId is not None else (idx0 + 1)
         headers = {
             "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{filenameId}.{fmtLower}"',
@@ -2772,11 +2652,9 @@ class ProjectService:
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
         columns = list(table.getColumns())
 
-        # Normalize offset/limit
         offset = max(0, int(offset or 0))
         limit = max(1, int(limit or 1))
 
-        # Total rows
         try:
             totalRows = objMgr.getTableRowCount(tableName) or 0
         except Exception:
@@ -2785,7 +2663,6 @@ class ProjectService:
         if totalRows <= 0:
             rows = []
         else:
-            # Selection-only mode: map offset/limit over selection ids
             if selectionOnly:
                 rows = []
                 try:
@@ -2806,18 +2683,17 @@ class ProjectService:
                 except Exception:
                     rows = []
             else:
-                # Normal case: offset + limit sobre la tabla completa
                 if offset >= totalRows:
                     rows = []
                 else:
                     rows = objMgr.getRows(tableName, offset, limit) or []
 
         resultRows = []
-        for local_index, row in enumerate(rows):
+        for localIndex, row in enumerate(rows):
             try:
-                logical_id = row.getId()
+                logicalId = row.getId()
             except Exception:
-                logical_id = None
+                logicalId = None
             rowValues = row.getValues()
 
             valuesPayload = []
@@ -2829,14 +2705,122 @@ class ProjectService:
                 cell = self._convertCellForPage(renderer, rawVal, rowValues)
                 valuesPayload.append(cell)
 
-            global_index = offset + local_index
+            globalIndex = offset + localIndex
 
             resultRows.append({
-                # 0-based row index for the viewer (used to request images).
-                "id": global_index,
-                "index": global_index,
-                # Logical DAO id (may be non-consecutive); kept for future selection/export logic.
-                "rowId": logical_id,
+                "id": globalIndex,
+                "index": globalIndex,
+                "rowId": logicalId,
+                "values": valuesPayload,
+            })
+
+        return {
+            "offset": offset,
+            "limit": limit,
+            "totalRows": int(totalRows),
+            "rows": resultRows,
+        }
+
+
+    def getMetadataTableWindowService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            offset: int,
+            limit: int,
+            selectionOnly: bool,
+    ):
+        """
+        Return a window of rows for a metadata table using offset + limit.
+
+        IMPORTANT:
+        - `offset` / `limit` are 0-based indices in the current table order.
+        - Each returned row uses:
+            - `id` / `index`: 0-based global index (stable for the viewer)
+            - `rowId`: logical DAO id (which may be sparse)
+        - `totalRows` is the total number of rows in the *current view*:
+            - full table if selectionOnly == False
+            - number of selected rows if selectionOnly == True
+        """
+        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        columns = list(table.getColumns())
+
+        # Sanitize window parameters
+        offset = max(0, int(offset or 0))
+        limit = max(1, int(limit or 1))
+
+        # Get physical row count once
+        try:
+            totalPhysicalRows = objMgr.getTableRowCount(tableName) or 0
+        except Exception:
+            totalPhysicalRows = 0
+
+        rows = []
+        totalRows = totalPhysicalRows
+
+        if totalPhysicalRows <= 0:
+            rows = []
+            totalRows = 0
+        else:
+            if selectionOnly:
+                # Window over server-side selection
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        allIds = sorted(selection.getSelection().keys())
+                        totalRows = len(allIds)
+
+                        if offset < totalRows:
+                            end = min(offset + limit, totalRows)
+                            sliceIds = allIds[offset:end]
+                            for rid in sliceIds:
+                                idx0 = max(0, int(rid) - 1)
+                                chunk = objMgr.getRows(tableName, idx0, 1) or []
+                                if chunk:
+                                    rows.append(chunk[0])
+                    else:
+                        # No selection → empty view
+                        rows = []
+                        totalRows = 0
+                except Exception:
+                    # On any selection error, expose empty view instead of inconsistent totals
+                    rows = []
+                    totalRows = 0
+            else:
+                # Window over full table
+                totalRows = totalPhysicalRows
+                if offset < totalRows:
+                    rows = objMgr.getRows(tableName, offset, limit) or []
+                else:
+                    rows = []
+
+        # Convert rows to JSON-friendly payload
+        resultRows = []
+        for localIndex, row in enumerate(rows):
+            try:
+                logicalId = row.getId()
+            except Exception:
+                logicalId = None
+
+            rowValues = row.getValues()
+
+            valuesPayload = []
+            for idx, rawVal in enumerate(rowValues):
+                if idx >= len(columns):
+                    break
+                col = columns[idx]
+                renderer = col.getRenderer()
+                cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                valuesPayload.append(cell)
+
+            globalIndex = offset + localIndex
+
+            resultRows.append({
+                "id": globalIndex,
+                "index": globalIndex,
+                "rowId": logicalId,
                 "values": valuesPayload,
             })
 
