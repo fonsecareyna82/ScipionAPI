@@ -60,10 +60,9 @@ from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, Stri
                                         MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
-from app.backend.api.schemas.project_schema import ProjectCreate
+from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 
-from app.backend.models.project_model import ProjectUpdateRequest
 from app.utils.scipion_helper import serializeToJson
 
 
@@ -174,7 +173,7 @@ class ProjectService:
 
         return self.loadProject(dbProj, mapper)
 
-    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdateRequest):
+    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
         project = self.getProjectById(mapper, projectId, currentUser)
 
         if not project:
@@ -1427,7 +1426,7 @@ class ProjectService:
                 status_code=404,
                 detail=f"Output '{outputName}' not found in protocol",
             )
-
+        self.tomoList = {}
         tomogramList: List[Dict[str, Any]] = []
         tomosIter = None
 
@@ -1478,7 +1477,7 @@ class ProjectService:
                         continue
             if tomoId is None:
                 tomoId = index
-
+            self.tomoList[tomoId] = tomo
             label = None
             for fnName in ("getObjLabel", "getNameId", "getFileName"):
                 fn = getattr(tomo, fnName, None)
@@ -1560,7 +1559,10 @@ class ProjectService:
                 key = tomogramId
 
         try:
-            tomogram = setOfCoordinates3D._getTomogram(key)
+            if self.tomoList:
+                tomogram = self.tomoList[key]
+            else:
+                tomogram = setOfCoordinates3D._getTomogram(key)
         except Exception:
             tomogram = None
 
@@ -1788,7 +1790,10 @@ class ProjectService:
             )
 
         try:
-            tomogram = setOfCoordinates3D._getTomogram(tomogramId)
+            if self.tomoList:
+                tomogram = self.tomoList[tomogramId]
+            else:
+                tomogram = setOfCoordinates3D._getTomogram(tomogramId)
         except Exception:
             tomogram = None
 
