@@ -25,6 +25,7 @@
 # ******************************************************************************
 import io
 import logging
+import threading
 import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
@@ -64,18 +65,57 @@ from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 
 from app.utils.scipion_helper import serializeToJson
+from contextvars import ContextVar
+
+
+# Per-request context for current project and tomoList
+_currentProjectVar: ContextVar[Optional[ScipionProject]] = ContextVar(
+    "_currentProjectVar", default=None
+)
+_tomoListVar: ContextVar[Optional[Dict[Any, Any]]] = ContextVar(
+    "_tomoListVar", default=None
+)
+
+# Global lock for metadata / DAO operations (not thread-safe)
+_metadataLock = threading.Lock()
 
 
 class ProjectService:
     def __init__(self):
         self.manager = Manager()
-        self.currentProject = None
         # Keep objectManager attribute for backward compatibility,
         # but new HTTP endpoints use a fresh ObjectManager per request.
         self.objectManager = None
 
+    # ------------------------------------------------------------------
+    # Per-request project / tomogram context
+    # ------------------------------------------------------------------
+    @property
+    def currentProject(self) -> Optional[ScipionProject]:
+        """Return the current ScipionProject bound to this request context."""
+        return _currentProjectVar.get()
+
+    @currentProject.setter
+    def currentProject(self, value: Optional[ScipionProject]):
+        _currentProjectVar.set(value)
+
+    @property
+    def tomoList(self) -> Dict[Any, Any]:
+        """Return the per-request tomogram cache dictionary."""
+        value = _tomoListVar.get()
+        if value is None:
+            value = {}
+            _tomoListVar.set(value)
+        return value
+
+    @tomoList.setter
+    def tomoList(self, value: Dict[Any, Any]):
+        _tomoListVar.set(value)
+
     def clearCurrentProject(self):
-        self.currentProject = None
+        """Clear per-request project and tomogram cache."""
+        _currentProjectVar.set(None)
+        _tomoListVar.set({})
 
     def _createObjectManager(self) -> ObjectManager:
         """Create and configure a fresh ObjectManager instance.
@@ -162,7 +202,7 @@ class ProjectService:
 
         return result
 
-    def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
+    def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser, refresh=True, checkPid=True) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
         if not dbProj:
@@ -171,7 +211,7 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        return self.loadProject(dbProj, mapper)
+        return self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
 
     def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
         project = self.getProjectById(mapper, projectId, currentUser)
@@ -187,7 +227,7 @@ class ProjectService:
         return project
 
     def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
-        project = self.getProjectById(mapper, projectId, currentUser)
+        project = self.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
         deleted = mapper.deleteProject(projectId, currentUser["id"])
         if not deleted:
             raise HTTPException(
@@ -284,11 +324,11 @@ class ProjectService:
             }
         return graphData
 
-    def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None) -> dict:
+    def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
         projPath = dbProj['name']
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
-        runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
+        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
         graphData = self.buildProtocolsGraph(runs)
         # self.saveProtocolDependencies(mapper, graphData)
 
@@ -688,14 +728,13 @@ class ProjectService:
         else:
             self.currentProject._setupProtocol(protocol)
 
-        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),
-                                                    projectId=27)
-        if not dbProtocol:
-            # Insert a new protocol
-            pass
-        else:
-            # Update parameters and status if exists
-            pass
+        # dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=27)
+        # if not dbProtocol:
+        #     # Insert a new protocol
+        #     pass
+        # else:
+        #     # Update parameters and status if exists
+        #     pass
         # Save dependencies
         # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
         # self.saveProtocolDependencies(mapper, graphData._nodesDict)
@@ -2010,6 +2049,11 @@ class ProjectService:
     def _resolveOutputForMetadata(self, protocolId: int, outputName: str):
         """
         Resolve protocol and output object for metadata operations.
+
+        It also normalizes the metadata file path:
+        - If getFileName() returns a relative path, it is interpreted as
+          project-relative.
+        - Raises 404 if the final path does not exist on disk.
         """
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
@@ -2037,7 +2081,39 @@ class ProjectService:
             )
 
         metaPath = getFileNameFn()
-        if not metaPath or not os.path.exists(metaPath):
+
+        if not metaPath:
+            logger.warning(
+                "[METADATA] Empty metaPath for project=%s protocolId=%s outputName=%s",
+                getattr(self.currentProject, "getName", lambda: '<?>')(),
+                protocolId,
+                outputName,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Metadata file not found for this output"
+            )
+
+        # If path is not absolute, interpret it as project-relative
+        if not os.path.isabs(metaPath):
+            projectPath = None
+            try:
+                projectPath = self.currentProject.getPath()
+            except Exception:
+                projectPath = None
+
+            if projectPath:
+                metaPath = os.path.join(projectPath, metaPath)
+
+        if not os.path.exists(metaPath):
+            logger.warning(
+                "[METADATA] Metadata file does not exist on disk. "
+                "project=%s protocolId=%s outputName=%s metaPath=%s",
+                getattr(self.currentProject, "getName", lambda: '<?>')(),
+                protocolId,
+                outputName,
+                metaPath,
+            )
             raise HTTPException(
                 status_code=404,
                 detail="Metadata file not found for this output"
@@ -2140,30 +2216,31 @@ class ProjectService:
         """
         List logical metadata tables associated with an output.
         """
-        _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
-        objMgr = self._getMetadataObjectManager(metaPath)
+        with _metadataLock:
+            _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+            objMgr = self._getMetadataObjectManager(metaPath)
 
-        tables = objMgr.getTables() or {}
-        items = []
-        for name, table in tables.items():
-            try:
-                rowCount = objMgr.getTableRowCount(name) or 0
-            except Exception:
-                rowCount = 0
-            hasColumnId = True
-            try:
-                hasColumnId = table.hasColumnId()
-            except Exception:
-                pass
+            tables = objMgr.getTables() or {}
+            items = []
+            for name, table in tables.items():
+                try:
+                    rowCount = objMgr.getTableRowCount(name) or 0
+                except Exception:
+                    rowCount = 0
+                hasColumnId = True
+                try:
+                    hasColumnId = table.hasColumnId()
+                except Exception:
+                    pass
 
-            items.append({
-                "name": name,
-                "alias": table.getAlias(),
-                "rowCount": int(rowCount),
-                "hasColumnId": bool(hasColumnId),
-            })
+                items.append({
+                    "name": name,
+                    "alias": table.getAlias(),
+                    "rowCount": int(rowCount),
+                    "hasColumnId": bool(hasColumnId),
+                })
 
-        return items
+            return items
 
     def getMetadataTableSchemaService(self, projectId: int,
                                       protocolId: int,
@@ -2172,97 +2249,98 @@ class ProjectService:
         """
         Return logical schema for one metadata table: columns, renderers, flags.
         """
-        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
 
-        visibleLabels = []
-        orderLabels = []
-        renderLabels = []
+            visibleLabels = []
+            orderLabels = []
+            renderLabels = []
 
-        if table.getName() == SQLITE_OBJECT_TABLE:
-            from pwem.viewers.viewers_data import RegistryViewerConfig
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            output = getattr(protocol, outputName)
+            if table.getName() == SQLITE_OBJECT_TABLE:
+                from pwem.viewers.viewers_data import RegistryViewerConfig
+                protocol = self.currentProject.getProtocol(int(protocolId))
+                output = getattr(protocol, outputName)
 
-            config = RegistryViewerConfig.getConfig(type(output)) or {}
+                config = RegistryViewerConfig.getConfig(type(output)) or {}
 
-            fileNameLabel = ' _filename'
-            stackLabel = ' stack'
+                fileNameLabel = ' _filename'
+                stackLabel = ' stack'
 
-            visibleLabelsStr = config.get(VISIBLE, '')
-            orderLabelsStr = config.get(ORDER, '')
-            renderLabelsStr = config.get(RENDER, '')
+                visibleLabelsStr = config.get(VISIBLE, '')
+                orderLabelsStr = config.get(ORDER, '')
+                renderLabelsStr = config.get(RENDER, '')
 
-            orderLabelsStr = orderLabelsStr.replace(fileNameLabel, stackLabel, 1)
-            renderLabelsStr = renderLabelsStr.replace(fileNameLabel, stackLabel, 1)
+                orderLabelsStr = orderLabelsStr.replace(fileNameLabel, stackLabel, 1)
+                renderLabelsStr = renderLabelsStr.replace(fileNameLabel, stackLabel, 1)
 
-            if fileNameLabel in visibleLabelsStr and stackLabel not in renderLabelsStr:
-                renderLabelsStr += stackLabel
-                visibleLabelsStr += stackLabel
+                if fileNameLabel in visibleLabelsStr and stackLabel not in renderLabelsStr:
+                    renderLabelsStr += stackLabel
+                    visibleLabelsStr += stackLabel
 
-            visibleLabels = visibleLabelsStr.split()
-            orderLabels = orderLabelsStr.split()
-            renderLabels = renderLabelsStr.split()
-
-        try:
-            hasColumnId = table.hasColumnId()
-        except Exception:
-            hasColumnId = True
-
-        columns = list(table.getColumns())
-        schema = {
-            "name": tableName,
-            "alias": table.getAlias(),
-            "hasColumnId": bool(hasColumnId),
-            "columns": [],
-        }
-
-        for idx, col in enumerate(columns):
-            try:
-                col.setIndex(idx)
-            except Exception:
-                pass
-
-            renderer = col.getRenderer()
-            rendererType = self._rendererTypeFromInstance(renderer)
-
-            decimals = None
-            if hasattr(renderer, "getDecimalsNumber"):
-                try:
-                    decimals = renderer.getDecimalsNumber()
-                except Exception:
-                    decimals = None
-
-            hasTransformation = False
-            if hasattr(renderer, "hasTransformation"):
-                try:
-                    hasTransformation = bool(renderer.hasTransformation())
-                except Exception:
-                    hasTransformation = False
-
-            sortable = True
-            if hasattr(col, "isSorteable"):
-                try:
-                    sortable = bool(col.isSorteable())
-                except Exception:
-                    sortable = True
+                visibleLabels = visibleLabelsStr.split()
+                orderLabels = orderLabelsStr.split()
+                renderLabels = renderLabelsStr.split()
 
             try:
-                visible = col.getName() in visibleLabels if visibleLabels else True
+                hasColumnId = table.hasColumnId()
             except Exception:
-                visible = True
+                hasColumnId = True
 
-            schema["columns"].append({
-                "name": col.getName(),
-                "alias": col.getAlias() or col.getName(),
-                "index": idx,
-                "sortable": sortable,
-                "visible": visible,
-                "rendererType": rendererType,
-                "decimals": decimals,
-                "hasTransformation": hasTransformation,
-            })
+            columns = list(table.getColumns())
+            schema = {
+                "name": tableName,
+                "alias": table.getAlias(),
+                "hasColumnId": bool(hasColumnId),
+                "columns": [],
+            }
 
-        return schema
+            for idx, col in enumerate(columns):
+                try:
+                    col.setIndex(idx)
+                except Exception:
+                    pass
+
+                renderer = col.getRenderer()
+                rendererType = self._rendererTypeFromInstance(renderer)
+
+                decimals = None
+                if hasattr(renderer, "getDecimalsNumber"):
+                    try:
+                        decimals = renderer.getDecimalsNumber()
+                    except Exception:
+                        decimals = None
+
+                hasTransformation = False
+                if hasattr(renderer, "hasTransformation"):
+                    try:
+                        hasTransformation = bool(renderer.hasTransformation())
+                    except Exception:
+                        hasTransformation = False
+
+                sortable = True
+                if hasattr(col, "isSorteable"):
+                    try:
+                        sortable = bool(col.isSorteable())
+                    except Exception:
+                        sortable = True
+
+                try:
+                    visible = col.getName() in visibleLabels if visibleLabels else True
+                except Exception:
+                    visible = True
+
+                schema["columns"].append({
+                    "name": col.getName(),
+                    "alias": col.getAlias() or col.getName(),
+                    "index": idx,
+                    "sortable": sortable,
+                    "visible": visible,
+                    "rendererType": rendererType,
+                    "decimals": decimals,
+                    "hasTransformation": hasTransformation,
+                })
+
+            return schema
 
     def getMetadataTablePageService(
         self,
@@ -2280,74 +2358,75 @@ class ProjectService:
         Return one logical page of rows for a metadata table.
         Sorting is currently delegated to the underlying DAO default order.
         """
-        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
-        columns = list(table.getColumns())
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+            columns = list(table.getColumns())
 
-        if selectionOnly:
-            rows: list = []
-            totalRows = 0
-            try:
-                selection = table.getSelection()
-                if selection and not selection.isEmpty():
-                    allIds = sorted(selection.getSelection().keys())
-                    totalRows = len(allIds)
-                    start = max(0, (page - 1) * pageSize)
-                    end = start + pageSize
-                    sliceIds = allIds[start:end]
-                    for rid in sliceIds:
-                        idx0 = max(0, int(rid) - 1)
-                        chunk = objMgr.getRows(tableName, idx0, 1) or []
-                        if chunk:
-                            rows.append(chunk[0])
-                else:
+            if selectionOnly:
+                rows: list = []
+                totalRows = 0
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        allIds = sorted(selection.getSelection().keys())
+                        totalRows = len(allIds)
+                        start = max(0, (page - 1) * pageSize)
+                        end = start + pageSize
+                        sliceIds = allIds[start:end]
+                        for rid in sliceIds:
+                            idx0 = max(0, int(rid) - 1)
+                            chunk = objMgr.getRows(tableName, idx0, 1) or []
+                            if chunk:
+                                rows.append(chunk[0])
+                    else:
+                        totalRows = 0
+                        rows = []
+                except Exception:
                     totalRows = 0
                     rows = []
-            except Exception:
-                totalRows = 0
-                rows = []
-        else:
-            try:
-                totalRows = objMgr.getTableRowCount(tableName) or 0
-            except Exception:
-                totalRows = 0
-
-            if totalRows <= 0:
-                rows = []
             else:
-                offset = max(0, (page - 1) * pageSize)
-                if offset >= totalRows:
+                try:
+                    totalRows = objMgr.getTableRowCount(tableName) or 0
+                except Exception:
+                    totalRows = 0
+
+                if totalRows <= 0:
                     rows = []
                 else:
-                    rows = objMgr.getRows(tableName, offset, pageSize) or []
+                    offset = max(0, (page - 1) * pageSize)
+                    if offset >= totalRows:
+                        rows = []
+                    else:
+                        rows = objMgr.getRows(tableName, offset, pageSize) or []
 
-        resultRows = []
-        for row in rows:
-            try:
-                rowId = row.getId()
-            except Exception:
-                rowId = None
-            rowValues = row.getValues()
+            resultRows = []
+            for row in rows:
+                try:
+                    rowId = row.getId()
+                except Exception:
+                    rowId = None
+                rowValues = row.getValues()
 
-            valuesPayload = []
-            for idx, rawVal in enumerate(rowValues):
-                if idx >= len(columns):
-                    break
-                col = columns[idx]
-                renderer = col.getRenderer()
-                cell = self._convertCellForPage(renderer, rawVal, rowValues)
-                valuesPayload.append(cell)
+                valuesPayload = []
+                for idx, rawVal in enumerate(rowValues):
+                    if idx >= len(columns):
+                        break
+                    col = columns[idx]
+                    renderer = col.getRenderer()
+                    cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                    valuesPayload.append(cell)
 
-            resultRows.append({
-                "id": rowId,
-                "values": valuesPayload,
-            })
+                resultRows.append({
+                    "id": rowId,
+                    "values": valuesPayload,
+                })
 
-        return {
-            "pageNumber": page,
-            "pageSize": pageSize,
-            "totalRows": int(totalRows),
-            "rows": resultRows,
-        }
+            return {
+                "pageNumber": page,
+                "pageSize": pageSize,
+                "totalRows": int(totalRows),
+                "rows": resultRows,
+            }
 
     def exportMetadataTableService(
         self,
@@ -2368,124 +2447,171 @@ class ProjectService:
         """
         import csv
 
-        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
-        columns = list(table.getColumns())
-        colNames = [c.getName() for c in columns]
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+            columns = list(table.getColumns())
+            colNames = [c.getName() for c in columns]
 
-        rowIds: Optional[List[int]] = None
+            rowIds: Optional[List[int]] = None
 
-        if ids:
-            rowIds = [int(x) for x in ids]
-        elif selectionOnly:
-            try:
-                selection = table.getSelection()
-                if selection and not selection.isEmpty():
-                    rowIds = sorted(selection.getSelection().keys())
-                else:
+            if ids:
+                rowIds = [int(x) for x in ids]
+            elif selectionOnly:
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        rowIds = sorted(selection.getSelection().keys())
+                    else:
+                        rowIds = []
+                except Exception:
                     rowIds = []
-            except Exception:
-                rowIds = []
-        else:
-            rowIds = None
+            else:
+                rowIds = None
 
-        rowsToExport = []
-        if rowIds is not None:
-            for rid in rowIds:
-                idx0 = max(0, int(rid) - 1)
-                chunk = objMgr.getRows(tableName, idx0, 1) or []
-                if chunk:
-                    rowsToExport.append(chunk[0])
-        else:
-            try:
-                totalRows = objMgr.getTableRowCount(tableName) or 0
-            except Exception:
-                totalRows = 0
-            if totalRows > 0:
-                rowsToExport = objMgr.getRows(tableName, 0, totalRows) or []
+            rowsToExport = []
+            if rowIds is not None:
+                for rid in rowIds:
+                    idx0 = max(0, int(rid) - 1)
+                    chunk = objMgr.getRows(tableName, idx0, 1) or []
+                    if chunk:
+                        rowsToExport.append(chunk[0])
+            else:
+                try:
+                    totalRows = objMgr.getTableRowCount(tableName) or 0
+                except Exception:
+                    totalRows = 0
+                if totalRows > 0:
+                    rowsToExport = objMgr.getRows(tableName, 0, totalRows) or []
 
-        fmtLower = (fmt or "csv").lower()
-        if fmtLower not in ("csv", "xlsx"):
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported export format. Use 'csv' or 'xlsx'.",
-            )
-
-        if fmtLower == "csv":
-            buf = io.StringIO()
-            writer = csv.writer(buf)
-            writer.writerow(colNames)
-
-            for row in rowsToExport:
-                rowValues = row.getValues()
-                outRow = []
-                for idx, colName in enumerate(colNames):
-                    if idx >= len(rowValues):
-                        outRow.append("")
-                        continue
-                    rawVal = rowValues[idx]
-                    renderer = columns[idx].getRenderer()
-                    try:
-                        v = renderer.render(rawVal, rowValues)
-                    except Exception:
-                        v = rawVal
-                    if isinstance(v, np.ndarray):
-                        v = v.tolist()
-                    if isinstance(v, np.generic):
-                        v = v.item()
-                    if not isinstance(v, (str, int, float, bool)):
-                        v = str(v)
-                    outRow.append(v)
-                writer.writerow(outRow)
-
-            contentBytes = buf.getvalue().encode("utf-8")
-            mediaType = "text/csv; charset=utf-8"
-            ext = "csv"
-        else:
-            try:
-                from openpyxl import Workbook
-            except ImportError:
+            fmtLower = (fmt or "csv").lower()
+            if fmtLower not in ("csv", "xlsx"):
                 raise HTTPException(
-                    status_code=500,
-                    detail="XLSX export requires 'openpyxl' to be installed.",
+                    status_code=400,
+                    detail="Unsupported export format. Use 'csv' or 'xlsx'.",
                 )
 
-            wb = Workbook()
-            ws = wb.active
-            ws.append(colNames)
+            if fmtLower == "csv":
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(colNames)
 
-            for row in rowsToExport:
-                rowValues = row.getValues()
-                outRow = []
-                for idx, colName in enumerate(colNames):
-                    if idx >= len(rowValues):
-                        outRow.append(None)
-                        continue
-                    rawVal = rowValues[idx]
-                    renderer = columns[idx].getRenderer()
-                    try:
-                        v = renderer.render(rawVal, rowValues)
-                    except Exception:
-                        v = rawVal
-                    if isinstance(v, np.ndarray):
-                        v = v.tolist()
-                    if isinstance(v, np.generic):
-                        v = v.item()
-                    if not isinstance(v, (str, int, float, bool)):
-                        v = str(v)
-                    outRow.append(v)
-                ws.append(outRow)
+                for row in rowsToExport:
+                    rowValues = row.getValues()
+                    outRow = []
+                    for idx, colName in enumerate(colNames):
+                        if idx >= len(rowValues):
+                            outRow.append("")
+                            continue
+                        rawVal = rowValues[idx]
+                        renderer = columns[idx].getRenderer()
+                        try:
+                            v = renderer.render(rawVal, rowValues)
+                        except Exception:
+                            v = rawVal
+                        if isinstance(v, np.ndarray):
+                            v = v.tolist()
+                        if isinstance(v, np.generic):
+                            v = v.item()
+                        if not isinstance(v, (str, int, float, bool)):
+                            v = str(v)
+                        outRow.append(v)
+                    writer.writerow(outRow)
 
-            bio = io.BytesIO()
-            wb.save(bio)
-            contentBytes = bio.getvalue()
-            mediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ext = "xlsx"
+                contentBytes = buf.getvalue().encode("utf-8")
+                mediaType = "text/csv; charset=utf-8"
+                ext = "csv"
+            else:
+                try:
+                    from openpyxl import Workbook
+                except ImportError:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="XLSX export requires 'openpyxl' to be installed.",
+                    )
+
+                wb = Workbook()
+                ws = wb.active
+                ws.append(colNames)
+
+                for row in rowsToExport:
+                    rowValues = row.getValues()
+                    outRow = []
+                    for idx, colName in enumerate(colNames):
+                        if idx >= len(rowValues):
+                            outRow.append(None)
+                            continue
+                        rawVal = rowValues[idx]
+                        renderer = columns[idx].getRenderer()
+                        try:
+                            v = renderer.render(rawVal, rowValues)
+                        except Exception:
+                            v = rawVal
+                        if isinstance(v, np.ndarray):
+                            v = v.tolist()
+                        if isinstance(v, np.generic):
+                            v = v.item()
+                        if not isinstance(v, (str, int, float, bool)):
+                            v = str(v)
+                        outRow.append(v)
+                    ws.append(outRow)
+
+                bio = io.BytesIO()
+                wb.save(bio)
+                contentBytes = bio.getvalue()
+                mediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ext = "xlsx"
+
+            headers = {
+                "Content-Disposition": f'attachment; filename="{tableName}.{ext}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            }
+            return Response(content=contentBytes, media_type=mediaType, headers=headers)
+
+
+    def _renderMetadataPlaceholderImage(
+            self,
+            size: int,
+            inline: bool,
+            fmt: str,
+            tableName: str,
+            columnName: str,
+            rowId: Optional[Union[int, str]],
+            rowIndex: Optional[int],
+    ) -> Response:
+        """Return a small neutral placeholder image for broken metadata cells."""
+        from PIL import Image as PILImage
+
+        try:
+            sizeInt = int(size)
+        except Exception:
+            sizeInt = 64
+        sizeInt = max(8, sizeInt)
+
+        img = PILImage.new("L", (sizeInt, sizeInt), 0)
+        buf = io.BytesIO()
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+
+        img.save(buf, format=pilFormat)
+
+        disp = "inline" if inline else "attachment"
+        ident = rowId if rowId is not None else (rowIndex if rowIndex is not None else "placeholder")
 
         headers = {
-            "Content-Disposition": f'attachment; filename="{tableName}.{ext}"',
+            "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{ident}.{fmtLower}"',
             "Access-Control-Expose-Headers": "Content-Disposition",
+            "X-Image-Placeholder": "1",
         }
-        return Response(content=contentBytes, media_type=mediaType, headers=headers)
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
     def renderMetadataImageCellService(
             self,
@@ -2504,15 +2630,28 @@ class ProjectService:
         """
         Render one image cell from a metadata table using ImageRenderer.
 
-        The row can be located either by:
-        - rowIndex (preferred for virtual scrolling): 0-based index in the current table order
-        - rowId (legacy): logical row id, interpreted as 1-based index
+        Behavior:
+        - If everything is correct -> real thumbnail.
+        - If the image file cannot be resolved or opened -> neutral placeholder.
+        - Only true API misuse (bad column name, bad indices, etc.) returns 4xx.
         """
         from PIL import Image as PILImage
+        from pathlib import Path as LocalPath
+
+        # Resolve metadata root path for relative image paths
+        try:
+            _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+            metaDir = LocalPath(metaPath).parent
+        except HTTPException:
+            # If the output / metadata file is really missing, that is a real error
+            raise
+        except Exception:
+            metaDir = None
 
         objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
         columns = list(table.getColumns())
 
+        # Resolve column index
         colIndex = table.getColumnIndexFromLabel(columnName)
         if colIndex < 0 or colIndex >= len(columns):
             raise HTTPException(
@@ -2520,6 +2659,7 @@ class ProjectService:
                 detail=f"Column '{columnName}' not found in table '{tableName}'",
             )
 
+        # Resolve row index (0-based)
         if rowIndex is not None:
             try:
                 idx0 = int(rowIndex)
@@ -2555,17 +2695,40 @@ class ProjectService:
 
         rows = objMgr.getRows(tableName, idx0, 1) or []
         if not rows:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Row index {idx0} not found in table '{tableName}'",
+            logger.warning(
+                "Row index %s not found in table '%s' (projectId=%s, protocolId=%s)",
+                idx0,
+                tableName,
+                projectId,
+                protocolId,
+            )
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
             )
 
         row = rows[0]
         rowValues = row.getValues()
         if colIndex >= len(rowValues):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Column index {colIndex} out of range for this row",
+            logger.warning(
+                "Column index %s out of range for rowIndex=%s in table '%s'",
+                colIndex,
+                idx0,
+                tableName,
+            )
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
             )
 
         rawValue = rowValues[colIndex]
@@ -2577,40 +2740,134 @@ class ProjectService:
         if hasattr(renderer, "setApplyTransformation"):
             renderer.setApplyTransformation(applyTransform)
 
+        # Try to render using the metadata renderer
         try:
             img = renderer.render(rawValue, rowValues)
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Cannot render image cell: {e}",
+            logger.error(
+                "Cannot render image cell: table=%s, column=%s, rowIndex=%s, error=%s",
+                tableName,
+                columnName,
+                idx0,
+                e,
             )
+            img = None
 
+        # Normalize renderer outputs into a PIL image
         if img is None:
-            raise HTTPException(status_code=404, detail="No image for this cell")
+            pilImg = None
+        else:
+            # Sometimes renderers may return (img, extraInfo) or [img, ...]
+            if isinstance(img, (list, tuple)) and len(img) > 0:
+                img = img[0]
 
-        if isinstance(img, np.ndarray):
-            if img.ndim == 2:
-                mode = "L"
-            elif img.ndim == 3 and img.shape[-1] == 3:
-                mode = "RGB"
+            # Numpy array -> to PIL
+            if isinstance(img, np.ndarray):
+                if img.ndim == 2:
+                    mode = "L"
+                elif img.ndim == 3 and img.shape[-1] == 3:
+                    mode = "RGB"
+                else:
+                    mode = "L"
+                pilImg = PILImage.fromarray(img, mode=mode)
             else:
-                mode = "L"
-            img = PILImage.fromarray(img, mode=mode)
+                # PIL-like object
+                if hasattr(img, "save"):
+                    pilImg = img
+                else:
+                    # Path-like result: try to open image from disk
+                    if isinstance(img, (str, os.PathLike)):
+                        imgPath = LocalPath(img)
 
-        if not hasattr(img, "save"):
-            raise HTTPException(
-                status_code=500,
-                detail="Renderer did not return a PIL image",
+                        # Build candidates for relative paths:
+                        candidates = []
+                        if imgPath.is_absolute():
+                            candidates.append(imgPath)
+                        else:
+                            if metaDir is not None:
+                                candidates.append(metaDir / imgPath)
+
+                            projPath = None
+                            protPath = None
+                            try:
+                                if self.currentProject is not None:
+                                    projPath = LocalPath(self.currentProject.getPath())
+                                    prot = self.currentProject.getProtocol(int(protocolId))
+                                    protPath = LocalPath(prot.getPath())
+                            except Exception:
+                                protPath = None
+
+                            if protPath is not None:
+                                candidates.append(protPath / imgPath)
+                            if projPath is not None:
+                                candidates.append(projPath / imgPath)
+
+                            # Original relative path as last resort
+                            candidates.append(imgPath)
+
+                        resolvedPath = None
+                        for cand in candidates:
+                            if cand.exists():
+                                resolvedPath = cand
+                                break
+
+                        if resolvedPath is None:
+                            logger.warning(
+                                "Image file not found for metadata cell: raw='%s', table=%s, column=%s, rowIndex=%s",
+                                str(img),
+                                tableName,
+                                columnName,
+                                idx0,
+                            )
+                            pilImg = None
+                        else:
+                            try:
+                                pilImg = PILImage.open(str(resolvedPath))
+                            except Exception as e:
+                                logger.error(
+                                    "Cannot open image file '%s' for metadata cell: %s",
+                                    str(resolvedPath),
+                                    e,
+                                )
+                                pilImg = None
+                    else:
+                        # Unsupported type: treat as no image for this cell
+                        logger.warning(
+                            "Renderer returned unsupported type %r for metadata image cell "
+                            "(table=%s, column=%s, rowIndex=%s)",
+                            type(img),
+                            tableName,
+                            columnName,
+                            idx0,
+                        )
+                        pilImg = None
+
+        # If we still have no image, return placeholder instead of 404
+        if pilImg is None:
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
             )
 
+        # Resize and normalize contrast a bit
         try:
-            img.thumbnail((size, size))
-            arr = np.array(img)
-            iMax = arr.max()
-            iMin = arr.min()
-            im255 = ((arr - iMin) / (iMax - iMin) * 255).astype(np.uint8)
-            img = PILImage.fromarray(im255, mode="L")
+            pilImg.thumbnail((size, size))
+            arr = np.array(pilImg)
+
+            if arr.ndim == 3 and arr.shape[-1] == 3:
+                arrGray = arr.mean(axis=-1)
+            else:
+                arrGray = arr if arr.ndim == 2 else arr.mean(axis=-1)
+
+            im255 = self._normalize2dSlice(arrGray, mode="minmax")
+            pilImg = PILImage.fromarray(im255, mode="L")
         except Exception:
+            # If any normalization fails, keep whatever pilImg we have
             pass
 
         buf = io.BytesIO()
@@ -2625,107 +2882,16 @@ class ProjectService:
             pilFormat = "PNG"
             mediaType = "image/png"
 
-        img.save(buf, format=pilFormat)
+        pilImg.save(buf, format=pilFormat)
 
         disp = "inline" if inline else "attachment"
-        filenameId = rowId if rowId is not None else (idx0 + 1)
+        filenameId = rowId if rowId is not None else (rowIndex if rowIndex is not None else (idx0 + 1))
         headers = {
             "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{filenameId}.{fmtLower}"',
             "Access-Control-Expose-Headers": "Content-Disposition",
         }
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
-
-    def getMetadataTableWindowService(
-            self,
-            projectId: int,
-            protocolId: int,
-            outputName: str,
-            tableName: str,
-            offset: int,
-            limit: int,
-            selectionOnly: bool,
-    ):
-        """
-        Return a window of rows for a metadata table using offset + limit.
-
-        IMPORTANT:
-        - `offset` / `limit` are 0-based indices in the current table order.
-        - Each returned row uses `id` as the 0-based row index (stable for the viewer),
-          and also exposes `rowId` with the logical DAO id (which may be sparse).
-        """
-        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
-        columns = list(table.getColumns())
-
-        offset = max(0, int(offset or 0))
-        limit = max(1, int(limit or 1))
-
-        try:
-            totalRows = objMgr.getTableRowCount(tableName) or 0
-        except Exception:
-            totalRows = 0
-
-        if totalRows <= 0:
-            rows = []
-        else:
-            if selectionOnly:
-                rows = []
-                try:
-                    selection = table.getSelection()
-                    if selection and not selection.isEmpty():
-                        allIds = sorted(selection.getSelection().keys())
-                        totalRows = len(allIds)
-                        if offset < totalRows:
-                            end = min(offset + limit, totalRows)
-                            sliceIds = allIds[offset:end]
-                            for rid in sliceIds:
-                                idx0 = max(0, int(rid) - 1)
-                                chunk = objMgr.getRows(tableName, idx0, 1) or []
-                                if chunk:
-                                    rows.append(chunk[0])
-                    else:
-                        rows = []
-                except Exception:
-                    rows = []
-            else:
-                if offset >= totalRows:
-                    rows = []
-                else:
-                    rows = objMgr.getRows(tableName, offset, limit) or []
-
-        resultRows = []
-        for localIndex, row in enumerate(rows):
-            try:
-                logicalId = row.getId()
-            except Exception:
-                logicalId = None
-            rowValues = row.getValues()
-
-            valuesPayload = []
-            for idx, rawVal in enumerate(rowValues):
-                if idx >= len(columns):
-                    break
-                col = columns[idx]
-                renderer = col.getRenderer()
-                cell = self._convertCellForPage(renderer, rawVal, rowValues)
-                valuesPayload.append(cell)
-
-            globalIndex = offset + localIndex
-
-            resultRows.append({
-                "id": globalIndex,
-                "index": globalIndex,
-                "rowId": logicalId,
-                "values": valuesPayload,
-            })
-
-        return {
-            "offset": offset,
-            "limit": limit,
-            "totalRows": int(totalRows),
-            "rows": resultRows,
-        }
-
 
     def getMetadataTableWindowService(
             self,
@@ -2749,90 +2915,90 @@ class ProjectService:
             - full table if selectionOnly == False
             - number of selected rows if selectionOnly == True
         """
-        objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
-        columns = list(table.getColumns())
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
+            columns = list(table.getColumns())
 
-        # Sanitize window parameters
-        offset = max(0, int(offset or 0))
-        limit = max(1, int(limit or 1))
+            # Sanitize window parameters
+            offset = max(0, int(offset or 0))
+            limit = max(1, int(limit or 1))
 
-        # Get physical row count once
-        try:
-            totalPhysicalRows = objMgr.getTableRowCount(tableName) or 0
-        except Exception:
-            totalPhysicalRows = 0
+            # Get physical row count once
+            try:
+                totalPhysicalRows = objMgr.getTableRowCount(tableName) or 0
+            except Exception:
+                totalPhysicalRows = 0
 
-        rows = []
-        totalRows = totalPhysicalRows
-
-        if totalPhysicalRows <= 0:
             rows = []
-            totalRows = 0
-        else:
-            if selectionOnly:
-                # Window over server-side selection
-                try:
-                    selection = table.getSelection()
-                    if selection and not selection.isEmpty():
-                        allIds = sorted(selection.getSelection().keys())
-                        totalRows = len(allIds)
+            totalRows = totalPhysicalRows
 
-                        if offset < totalRows:
-                            end = min(offset + limit, totalRows)
-                            sliceIds = allIds[offset:end]
-                            for rid in sliceIds:
-                                idx0 = max(0, int(rid) - 1)
-                                chunk = objMgr.getRows(tableName, idx0, 1) or []
-                                if chunk:
-                                    rows.append(chunk[0])
-                    else:
-                        # No selection → empty view
+            if totalPhysicalRows <= 0:
+                rows = []
+                totalRows = 0
+            else:
+                if selectionOnly:
+                    # Window over server-side selection
+                    try:
+                        selection = table.getSelection()
+                        if selection and not selection.isEmpty():
+                            allIds = sorted(selection.getSelection().keys())
+                            totalRows = len(allIds)
+
+                            if offset < totalRows:
+                                end = min(offset + limit, totalRows)
+                                sliceIds = allIds[offset:end]
+                                for rid in sliceIds:
+                                    idx0 = max(0, int(rid) - 1)
+                                    chunk = objMgr.getRows(tableName, idx0, 1) or []
+                                    if chunk:
+                                        rows.append(chunk[0])
+                        else:
+                            # No selection → empty view
+                            rows = []
+                            totalRows = 0
+                    except Exception:
+                        # On any selection error, expose empty view instead of inconsistent totals
                         rows = []
                         totalRows = 0
-                except Exception:
-                    # On any selection error, expose empty view instead of inconsistent totals
-                    rows = []
-                    totalRows = 0
-            else:
-                # Window over full table
-                totalRows = totalPhysicalRows
-                if offset < totalRows:
-                    rows = objMgr.getRows(tableName, offset, limit) or []
                 else:
-                    rows = []
+                    # Window over full table
+                    totalRows = totalPhysicalRows
+                    if offset < totalRows:
+                        rows = objMgr.getRows(tableName, offset, limit) or []
+                    else:
+                        rows = []
 
-        # Convert rows to JSON-friendly payload
-        resultRows = []
-        for localIndex, row in enumerate(rows):
-            try:
-                logicalId = row.getId()
-            except Exception:
-                logicalId = None
+            # Convert rows to JSON-friendly payload
+            resultRows = []
+            for localIndex, row in enumerate(rows):
+                try:
+                    logicalId = row.getId()
+                except Exception:
+                    logicalId = None
 
-            rowValues = row.getValues()
+                rowValues = row.getValues()
 
-            valuesPayload = []
-            for idx, rawVal in enumerate(rowValues):
-                if idx >= len(columns):
-                    break
-                col = columns[idx]
-                renderer = col.getRenderer()
-                cell = self._convertCellForPage(renderer, rawVal, rowValues)
-                valuesPayload.append(cell)
+                valuesPayload = []
+                for idx, rawVal in enumerate(rowValues):
+                    if idx >= len(columns):
+                        break
+                    col = columns[idx]
+                    renderer = col.getRenderer()
+                    cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                    valuesPayload.append(cell)
 
-            globalIndex = offset + localIndex
+                globalIndex = offset + localIndex
 
-            resultRows.append({
-                "id": globalIndex,
-                "index": globalIndex,
-                "rowId": logicalId,
-                "values": valuesPayload,
-            })
+                resultRows.append({
+                    "id": globalIndex,
+                    "index": globalIndex,
+                    "rowId": logicalId,
+                    "values": valuesPayload,
+                })
 
-        return {
-            "offset": offset,
-            "limit": limit,
-            "totalRows": int(totalRows),
-            "rows": resultRows,
-        }
-
+            return {
+                "offset": offset,
+                "limit": limit,
+                "totalRows": int(totalRows),
+                "rows": resultRows,
+            }
