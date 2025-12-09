@@ -26,16 +26,19 @@
 import io
 import logging
 import threading
+from functools import lru_cache
+
 import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
-from tomo.constants import SCIPION, BOTTOM_LEFT_CORNER
+from tomo.constants import BOTTOM_LEFT_CORNER
+from tomo.objects import SetOfTiltSeries, TiltSeries
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_utils import readVolumeArray3d
-from pwem.emlib.image.image_readers import ImageReadersRegistry
+from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -49,7 +52,7 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Any, Union, Tuple, Dict
+from typing import List, Optional, Any, Union, Tuple, Dict, Set
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
@@ -705,7 +708,7 @@ class ProjectService:
             rawValue = value.get("value")
             try:
                 castedValue = self.castParamValue(param, rawValue)
-                errors = param.validate(castedValue)
+                errors = param.validate(castedValue) if hasattr(param, 'validate') else []
                 if errors:
                     errorListAux = ['**' + param.label.get() + '** ' + error for error in errors]
                     errorList += errorListAux
@@ -1131,6 +1134,60 @@ class ProjectService:
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
 
+    # ----------------------------------------------------------------------
+    # Internal helpers for TiltSeries (SetOfTiltSeries)
+    # ----------------------------------------------------------------------
+
+    @lru_cache
+    def _resolveOutputForTiltSeries(self, protocolId: int, outputName: str):
+        """
+        Resolve protocol + SetOfTiltSeries-like output for tilt series operations.
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None",
+            )
+
+        return protocol, output
+
+    def _buildTiltSeriesSummary(self, ts) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly summary for one tilt series.
+        """
+        tsId = ts.getTsId()
+        label = f"TiltSeries {tsId}"
+        nViews = ts.getSize()
+        dims = ts.getDim()
+        pixelSize = ts.getSamplingRate()
+        tiltAxisAngle = ts.getAcquisition().getTiltAxisAngle()
+        item: Dict[str, Any] = {
+            "tiltSeriesId": tsId,
+            "label": str(label),
+        }
+        if nViews is not None:
+            item["nViews"] = nViews
+        if dims is not None:
+            item["dims"] = dims
+        if pixelSize is not None:
+            item["pixelSize"] = pixelSize
+        if tiltAxisAngle is not None:
+            item["tiltAxisAngle"] = tiltAxisAngle
+
+        return item
+
     # ======================================================================
     # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
     # ======================================================================
@@ -1435,10 +1492,432 @@ class ProjectService:
 
         return fshift[z0:z0 + tz, y0:y0 + ty, x0:x0 + tx]
 
+    def listOutputTiltSeriesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        """
+        List all tilt series in a SetOfTiltSeries-like output.
+
+        Shape:
+        [
+          {
+            "tiltSeriesId": "...",
+            "label": "...",
+            "nViews"?: number,
+            "dims"?: [w, h, ...],
+            "pixelSize"?: number,
+            "tiltAxisAngle"?: number,
+          },
+          ...
+        ]
+        """
+        _, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+
+        seriesList: List[Dict[str, Any]] = []
+        for idx, ts in enumerate(setOfTiltSeries.iterItems(iterate=False)):
+            try:
+                summary = self._buildTiltSeriesSummary(ts)
+                seriesList.append(summary)
+            except Exception as e:
+                logger.warning("Failed to summarize TiltSeries #%s: %s", idx, e)
+
+        return seriesList
+
+    def getTiltSeriesFramesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+    ):
+        """
+        Return metadata for all tilt images in a given tilt series.
+
+        Shape:
+        {
+          "tiltSeriesId": ...,
+          "label": "...",
+          "tiltAxisAngle"?: number,
+          "frames": [
+            {
+              "viewId": ...,
+              "index": 0-based index,
+              "order"?: number,
+              "tiltAngle"?: number,
+              "excluded"?: bool,
+              "dose"?: number,
+              "path"?: str,
+              "rot"?: number,
+              "shiftX"?: number,
+              "shiftY"?: number,
+            },
+            ...
+          ]
+        }
+        """
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+        targetKey = str(tiltSeriesId)
+        selectedSummary: Optional[Dict[str, Any]] = None
+        selectedSeries = setOfTiltSeries.getItem('_tsId', targetKey)
+        if selectedSeries is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
+            )
+
+        frames: List[Dict[str, Any]] = []
+
+        for idx, view in enumerate(selectedSeries.iterItems(iterate=False)):
+            frame: Dict[str, Any] = {}
+            # viewId
+            frame["viewId"] = view.getObjId()
+            frame["index"] = view.getIndex()
+            frame["order"] = view.getAcquisitionOrder()
+            frame["tiltAngle"] = view.getTiltAngle()
+
+            # excluded flag
+            excluded = False
+            if hasattr(view, "isExcluded"):
+                try:
+                    excluded = bool(view.isExcluded())
+                except Exception:
+                    pass
+            elif hasattr(view, "getIsExcluded"):
+                try:
+                    excluded = bool(view.getIsExcluded())
+                except Exception:
+                    pass
+            elif hasattr(view, "isEnabled"):
+                try:
+                    enabled = bool(view.isEnabled())
+                    excluded = not enabled
+                except Exception:
+                    pass
+            elif hasattr(view, "getEnabled"):
+                try:
+                    enabled = bool(view.getEnabled())
+                    excluded = not enabled
+                except Exception:
+                    pass
+            else:
+                for attrName in ("excluded", "_excluded", "skip", "_skip"):
+                    try:
+                        v = getattr(view, attrName, None)
+                        if v is not None:
+                            excluded = bool(v)
+                            break
+                    except Exception:
+                        continue
+            frame["excluded"] = excluded
+
+            # dose
+            dose = view.getAcquisition().getAccumDose()
+            if dose is not None:
+                frame["dose"] = dose
+
+            # path
+            path = view.getFileName()
+            if path is not None:
+                frame["path"] = str(view.getIndex()) + '@' + path
+
+            # rotation and shifts
+            rot = None
+            shifts = None
+
+            if view.hasTransform():
+                transf = view.getTransform()
+                _, _, rot = transf.getEulerAngles()
+                rot = np.rad2deg(-rot)
+                list = transf.getMatrixAsList()
+                shifts = list[2], list[5]
+
+            if rot is not None:
+                frame["rot"] = rot
+
+            # shifts
+            if shifts is not None:
+                frame["shiftX"] = shifts[0]
+                frame["shiftY"] = shifts[1]
+
+            frames.append(frame)
+
+        payload: Dict[str, Any] = {
+            "tiltSeriesId": selectedSummary.get("tiltSeriesId") if selectedSummary else tiltSeriesId,
+            "label": selectedSummary.get("label") if selectedSummary else str(tiltSeriesId),
+            "frames": frames,
+        }
+
+        if selectedSummary and "tiltAxisAngle" in selectedSummary:
+            payload["tiltAxisAngle"] = selectedSummary["tiltAxisAngle"]
+
+        return payload
+
+    def renderTiltSeriesImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            index: int = 0,
+            size: int = 1024,
+            fmt: str = "png",
+            applyTransform: bool = True,
+            inline: bool = True,
+            requestHeaders: Optional[Dict[str, str]] = None,
+    ):
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+        ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
+        ti = ts.getItem('_index', index)
+        rot = shifts = None
+        if applyTransform and ti.hasTransform():
+            transf = ti.getTransform()
+            _, _, rot = transf.getEulerAngles()
+            rot = np.rad2deg(-rot)
+            list = transf.getMatrixAsList()
+            shifts = list[2], list[5]
+
+        preview = OutputsPreview(
+            currentProject=self.currentProject,
+            protocol=protocol,
+            output=ts,
+            requestHeaders=requestHeaders,
+        )
+        return preview.renderImageFromFilePath(os.path.abspath(ti.getFileName()),
+                                               size=size,
+                                               fmt=fmt,
+                                               index=index,
+                                               applyTransform=applyTransform,
+                                               inline=inline,
+                                               rot=rot,
+                                               shifts=shifts)
+
+    def createNewSetOfTiltSeriesService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        exclusions: Dict[str, Any],
+        restack: bool,
+    ) -> Dict[str, Any]:
+        """
+        Create a new SetOfTiltSeries applying per-tilt-series and per-tilt exclusions.
+
+        The `exclusions` dict is expected to have the shape:
+        {
+            "<tsId>": {
+                "excluded": bool,
+                "tiltimages": [index1, index2, ...]  # tilt indices (1-based)
+            },
+            ...
+        }
+
+        Returns a JSON-serializable payload for the web UI with basic metadata.
+        """
+        # Resolve protocol and input set for the given output
+        protocol, inputSet = self._resolveOutputForTiltSeries(protocolId, outputName)
+        hasOddEven = inputSet.hasOddEven()
+
+        # Normalize exclusions keys to strings (tsId can be int/str on the backend)
+        normalizedExclusions: Dict[str, Dict[str, Any]] = {}
+        for key, value in (exclusions or {}).items():
+            normalizedExclusions[str(key)] = value or {}
+
+        # New output name and path for the created SetOfTiltSeries
+        newOutputName = protocol.getNextOutputName("TiltSeries_")
+        outputPath = os.path.join(protocol._getExtraPath(), newOutputName)
+
+        # Create the output set with copied info
+        outputSet = SetOfTiltSeries.create(
+            protocol.getPath(),
+            suffix=str(protocol.getOutputsSize()),
+        )
+        outputSet.copyInfo(inputSet)
+        outputSet.setDim(inputSet.getDim())
+
+        if restack and not os.path.exists(outputPath):
+            os.mkdir(outputPath)
+
+        totalInputSeries = inputSet.getSize() if hasattr(inputSet, "getSize") else None
+
+        for tsIndex, ts in enumerate(inputSet.iterItems(iterate=False)):
+            tsId = ts.getTsId()
+            tsKey = str(tsId)
+
+            # Per-tilt-series exclusion info
+            tsExcl = normalizedExclusions.get(tsKey, {})
+            seriesExcluded = bool(tsExcl.get("excluded", False))
+
+            # Per-tilt-image exclusions: indices (1-based)
+            rawTiltIndices = tsExcl.get("tiltimages") or []
+            excludedTiltIndices: Set[int] = set()
+
+            for v in rawTiltIndices:
+                try:
+                    excludedTiltIndices.add(int(v))
+                except (TypeError, ValueError):
+                    continue
+
+            try:
+                # Skip the whole tilt series if marked as excluded
+                if seriesExcluded:
+                    continue
+
+                newTs = TiltSeries()
+                newTs.copyInfo(ts)
+                outputSet.append(newTs)
+
+                newBinaryName = os.path.join(outputPath, f"{tsId}.mrcs")
+                if hasOddEven:
+                    oddFileName = ts.getOddFileName()
+                    evenFileName = ts.getEvenFileName()
+                    newOddBinaryName = os.path.join(outputPath, f"{tsId}_odd.mrcs")
+                    newEvenBinaryName = os.path.join(outputPath, f"{tsId}_even.mrcs")
+
+                # Create new stacks if restacking is enabled
+                properties = {"sr": ts.getSamplingRate()}
+                stack = ImageStack(properties)
+                oddStack = ImageStack(properties)
+                evenStack = ImageStack(properties)
+
+                index = 1  # new index when restacking
+                validImages = 0
+                errorsCount = 0
+
+                for ti in ts.iterItems(iterate=False):
+                    try:
+                        # In the web workflow, exclusions use tilt index (1-based)
+                        tiIndex = getattr(ti, "getIndex", lambda: None)()
+                        if tiIndex is None:
+                            included = True
+                        else:
+                            included = int(tiIndex) not in excludedTiltIndices
+
+                        if not restack or (included and restack):
+                            newTi = self._cloneTiltImage(ti, included)
+
+                            if restack:
+                                oldIndex = str(ti.getIndex())
+                                stack.append(
+                                    ImageReadersRegistry.open(
+                                        f"{oldIndex}@{ti.getFileName()}"
+                                    )
+                                )
+                                newTi.setLocation((index, newBinaryName))
+
+                                if hasOddEven:
+                                    oddStack.append(
+                                        ImageReadersRegistry.open(
+                                            f"{oldIndex}@{oddFileName}"
+                                        )
+                                    )
+                                    evenStack.append(
+                                        ImageReadersRegistry.open(
+                                            f"{oldIndex}@{evenFileName}"
+                                        )
+                                    )
+                                    newTi.setOddEven(
+                                        [newOddBinaryName, newEvenBinaryName]
+                                    )
+
+                                index += 1
+
+                            newTs.append(newTi)
+                            validImages += 1
+
+                    except Exception:
+                        errorsCount += 1
+                        logger.exception(
+                            "Error processing tilt image in tilt series %s (tilt index %s)",
+                            tsId,
+                            getattr(ti, "getIndex", lambda: "unknown")(),
+                        )
+                        continue
+
+                # If no image was processed successfully and at least one failed,
+                # skip this tilt series completely (do not write or add it to the output set).
+                if validImages == 0 and errorsCount > 0:
+                    logger.warning(
+                        "Skipping tilt series %s (%d/%s): all tilt images failed. "
+                        "Check log for details.",
+                        tsId,
+                        tsIndex + 1,
+                        totalInputSeries if totalInputSeries is not None else "?",
+                    )
+                    # Remove empty newTs from the output set if it was added
+                    try:
+                        outputSet.remove(newTs)
+                    except Exception:
+                        pass
+                    continue
+
+                if restack:
+                    ImageReadersRegistry.write(stack, newBinaryName, isStack=True)
+                    if hasOddEven:
+                        ImageReadersRegistry.write(
+                            oddStack, newOddBinaryName, isStack=True
+                        )
+                        ImageReadersRegistry.write(
+                            evenStack, newEvenBinaryName, isStack=True
+                        )
+
+                # If all tilts are excluded, disable this tilt series
+                if excludedTiltIndices and len(excludedTiltIndices) == ts.getSize():
+                    newTs.setEnabled(False)
+
+                newTs.setDim(ts.getDim())
+                newTs.setAnglesCount(newTs.getSize())
+                newTs.write()
+                outputSet.update(newTs)
+
+            except Exception:
+                logger.exception(
+                    "Error processing tilt series %s (%d/%s)",
+                    tsId or "unknown",
+                    tsIndex + 1,
+                    totalInputSeries if totalInputSeries is not None else "?",
+                )
+                # Do not propagate; continue with next tilt series
+                continue
+
+        createdCount = outputSet.getSize()
+        if not createdCount:
+            logger.info("No output was generated because it cannot be empty")
+            return {
+                "status": "empty",
+                "outputName": newOutputName,
+                "createdTiltSeries": 0,
+                "hasOddEven": bool(hasOddEven),
+                "restack": bool(restack),
+                "message": "No output was generated because it cannot be empty",
+            }
+
+        outputSet.write()
+        protocol._defineOutputs(**{newOutputName: outputSet})
+        protocol._store()
+        logger.info("The new set (%s) has been created successfully", newOutputName)
+
+        return {
+            "status": "ok",
+            "outputName": newOutputName,
+            "createdTiltSeries": createdCount,
+            "hasOddEven": bool(hasOddEven),
+            "restack": bool(restack),
+        }
+
+    def _cloneTiltImage(self, ti, included):
+        newTi = ti.clone()
+        newTi.copyInfo(ti, copyId=False)
+        newTi.setObjId(None)
+        newTi.setAcquisition(ti.getAcquisition())
+        newTi.setEnabled(included)
+        return newTi
+
     # ----------------------------------------------------------------------
     # Analyze Results: Coordinates3D
     # ----------------------------------------------------------------------
-
     def listCoordinates3dTomogramsService(
             self,
             projectId: int,

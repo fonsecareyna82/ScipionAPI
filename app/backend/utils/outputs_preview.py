@@ -646,6 +646,158 @@ class OutputsPreview(FileHandlers):
         summary = f"{total} classes" if isClasses3D else f"{total} items"
         return tiles, labels, cols, tileSize, summary
 
+    def renderImageFromFilePath(
+            self,
+            filePath: Union[str, Path],
+            size: Optional[int] = None,
+            fmt: str = "png",
+            index: int = 0,
+            inline: bool = True,
+            quality: int = 75,
+            applyTransform: bool = True,
+            rot=None,
+            shifts=None
+    ) -> Response:
+        """
+        Render a single 2D image (or first slice of a stack) from an absolute file path.
+
+        - Uses the same normalization pipeline as gallery thumbnails.
+        - Optionally resizes to a square thumbnail with max side = size.
+        - If applyTransform is True and rot/shifts are provided, apply alignment
+          transforms scaled to the thumbnail size.
+        """
+        p = Path(str(filePath)).expanduser().resolve()
+        if not p.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Image file not found: {p}",
+            )
+
+        try:
+            reader = ImageReadersRegistry.open(str(p))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not open image file: {e}",
+            )
+
+        # Try first image, fallback to central if needed
+        try:
+            pilImg = reader.getImage(index=index, pilImage=True)
+        except Exception:
+            try:
+                pilImg = reader.getCentralImage(pilImage=True)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not read image from file: {e}",
+                )
+
+        # Keep original dimensions to be able to rescale shifts
+        try:
+            origWidth, origHeight = pilImg.size
+        except Exception:
+            # Fallback in case PIL image is not standard
+            arr = np.asarray(pilImg)
+            if arr.ndim >= 2:
+                origHeight, origWidth = arr.shape[0], arr.shape[1]
+            else:
+                origWidth, origHeight = 1, 1
+
+        # Build thumbnail/tile
+        tile = self._pilTo2dTile(reader, pilImg, thumbSize=size)
+
+        # Apply alignment transforms in thumbnail space if requested
+        if (
+                applyTransform
+                and rot is not None
+                and shifts is not None
+                and tile is not None
+                and origWidth > 0
+                and origHeight > 0
+        ):
+            # tile is a 2D array: (h, w) or (h, w, 1)
+            tileArr = np.asarray(tile)
+            if tileArr.ndim == 2:
+                tileHeight, tileWidth = tileArr.shape
+            else:
+                tileHeight, tileWidth = tileArr.shape[0], tileArr.shape[1]
+
+            # Scale shifts from original size to thumbnail size
+            scaleX = tileWidth / float(origWidth)
+            scaleY = tileHeight / float(origHeight)
+
+            scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
+
+            # Apply transform on the thumbnail
+            tile = reader.transformSlice(tileArr, scaledShifts, rot)
+
+        # Apply flip at the end to match viewer orientation
+        tile = reader.flipSlice(tile)
+
+        if tile is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Empty or invalid image tile",
+            )
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        img = Image.fromarray(tile.astype(np.uint8), mode="L")
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        meta = {
+            "mime": mediaType,
+            "width": img.width,
+            "height": img.height,
+            "note": f"Static image preview for {p.name}",
+        }
+        previewHeaders = self._buildPreviewHeaders(meta)
+
+        disp = "inline" if inline else "attachment"
+        filename = (
+            f"{p.name}.{fmtLower}"
+            if not p.name.lower().endswith(fmtLower)
+            else p.name
+        )
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Note": f"file={p.name}",
+            "Access-Control-Expose-Headers": ", ".join(
+                [
+                    "Content-Disposition",
+                    "X-Preview-Mime",
+                    "X-Preview-Width",
+                    "X-Preview-Height",
+                    "X-Preview-Note",
+                ]
+            ),
+            **previewHeaders,
+        }
+
+        return Response(
+            content=buf.getvalue(),
+            media_type=mediaType,
+            headers=headers,
+        )
+
     # ------------------------------------------------------------------ #
     # TiltSeries (grayscale)
     # ------------------------------------------------------------------ #
@@ -1209,11 +1361,11 @@ class OutputsPreview(FileHandlers):
 
         return self._pilTo2dTile(imgStk, pilImg)
 
-    def _pilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
+    def _pilTo2dTile(self, imgStk, pilImg, thumbSize=maxThumbSize) -> Optional[np.ndarray]:
         """
         Convert a PIL image from a stack into a 2D uint8 tile.
 
-        - Downsamples to <= maxThumbSize.
+        - Downsamples to <= size.
         - Converts to grayscale.
         - Runs highlightSlice/normalizeSlice at most once.
         - Final output is uint8 [0, 255] so we can avoid re-normalizing later.
@@ -1221,8 +1373,8 @@ class OutputsPreview(FileHandlers):
         try:
             width, height = pilImg.size
             scale = min(
-                maxThumbSize / float(width),
-                maxThumbSize / float(height),
+                thumbSize / float(width),
+                thumbSize / float(height),
                 1.0,
             )
             thumbWidth = max(1, int(round(width * scale)))
@@ -2024,3 +2176,196 @@ class OutputsPreview(FileHandlers):
                 **previewHeaders,
             },
         )
+
+    def listTiltSeriesFrames(
+            self,
+            tiltSeriesName: str,
+    ) -> Dict[str, Any]:
+        """
+        Return metadata for a single tilt series:
+        - nFrames
+        - dims [width, height]
+        - stackRelPath
+        - optional tiltAngles
+        """
+        if not isinstance(self.output, SetOfTiltSeries):
+            raise HTTPException(
+                status_code=400,
+                detail="Output is not a SetOfTiltSeries",
+            )
+
+        # locate tilt series object by name/id/label
+        targetTs = None
+        for ts in self.output:
+            # try match by tsId
+            getTsId = getattr(ts, "getTsId", None)
+            if callable(getTsId) and getTsId() == tiltSeriesName:
+                targetTs = ts
+                break
+
+            # fallback: match by label
+            getLabel = getattr(ts, "getObjLabel", None)
+            if callable(getLabel) and getLabel() == tiltSeriesName:
+                targetTs = ts
+                break
+
+        if targetTs is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesName}' not found",
+            )
+
+        try:
+            stackPath = Path(targetTs.getFileName()).resolve()
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail="Tilt series does not provide a valid stack file",
+            )
+
+        try:
+            reader = ImageReadersRegistry.open(str(stackPath))
+            data = np.asarray(reader.getImages())
+        except Exception:
+            data = None
+
+        if data is None or data.ndim != 3:
+            raise HTTPException(
+                status_code=500,
+                detail="Tilt series stack is not a 3D array",
+            )
+
+        zdim, ydim, xdim = map(int, data.shape)
+
+        tiltAngles = None
+        getTiltAngles = getattr(targetTs, "getTiltAngles", None)
+        if callable(getTiltAngles):
+            try:
+                tiltAngles = list(getTiltAngles())
+            except Exception:
+                tiltAngles = None
+
+        protRoot = Path(self.protocol.getPath()).resolve()
+
+        return {
+            "name": tiltSeriesName,
+            "nFrames": zdim,
+            "dims": [xdim, ydim],
+            "stackRelPath": self._relPathInside(protRoot, stackPath),
+            "tiltAngles": tiltAngles,
+        }
+
+    def renderTiltSeriesFrame(
+        self,
+        tiltSeriesName: str,
+        index: int,
+        size: int = 1024,
+        fmt: str = "png",
+        inline: bool = True,
+        applyTransform: bool = True,
+    ) -> Response:
+        """
+        Render a single frame from a tilt series stack.
+        - index is 0-based
+        - size sets the max side in pixels (square thumbnail)
+        """
+        if not isinstance(self.output, SetOfTiltSeries):
+            raise HTTPException(
+                status_code=400,
+                detail="Output is not a SetOfTiltSeries",
+            )
+
+        # reuse listTiltSeriesFrames to locate the stack
+        meta = self.listTiltSeriesFrames(tiltSeriesName)
+        protRoot = Path(self.protocol.getPath()).resolve()
+        stackPath = (protRoot / Path(meta["stackRelPath"])).resolve()
+
+        if not stackPath.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Stack file not found for tilt series '{tiltSeriesName}'",
+            )
+
+        try:
+            reader = ImageReadersRegistry.open(str(stackPath))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not open tilt series stack: {e}",
+            )
+
+        # get frame index safely
+        nFrames = int(meta["nFrames"])
+        k = max(0, min(int(index), max(nFrames - 1, 0)))
+
+        try:
+            pilImg = reader.getImage(index=k, pilImage=True)
+        except Exception:
+            # fallback: central image
+            try:
+                pilImg = reader.getCentralImage(pilImage=True)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not get tilt frame: {e}",
+                )
+
+        # reuse the same 2D tile pipeline as other previews
+        tile = self._pilTo2dTile(reader, pilImg)
+        if tile is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Empty or invalid tilt frame image",
+            )
+
+        # optional resize to requested size
+        if size and size > 0:
+            pilTile = Image.fromarray(tile, mode="L")
+            pilTile.thumbnail((size, size))
+            tile = np.array(pilTile, copy=False)
+
+        # build PNG/JPEG/WEBP, similar to renderVolumeSlice
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": 75}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": 75}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        img = Image.fromarray(tile.astype(np.uint8), mode="L")
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        headers = {
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Note": f"tiltSeries={tiltSeriesName} index={k}",
+            "Access-Control-Expose-Headers": ", ".join(
+                [
+                    "Content-Disposition",
+                    "X-Preview-Mime",
+                    "X-Preview-Width",
+                    "X-Preview-Height",
+                    "X-Preview-Note",
+                ]
+            ),
+        }
+
+        disp = "inline" if inline else "attachment"
+        filename = f"{tiltSeriesName}_tilt-{k}.{fmtLower}"
+        headers["Content-Disposition"] = f'{disp}; filename="{filename}"'
+
+        return Response(
+            content=buf.getvalue(),
+            media_type=mediaType,
+            headers=headers,
+        )
+
