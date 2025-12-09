@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -8,6 +10,8 @@ from fastapi import (
     Request,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
+
+from pydantic import BaseModel
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
@@ -20,6 +24,7 @@ from app.backend.models.protocol_model import (
     DeletePayload,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -619,6 +624,221 @@ def getVolumeData3d(
         maxDim=maxDim,
         method=method,
     )
+# ==============================================================================
+#        ANALYZE RESULTS: TILT SERIES (SetOfTiltSeries)
+# ==============================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listOutputTiltSeries(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    List tilt series for a SetOfTiltSeries-like output.
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    items = service.listOutputTiltSeriesService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+    from fastapi.responses import JSONResponse
+
+    resp = JSONResponse(items or [])
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/{tiltSeriesId}/frames",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getTiltSeriesFrames(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tiltSeriesId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return metadata for all tilt images in one tilt series.
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        payload = service.getTiltSeriesFramesService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+        )
+
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(payload or {})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except Exception as e:
+        logger.exception("Error in get_tiltseries_frames: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load frames for tiltseries {tiltSeriesId}: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/{tiltSeriesId}/tilt",
+    response_model=None,
+)
+def renderTiltSeriesImage(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tiltSeriesId: str,
+    index: int = Query(
+        0,
+        ge=0,
+        description="0-based tilt index inside the tilt series",
+    ),
+    size: int = Query(
+        1024,
+        ge=16,
+        le=4096,
+        description="Target thumbnail size (longest side) in pixels",
+    ),
+    fmt: str = Query(
+        "png",
+        alias="fmt",
+        description="Output image format: png | webp | jpeg",
+    ),
+    applyTransform: bool = Query(
+        False,
+        description="If true, apply geometric transformation if available (alignment)",
+    ),
+    inline: bool = Query(
+        True,
+        description="If true, send Content-Disposition inline",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Render one tilt image from a tilt series.
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        resp = service.renderTiltSeriesImageService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            index=index,
+            size=size,
+            fmt=fmt,
+            applyTransform=applyTransform,
+            inline=inline,
+        )
+
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except Exception as e:
+        logger.exception("Error in get_tiltseries_frames: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load frames for tiltseries {tiltSeriesId}: {e}",
+        )
+
+
+class TiltSeriesNewSetRequest(BaseModel):
+    """
+    Request payload for creating a new SetOfTiltSeries based on exclusions.
+    """
+    exclusions: Dict[str, Any]
+    restack: bool = False
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/new-set",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def createNewSetOfTiltSeries(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: TiltSeriesNewSetRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Create a new tilt-series output applying the given exclusions.
+    The backend is expected to duplicate the SetOfTiltSeries and
+    remove excluded views, optionally restacking files on disk.
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        result = service.createNewSetOfTiltSeriesService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            exclusions=payload.exclusions,
+            restack=payload.restack,
+        )
+
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(result or {})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(
+            getattr(currentUser, "id", currentUser.get("id", ""))
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in createNewSetOfTiltSeries: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create new tilt-series set: {e}",
+        )
+
 
 
 # ==============================================================================
