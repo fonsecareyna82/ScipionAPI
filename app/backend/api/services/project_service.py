@@ -33,7 +33,7 @@ import numpy as np
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries, TiltSeries
+from tomo.objects import SetOfTiltSeries, TiltSeries, SetOfCTFTomoSeries, CTFTomoSeries, CTFTomo
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
@@ -1163,6 +1163,303 @@ class ProjectService:
 
         return protocol, output
 
+    # ======================================================================
+    # Analyze Results: CTF Tomography (CTFTomoSeries)
+    # ======================================================================
+
+    @lru_cache
+    def _resolveOutputForCtftomoSeries(self, protocolId: int, outputName: str):
+        """
+        Resolve protocol + CTFTomoSeries-like output for CTF tomography operations.
+
+        The output can be:
+          * a single CTFTomoSeries (one tilt-series)
+          * a container of CTFTomoSeries objects (SetOfCTFTomoSeries)
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None",
+            )
+
+        return protocol, output
+
+    def _buildCtftomoSeriesSummary(self, ctfSeries) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly summary for one CTFTomoSeries object.
+        """
+
+        tsId = ctfSeries.getTsId()
+        label = ctfSeries.getObjLabel()
+        tiltSeries = ctfSeries.getTiltSeries()
+        dims = list(tiltSeries.getDim())
+        pixelSize = tiltSeries.getSamplingRate()
+        nViews = tiltSeries.getSize()
+
+        item: Dict[str, Any] = {
+            "tiltSeriesId": tsId,
+            "label": str(label) if label is not None else "",
+        }
+        if nViews is not None:
+            item["nViews"] = nViews
+        if dims is not None:
+            item["dims"] = dims
+        if pixelSize is not None:
+            item["pixelSize"] = pixelSize
+        return item
+
+    def _buildCtftomoMeasurementRow(self, ctfObj, tiltSeries=None) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly row with CTF parameters for a single tilt image.
+        """
+
+        defocusU = ctfObj.getDefocusU()
+        defocusV = ctfObj.getDefocusV()
+        defocusAngle = ctfObj.getDefocusAngle()
+        resolution = ctfObj.getResolution()
+        phaseShift = ctfObj.getPhaseShift()
+        acqOrder = ctfObj.getAcquisitionOrder()
+        psdFile = ctfObj.getPsdFile()
+        astigmatism = defocusU - defocusV
+        tiltAngle = None
+        enabled = ctfObj.isEnabled()
+        dose = None
+
+        if tiltSeries is not None:
+            try:
+                view = tiltSeries.getItem('_acqOrder', acqOrder)
+            except Exception:
+                view = None
+
+            if view is not None:
+                try:
+                    tiltAngle = view.getTiltAngle()
+                except Exception:
+                    tiltAngle = None
+
+                try:
+                    acq = view.getAcquisition()
+                    dose = acq.getAccumDose()
+                except Exception:
+                    dose = None
+
+        row: Dict[str, Any] = {}
+        row["index"] = ctfObj.getObjId()
+        row["viewIndex"] = ctfObj.getObjId()
+        if tiltAngle is not None:
+            row["tiltAngle"] = tiltAngle
+        if dose is not None:
+            row["dose"] = dose
+        if defocusU is not None:
+            row["defocusU"] = defocusU
+        if defocusV is not None:
+            row["defocusV"] = defocusV
+        row['astigmatism'] = astigmatism
+        if defocusAngle is not None:
+            row["defocusAngle"] = defocusAngle
+        if resolution is not None:
+            row["resolution"] = resolution
+        if phaseShift is not None:
+            row["phaseShift"] = phaseShift
+        if acqOrder is not None:
+            row["order"] = acqOrder
+        if psdFile:
+            row['psdFile'] = psdFile
+
+        row['excluded'] = not enabled
+
+        return row
+
+    def listOutputCtftomoSeriesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        """
+        List all CTFTomoSeries in a CTFTomo output.
+
+        Shape:
+        [
+          {
+            "tiltSeriesId": "...",
+            "label": "...",
+            "nViews"?: number,
+            "dims"?: [...],
+            "pixelSize"?: number,
+            "tiltAxisAngle"?: number,
+          },
+          ...
+        ]
+        """
+        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+
+        seriesList: List[Dict[str, Any]] = []
+
+        for index, ctfSeries in enumerate(output.iterItems(iterate=False)):
+            try:
+                summary = self._buildCtftomoSeriesSummary(ctfSeries)
+                summary["index"] = index
+                seriesList.append(summary)
+            except Exception as e:
+                logger.warning("Failed to summarize CTFTomoSeries #%s: %s", index, e)
+
+        return seriesList
+
+    def getCtftomoSeriesViewsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+    ):
+        """
+        Return all CTF measurements for one tilt series inside a CTFTomo output.
+
+        Shape:
+        {
+          "tiltSeriesId": "...",
+          "label": "...",
+          "nViews": number,
+          "dims"?: [...],
+          "pixelSize"?: number,
+          "tiltAxisAngle"?: number,
+          "isDefocusUInRange"?: bool,
+          "isDefocusVInRange"?: bool,
+          "frames": [
+             {
+               "index": 0-based index,
+               "viewIndex": 1-based index,
+               "tiltAngle"?: number,
+               "dose"?: number,
+               "defocusU"?: number,
+               "defocusV"?: number,
+               "defocusAngle"?: number,
+               "resolution"?: number,
+               "phaseShift"?: number,
+               "cutOnFreq"?: number,
+               "defocusUDeviation"?: number,
+               "defocusVDeviation"?: number,
+             },
+             ...
+          ]
+        }
+        """
+        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+
+        targetKey = str(tiltSeriesId)
+        setOfTiltSeries = output.getSetOfTiltSeries()
+        ctfSerie = output.getItem('_tsId', targetKey)
+        associatedTS = setOfTiltSeries.getItem('_tsId', targetKey)
+        frames: List[Dict[str, Any]] = []
+
+        for idx, ctfTomo in enumerate(ctfSerie.iterItems(iterate=False)):
+            try:
+                row = self._buildCtftomoMeasurementRow(ctfTomo, tiltSeries=associatedTS)
+                if "index" not in row:
+                    row["index"] = idx
+                frames.append(row)
+            except Exception as e:
+                logger.warning(
+                    "Failed to build CTFTomo measurement for tiltSeries '%s' (item #%s): %s",
+                    tiltSeriesId,
+                    idx,
+                    e,
+                )
+
+        summary = self._buildCtftomoSeriesSummary(ctfSerie)
+        summary["frames"] = frames
+        summary["tiltSeriesId"] = summary.get("tiltSeriesId") or tiltSeriesId
+        summary["nViews"] = len(frames)
+
+        return summary
+
+    def renderCtfTomoPsdImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            psdPath: str,
+            size: int = 1024,
+            fmt: str = "png",
+            inline: bool = True,
+            index: int = 0,
+            quality: int = 75,
+            applyTransform: bool = False,
+            rot=None,
+            shifts=None,
+    ) -> Response:
+        """
+            Render a single CTFtomo PSD image using the OutputsPreview pipeline.
+
+            - psdPath can be relative to the protocol root or an absolute path.
+            - size sets the max side in pixels for the thumbnail (square).
+            - fmt controls the output format: png | jpg | webp.
+            - index is used when the PSD is stored in a stack file.
+            - applyTransform/rot/shifts are optional alignment parameters.
+            """
+        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+        if protocol is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in project '{projectId}'",
+            )
+
+        if not psdPath:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing PSD image path",
+            )
+
+        protRoot = Path(protocol.getPath()).resolve()
+        splitPath = psdPath.split('@')
+        if len(splitPath) > 1:
+            index = int(splitPath[0])
+        candidatePath = Path(splitPath[-1])
+
+        # Allow both relative (to protocol root) and absolute paths
+        if not candidatePath.is_absolute():
+            absPath = (protRoot / candidatePath).resolve()
+        else:
+            absPath = candidatePath.resolve()
+
+        if not absPath.exists() or not absPath.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"PSD image file not found: {absPath}",
+            )
+
+        # We do not need a real output object for this helper
+        preview = OutputsPreview(
+            currentProject=self.currentProject,
+            protocol=protocol,
+            output=None,
+        )
+
+        return preview.renderImageFromFilePath(
+            filePath=str(absPath),
+            size=size,
+            fmt=fmt,
+            index=index,
+            inline=inline,
+            quality=quality,
+            applyTransform=applyTransform and rot is not None and shifts is not None,
+            rot=rot,
+            shifts=shifts,
+        )
+
     def _buildTiltSeriesSummary(self, ts) -> Dict[str, Any]:
         """
         Build a JSON-friendly summary for one tilt series.
@@ -1654,6 +1951,90 @@ class ProjectService:
             payload["tiltAxisAngle"] = selectedSummary["tiltAxisAngle"]
 
         return payload
+
+    def createNewSetOfCtftomoSeriesService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        exclusions: Dict[str, Any],
+        restack: bool,
+    ) -> Dict[str, Any]:
+        """
+        Create a new SetOfCTFTomoSeries applying per-series and per-tilt exclusions.
+
+        Exclusions schema:
+
+        {
+          "<tsId>": {
+            "excluded": bool,           # exclude entire tilt series
+            "tiltimages": [1, 5, 12],   # per-tilt indices (1-based)
+          },
+          ...
+        }
+        """
+        protocol, inputSet = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+
+        # Normalize exclusions keys to strings
+        normalizedExclusions: Dict[str, Dict[str, Any]] = {}
+        for key, value in (exclusions or {}).items():
+            normalizedExclusions[str(key)] = value or {}
+
+        # New output name and set object
+        newOutputName = protocol.getNextOutputName("CTFTomoSeries")
+        outputSet = inputSet.createCopy(protocol._getPath(), prefix=newOutputName, copyInfo=True)
+        createdCount = 0
+        for seriesIndex, ctfSeries in enumerate(inputSet.iterItems(iterate=False)):
+            tsId = ctfSeries.getTsId()
+            tsKey = str(tsId)
+            tsExcl = normalizedExclusions.get(tsKey, {})
+            seriesExcluded = bool(tsExcl.get("excluded", False))
+            rawTiltIndices = tsExcl.get("tiltimages") or []
+            newSeries = ctfSeries.clone()
+            newSeries.setEnabled(True)
+
+            if seriesExcluded:
+                continue
+
+            outputSet.append(newSeries)
+            createdCount += 1
+            outputSet.setSetOfTiltSeries(inputSet.getSetOfTiltSeries())
+            for ctfObj in ctfSeries.iterItems(iterate=False):
+                ctfEstItem = ctfObj.clone()
+                ctfEstItem.setEnabled(ctfObj.getIndex() not in rawTiltIndices)
+                newSeries.append(ctfEstItem)
+            try:
+                newSeries.write()
+                outputSet.update(newSeries)
+                outputSet.write()
+            except Exception:
+                logger.exception("Error storing Ctftomo series %s in new set %s", tsId, newOutputName,)
+                continue
+
+        if outputSet.isEmpty():
+            logger.info("No Ctftomo series were generated in new set '%s'", newOutputName)
+            return {
+                "status": "empty",
+                "outputName": newOutputName,
+                "createdSeries": 0,
+                "restack": bool(restack),
+                "message": "No output was generated because it cannot be empty",
+            }
+        try:
+            protocol._defineOutputs(**{newOutputName: outputSet})
+            protocol._store()
+        except Exception:
+            logger.exception("Error attaching Ctftomo filtered set '%s' to protocol", newOutputName,)
+
+        logger.info(
+            "The new Ctftomo set (%s) has been created successfully with %d series", newOutputName, createdCount,)
+
+        return {
+            "status": "ok",
+            "outputName": newOutputName,
+            "createdSeries": createdCount,
+            "restack": bool(restack),
+        }
 
     def renderTiltSeriesImageService(
             self,

@@ -840,6 +840,193 @@ def createNewSetOfTiltSeries(
         )
 
 
+# ==============================================================================
+#        ANALYZE RESULTS: CTF TOMOGRAPHY (SetOfCTFTomoSeries)
+# ==============================================================================
+class CtftomoNewSetRequest(BaseModel):
+    """
+    Request payload for creating a new SetOfCTFTomoSeries based on exclusions.
+    The exact shape of 'exclusions' will be interpreted by the service layer.
+    """
+    exclusions: Dict[str, Any]
+    restack: bool = False
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctftomo",
+    status_code=status.HTTP_200_OK,
+)
+def listCtftomoSeries(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    List CTFTomoSeries entries for a CTFTomo output.
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.listOutputCtftomoSeriesService(projectId, protocolId, outputName)
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctftomo/{tiltSeriesId}/views",
+    status_code=status.HTTP_200_OK,
+)
+def getCtftomoSeriesViews(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tiltSeriesId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return all CTF measurements for one tilt-series (identified by tiltSeriesId).
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.getCtftomoSeriesViewsService(projectId, protocolId, outputName, tiltSeriesId)
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctftomo/new-set",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def createNewSetOfCtftomoSeries(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: CtftomoNewSetRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Create a new CTF-tomography output applying the given exclusions.
+    The backend is expected to duplicate the SetOfCTFTomoSeries and
+    update excluded tilts per series.
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        result = service.createNewSetOfCtftomoSeriesService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            exclusions=payload.exclusions,
+            restack=payload.restack,
+        )
+
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(result or {})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(
+            getattr(currentUser, "id", currentUser.get("id", ""))
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in createNewSetOfCtftomoSeries: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create new CTF-tomography set: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctftomo/psd",
+    response_model=None,
+)
+def renderCtftomoPsdImage(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    spec: str = Query(
+        ...,
+        description="Stack spec string such as '3@/path/to/file.mrc'",
+    ),
+    size: int = Query(
+        512,
+        ge=16,
+        le=4096,
+        description="Target thumbnail size (longest side) in pixels",
+    ),
+    fmt: str = Query(
+        "png",
+        alias="fmt",
+        description="Output image format: png | webp | jpeg",
+    ),
+    applyTransform: bool = Query(
+        False,
+        description="If true, apply geometric transformation if available.",
+    ),
+    inline: bool = Query(
+        True,
+        description="If true, send Content-Disposition inline",
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Render a PSD image for a CTF-tomography view, given a stack spec
+    (for example '3@/path/to/TS_1.mrc').
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        resp = service.renderCtfTomoPsdImageService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            psdPath=spec,
+            size=size,
+            fmt=fmt,
+            applyTransform=applyTransform,
+            inline=inline,
+        )
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(
+            getattr(currentUser, "id", currentUser.get("id", ""))
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except Exception as e:
+        logger.exception("Error in renderCtftomoPsdImage: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to render CTF-tomography PSD image: {e}",
+        )
+
 
 # ==============================================================================
 #        ANALYZE RESULTS: COORDINATES3D (SetOfCoordinates3D)
