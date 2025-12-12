@@ -24,41 +24,24 @@
 # *
 # ******************************************************************************
 
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
+# app/backend/api/routers/user_router.py
+
+from fastapi import APIRouter, Depends
+from typing import List, Dict, Any
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.database import getMapper
+from app.backend.api.dependencies import getCurrentUser
+
+router = APIRouter(prefix="/users", tags=["users"])
 
 
-class ProjectCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    status: Optional[str] = "active"
-
-
-class ProjectUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[str] = None
-
-
-class ProjectOut(BaseModel):
-    id: int
-    name: str
-    description: Optional[str]
-    status: str
-    createdAt: datetime
-    updatedAt: Optional[datetime]
-    protocolsCount: int = 0,
-    diskUsage: str = f"{0.0} GB"
-    isOwner: bool
-    isShared: bool
-    permission: str
-    projectOwnerId: int
-
-    class Config:
-        orm_mode = True
-
-
-class ProjectShareCreate(BaseModel):
-    userIds: list = []
-    permission: Optional[str] = "full"
+@router.get("/")
+def listUsers(
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    currentUser: dict = Depends(getCurrentUser),
+) -> List[Dict[str, Any]]:
+    """
+    Return a lightweight list of users for project sharing.
+    The current user is excluded from the result.
+    """
+    return mapper.listUsers(excludeUserId=currentUser["id"])

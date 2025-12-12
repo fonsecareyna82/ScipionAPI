@@ -31,6 +31,7 @@ from app.backend.api.routers.project_router import router as projects
 from app.backend.api.routers.protocol_router import router as protocols
 from app.backend.api.routers.plugin_router import router as plugins
 from app.backend.api.routers.auth_router import router as auth
+from app.backend.api.routers.user_router import router as users
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 
@@ -77,6 +78,7 @@ app.include_router(projects)
 app.include_router(protocols)
 app.include_router(plugins)
 app.include_router(auth)
+app.include_router(users)
 
 
 @app.get("/health")

@@ -184,30 +184,127 @@ class ProjectService:
         }
 
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
-        # Retrieve projects from PostgreSQL using the mapper
+        """
+        List all projects visible for the current user:
+        - owned projects
+        - shared projects (from project_shares)
+        """
         dbProjects = mapper.listProjects(ownerId=currentUser["id"])
         result = []
 
         for dbProj in dbProjects:
-            path = self.manager.getProjectPath(dbProj['name'])
-            sizeGB = self.getProjectSize(path) / (1024 ** 3)
-            protCount = self.countProtocols(os.path.join(path, "Runs"))
+            # projects.name currently stores the absolute Scipion project path
+            projectPath = dbProj.get("name")
+
+            if not projectPath:
+                # Skip inconsistent rows
+                continue
+
+            # If name is not absolute, normalize it using Scipion manager
+            if not os.path.isabs(projectPath):
+                projectPath = self.manager.getProjectPath(projectPath)
+
+            # Compute size and number of protocols for this project
+            try:
+                sizeGB = self.getProjectSize(projectPath) / (1024 ** 3)
+            except Exception:
+                sizeGB = 0.0
+
+            runsPath = os.path.join(projectPath, "Runs")
+            protCount = self.countProtocols(runsPath)
+
+            # Ownership and sharing flags coming from the mapper
+            isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUser["id"])
+            isShared = dbProj.get("isShared", False)
+            permission = dbProj.get(
+                "permission",
+                "owner" if isOwner else "full"
+            )
+            projectOwnerId = dbProj.get("ownerId")
 
             result.append({
-                "id": dbProj['id'],
-                "name": os.path.basename(dbProj['name']),
-                "description": dbProj.get('description', ''),
-                "createdAt": dbProj.get('createdAt'),
-                "status": dbProj.get('status', 'active'),
+                "id": dbProj["id"],
+                "name": os.path.basename(projectPath),
+                "description": dbProj.get("description", ""),
+                "createdAt": dbProj.get("createdAt"),
+                "status": dbProj.get("status", "active"),
                 "protocolsCount": str(protCount),
-                "diskUsage": f"{sizeGB:.2f} GB"
+                "diskUsage": f"{sizeGB:.2f} GB",
+                "isOwner": bool(isOwner),
+                "isShared": bool(isShared),
+                "permission": permission,
+                "projectOwnerId": projectOwnerId,
             })
 
         return result
 
+    def shareProjectWithUser(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            targetUserIds: list,
+            permission: str = "full",
+    ) -> dict:
+        """
+        Share a project owned by currentUser with another user.
+
+        Only the project owner is allowed to call this method.
+        """
+        # Ensure project exists and is owned by currentUser
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found or you are not the owner",
+            )
+
+        if targetUserIds == currentUser["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot share a project with yourself",
+            )
+
+        for userId in targetUserIds:
+            shareRow = mapper.shareProjectWithUser(
+                projectId=projectId,
+                targetUserId=int(userId),
+                permission=permission or "full",
+            )
+
+        return {
+            "id": shareRow["id"],
+            "projectId": shareRow["projectId"],
+            "userId": shareRow["userId"],
+            "permission": shareRow["permission"],
+            "createdAt": shareRow.get("createdAt"),
+            "updatedAt": shareRow.get("updatedAt"),
+        }
+
+    def listProjectShares(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+    ) -> List[dict]:
+        """
+        List users that have access to a project.
+
+        Only the project owner is allowed to call this method.
+        """
+        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found or you are not the owner",
+            )
+
+        return mapper.listProjectShares(projectId)
+
     def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser, refresh=True, checkPid=True) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        userId = currentUser["id"]
+        dbProj = mapper.getProject(projectId=projectId, userId=userId)
         if not dbProj:
             return None
         projectPath = dbProj['name']
