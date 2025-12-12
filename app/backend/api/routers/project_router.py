@@ -131,6 +131,29 @@ def shareProject(
         permission=payload.permission,
     )
 
+@router.delete(
+    "/{projectId}/share/{targetUserId}",
+    status_code=status.HTTP_200_OK,
+)
+def revokeProjectShare(
+    projectId: int,
+    targetUserId: int,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    projectService: ProjectService = Depends(getProjectService),
+    currentUser: dict = Depends(getCurrentUser),
+) -> Dict[str, bool]:
+    """
+    Revoke sharing of a project for a specific user.
+
+    Only the project owner is allowed to revoke access.
+    """
+    projectService.revokeProjectShareForUser(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        targetUserId=targetUserId,
+    )
+    return {"success": True}
 
 @router.get("/{projectId}/shares")
 def listProjectShares(

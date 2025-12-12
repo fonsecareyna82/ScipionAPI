@@ -252,7 +252,7 @@ class ProjectService:
         Only the project owner is allowed to call this method.
         """
         # Ensure project exists and is owned by currentUser
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -292,7 +292,7 @@ class ProjectService:
 
         Only the project owner is allowed to call this method.
         """
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser["id"])
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -300,6 +300,36 @@ class ProjectService:
             )
 
         return mapper.listProjectShares(projectId)
+
+    def revokeProjectShareForUser(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            targetUserId: int,
+            currentUser: dict,
+    ) -> dict:
+        """
+        Revoke project access for targetUserId.
+        Only the project owner is allowed to perform this action.
+        """
+        # Ensure currentUser has access and get full project row
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Ensure current user is the owner
+        if int(dbProj["ownerId"]) != int(currentUser["id"]):
+            raise HTTPException(status_code=403, detail="Only project owner can revoke shares")
+
+        # Prevent removing owner from a project
+        if int(targetUserId) == int(currentUser["id"]):
+            raise HTTPException(status_code=400, detail="Owner cannot be removed from the project")
+
+        deleted = mapper.revokeProjectShare(projectId=projectId, userId=targetUserId)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Share entry not found")
+
+        return {"success": True}
 
     def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser, refresh=True, checkPid=True) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
@@ -974,7 +1004,7 @@ class ProjectService:
 
     def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
         # Retrieve all protocols
-        dbProj = mapper.getProject(projectId=projectId, ownerId=currentUser['id'])
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser['id'])
         if not dbProj:
             return None
         from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
