@@ -68,6 +68,18 @@ class PostgresqlFlatMapper(Mapper):
                 parameters JSONB
             );
         """)
+        # Table for shared projects with future-proof permission field
+        self.db.execute("""
+                   CREATE TABLE IF NOT EXISTS project_shares (
+                       id SERIAL PRIMARY KEY,
+                       "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                       "userId" INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                       "permission" TEXT NOT NULL DEFAULT 'full',
+                       "createdAt" TIMESTAMP DEFAULT NOW(),
+                       "updatedAt" TIMESTAMP,
+                       UNIQUE ("projectId", "userId")
+                   );
+               """)
 
     # -----------------------------
     # Auth Methods
@@ -217,6 +229,42 @@ class PostgresqlFlatMapper(Mapper):
         params.append(userId)
         self.db.execute(sql, tuple(params))
 
+    def listUsers(self, excludeUserId: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Return a list of users for selection in the UI.
+        If excludeUserId is provided, that user will be filtered out.
+        """
+        if excludeUserId is None:
+            return self.db.fetchAll(
+                '''
+                SELECT
+                  id,
+                  email,
+                  "firstName",
+                  "lastName",
+                  institution,
+                  role
+                FROM users
+                ORDER BY "firstName", "lastName", email
+                '''
+            )
+        else:
+            return self.db.fetchAll(
+                '''
+                SELECT
+                  id,
+                  email,
+                  "firstName",
+                  "lastName",
+                  institution,
+                  role
+                FROM users
+                WHERE id <> %s
+                ORDER BY "firstName", "lastName", email
+                ''',
+                (excludeUserId,),
+            )
+
     # -----------------------------
     # Project Methods
     # -----------------------------
@@ -229,18 +277,159 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cur.fetchone()['id']
 
-    def getProject(self, projectId: int, ownerId: int) -> Optional[Dict]:
-        """Retrieve a project by id and ownerId."""
-        return self.db.fetchOne(
-            'SELECT * FROM projects WHERE id=%s AND "ownerId"=%s',
-            (projectId, ownerId)
+    def getProject(self, projectId: int, userId: int) -> Optional[Dict]:
+        """
+        Retrieve a project by id that is accessible to the given user.
+        A project is accessible if:
+          - The user is the owner, or
+          - There is an entry in project_shares for (projectId, userId).
+
+        It also annotates the row with:
+          - isOwner: bool
+          - isShared: bool (true if there is a share row for this user)
+          - permission: text (permission for this user, default 'full')
+        """
+        query = """
+            SELECT
+                p.*,
+                (p."ownerId" = %s) AS "isOwner",
+                EXISTS (
+                    SELECT 1
+                    FROM project_shares s
+                    WHERE s."projectId" = p.id
+                      AND s."userId" = %s
+                ) AS "isShared",
+                COALESCE(
+                    (
+                        SELECT s."permission"
+                        FROM project_shares s
+                        WHERE s."projectId" = p.id
+                          AND s."userId" = %s
+                        LIMIT 1
+                    ),
+                    'full'
+                ) AS "permission"
+            FROM projects p
+            WHERE p.id = %s
+              AND (
+                  p."ownerId" = %s
+                  OR EXISTS (
+                      SELECT 1
+                      FROM project_shares s
+                      WHERE s."projectId" = p.id
+                        AND s."userId" = %s
+                  )
+              )
+        """
+        params = (
+            userId,  # isOwner check
+            userId,  # isShared EXISTS
+            userId,  # permission subquery
+            projectId,
+            userId,  # owner condition in WHERE
+            userId,  # shared condition in WHERE
+        )
+        return self.db.fetchOne(query, params)
+
+    # -----------------------------
+    # Project share methods
+    # -----------------------------
+    def shareProjectWithUser(self, projectId: int, targetUserId: int, permission: str = "full") -> Dict[str, Any]:
+        """
+        Create or update a project share entry between projectId and targetUserId.
+
+        Requires a unique constraint on (projectId, userId) in project_shares.
+        If the row already exists, only the permission and updatedAt are changed.
+        """
+        cur = self.db.execute(
+            '''
+            INSERT INTO project_shares ("projectId", "userId", "permission")
+            VALUES (%s, %s, %s)
+            ON CONFLICT ("projectId", "userId")
+            DO UPDATE SET
+                "permission" = EXCLUDED."permission",
+                "updatedAt" = NOW()
+            RETURNING id,
+                      "projectId",
+                      "userId",
+                      "permission",
+                      "createdAt",
+                      "updatedAt"
+            ''',
+            (projectId, targetUserId, permission),
+        )
+        return cur.fetchone()
+
+    def revokeProjectShare(self, projectId: int, userId: int) -> bool:
+        """
+        Remove a share from project_shares.
+        """
+        cursor = self.db.execute(
+            """
+            DELETE FROM project_shares
+             WHERE "projectId" = %s
+               AND "userId" = %s
+            """,
+            (projectId, userId),
+        )
+        return cursor.rowcount > 0
+
+    def listProjectShares(self, projectId: int) -> List[Dict[str, Any]]:
+        """
+        List all shares for a given project.
+        """
+        return self.db.fetchAll(
+            """
+            SELECT id,
+                   "projectId",
+                   "userId",
+                   "permission",
+                   "createdAt",
+                   "updatedAt"
+              FROM project_shares
+             WHERE "projectId" = %s
+             ORDER BY "createdAt" ASC
+            """,
+            (projectId,),
         )
 
     def listProjects(self, ownerId: int) -> List[Dict]:
-        """List all projects for a given owner, ordered by createdAt."""
+        """
+        List all projects the user can see:
+        - owned projects (isOwner=True, isShared=False, permission='owner')
+        - shared projects (isOwner=False, isShared=True, permission from project_shares)
+        Results are ordered by createdAt (from projects table) descending.
+        """
         return self.db.fetchAll(
-            'SELECT * FROM projects WHERE "ownerId" = %s ORDER BY "createdAt" DESC',
-            (ownerId,)
+            '''
+            SELECT *
+            FROM (
+                -- Owned projects
+                SELECT
+                    p.*,
+                    TRUE  AS "isOwner",
+                    FALSE AS "isShared",
+                    'owner'::text AS "permission"
+                FROM projects p
+                WHERE p."ownerId" = %s
+
+                UNION ALL
+
+                -- Projects shared with this user
+                SELECT
+                    p.*,
+                    FALSE AS "isOwner",
+                    TRUE  AS "isShared",
+                    COALESCE(ps."permission", 'full') AS "permission"
+                FROM projects p
+                JOIN project_shares ps
+                  ON ps."projectId" = p.id
+                WHERE ps."userId" = %s
+                  AND p."ownerId" <> %s
+            ) AS sub
+            ORDER BY "createdAt" DESC
+            ''',
+            (ownerId, ownerId, ownerId)
         )
 
     def updateProject(
@@ -304,6 +493,73 @@ class PostgresqlFlatMapper(Mapper):
 
         # psycopg2 cursor.rowcount holds number of rows affected
         return cursor.rowcount > 0
+
+    def getProjectSharedUsers(self, projectId: int) -> List[int]:
+        """
+        Return the list of userIds with whom the given project is shared.
+        """
+        rows = self.db.fetchAll(
+            '''
+            SELECT "userId"
+              FROM project_shares
+             WHERE "projectId" = %s
+             ORDER BY "userId"
+            ''',
+            (projectId,),
+        )
+        return [row["userId"] for row in rows]
+
+    def setProjectSharedUsers(self, projectId: int, ownerId: int, userIds: List[int]) -> None:
+        """
+        Replace the share list of a project with the given userIds.
+
+        Semantics:
+        - The project must exist and belong to ownerId.
+        - Existing entries in project_shares for this project are removed.
+        - New rows (projectId, userId) are inserted for each userId.
+        - Owner is not stored in project_shares (he already owns the project).
+        """
+        # Ensure project exists and belongs to ownerId
+        project = self.getProject(projectId, ownerId)
+        if not project:
+            raise ValueError("Project does not exist or is not owned by this user")
+
+        # NormalizeAndDeduplicateUserIds
+        cleanedUserIds: List[int] = []
+        for rawId in userIds or []:
+            try:
+                uid = int(rawId)
+            except (TypeError, ValueError):
+                continue
+            if uid not in cleanedUserIds:
+                cleanedUserIds.append(uid)
+
+        # RemoveExistingSharesForThisProject
+        self.db.execute(
+            '''
+            DELETE FROM project_shares
+             WHERE "projectId" = %s
+            ''',
+            (projectId,),
+        )
+
+        # If no users to share with, we are done
+        if not cleanedUserIds:
+            return
+
+        # BulkInsertNewShareRows
+        valuesSql = ",".join(["(%s, %s)"] * len(cleanedUserIds))
+        params: List[Any] = []
+        for uid in cleanedUserIds:
+            params.extend([projectId, uid])
+
+        self.db.execute(
+            f'''
+            INSERT INTO project_shares ("projectId", "userId")
+            VALUES {valuesSql}
+            ''',
+            tuple(params),
+        )
 
     # -----------------------------
     # Protocol Methods

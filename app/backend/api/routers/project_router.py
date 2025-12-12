@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
-from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate
+from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -27,6 +27,21 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+class TiltSeriesNewSetRequest(BaseModel):
+    """
+    Request payload for creating a new SetOfTiltSeries based on exclusions.
+    """
+    exclusions: Dict[str, Any]
+    restack: bool = False
+
+
+class ShareProjectPayload(BaseModel):
+    """
+    Request payload for sharing a project with one or more users.
+    """
+    userIds: List[int]
 
 
 def getProjectService() -> ProjectService:
@@ -92,6 +107,46 @@ def deleteProject(
     """
     return service.deleteProject(mapper, currentUser, projectId)
 
+
+# ======================================================================
+#                            PROJECT SHARING
+# ======================================================================
+
+@router.post("/{projectId}/share", status_code=status.HTTP_201_CREATED)
+def shareProject(
+    projectId: int,
+    payload: ProjectShareCreate,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    projectService: ProjectService = Depends(getProjectService),
+    currentUser: dict = Depends(getCurrentUser),
+):
+    """
+    Share a project with another users.
+    """
+    return projectService.shareProjectWithUser(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        targetUserIds=payload.userIds,
+        permission=payload.permission,
+    )
+
+
+@router.get("/{projectId}/shares")
+def listProjectShares(
+    projectId: int,
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        projectService: ProjectService = Depends(getProjectService),
+        currentUser: dict = Depends(getCurrentUser),
+):
+    """
+    Return the list of users the project is shared with.
+    """
+    return projectService.listProjectShares(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
 
 # ======================================================================
 #                    PROTOCOLS: LOAD / PARAMS / GRAPH
@@ -774,14 +829,6 @@ def renderTiltSeriesImage(
             status_code=500,
             detail=f"Failed to load frames for tiltseries {tiltSeriesId}: {e}",
         )
-
-
-class TiltSeriesNewSetRequest(BaseModel):
-    """
-    Request payload for creating a new SetOfTiltSeries based on exclusions.
-    """
-    exclusions: Dict[str, Any]
-    restack: bool = False
 
 @router.post(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/new-set",
