@@ -45,6 +45,7 @@ from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer
+from pyworkflow.template import TemplateList
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,20 @@ class ProjectService:
             "path": projPath,
             "protocols": graphData
         }
+
+    def listProjectWorkflows(self):
+        """
+        Return a list of workflows (id, name, description, ...)
+        configured for the given project and visible to currentUser.
+        """
+        tempList = TemplateList()
+        tempId = None
+        # Try to find all templates from the template folder and the plugins
+        tempList.addScipionTemplates(tempId)
+        if not (tempId is not None and len(tempList.templates) == 1):
+            tempList.addPluginTemplates(tempId)
+
+        return tempList.sortListByPluginName().templates
 
     def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
         for nodeId, nodeInfo in graphData.items():

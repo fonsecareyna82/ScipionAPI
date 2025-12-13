@@ -48,6 +48,7 @@ def getProjectService() -> ProjectService:
     """Return a fresh ProjectService per request to avoid shared state."""
     return ProjectService()
 
+
 # ======================================================================
 #                            PROJECTS CRUD
 # ======================================================================
@@ -170,6 +171,49 @@ def listProjectShares(
         projectId=projectId,
         currentUser=currentUser,
     )
+
+# ======================================================================
+#                           PROJECT WORKFLOWS
+# ======================================================================
+
+@router.get(
+    "/{projectId}/workflows",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProjectWorkflows(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return the list of predefined workflows configured for this project.
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        workflows = service.listProjectWorkflows()
+        # Ensure we always return a list, even if service returns None
+        return workflows or []
+    except Exception as e:
+        logger.exception("Error in listProjectWorkflows: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load workflows for project {projectId}: {e}",
+        )
+
 
 # ======================================================================
 #                    PROTOCOLS: LOAD / PARAMS / GRAPH
