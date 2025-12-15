@@ -1,96 +1,384 @@
-# Scipion Project Installation Guide (FastAPI + React + PostgreSQL)
+==========================================================
+Scipion Web Backend API
+==========================================================
 
-1. Update your system and install required packages:
+A modular, service-oriented backend exposing a modern REST API around
+Scipion. This application provides project management, protocol
+execution, plugin inspection, output preview functionalities, user
+management, and asynchronous workflow orchestration. It combines 
+FastAPI, SQLAlchemy, Alembic, Celery, Redis, and an installed Scipion 
+environment to deliver a robust and extensible computation backend.
 
-    sudo apt update
-    sudo apt install nodejs npm python3 python3-pip postgresql postgresql-contrib
-    sudo systemctl start postgresql
+This repository contains only the backend. It can be used independently
+or as part of a larger web-based Scipion interface.
 
-2. Install Scipion wit conda environment
+----------------------------------------------------------
+1. Key Features
+----------------------------------------------------------
 
-3. Set up PostgreSQL:
+* Project creation, renaming, deletion, and metadata access  
+* Scipion plugin discovery via plugin_router and plugin_service  
+* Protocol execution via Celery workers  
+* Structured access to protocol output artifacts  
+* Previews for volumes, metadata tables, micrographs, etc.  
+* User CRUD + optional authentication layer  
+* Fully asynchronous Scipion workflow execution  
+* Automated database migrations using Alembic  
+* Modular services architecture for future extension  
+* Production-friendly logs and worker orchestration  
 
-    Start the PostgreSQL service:
+----------------------------------------------------------
+2. Repository Structure (Detailed)
+----------------------------------------------------------
 
-        sudo service postgresql start
-        sudo -u postgres psql
-        CREATE USER userName WITH PASSWORD 'yourPassword';
-        CREATE DATABASE scipion_db OWNER yunior;
-        GRANT ALL PRIVILEGES ON DATABASE scipion_db TO yunior;
-        \q
+The following reflects the actual project layout:
 
-4. Install backend dependencies (Scipion env):
-    pip install fastapi uvicorn psycopg2-binary python-dotenv sqlalchemy bcrypt
+::
 
-6. Create a .env file in your backend folder:
+    alembic/
+        env.py                  # Alembic environment setup
+        script.py.mako          # Migration template
+        versions/               # Versioned migration scripts
 
-    Add this line:
+    app/
+      backend/
+        api/
+          dependencies.py       # Shared API dependencies (DB, auth, etc.)
+          routers/
+            auth_router.py
+            plugin_router.py
+            project_router.py
+            protocol_router.py
+            user_router.py
+          schemas/
+            project_schema.py
+            protocols_schema.py
+            user_schema.py
+          routes.py             # Router registration
+          services/
+            environment.py
+            plugin_service.py
+            project_service.py
+            protocol_service.py
 
-        DATABASE_URL=postgresql://yunior:yourPassword@localhost:5432/bioinfo_db
+        database.py             # SQLAlchemy engine/session lifecycle
+        main.py                 # FastAPI application entrypoint
+        mapper/
+          postgresql.py         # Low-level PostgreSQL mapper helpers
+        models/
+          data_model.py
+          plugin_model.py
+          project_model.py
+          protocol_model.py
+          user_model.py
+        scripts/
+          update_user_email.py  # Example maintenance script
+        utils/
+          constants.py
+          email.py
+          error_handlers.py
+          file_handlers.py
+          jwt.py
+          outputs_preview.py
+          security.py
+          volume_utils.py
+        worker.py               # Celery integration (worker entrypoint)
 
-7. Run the backend server:
+      celeryconfig.py           # Celery configuration (broker, backend)
+      celery_worker.py          # Alternative Celery launcher
+      services/
+        scipion_runner.py       # High-level wrapper for Scipion execution
+      utils/
+        scipion_helper.py       # Low-level Scipion utility helpers
+      workers/
+        task_queue.py           # Celery tasks and queue helpers
 
-    uvicorn app.backend.main:app --host 0.0.0.0 --port 8080 --reload
+    projects/                   # Scipion project workspace (runtime)
+    logs/                       # app.log, celery.log, celery.pid
 
-8. Set up the frontend:
+    requirements.txt
+    setup_api.sh                # Helper script for launching API
 
-   Go to your frontend folder:
+This structure formalizes a multi-layered backend divided into:
+API → Services → Workers → Scipion Integration → DB + Filesystem.
 
-        npm install
-        npm run dev
+----------------------------------------------------------
+3. Architecture
+----------------------------------------------------------
 
-9. Create an admin user manually (if needed):
+The backend is organized into well-defined layers that separate 
+concerns cleanly.
 
-    Enter PostgreSQL:
+----------------------------------------------------------
+3.1 Architecture Diagram
+----------------------------------------------------------
 
-        sudo -u postgres psql
+::
 
-    To generate the hashed password in Python:
-        import bcrypt
-        hashed = bcrypt.hashpw(b"yourPassword", bcrypt.gensalt())
-        print(hashed.decode())
+    +--------------------------------------------------------------+
+    |                       Client Applications                    |
+    |    Frontend • CLI • Automated Pipelines • Integrators        |
+    +-----------------------------+--------------------------------+
+                                  |
+                                  v
+    +--------------------------------------------------------------+
+    |                           FastAPI                            |
+    |  Routers: auth, user, project, protocol, plugin              |
+    |  Pydantic schemas for validation                             |
+    |  Dependency injection: DB session, security, environment     |
+    +-----------------------------+--------------------------------+
+                                  |
+                                  v
+    +--------------------------------------------------------------+
+    |                           Services                           |
+    |  project_service.py                                          |
+    |  protocol_service.py                                         |
+    |  plugin_service.py                                           |
+    |  environment.py                                              |
+    |  user services (auth_router + user_router)                   |
+    +-----------------------------+--------------------------------+
+                                  |
+                                  v
+    +--------------------------------------------------------------+
+    |                       Celery Task System                     |
+    |       worker.py • celeryconfig.py • workers/task_queue.py    |
+    |  Handles long-running jobs (Scipion workflows, previews)     |
+    +-----------------------------+--------------------------------+
+                                  |
+                                  v
+    +--------------------------------------------------------------+
+    |                      Scipion Integration                     |
+    |     scipion_runner.py → orchestrates execution               |
+    |     scipion_helper.py → low-level CLI interaction            |
+    |     volume_utils.py & outputs_preview.py → visualization     |
+    +-----------------------------+--------------------------------+
+                                  |
+                                  v
+    +--------------------------------------------------------------+
+    |       PostgreSQL (SQLAlchemy) + Project Filesystem           |
+    |   models/*.py • alembic/ • projects/<project_name>/          |
+    +--------------------------------------------------------------+
 
-    Copy the output and paste it into the following SQL command.
+----------------------------------------------------------
+4. Installation
+----------------------------------------------------------
 
-    Run this SQL command:
+----------------------------------------------------------
+4.1 Requirements
+----------------------------------------------------------
 
-        INSERT INTO users (username, email, "hashedPassword", role, "isActive")
-        VALUES (
-          'admin',
-          'admin@bioinfo.com',
-          'yourHashedPassword',
-          'admin',
-          true
-        );
+* Python 3.8+
+* PostgreSQL
+* Redis (or RabbitMQ) for Celery broker
+* Scipion installed locally
+* Linux recommended (due to Scipion runtime)
 
-10. Test everything:
+----------------------------------------------------------
+4.2 Environment Setup (Conda)
+----------------------------------------------------------
 
-Backend docs: http://localhost:8000/docs
-Frontend: http://localhost:3000
-Login page: http://localhost:3000/
-Dashboard: http://localhost:3000/home
+::
 
-11. Logout behavior:
+    conda create -n scipionapi python=3.8
+    conda activate scipionapi
+    pip install -r requirements.txt
 
-    To log out, remove the token from localStorage and redirect:
+----------------------------------------------------------
+4.3 Configuration (.env)
+----------------------------------------------------------
 
-        localStorage.removeItem("accessToken");
-        navigate("/");
+Typical environment configuration:
 
-12. Optional: export your Conda environment:
+::
 
-    To save it:
-        conda env export > environment.yml
+    DATABASE_URL=postgresql://user:pass@localhost:5432/scipion_db
+    BROKER_URL=redis://localhost:6379/0
+    SECRET_KEY=yourSecretKey
+    SCIPION_HOME=/home/user/scipion3
+    PROJECTS_PATH=/home/user/scipion_projects
+    LOGS_PATH=./logs
 
-    To recreate it on another machine:
-        conda env create -f environment.yml
+----------------------------------------------------------
+4.4 Database Initialization
+----------------------------------------------------------
 
+::
 
+    alembic upgrade head
 
-We need to start Celerity
-----------------------------
-PYTHONPATH=. celery -A app.workers.task_queue worker --loglevel=info > "$CELERY_LOG" 2>&1 &
+This applies migrations found under ``alembic/versions``.
 
-We need to star Redis
-----------------------
-redis-server
+----------------------------------------------------------
+4.5 Start API Server
+----------------------------------------------------------
+
+::
+
+    uvicorn app.backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+Docs available at:
+
+::
+
+    http://localhost:8000/docs
+
+----------------------------------------------------------
+4.6 Start Celery Worker
+----------------------------------------------------------
+
+::
+
+    celery -A app.celery_worker.celery worker -l info
+
+Or using ``task_queue.py`` depending on your Celery app configuration:
+
+::
+
+    PYTHONPATH=. celery -A app.workers.task_queue worker --loglevel=info
+
+----------------------------------------------------------
+5. Workflow Execution Model
+----------------------------------------------------------
+
+The protocol execution process is fully asynchronous:
+
+1. A request is submitted to ``protocol_router.py``.
+2. Input is validated using ``protocols_schema.py``.
+3. ``protocol_service.py`` constructs execution context.
+4. A Celery task is submitted to ``task_queue.py``.
+5. ``scipion_runner.py`` invokes Scipion inside the appropriate project.
+6. Outputs are stored under ``projects/<project>/``.
+7. ``outputs_preview.py`` and ``volume_utils.py`` provide lightweight previews.
+8. Status is checked through corresponding protocol endpoints.
+
+This isolates the web server from heavy Scipion workloads.
+
+----------------------------------------------------------
+6. Detailed Folder Responsibilities
+----------------------------------------------------------
+
+----------------------------------------------------------
+6.1 app/backend/api
+----------------------------------------------------------
+
+* routers/  
+  Contains route definitions, grouped by domain:
+  - ``project_router.py``  
+  - ``protocol_router.py``  
+  - ``plugin_router.py``  
+  - ``user_router.py``  
+  - ``auth_router.py``  
+
+* schemas/  
+  Pydantic models describing request and response formats.
+
+* dependencies.py  
+  Provides shared DI objects (e.g., DB session generator).
+
+* routes.py  
+  Globally registers all routers into the FastAPI application.
+
+----------------------------------------------------------
+6.2 app/backend/services
+----------------------------------------------------------
+
+High-level business logic:
+
+* ``project_service.py``:
+  project creation, deletion, renaming, metadata retrieval.
+
+* ``protocol_service.py``:
+  validates parameters, schedules protocol execution tasks.
+
+* ``plugin_service.py``:
+  discovers Scipion plugins, extracts metadata.
+
+* ``environment.py``:
+  Scipion/home path checks, environment validation.
+
+----------------------------------------------------------
+6.3 app/backend/models
+----------------------------------------------------------
+
+Defines SQLAlchemy ORM entities:
+
+* ``project_model.py``
+* ``protocol_model.py``
+* ``plugin_model.py``
+* ``user_model.py``
+* ``data_model.py``
+
+----------------------------------------------------------
+6.4 Scipion Integration (app/services + app/utils)
+----------------------------------------------------------
+
+* ``scipion_runner.py`` — orchestrates Scipion CLI executions.  
+* ``scipion_helper.py`` — command-building, path resolution.  
+* ``outputs_preview.py`` — previews for STAR, volumes, micrographs.  
+* ``volume_utils.py`` — scientific parsing of EM/MRC files.  
+
+----------------------------------------------------------
+6.5 Workers (Celery)
+----------------------------------------------------------
+
+* ``worker.py`` — defines Celery app and worker entrypoint.  
+* ``task_queue.py`` — defines queue tasks (protocol execution, previews).  
+* ``celery_worker.py`` — alternative launcher.  
+* ``celeryconfig.py`` — broker, backend, concurrency settings.
+
+----------------------------------------------------------
+7. Project Filesystem Layout
+----------------------------------------------------------
+
+::
+
+    projects/
+      MyProject/
+        Runs/
+        ProtocolOutputs/
+        Extra/
+        metadata.json
+
+``PROJECTS_PATH`` defines this root directory.  
+Each Scipion project is isolated here.
+
+----------------------------------------------------------
+8. Logging
+----------------------------------------------------------
+
+::
+
+    logs/app.log
+    logs/celery.log
+    logs/celery.pid
+
+Written using Python’s logging infrastructure.  
+Workers log deeply, including protocol execution output.
+
+----------------------------------------------------------
+9. Troubleshooting
+----------------------------------------------------------
+
+* **Worker not receiving tasks** → Check Redis connection.  
+* **Scipion errors** → Verify ``SCIPION_HOME`` and execution permissions.  
+* **Preview failures** → Validate MRC/STAR file structure.  
+* **Database errors** → Ensure Alembic migrations are up-to-date.
+
+----------------------------------------------------------
+10. Extending the Backend
+----------------------------------------------------------
+
+To add new functionality:
+
+1. Create new router under ``api/routers``  
+2. Create schemas under ``api/schemas``  
+3. Implement logic in ``api/services``  
+4. Add ORM models under ``models`` if needed  
+5. Generate Alembic revisions  
+6. Optionally define new Celery tasks  
+
+----------------------------------------------------------
+11. License
+----------------------------------------------------------
+
+See LICENSE for details.
