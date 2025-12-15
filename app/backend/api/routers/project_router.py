@@ -15,7 +15,8 @@ from pydantic import BaseModel
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
-from app.backend.api.schemas.project_schema import ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate
+from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
+                                                    ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -29,29 +30,91 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-class TiltSeriesNewSetRequest(BaseModel):
-    """
-    Request payload for creating a new SetOfTiltSeries based on exclusions.
-    """
-    exclusions: Dict[str, Any]
-    restack: bool = False
-
-
-class ShareProjectPayload(BaseModel):
-    """
-    Request payload for sharing a project with one or more users.
-    """
-    userIds: List[int]
-
-
 def getProjectService() -> ProjectService:
     """Return a fresh ProjectService per request to avoid shared state."""
     return ProjectService()
+
+# ======================================================================
+#                           PROJECT WORKFLOWS
+# ======================================================================
+
+@router.get(
+    "/workflows",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProjectWorkflows(
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return the list of predefined workflows available for the current user.
+    """
+    try:
+        workflows = service.listProjectWorkflows()
+        return workflows or []
+    except Exception as e:
+        logger.exception("Error in listProjectWorkflows: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load workflows: {e}",
+        )
+
+@router.post(
+    "/{projectId}/workflows/apply",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def applyWorkflowToProject(
+    projectId: int,
+    payload: ApplyWorkflowToProjectRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Apply a predefined workflow to an existing project.
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=True,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        result = service.applyWorkflowToProject(
+            mapper=mapper,
+            projectId=projectId,
+            workflowId=payload.workflowId,
+            currentUser=currentUser,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in applyWorkflowToProject: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to apply workflow to project {projectId}: {e}",
+        )
 
 
 # ======================================================================
 #                            PROJECTS CRUD
 # ======================================================================
+@router.get("/", response_model=List[ProjectOut])
+def listProjects(
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    return service.listProjects(mapper, currentUser)
+
 
 @router.post("/", response_model=ProjectOut)
 def createProject(
@@ -61,15 +124,6 @@ def createProject(
     service: ProjectService = Depends(getProjectService),
 ):
     return service.createProject(mapper, projectData, currentUser)
-
-
-@router.get("/", response_model=List[ProjectOut])
-def listProjects(
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
-):
-    return service.listProjects(mapper, currentUser)
 
 
 @router.get("/{projectId}", response_model=Any)
@@ -171,49 +225,6 @@ def listProjectShares(
         projectId=projectId,
         currentUser=currentUser,
     )
-
-# ======================================================================
-#                           PROJECT WORKFLOWS
-# ======================================================================
-
-@router.get(
-    "/{projectId}/workflows",
-    response_model=Any,
-    status_code=status.HTTP_200_OK,
-)
-def listProjectWorkflows(
-    projectId: int,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
-):
-    """
-    Return the list of predefined workflows configured for this project.
-    """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    try:
-        workflows = service.listProjectWorkflows()
-        # Ensure we always return a list, even if service returns None
-        return workflows or []
-    except Exception as e:
-        logger.exception("Error in listProjectWorkflows: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load workflows for project {projectId}: {e}",
-        )
-
 
 # ======================================================================
 #                    PROTOCOLS: LOAD / PARAMS / GRAPH

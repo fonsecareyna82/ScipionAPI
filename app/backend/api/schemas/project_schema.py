@@ -25,7 +25,7 @@
 # ******************************************************************************
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 
@@ -62,3 +62,23 @@ class ProjectOut(BaseModel):
 class ProjectShareCreate(BaseModel):
     userIds: list = []
     permission: Optional[str] = "full"
+
+
+
+class TiltSeriesNewSetRequest(BaseModel):
+    """
+    Request payload for creating a new SetOfTiltSeries based on exclusions.
+    """
+    exclusions: Dict[str, Any]
+    restack: bool = False
+
+
+class ShareProjectPayload(BaseModel):
+    """
+    Request payload for sharing a project with one or more users.
+    """
+    userIds: List[int]
+
+
+class ApplyWorkflowToProjectRequest(BaseModel):
+    workflowId: str
