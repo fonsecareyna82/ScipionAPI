@@ -23,8 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import collections
 import io
 import logging
+import re
 import threading
 from functools import lru_cache
 
@@ -144,44 +146,99 @@ class ProjectService:
             self.objectManager = self._createObjectManager()
         return self.objectManager
 
-    def createProject(self, mapper: PostgresqlFlatMapper, projectData: ProjectCreate, currentUser) -> dict:
-        # Check if a project with the same name already exists for this user
-        existingProjects = mapper.listProjects(ownerId=currentUser['id'])
-        if any(p['name'] == projectData.name for p in existingProjects):
+    @staticmethod
+    def sanitizeProjectName(rawName: str) -> str:
+        """
+        Return a filesystem-safe project name.
+
+        Rules:
+          - Replace any char not in [A-Za-z0-9_-] with '_'
+          - Collapse consecutive underscores
+          - Strip leading/trailing underscores and dots
+          - Ensure non-empty (fallback to 'project')
+        """
+        if rawName is None:
+            rawName = ""
+
+        # Trim whitespace
+        name = rawName.strip()
+
+        # Replace invalid chars with underscore
+        name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
+
+        # Collapse multiple underscores
+        name = re.sub(r"_+", "_", name)
+
+        # Strip leading/trailing underscores and dots
+        name = name.strip("._")
+
+        # Fallback if empty
+        if not name:
+            name = "project"
+
+        return name
+
+    def createProject(
+        self,
+        mapper: PostgresqlFlatMapper,
+        projectData: ProjectCreate,
+        currentUser,
+    ) -> dict:
+        # Sanitize incoming name for filesystem usage
+        originalName = projectData.name
+        sanitizedName = self.sanitizeProjectName(originalName)
+
+        # Optional: if you want, overwrite the projectData.name so that
+        # DB and UI use the sanitized version as well.
+        projectData.name = sanitizedName
+
+        # Check if a project with the same (sanitized) name already exists for this user
+        existingProjects = mapper.listProjects(ownerId=currentUser["id"])
+        if any(p["name"] == sanitizedName for p in existingProjects):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A project with this name already exists for the current user"
+                detail=(
+                    "A project with this name already exists for the current user "
+                    "(sanitized name: '%s')" % sanitizedName
+                ),
             )
 
         # Check if the project already exists in the file system (Scipion)
-        scipionPath = self.manager.getProjectPath(projectData.name)
+        scipionPath = self.manager.getProjectPath(sanitizedName)
         if os.path.exists(scipionPath):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A project with this name already exists in the file system"
+                detail=(
+                    "A project with this name already exists in the file system "
+                    "(sanitized name: '%s')" % sanitizedName
+                ),
             )
 
-        # Create the project in Scipion
-        proj = self.manager.createProject(projectData.name)
+        # Create the project in Scipion using the sanitized name
+        proj = self.manager.createProject(sanitizedName)
         proj.setComment(projectData.description or "")
 
         # Insert project metadata into PostgreSQL via mapper
         dbProjectId = mapper.insertProject(
-            ownerId=currentUser['id'],
-            name=scipionPath,
+            ownerId=currentUser["id"],
+            name=scipionPath,  # store the sanitized name, not the full path
             description=projectData.description,
-            status=projectData.status
+            status=projectData.status,
         )
 
         # Return the response payload
         return {
             "id": dbProjectId,
-            "name": projectData.name,
+            "name": sanitizedName,
             "description": projectData.description,
             "createdAt": datetime.utcnow(),
             "status": projectData.status,
             "protocolsCount": 0,
-            "diskUsage": f"{0.0} GB"
+            "diskUsage": f"{0.0} GB",
+            "isOwner": True,
+            "isShared": False,
+            "permission": "full",
+            "projectOwnerId": currentUser["id"],
         }
 
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
@@ -486,6 +543,104 @@ class ProjectService:
             tempList.addPluginTemplates(tempId)
 
         return tempList.sortListByPluginName().templates
+
+    def applyWorkflowToProject(
+        self,
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        workflowId: Union[int, str],
+        currentUser: dict,
+    ) -> dict:
+        """
+        Apply a predefined workflow template to an existing project.
+        Returns a JSON-serializable dict suitable for sending to the frontend.
+        """
+        # 1) Check that the target project exists and is accessible
+        project = self.getProjectById(mapper, projectId, currentUser)
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project {projectId} not found or not accessible",
+            )
+
+        # 2) Get available templates/workflows
+        templates = self.listProjectWorkflows() or []
+        if not templates:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No workflows are currently available",
+            )
+
+        workflowIdStr = str(workflowId)
+        selectedTemplate: Any = None
+
+        # 3) Find the template by id or name
+        for t in templates:
+            templateId = getattr(t, "id", None)
+            templateName = getattr(t, "name", None)
+
+            if (templateId is not None and str(templateId) == workflowIdStr) or (
+                templateName and str(templateName) == workflowIdStr
+            ):
+                selectedTemplate = t
+                break
+
+        if selectedTemplate is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow '{workflowIdStr}' not found",
+            )
+
+        # 4) Ensure params attribute exists and is an ordered mapping
+        if not hasattr(selectedTemplate, "params") or selectedTemplate.params is None:
+            selectedTemplate.params = collections.OrderedDict()
+
+        # 5) Materialize the workflow template file
+        try:
+            selectedTemplate.replaceEnvVariables()
+            workflowFile = selectedTemplate.createTemplateFile()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to materialize workflow '{workflowIdStr}': {e}",
+            )
+
+        if not workflowFile:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Workflow '{workflowIdStr}' did not generate a valid template file",
+            )
+
+        # 6) Apply the workflow to the current project in Scipion
+        try:
+            loadResult = self.currentProject.loadProtocols(workflowFile)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
+            )
+
+        # 7) Optionally compute how many protocols are present after applying
+        protocolsCount = None
+        try:
+            if hasattr(self.currentProject, "getProtocols"):
+                protocols = self.currentProject.getProtocols()
+                if protocols is not None:
+                    protocolsCount = len(protocols)
+        except Exception:
+            # Ignore errors when computing protocol count
+            protocolsCount = None
+
+        # 8) Return a compact, useful payload for the frontend
+        return {
+            "status": "ok",
+            "projectId": projectId,
+            "workflowId": workflowIdStr,
+            "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
+            "workflowFile": str(workflowFile),
+            "protocolsCount": protocolsCount,
+            "loadResult": str(loadResult) if loadResult is not None else None,
+        }
 
     def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
         for nodeId, nodeInfo in graphData.items():
