@@ -2,7 +2,6 @@
 
 import psycopg2
 import psycopg2.extras
-from collections import OrderedDict
 from typing import Optional, List, Dict, Any
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
@@ -46,11 +45,39 @@ class PostgresqlFlatMapper(Mapper):
         # self.initTables()
 
     def initTables(self):
-        """Create projects and protocols tables if they do not exist."""
+        """Create tables if they do not exist (protocols kept as legacy schema)."""
+
+        # CreateUsersTableFirst because projects and project_shares reference users(id)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                "hashedPassword" TEXT NOT NULL,
+                "isActive" BOOLEAN NOT NULL DEFAULT TRUE,
+                role TEXT NOT NULL DEFAULT 'user',
+
+                "firstName" TEXT,
+                "lastName" TEXT,
+                institution TEXT,
+                phone TEXT,
+                position TEXT,
+                country TEXT,
+                city TEXT,
+                "postalCode" TEXT,
+
+                "isVerified" BOOLEAN NOT NULL DEFAULT FALSE,
+                "verificationCode" TEXT,
+
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ
+            );
+        """)
+
+        # CreateProjectsTable with mandatory ownerId
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS projects (
                 id SERIAL PRIMARY KEY,
-                ownerId INTEGER NOT NULL,
+                "ownerId" INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
                 name TEXT NOT NULL,
                 description TEXT,
                 status TEXT DEFAULT 'active',
@@ -58,6 +85,8 @@ class PostgresqlFlatMapper(Mapper):
                 updatedAt TIMESTAMP
             );
         """)
+
+        # CreateProtocolsTableLegacy (kept as-is for now)
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS protocols (
                 id SERIAL PRIMARY KEY,
@@ -68,18 +97,19 @@ class PostgresqlFlatMapper(Mapper):
                 parameters JSONB
             );
         """)
-        # Table for shared projects with future-proof permission field
+
+        # CreateProjectSharesTable (requires users and projects)
         self.db.execute("""
-                   CREATE TABLE IF NOT EXISTS project_shares (
-                       id SERIAL PRIMARY KEY,
-                       "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                       "userId" INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                       "permission" TEXT NOT NULL DEFAULT 'full',
-                       "createdAt" TIMESTAMP DEFAULT NOW(),
-                       "updatedAt" TIMESTAMP,
-                       UNIQUE ("projectId", "userId")
-                   );
-               """)
+            CREATE TABLE IF NOT EXISTS project_shares (
+                id SERIAL PRIMARY KEY,
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                "userId" INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                "permission" TEXT NOT NULL DEFAULT 'full',
+                "createdAt" TIMESTAMP DEFAULT NOW(),
+                "updatedAt" TIMESTAMP,
+                UNIQUE ("projectId", "userId")
+            );
+        """)
 
     # -----------------------------
     # Auth Methods
@@ -565,18 +595,46 @@ class PostgresqlFlatMapper(Mapper):
     # Protocol Methods
     # -----------------------------
     def saveProtocol(self, protocol: Dict[str, Any]) -> int:
-        """Insert a new protocol and return its id."""
+        """Insert a new protocol row and return its database id."""
+        protocolId = protocol.get("protocolId")
+        projectId = protocol.get("projectId")
+        protocolClassName = protocol.get("protocolClassName")
+
+        if not protocolId:
+            raise ValueError("Missing required field: protocolId")
+        if not projectId:
+            raise ValueError("Missing required field: projectId")
+        if not protocolClassName:
+            raise ValueError("Missing required field: protocolClassName")
+
+        status = protocol.get("status", "pending")
+        params = protocol.get("params")
+        parentIds = protocol.get("parentIds", [])
+        childIds = protocol.get("childIds", [])
+
+        # InsertProtocolRow
         cur = self.db.execute(
             """
-            INSERT INTO protocols ("projectId", "protocolClassName", status, params)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO protocols (
+                "projectId",
+                "protocolId",
+                "protocolClassName",
+                status,
+                params,
+                "parentIds",
+                "childIds"
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
-                protocol["projectId"],
-                protocol["protocolClassName"],
-                protocol.get("status", "pending"),
-                protocol.get("params"),
+                projectId,
+                str(protocolId),
+                protocolClassName,
+                status,
+                params,
+                parentIds,
+                childIds,
             ),
         )
         return cur.fetchone()["id"]

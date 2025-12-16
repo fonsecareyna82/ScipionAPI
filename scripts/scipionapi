@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# resolveRepoRootByMarkers
+scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repoRoot="${scriptDir}"
+while [[ "${repoRoot}" != "/" ]]; do
+  if [[ -f "${repoRoot}/pyproject.toml" ]] && [[ -f "${repoRoot}/alembic.ini" ]]; then
+    break
+  fi
+  repoRoot="$(dirname "${repoRoot}")"
+done
+
+if [[ "${repoRoot}" == "/" ]]; then
+  echo "ERROR: Could not locate repo root (pyproject.toml + alembic.ini)." >&2
+  exit 1
+fi
+
+# configDefaults
+condaEnvName="scipion4Web"
+pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
+
+# scipionCoreInstallToggle
+installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
+scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scipion-em scipion-app}"
+
+# ensureConda
+if ! command -v conda >/dev/null 2>&1; then
+  echo "ERROR: conda is required but was not found in PATH." >&2
+  exit 1
+fi
+
+# envExistsNow
+envExistsNow() {
+  if conda env list | awk '{print $1}' | grep -qx "${condaEnvName}"; then
+    echo "1"
+  else
+    echo "0"
+  fi
+}
+
+# ensureScipionCoreInstalled
+ensureScipionCoreInstalled() {
+  if [[ "${installScipionCore}" != "1" ]]; then
+    return 0
+  fi
+
+  # checkPyworkflowImport
+  if conda run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Installing Scipion core packages (pyworkflow/em/app)"
+  conda run -n "${condaEnvName}" python -m pip install ${scipionCorePackages}
+
+  # verifyPyworkflowImport
+  conda run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
+    echo "ERROR: pyworkflow import still failing after installing Scipion core packages." >&2
+    exit 1
+  }
+}
+
+# bootstrapEnv
+bootstrapEnv() {
+  cd "${repoRoot}"
+
+  local envExists
+  envExists="$(envExistsNow)"
+
+  if [[ "${envExists}" == "0" ]]; then
+    echo "Creating conda env: ${condaEnvName} (python=${pythonVersion})"
+    conda create -y -n "${condaEnvName}" "python=${pythonVersion}"
+  fi
+
+  echo "Upgrading pip"
+  conda run -n "${condaEnvName}" python -m pip install --upgrade pip
+
+  if [[ -f "${repoRoot}/requirements.txt" ]]; then
+    echo "Installing requirements.txt"
+    conda run -n "${condaEnvName}" python -m pip install -r "${repoRoot}/requirements.txt"
+  fi
+
+  # optionalScipionCoreInstall
+  ensureScipionCoreInstalled
+
+  echo "Installing package (editable)"
+  conda run -n "${condaEnvName}" python -m pip install -e "${repoRoot}"
+}
+
+# ensureCliInstalled
+ensureCliInstalled() {
+  if conda run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1; then
+    return 0
+  fi
+  bootstrapEnv
+}
+
+# routeCommand
+cmd="${1:-}"
+if [[ -z "${cmd}" ]]; then
+  ensureCliInstalled
+  exec conda run -n "${condaEnvName}" scipionapi --help
+fi
+
+if [[ "${cmd}" == "bootstrap" ]]; then
+  bootstrapEnv
+  echo "Bootstrap completed."
+  exit 0
+fi
+
+ensureCliInstalled
+cd "${repoRoot}"
+exec conda run -n "${condaEnvName}" scipionapi "$@"

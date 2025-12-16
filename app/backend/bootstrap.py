@@ -23,6 +23,21 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from app.backend.models.user_model import User  # noqa: F401
-from app.backend.models.project_model import Project  # noqa: F401
-from app.backend.models.protocol_model import Protocol  # noqa: F401
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+def bootstrapEnv() -> None:
+    # bootstrapEnvFromScipionHome
+    scipionHome = (os.getenv("SCIPION_HOME") or "").strip()
+    if not scipionHome:
+        return
+
+    envPath = Path(scipionHome) / ".env"
+    if not envPath.exists():
+        return
+
+    # doNotOverrideExistingEnv
+    load_dotenv(dotenv_path=str(envPath), override=False)

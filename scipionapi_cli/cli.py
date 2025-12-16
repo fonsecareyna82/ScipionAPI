@@ -23,6 +23,49 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from app.backend.models.user_model import User  # noqa: F401
-from app.backend.models.project_model import Project  # noqa: F401
-from app.backend.models.protocol_model import Protocol  # noqa: F401
+
+import typer
+
+from scipionapi_cli.install import installCommand
+from scipionapi_cli.runtime import startCommand, stopCommand, restartCommand, statusCommand, logsCommand
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command("install")
+def install(
+    user: str = typer.Option(..., "--user"),
+    email: str = typer.Option(..., "--email"),
+    password: str = typer.Option(..., "--pass"),
+):
+    # nonInteractiveInstall
+    installCommand(adminUser=user, adminEmail=email, adminPassword=password)
+
+
+@app.command("start")
+def start():
+    startCommand()
+
+
+@app.command("stop")
+def stop():
+    stopCommand()
+
+
+@app.command("restart")
+def restart():
+    restartCommand()
+
+
+@app.command("status")
+def status():
+    statusCommand()
+
+
+@app.command("logs")
+def logs():
+    logsCommand()
+
+
+if __name__ == "__main__":
+    app()
