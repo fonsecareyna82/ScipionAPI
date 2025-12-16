@@ -95,6 +95,21 @@ ensureCliInstalled() {
   bootstrapEnv
 }
 
+# provisionAll
+provisionAll() {
+  # provisionRunsBootstrapInstallStart
+  ensureCliInstalled
+  cd "${repoRoot}"
+
+  echo "Running: scipionapi install $*"
+  conda run -n "${condaEnvName}" scipionapi install "$@"
+
+  echo "Starting services"
+  conda run -n "${condaEnvName}" scipionapi start
+
+  echo "Provision completed."
+}
+
 # routeCommand
 cmd="${1:-}"
 if [[ -z "${cmd}" ]]; then
@@ -105,6 +120,12 @@ fi
 if [[ "${cmd}" == "bootstrap" ]]; then
   bootstrapEnv
   echo "Bootstrap completed."
+  exit 0
+fi
+
+if [[ "${cmd}" == "provision" ]]; then
+  shift
+  provisionAll "$@"
   exit 0
 fi
 
