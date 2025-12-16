@@ -24,11 +24,17 @@
 # *
 # ******************************************************************************
 import os
+from pathlib import Path
+
 from app.backend.bootstrap import bootstrapEnv
+
+# bootstrapEnvFirst
 bootstrapEnv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
+
 from app.backend.api.routers.project_router import router as projects
 from app.backend.api.routers.protocol_router import router as protocols
 from app.backend.api.routers.plugin_router import router as plugins
@@ -36,53 +42,120 @@ from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.utils.error_handlers import registerAllErrorHandlers
-app = FastAPI(title="Scipion API", debug=True)
-
-# Register custom error handlers
-registerAllErrorHandlers(app)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],  # o ["*"] para desarrollo
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=[
-        "*",
-        "Authorization",
-        "Content-Type",
-        "X-Requested-With",
-        "X-Scipion-Colormap",
-        "X-Preview-Colormap",
-        "X-Colormap",
-        "Scipion-Colormap",
-        "Colormap",
-    ],
-    expose_headers=[
-        "Content-Disposition",
-        "X-Preview-Mime",
-        "X-Preview-Width",
-        "X-Preview-Height",
-        "X-Preview-Depth",
-        "X-Preview-Colormap",
-        "X-Preview-Colormap-Note",
-        "X-Preview-Tiles",
-        "X-Preview-SizeBytes",
-        "X-Preview-Columns",
-        "X-Preview-RowCount",
-        "X-Archive-Kind",
-        "X-Preview-VoxelSize",
-    ],
-)
-
-prepareEnvironment()
-app.include_router(projects)
-app.include_router(protocols)
-app.include_router(plugins)
-app.include_router(auth)
-app.include_router(users)
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+class SpaStaticFiles(StaticFiles):
+    # spaStaticFilesFallbackToIndex
+    async def get_response(self, path: str, scope):
+        # getResponseOrFallbackToIndexHtml
+        response = await super().get_response(path, scope)
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
 
+
+def _buildApiApp() -> FastAPI:
+    # buildApiApp
+    apiApp = FastAPI(title="Scipion API", debug=True)
+
+    # registerCustomErrorHandlers
+    registerAllErrorHandlers(apiApp)
+
+    apiApp.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173", "http://localhost:5174"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=[
+            "*",
+            "Authorization",
+            "Content-Type",
+            "X-Requested-With",
+            "X-Scipion-Colormap",
+            "X-Preview-Colormap",
+            "X-Colormap",
+            "Scipion-Colormap",
+            "Colormap",
+        ],
+        expose_headers=[
+            "Content-Disposition",
+            "X-Preview-Mime",
+            "X-Preview-Width",
+            "X-Preview-Height",
+            "X-Preview-Depth",
+            "X-Preview-Colormap",
+            "X-Preview-Colormap-Note",
+            "X-Preview-Tiles",
+            "X-Preview-SizeBytes",
+            "X-Preview-Columns",
+            "X-Preview-RowCount",
+            "X-Archive-Kind",
+            "X-Preview-VoxelSize",
+        ],
+    )
+
+    # prepareScipionEnvironment
+    prepareEnvironment()
+
+    # includeRouters
+    apiApp.include_router(projects)
+    apiApp.include_router(protocols)
+    apiApp.include_router(plugins)
+    apiApp.include_router(auth)
+    apiApp.include_router(users)
+
+    @apiApp.get("/health")
+    def health_check():
+        # healthCheck
+        return {"status": "ok"}
+
+    return apiApp
+
+
+def _normalizeMountPath(value: str) -> str:
+    # normalizeMountPath
+    mountPath = (value or "/api").strip()
+    if not mountPath.startswith("/"):
+        mountPath = f"/{mountPath}"
+    if mountPath != "/" and mountPath.endswith("/"):
+        mountPath = mountPath.rstrip("/")
+    return mountPath
+
+
+def _shouldServeWeb() -> bool:
+    # shouldServeWeb
+    return (os.getenv("SERVE_WEB") or "").strip() == "1"
+
+
+def _resolveWebDistPath() -> Path:
+    # resolveWebDistPath
+    raw = (os.getenv("WEB_DIST_PATH") or "").strip()
+    if not raw:
+        return Path("")
+    return Path(raw).expanduser().resolve()
+
+
+apiApp = _buildApiApp()
+
+serveWeb = _shouldServeWeb()
+webDistPath = _resolveWebDistPath()
+apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
+
+if serveWeb and webDistPath and (webDistPath / "index.html").exists():
+    # buildCombinedApp
+    app = FastAPI(title="Scipion Web", debug=True)
+
+    # mountApiBeforeStatic
+    app.mount(apiMountPath, apiApp)
+
+    # mountSpaStaticRoot
+    app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")
+
+    @app.get("/health")
+    def health_check():
+        # healthCheckCombined
+        return {"status": "ok", "mode": "combined", "apiMountPath": apiMountPath}
+
+else:
+    # apiOnlyMode
+    app = apiApp

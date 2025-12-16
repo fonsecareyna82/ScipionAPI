@@ -1,57 +1,19 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
-# * Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
-
 import os
 import signal
-import subprocess
 import sys
 import time
+import subprocess
 from pathlib import Path
+from typing import Dict
 
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, exportEnvToOs
 
 
-def _resolveScipionHome(repoRoot: Path) -> Path:
-    # resolveScipionHome
-    configured = (os.getenv("SCIPION_HOME") or "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return (repoRoot / "scipion_home").resolve()
-
-
-def _envPathForScipionHome(scipionHome: Path) -> Path:
-    # envPathForScipionHome
-    return scipionHome / ".env"
-
-
-def _pidDir(scipionHome: Path) -> Path:
+def _pidDir(repoRoot: Path) -> Path:
     # ensurePidDir
-    runDir = scipionHome / ".run"
-    runDir.mkdir(exist_ok=True, parents=True)
+    runDir = repoRoot / ".run"
+    runDir.mkdir(exist_ok=True)
     return runDir
 
 
@@ -88,14 +50,7 @@ def _safeUnlink(path: Path) -> None:
         return
 
 
-def _ensureLogFile(logPath: Path) -> None:
-    # ensureLogFileExists
-    logPath.parent.mkdir(exist_ok=True, parents=True)
-    if not logPath.exists():
-        logPath.touch()
-
-
-def _readLastLines(filePath: Path, maxLines: int = 120, maxBytes: int = 65536) -> str:
+def _readLastLines(filePath: Path, maxLines: int = 80, maxBytes: int = 65536) -> str:
     # readLastLinesForDiagnostics
     try:
         if not filePath.exists():
@@ -161,6 +116,13 @@ def _stopPid(pidPath: Path) -> None:
     _safeUnlink(pidPath)
 
 
+def _ensureLogFile(logPath: Path) -> None:
+    # ensureLogFileExists
+    logPath.parent.mkdir(exist_ok=True, parents=True)
+    if not logPath.exists():
+        logPath.touch()
+
+
 def _startDetachedProcess(
     args: list,
     cwd: Path,
@@ -182,7 +144,6 @@ def _startDetachedProcess(
             start_new_session=True,
         )
 
-    # quickSanityCheck
     time.sleep(max(0.1, sanityWaitSec))
     if proc.poll() is not None:
         tail = _readLastLines(logPath, maxLines=120)
@@ -196,20 +157,32 @@ def _startDetachedProcess(
     return proc.pid
 
 
+def _resolveScipionHome(repoRoot: Path) -> Path:
+    # resolveScipionHomeFromEnvOrDefault
+    configured = (os.getenv("SCIPION_HOME") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (repoRoot / "scipion_home").resolve()
+
+
+def _loadEnv(repoRoot: Path) -> Dict[str, str]:
+    # loadEnvFromScipionHome
+    scipionHome = _resolveScipionHome(repoRoot)
+    envPath = scipionHome / ".env"
+    exportEnvToOs(envPath)
+    return readEnvFile(envPath)
+
+
 def startCommand() -> None:
     # startApiAndWorker
     repoRoot = resolveRepoRoot()
-    scipionHome = _resolveScipionHome(repoRoot)
-    envPath = _envPathForScipionHome(scipionHome)
+    env = _loadEnv(repoRoot)
 
-    exportEnvToOs(envPath)
-    env = readEnvFile(envPath)
-
-    runDir = _pidDir(scipionHome)
+    runDir = _pidDir(repoRoot)
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
 
-    logsDir = Path(env.get("LOGS_PATH", str(scipionHome / "logs"))).resolve()
+    logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
     logsDir.mkdir(exist_ok=True, parents=True)
     apiLogPath = logsDir / "app.log"
     workerLogPath = logsDir / "celery.log"
@@ -220,7 +193,6 @@ def startCommand() -> None:
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
 
-    # startApiIfNotRunning
     if apiPidPath.exists():
         pid = _readPid(apiPidPath)
         if _isProcessAlive(pid):
@@ -232,7 +204,6 @@ def startCommand() -> None:
         apiEnv = os.environ.copy()
         apiEnv["PYTHONPATH"] = str(repoRoot)
         apiEnv["PYTHONUNBUFFERED"] = "1"
-        apiEnv["SCIPION_HOME"] = str(scipionHome)
 
         pid = _startDetachedProcess(
             [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)],
@@ -244,7 +215,6 @@ def startCommand() -> None:
         _writePid(apiPidPath, pid)
         print(f"API started (pid={pid})")
 
-    # startWorkerIfNotRunning
     if workerPidPath.exists():
         pid = _readPid(workerPidPath)
         if _isProcessAlive(pid):
@@ -256,7 +226,6 @@ def startCommand() -> None:
         workerEnv = os.environ.copy()
         workerEnv["PYTHONPATH"] = str(repoRoot)
         workerEnv["PYTHONUNBUFFERED"] = "1"
-        workerEnv["SCIPION_HOME"] = str(scipionHome)
 
         pid = _startDetachedProcess(
             [sys.executable, "-m", "celery", "-A", celeryApp, "worker", "--loglevel", celeryLogLevel],
@@ -272,9 +241,7 @@ def startCommand() -> None:
 def stopCommand() -> None:
     # stopApiAndWorker
     repoRoot = resolveRepoRoot()
-    scipionHome = _resolveScipionHome(repoRoot)
-    runDir = _pidDir(scipionHome)
-
+    runDir = _pidDir(repoRoot)
     _stopPid(runDir / "api.pid")
     _stopPid(runDir / "worker.pid")
     print("Stopped.")
@@ -290,8 +257,7 @@ def restartCommand() -> None:
 def statusCommand() -> None:
     # statusApiAndWorker
     repoRoot = resolveRepoRoot()
-    scipionHome = _resolveScipionHome(repoRoot)
-    runDir = _pidDir(scipionHome)
+    runDir = _pidDir(repoRoot)
 
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
@@ -312,13 +278,9 @@ def statusCommand() -> None:
 def logsCommand() -> None:
     # tailLogs
     repoRoot = resolveRepoRoot()
-    scipionHome = _resolveScipionHome(repoRoot)
-    envPath = _envPathForScipionHome(scipionHome)
+    env = _loadEnv(repoRoot)
 
-    exportEnvToOs(envPath)
-    env = readEnvFile(envPath)
-
-    logsDir = Path(env.get("LOGS_PATH", str(scipionHome / "logs"))).resolve()
+    logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
     appLog = logsDir / "app.log"
     celeryLog = logsDir / "celery.log"
 
