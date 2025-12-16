@@ -12,7 +12,7 @@ from scipionapi_cli.admin import ensureAdminUser
 
 def _resolveScipionHome(repoRoot: Path, existing: Dict[str, str]) -> Path:
     # resolveScipionHome
-    configured = (existing.get("SCIPION_HOME") or os.getenv("SCIPION_HOME") or "").strip()
+    configured = existing.get("SCIPION_HOME") or os.getenv("SCIPION_HOME")
     if configured:
         return Path(configured).expanduser().resolve()
     return (repoRoot / "scipion_home").resolve()
@@ -21,9 +21,9 @@ def _resolveScipionHome(repoRoot: Path, existing: Dict[str, str]) -> Path:
 def _resolveCondaExe(existing: Dict[str, str]) -> Optional[Path]:
     # resolveCondaExePath
     candidates = [
-        (existing.get("CONDA_EXE") or "").strip(),
-        (os.getenv("CONDA_EXE") or "").strip(),
-        which("conda") or "",
+        existing.get("CONDA_EXE"),
+        os.getenv("CONDA_EXE"),
+        which("conda"),
         str((Path.home() / "miniconda3" / "bin" / "conda").resolve()),
         str((Path.home() / "anaconda3" / "bin" / "conda").resolve()),
     ]
@@ -55,14 +55,14 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     scipionHome = _resolveScipionHome(repoRoot, existing)
     scipionHome.mkdir(parents=True, exist_ok=True)
 
-    # ensureConfigDirExists
     (scipionHome / "config").mkdir(parents=True, exist_ok=True)
+    (scipionHome / "web").mkdir(parents=True, exist_ok=True)
 
     envPath = scipionHome / ".env"
     existing = readEnvFile(envPath)
 
-    logsDir = Path(existing.get("LOGS_PATH") or (scipionHome / "logs")).expanduser().resolve()
-    projectsDir = Path(existing.get("PROJECTS_PATH") or (scipionHome / "projects")).expanduser().resolve()
+    logsDir = Path(existing.get("LOGS_PATH") or (scipionHome / "logs")).resolve()
+    projectsDir = Path(existing.get("PROJECTS_PATH") or (scipionHome / "projects")).resolve()
     logsDir.mkdir(exist_ok=True, parents=True)
     projectsDir.mkdir(exist_ok=True, parents=True)
 
@@ -77,8 +77,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
 
     condaExePath = _resolveCondaExe(existing)
     condaExe = str(condaExePath) if condaExePath else ""
-
-    condaActivationCmd = (existing.get("CONDA_ACTIVATION_CMD") or "").strip()
+    condaActivationCmd = existing.get("CONDA_ACTIVATION_CMD")
     if not condaActivationCmd and condaExe:
         condaActivationCmd = _buildCondaActivationCmd(condaExe)
 
@@ -98,16 +97,20 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         "API_PORT": existing.get("API_PORT") or "8080",
         "CELERY_APP": existing.get("CELERY_APP") or "app.workers.task_queue",
         "CELERY_LOGLEVEL": existing.get("CELERY_LOGLEVEL") or "info",
+        "SERVE_WEB": existing.get("SERVE_WEB") or "0",
+        "API_MOUNT_PATH": existing.get("API_MOUNT_PATH") or "/api",
+        "WEB_DIST_PATH": existing.get("WEB_DIST_PATH") or str((scipionHome / "web" / "dist").resolve()),
+        "WEB_API_BASE_URL": existing.get("WEB_API_BASE_URL") or "/api",
         "ADMIN_USERNAME": adminUser,
         "ADMIN_EMAIL": adminEmail,
         "ADMIN_PASSWORD": adminPassword,
     }
 
-    if condaExe and not (existing.get("CONDA_EXE") or "").strip():
+    if condaExe and not existing.get("CONDA_EXE"):
         # persistCondaExeIfDetected
         updates["CONDA_EXE"] = condaExe
 
-    if condaActivationCmd and not (existing.get("CONDA_ACTIVATION_CMD") or "").strip():
+    if condaActivationCmd and not existing.get("CONDA_ACTIVATION_CMD"):
         # persistCondaActivationCmdIfDetected
         updates["CONDA_ACTIVATION_CMD"] = condaActivationCmd
 
