@@ -24,6 +24,8 @@
 # *
 # ******************************************************************************
 import os
+from app.backend.bootstrap import bootstrapEnv
+bootstrapEnv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +36,6 @@ from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.utils.error_handlers import registerAllErrorHandlers
-
 app = FastAPI(title="Scipion API", debug=True)
 
 # Register custom error handlers

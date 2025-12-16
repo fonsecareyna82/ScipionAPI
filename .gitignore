@@ -23,3 +23,32 @@ dist-ssr
 *.sln
 *.sw?
 *.pyc
+
+# env/secrets
+.env
+.env.*
+!.env.example
+!.env.template
+
+# runtime
+.run/
+*.pid
+logs/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# venv
+.venv/
+venv/
+env/
+
+# ide
+.idea/
+.vscode/
+

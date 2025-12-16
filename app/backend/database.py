@@ -11,8 +11,8 @@
 # *
 # * This program is distributed in the hope that it will be useful,
 # * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+# * Public License for more details.
 # *
 # * You should have received a copy of the GNU General Public License
 # * along with this program; if not, write to the Free Software
@@ -23,35 +23,56 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-# database.py
 
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 import os
-from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-from app.backend.mapper.postgresql import PostgresqlFlatMapper, PostgresqlDb
 
-# Load environment variables from .env file
-load_dotenv()
+def _requireEnv(key: str) -> str:
+    # requireEnvVar
+    value = (os.getenv(key) or "").strip()
+    if not value:
+        scipionHome = os.getenv("SCIPION_HOME")
+        hint = f" (SCIPION_HOME={scipionHome})" if scipionHome else ""
+        raise RuntimeError(
+            f"Missing required environment variable: {key}.{hint} "
+            "Run `scipionapi install` and start via `scipionapi start` so the .env is exported."
+        )
+    return value
 
-# Get the database connection URL from the environment
-DATABASE_URL = os.getenv("DATABASE_URL")
-DATABASE_NAME = os.getenv("DATABASE_NAME")
-DATABASE_USER = os.getenv("DATABASE_USER")
-DATABASE_PASS = os.getenv("DATABASE_PASS")
 
-# Create the SQLAlchemy engine using the database URL
-engine = create_engine(DATABASE_URL)
+# readRequiredEnvAtImportTime
+# The runtime/cli exports SCIPION_HOME/.env into the process environment before importing this module.
+DATABASE_URL = _requireEnv("DATABASE_URL")
 
-# Create a session factory bound to the engine
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# createSqlAlchemyEngine
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    future=True,
+)
 
-# Base class for all ORM models
+# createSessionFactory
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+    future=True,
+)
+
+# baseClassForModels
 Base = declarative_base()
 
 
-def getMapper() -> PostgresqlFlatMapper:
-    db = PostgresqlDb(dbName=DATABASE_NAME, user=DATABASE_USER, password=DATABASE_PASS)
+def getMapper():
+    # getPostgresqlMapper
+    from app.backend.mapper.postgresql import PostgresqlFlatMapper, PostgresqlDb
+
+    dbName = _requireEnv("DATABASE_NAME")
+    dbUser = _requireEnv("DATABASE_USER")
+    dbPass = _requireEnv("DATABASE_PASS")
+
+    db = PostgresqlDb(dbName=dbName, user=dbUser, password=dbPass)
     return PostgresqlFlatMapper(db)

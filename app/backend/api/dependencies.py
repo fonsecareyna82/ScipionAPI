@@ -1,19 +1,33 @@
 # dependencies.py
 
 import os
-from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
+
+from app.backend.bootstrap import bootstrapEnv
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 # OAuth2 scheme to extract token from Authorization header
 oauth2Scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-load_dotenv()
-SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
+
+
+def _requireJwtSecretKey() -> str:
+    # requireJwtSecretKey
+    bootstrapEnv()
+    secretKey = (os.getenv("SECRET_KEY") or "").strip()
+    if not secretKey:
+        scipionHome = os.getenv("SCIPION_HOME")
+        raise RuntimeError(
+            "Missing SECRET_KEY for JWT decoding. "
+            f"SCIPION_HOME={scipionHome}. "
+            "Ensure SCIPION_HOME/.env exists and contains SECRET_KEY, "
+            "and that the app is started with the correct environment."
+        )
+    return secretKey
 
 
 async def getCurrentUser(
@@ -27,28 +41,27 @@ async def getCurrentUser(
     Raises 401 if token is invalid or missing 'sub',
     raises 404 if no user is found for that email.
     """
-    # Decode and validate the JWT
+    # decodeAndValidateJwt
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
+        payload = jwt.decode(token, _requireJwtSecretKey(), algorithms=[ALGORITHM])
+        email = payload.get("sub")
         if not email:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials"
+                detail="Invalid authentication credentials",
             )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
+            detail="Invalid authentication credentials",
         )
 
-    # Fetch user by email using the flat mapper
-    user_record = mapper.getUserByEmail(email)
-    if not user_record:
+    # fetchUserByEmail
+    userRecord = mapper.getUserByEmail(email)
+    if not userRecord:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="User not found",
         )
 
-    # Return the user information as a dict
-    return user_record
+    return userRecord

@@ -23,6 +23,3 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from app.backend.models.user_model import User  # noqa: F401
-from app.backend.models.project_model import Project  # noqa: F401
-from app.backend.models.protocol_model import Protocol  # noqa: F401
