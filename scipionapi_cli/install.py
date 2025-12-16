@@ -1,27 +1,53 @@
 from pathlib import Path
 import os
 import secrets
-from typing import Dict
+from shutil import which
+from typing import Dict, Optional
 
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, writeEnvFile, exportEnvToOs
 from scipionapi_cli.db import ensureDatabaseAndRole, runAlembicUpgrade
+from scipionapi_cli.admin import ensureAdminUser
 
 
 def _resolveScipionHome(repoRoot: Path, existing: Dict[str, str]) -> Path:
     # resolveScipionHome
-    configured = existing.get("SCIPION_HOME") or os.getenv("SCIPION_HOME")
+    configured = (existing.get("SCIPION_HOME") or os.getenv("SCIPION_HOME") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-
     return (repoRoot / "scipion_home").resolve()
+
+
+def _resolveCondaExe(existing: Dict[str, str]) -> Optional[Path]:
+    # resolveCondaExePath
+    candidates = [
+        (existing.get("CONDA_EXE") or "").strip(),
+        (os.getenv("CONDA_EXE") or "").strip(),
+        which("conda") or "",
+        str((Path.home() / "miniconda3" / "bin" / "conda").resolve()),
+        str((Path.home() / "anaconda3" / "bin" / "conda").resolve()),
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        p = Path(candidate).expanduser()
+        if p.exists():
+            return p.resolve()
+
+    return None
+
+
+def _buildCondaActivationCmd(condaExe: str) -> str:
+    # buildCondaActivationCmd
+    return f'eval "$({condaExe} shell.bash hook)"'
 
 
 def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     # installCommandNonInteractive
     repoRoot = resolveRepoRoot()
 
-    # readExistingEnvFromRepoScipionHomeIfPresent
+    # readExistingEnvFromDefaultHomeIfPresent
     defaultScipionHome = (repoRoot / "scipion_home").resolve()
     defaultEnvPath = defaultScipionHome / ".env"
     existing = readEnvFile(defaultEnvPath)
@@ -35,8 +61,8 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     envPath = scipionHome / ".env"
     existing = readEnvFile(envPath)
 
-    logsDir = Path(existing.get("LOGS_PATH") or (scipionHome / "logs")).resolve()
-    projectsDir = Path(existing.get("PROJECTS_PATH") or (scipionHome / "projects")).resolve()
+    logsDir = Path(existing.get("LOGS_PATH") or (scipionHome / "logs")).expanduser().resolve()
+    projectsDir = Path(existing.get("PROJECTS_PATH") or (scipionHome / "projects")).expanduser().resolve()
     logsDir.mkdir(exist_ok=True, parents=True)
     projectsDir.mkdir(exist_ok=True, parents=True)
 
@@ -48,6 +74,13 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     dbHost = existing.get("POSTGRES_HOST") or "localhost"
     dbPort = existing.get("POSTGRES_PORT") or "5432"
     databaseUrl = existing.get("DATABASE_URL") or f"postgresql://{dbUser}:{dbPass}@{dbHost}:{dbPort}/{dbName}"
+
+    condaExePath = _resolveCondaExe(existing)
+    condaExe = str(condaExePath) if condaExePath else ""
+
+    condaActivationCmd = (existing.get("CONDA_ACTIVATION_CMD") or "").strip()
+    if not condaActivationCmd and condaExe:
+        condaActivationCmd = _buildCondaActivationCmd(condaExe)
 
     updates: Dict[str, str] = {
         "SCIPION_HOME": str(scipionHome),
@@ -70,6 +103,14 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         "ADMIN_PASSWORD": adminPassword,
     }
 
+    if condaExe and not (existing.get("CONDA_EXE") or "").strip():
+        # persistCondaExeIfDetected
+        updates["CONDA_EXE"] = condaExe
+
+    if condaActivationCmd and not (existing.get("CONDA_ACTIVATION_CMD") or "").strip():
+        # persistCondaActivationCmdIfDetected
+        updates["CONDA_ACTIVATION_CMD"] = condaActivationCmd
+
     writeEnvFile(envPath, updates)
     exportEnvToOs(envPath)
 
@@ -77,7 +118,9 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
 
     ensureDatabaseAndRole(env)
     runAlembicUpgrade(repoRoot)
-    from scipionapi_cli.admin import ensureAdminUser
     ensureAdminUser(env)
 
-    print("Install completed. Next: scipionapi start")
+    if not condaExePath:
+        print("Install completed. Note: conda executable not detected; CONDA_ACTIVATION_CMD was not set.")
+    else:
+        print("Install completed. Next: scipionapi start")
