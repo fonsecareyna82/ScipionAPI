@@ -749,7 +749,7 @@ class ProjectService:
         paramsData = []
         for section in protocol._definition.iterSections():
             if section.getLabel() != 'Parallelization':
-                sectionData = {"name": section.getLabel(), "params": []}
+                sectionData = {"label": section.getLabel(), "params": []}
                 if section.getLabel() != 'General':
                     for paramName, param in section.iterParams():
                         if paramName not in headerParams:
@@ -1068,58 +1068,6 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    @staticmethod
-    def getPointerHtml(protVar):
-        """
-        Return (nameId, objId::extended) if pointer parameter has a value,
-        otherwise return two empty strings.
-        """
-        if protVar.hasValue():
-            return protVar.getObjValue().getNameId(), '%s::%s' % (protVar.getObjValue().getObjId(),
-                                                                  protVar._extended.get())
-        return '', ''
-
-    @staticmethod
-    def replacePattern(m, mode):
-        """Replace hypertext patterns based on the given mode."""
-        g1 = m.group(mode)
-        if mode == HYPER_BOLD:
-            text = " <b>%s</b> " % g1
-        elif mode == HYPER_ITALIC:
-            text = " <i>%s</i> " % g1
-        elif mode == HYPER_LINK1:
-            text = " <a href='%s' target='_blank' style='color:firebrick;'>%s</a> " % (g1, g1)
-        elif mode == HYPER_LINK2:
-            if g1.startswith("sci-open:"):
-                url = 'javascript:launchViewer(%s)' % g1[len("sci-open:"):]
-            else:
-                url = g1
-            text = " <a href='%s' target='_blank' style='color:firebrick;'>%s</a> " % (url, m.group('link2_label'))
-        else:
-            raise Exception("Unrecognized pattern mode: " + mode)
-
-        return text
-
-    def parseText(self, text, func=replacePattern):
-        """
-        Parse a string or list of strings into HTML,
-        injecting <br /> tags at line breaks.
-        """
-        parsedText = ""
-        if isinstance(text, list):
-            for itemText in text:
-                splitLines = itemText.splitlines(True)
-                if len(splitLines) == 0:
-                    parsedText += '<br />'
-                else:
-                    for lineText in splitLines:
-                        parsedText += parseHyperText(lineText, func) + '<br />'
-        else:
-            splitLines = text.splitlines(True)
-            for lineText in splitLines:
-                parsedText += parseHyperText(lineText, func) + '<br />'
-        return parsedText[:-6]
-
     def PreprocessParamForm(self, param, paramName, wizards, viewerDict, visualize, protVar):
         """
         Serialize a protocol parameter into a dict, handling scalar, pointer, and multipointer types.
@@ -1132,6 +1080,7 @@ class ProjectService:
                 pass
             else:
                 context.setdefault(paramName, {})
+                context[paramName]['name'] = paramName
                 # Public attributes
                 for name, value in param.getAttributes():
                     context[paramName][name] = serializeToJson(value)

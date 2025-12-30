@@ -56,6 +56,7 @@ def toSerializable(obj):
     else:
         return str(obj)
 
+
 def serializeToJson(obj):
     """Serialize any Python object to JSON, preserving order of all dictionaries and nested structures."""
     return toSerializable(obj)
