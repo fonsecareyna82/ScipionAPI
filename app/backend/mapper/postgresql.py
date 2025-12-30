@@ -1,15 +1,23 @@
 # postgresql.py
 
+import json
 import psycopg2
 import psycopg2.extras
 from typing import Optional, List, Dict, Any
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
 
+def _toJsonParam(value: Any) -> Any:
+    # toJsonParam
+    if isinstance(value, (dict, list)):
+        return psycopg2.extras.Json(value, dumps=json.dumps)
+    return value
+
+
 class PostgresqlDb:
     """Class to handle PostgreSQL connection and basic operations."""
 
-    def __init__(self, dbName: str, user: str, password: str, host: str = 'localhost', port: int = 5432):
+    def __init__(self, dbName: str, user: str, password: str, host: str = "localhost", port: int = 5432):
         self.conn = psycopg2.connect(
             dbname=dbName, user=user, password=password, host=host, port=port
         )
@@ -48,7 +56,8 @@ class PostgresqlFlatMapper(Mapper):
         """Create tables if they do not exist (protocols kept as legacy schema)."""
 
         # CreateUsersTableFirst because projects and project_shares reference users(id)
-        self.db.execute("""
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
@@ -71,10 +80,12 @@ class PostgresqlFlatMapper(Mapper):
                 "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 "updatedAt" TIMESTAMPTZ
             );
-        """)
+            """
+        )
 
         # CreateProjectsTable with mandatory ownerId
-        self.db.execute("""
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS projects (
                 id SERIAL PRIMARY KEY,
                 "ownerId" INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -84,10 +95,12 @@ class PostgresqlFlatMapper(Mapper):
                 createdAt TIMESTAMP DEFAULT NOW(),
                 updatedAt TIMESTAMP
             );
-        """)
+            """
+        )
 
         # CreateProtocolsTableLegacy (kept as-is for now)
-        self.db.execute("""
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS protocols (
                 id SERIAL PRIMARY KEY,
                 project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -96,10 +109,12 @@ class PostgresqlFlatMapper(Mapper):
                 createdAt TIMESTAMP DEFAULT NOW(),
                 parameters JSONB
             );
-        """)
+            """
+        )
 
         # CreateProjectSharesTable (requires users and projects)
-        self.db.execute("""
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS project_shares (
                 id SERIAL PRIMARY KEY,
                 "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -109,7 +124,54 @@ class PostgresqlFlatMapper(Mapper):
                 "updatedAt" TIMESTAMP,
                 UNIQUE ("projectId", "userId")
             );
-        """)
+            """
+        )
+
+        # CreateUserSettingsTable
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                "userId" INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+
+        # CreateInstanceSettingsTable (singleton row id=1)
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS instance_settings (
+                id SMALLINT PRIMARY KEY,
+                settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT instance_settings_singleton CHECK (id = 1)
+            );
+            """
+        )
+
+        # EnsureSingletonRow
+        self.db.execute(
+            """
+            INSERT INTO instance_settings (id, settings)
+            VALUES (1, '{}'::jsonb)
+            ON CONFLICT (id) DO NOTHING;
+            """
+        )
+
+        # JsonbIndexes (optional but recommended)
+        self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_settings_settings_gin
+              ON user_settings USING GIN (settings);
+            """
+        )
+        self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_instance_settings_settings_gin
+              ON instance_settings USING GIN (settings);
+            """
+        )
 
     # -----------------------------
     # Auth Methods
@@ -122,25 +184,25 @@ class PostgresqlFlatMapper(Mapper):
           - isVerified
         """
         return self.db.fetchOne(
-            '''
+            """
             SELECT *
               FROM users
              WHERE email = %s
-            ''',
-            (email,)
+            """,
+            (email,),
         )
 
     def insertUser(
-            self,
-            email: str,
-            hashedPassword: str,
-            firstName: str,
-            lastName: str,
-            institution: Optional[str],
-            role: str,
-            isActive: bool,
-            isVerified: bool,
-            verificationCode: str,
+        self,
+        email: str,
+        hashedPassword: str,
+        firstName: str,
+        lastName: str,
+        institution: Optional[str],
+        role: str,
+        isActive: bool,
+        isVerified: bool,
+        verificationCode: str,
     ) -> int:
         """
         Insert a new user and return its id.
@@ -244,18 +306,17 @@ class PostgresqlFlatMapper(Mapper):
         if not fields:
             return
 
-        # Build SET clause dynamically
         setClauses = []
         params = []
-        for idx, (col, val) in enumerate(fields.items(), start=1):
+        for col, val in fields.items():
             setClauses.append(f'"{col}" = %s')
             params.append(val)
 
-        sql = f'''
+        sql = f"""
             UPDATE users
-               SET {', '.join(setClauses)}
+               SET {", ".join(setClauses)}
              WHERE id = %s
-        '''
+        """
         params.append(userId)
         self.db.execute(sql, tuple(params))
 
@@ -266,7 +327,7 @@ class PostgresqlFlatMapper(Mapper):
         """
         if excludeUserId is None:
             return self.db.fetchAll(
-                '''
+                """
                 SELECT
                   id,
                   email,
@@ -276,36 +337,35 @@ class PostgresqlFlatMapper(Mapper):
                   role
                 FROM users
                 ORDER BY "firstName", "lastName", email
-                '''
+                """
             )
-        else:
-            return self.db.fetchAll(
-                '''
-                SELECT
-                  id,
-                  email,
-                  "firstName",
-                  "lastName",
-                  institution,
-                  role
-                FROM users
-                WHERE id <> %s
-                ORDER BY "firstName", "lastName", email
-                ''',
-                (excludeUserId,),
-            )
+
+        return self.db.fetchAll(
+            """
+            SELECT
+              id,
+              email,
+              "firstName",
+              "lastName",
+              institution,
+              role
+            FROM users
+            WHERE id <> %s
+            ORDER BY "firstName", "lastName", email
+            """,
+            (excludeUserId,),
+        )
 
     # -----------------------------
     # Project Methods
     # -----------------------------
-    def insertProject(self, ownerId: int, name: str, description: Optional[str] = None,
-                      status: str = "active") -> int:
+    def insertProject(self, ownerId: int, name: str, description: Optional[str] = None, status: str = "active") -> int:
         """Insert a new project and return its id."""
         cur = self.db.execute(
             'INSERT INTO projects ("ownerId", name, description, status) VALUES (%s, %s, %s, %s) RETURNING id',
-            (ownerId, name, description, status)
+            (ownerId, name, description, status),
         )
-        return cur.fetchone()['id']
+        return cur.fetchone()["id"]
 
     def getProject(self, projectId: int, userId: int) -> Optional[Dict]:
         """
@@ -316,8 +376,8 @@ class PostgresqlFlatMapper(Mapper):
 
         It also annotates the row with:
           - isOwner: bool
-          - isShared: bool (true if there is a share row for this user)
-          - permission: text (permission for this user, default 'full')
+          - isShared: bool
+          - permission: text
         """
         query = """
             SELECT
@@ -352,12 +412,12 @@ class PostgresqlFlatMapper(Mapper):
               )
         """
         params = (
-            userId,  # isOwner check
-            userId,  # isShared EXISTS
-            userId,  # permission subquery
+            userId,
+            userId,
+            userId,
             projectId,
-            userId,  # owner condition in WHERE
-            userId,  # shared condition in WHERE
+            userId,
+            userId,
         )
         return self.db.fetchOne(query, params)
 
@@ -367,12 +427,9 @@ class PostgresqlFlatMapper(Mapper):
     def shareProjectWithUser(self, projectId: int, targetUserId: int, permission: str = "full") -> Dict[str, Any]:
         """
         Create or update a project share entry between projectId and targetUserId.
-
-        Requires a unique constraint on (projectId, userId) in project_shares.
-        If the row already exists, only the permission and updatedAt are changed.
         """
         cur = self.db.execute(
-            '''
+            """
             INSERT INTO project_shares ("projectId", "userId", "permission")
             VALUES (%s, %s, %s)
             ON CONFLICT ("projectId", "userId")
@@ -385,15 +442,13 @@ class PostgresqlFlatMapper(Mapper):
                       "permission",
                       "createdAt",
                       "updatedAt"
-            ''',
+            """,
             (projectId, targetUserId, permission),
         )
         return cur.fetchone()
 
     def revokeProjectShare(self, projectId: int, userId: int) -> bool:
-        """
-        Remove a share from project_shares.
-        """
+        """Remove a share from project_shares."""
         cursor = self.db.execute(
             """
             DELETE FROM project_shares
@@ -405,9 +460,7 @@ class PostgresqlFlatMapper(Mapper):
         return cursor.rowcount > 0
 
     def listProjectShares(self, projectId: int) -> List[Dict[str, Any]]:
-        """
-        List all shares for a given project.
-        """
+        """List all shares for a given project."""
         return self.db.fetchAll(
             """
             SELECT id,
@@ -425,16 +478,12 @@ class PostgresqlFlatMapper(Mapper):
 
     def listProjects(self, ownerId: int) -> List[Dict]:
         """
-        List all projects the user can see:
-        - owned projects (isOwner=True, isShared=False, permission='owner')
-        - shared projects (isOwner=False, isShared=True, permission from project_shares)
-        Results are ordered by createdAt (from projects table) descending.
+        List all projects the user can see (owned + shared).
         """
         return self.db.fetchAll(
-            '''
+            """
             SELECT *
             FROM (
-                -- Owned projects
                 SELECT
                     p.*,
                     TRUE  AS "isOwner",
@@ -445,7 +494,6 @@ class PostgresqlFlatMapper(Mapper):
 
                 UNION ALL
 
-                -- Projects shared with this user
                 SELECT
                     p.*,
                     FALSE AS "isOwner",
@@ -458,8 +506,8 @@ class PostgresqlFlatMapper(Mapper):
                   AND p."ownerId" <> %s
             ) AS sub
             ORDER BY "createdAt" DESC
-            ''',
-            (ownerId, ownerId, ownerId)
+            """,
+            (ownerId, ownerId, ownerId),
         )
 
     def updateProject(
@@ -468,13 +516,9 @@ class PostgresqlFlatMapper(Mapper):
         ownerId: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        status: Optional[str] = None
+        status: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Update the given fields on a project owned by ownerId.
-        Returns the updated project dict or None if not found.
-        """
-        # Gather SET clauses dynamically
+        """Update the given fields on a project owned by ownerId."""
         setClauses = []
         params: list[Any] = []
 
@@ -490,71 +534,48 @@ class PostgresqlFlatMapper(Mapper):
             setClauses.append('"status" = %s')
             params.append(status)
 
-        # If nothing to update, just return the existing project
         if not setClauses:
             return self.getProject(projectId, ownerId)
 
-        # Always update the timestamp
         setClauses.append('"updatedAt" = NOW()')
 
-        # Build and execute the UPDATE statement
-        sql = f'''
+        sql = f"""
             UPDATE "projects"
-               SET {', '.join(setClauses)}
+               SET {", ".join(setClauses)}
              WHERE "id" = %s
                AND "ownerId" = %s
-        '''
+        """
         params.extend([projectId, ownerId])
         self.db.execute(sql, tuple(params))
-
-        # Return the newly updated project
         return self.getProject(projectId, ownerId)
 
     def deleteProject(self, projectId: int, ownerId: int) -> bool:
-        """
-        Delete the project (and its protocols) for a given owner.
-        Returns True if a row was deleted, False otherwise.
-        """
-        # Execute the DELETE and grab the cursor to inspect rowcount
+        """Delete the project for a given owner."""
         cursor = self.db.execute(
             'DELETE FROM "projects" WHERE "id" = %s AND "ownerId" = %s',
             (projectId, ownerId),
         )
-
-        # psycopg2 cursor.rowcount holds number of rows affected
         return cursor.rowcount > 0
 
     def getProjectSharedUsers(self, projectId: int) -> List[int]:
-        """
-        Return the list of userIds with whom the given project is shared.
-        """
+        """Return the list of userIds with whom the given project is shared."""
         rows = self.db.fetchAll(
-            '''
+            """
             SELECT "userId"
               FROM project_shares
              WHERE "projectId" = %s
              ORDER BY "userId"
-            ''',
+            """,
             (projectId,),
         )
         return [row["userId"] for row in rows]
 
     def setProjectSharedUsers(self, projectId: int, ownerId: int, userIds: List[int]) -> None:
-        """
-        Replace the share list of a project with the given userIds.
-
-        Semantics:
-        - The project must exist and belong to ownerId.
-        - Existing entries in project_shares for this project are removed.
-        - New rows (projectId, userId) are inserted for each userId.
-        - Owner is not stored in project_shares (he already owns the project).
-        """
-        # Ensure project exists and belongs to ownerId
+        """Replace the share list of a project with the given userIds."""
         project = self.getProject(projectId, ownerId)
         if not project:
             raise ValueError("Project does not exist or is not owned by this user")
 
-        # NormalizeAndDeduplicateUserIds
         cleanedUserIds: List[int] = []
         for rawId in userIds or []:
             try:
@@ -564,30 +585,27 @@ class PostgresqlFlatMapper(Mapper):
             if uid not in cleanedUserIds:
                 cleanedUserIds.append(uid)
 
-        # RemoveExistingSharesForThisProject
         self.db.execute(
-            '''
+            """
             DELETE FROM project_shares
              WHERE "projectId" = %s
-            ''',
+            """,
             (projectId,),
         )
 
-        # If no users to share with, we are done
         if not cleanedUserIds:
             return
 
-        # BulkInsertNewShareRows
         valuesSql = ",".join(["(%s, %s)"] * len(cleanedUserIds))
         params: List[Any] = []
         for uid in cleanedUserIds:
             params.extend([projectId, uid])
 
         self.db.execute(
-            f'''
+            f"""
             INSERT INTO project_shares ("projectId", "userId")
             VALUES {valuesSql}
-            ''',
+            """,
             tuple(params),
         )
 
@@ -612,7 +630,6 @@ class PostgresqlFlatMapper(Mapper):
         parentIds = protocol.get("parentIds", [])
         childIds = protocol.get("childIds", [])
 
-        # InsertProtocolRow
         cur = self.db.execute(
             """
             INSERT INTO protocols (
@@ -643,20 +660,17 @@ class PostgresqlFlatMapper(Mapper):
         """Retrieve a protocol by id."""
         return self.db.fetchOne(
             'SELECT * FROM protocols WHERE "protocolId" = %s AND "projectId" = %s',
-            (str(protocolId), projectId)
+            (str(protocolId), projectId),
         )
 
     def getProtocols(self, projectId: Optional[int] = None) -> List[Dict]:
         """List all protocols, optionally filtered by projectId."""
         if projectId is None:
-            return self.db.fetchAll(
-                'SELECT * FROM protocols ORDER BY "createdAt" DESC'
-            )
-        else:
-            return self.db.fetchAll(
-                'SELECT * FROM protocols WHERE "projectId"=%s ORDER BY "createdAt" DESC',
-                (projectId,)
-            )
+            return self.db.fetchAll('SELECT * FROM protocols ORDER BY "createdAt" DESC')
+        return self.db.fetchAll(
+            'SELECT * FROM protocols WHERE "projectId"=%s ORDER BY "createdAt" DESC',
+            (projectId,),
+        )
 
     def updateProtocol(self, protocol: Dict[str, Any]) -> None:
         """Update protocol fields dynamically."""
@@ -681,7 +695,7 @@ class PostgresqlFlatMapper(Mapper):
         params.append(protocol["id"])
         sql = f"""
             UPDATE protocols
-               SET {', '.join(updates)},
+               SET {", ".join(updates)},
                    "updatedAt" = NOW()
              WHERE "id"=%s
         """
@@ -691,10 +705,74 @@ class PostgresqlFlatMapper(Mapper):
         """Delete a protocol by id."""
         cursor = self.db.execute(
             'DELETE FROM protocols WHERE "id"=%s',
-            (protocolId,)
+            (protocolId,),
         )
         return cursor.rowcount > 0
 
     def updateProtocolDependencies(self, protocolId: str, parentIds: list, childIds: list):
-        query ='UPDATE protocols SET "parentIds" = %s, "childIds" = %s, "updatedAt" = NOW() WHERE "protocolId" = %s'
+        query = 'UPDATE protocols SET "parentIds" = %s, "childIds" = %s, "updatedAt" = NOW() WHERE "protocolId" = %s'
         self.db.execute(query, (parentIds, childIds, protocolId))
+
+    # -----------------------------
+    # Settings Methods
+    # -----------------------------
+    def getUserSettings(self, userId: int) -> Dict[str, Any]:
+        # getUserSettings
+        row = self.db.fetchOne(
+            """
+            SELECT settings
+              FROM user_settings
+             WHERE "userId" = %s
+            """,
+            (userId,),
+        )
+        if not row or row.get("settings") is None:
+            return {}
+        return row["settings"]
+
+    def upsertUserSettings(self, userId: int, settings: Dict[str, Any]) -> Dict[str, Any]:
+        # upsertUserSettings
+        cur = self.db.execute(
+            """
+            INSERT INTO user_settings ("userId", settings, "updatedAt")
+            VALUES (%s, %s::jsonb, NOW())
+            ON CONFLICT ("userId")
+            DO UPDATE SET
+                settings = EXCLUDED.settings,
+                "updatedAt" = NOW()
+            RETURNING settings
+            """,
+            (userId, _toJsonParam(settings)),
+        )
+        row = cur.fetchone()
+        return row["settings"] if row and row.get("settings") is not None else {}
+
+    def getInstanceSettings(self) -> Dict[str, Any]:
+        # getInstanceSettings
+        row = self.db.fetchOne(
+            """
+            SELECT settings
+              FROM instance_settings
+             WHERE id = 1
+            """
+        )
+        if not row or row.get("settings") is None:
+            return {}
+        return row["settings"]
+
+    def upsertInstanceSettings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        # upsertInstanceSettings
+        cur = self.db.execute(
+            """
+            INSERT INTO instance_settings (id, settings, "updatedAt")
+            VALUES (1, %s::jsonb, NOW())
+            ON CONFLICT (id)
+            DO UPDATE SET
+                settings = EXCLUDED.settings,
+                "updatedAt" = NOW()
+            RETURNING settings
+            """,
+            (_toJsonParam(settings),),
+        )
+        row = cur.fetchone()
+        return row["settings"] if row and row.get("settings") is not None else {}

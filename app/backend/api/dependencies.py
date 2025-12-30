@@ -65,3 +65,14 @@ async def getCurrentUser(
         )
 
     return userRecord
+
+
+async def requireAdmin(currentUser: dict = Depends(getCurrentUser)) -> dict:
+    # requireAdmin
+    role = str(currentUser.get("role") or "user").lower()
+    if role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return currentUser
