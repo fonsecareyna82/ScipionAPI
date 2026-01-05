@@ -36,12 +36,12 @@ service = PluginService()
 
 
 @router.get("/", response_model=Any)
-async def loadPlugins():
+def loadPlugins():
     return service.getPlugins()
 
 
 @router.get("/{pluginName}", response_model=Any)
-async def loadPlugin(pluginName: str):
+def loadPlugin(pluginName: str):
     return service.getPlugin(pluginName)
 
 
