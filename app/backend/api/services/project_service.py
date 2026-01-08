@@ -470,29 +470,31 @@ class ProjectService:
                 # Iterate over inputs
                 for key, attr in protocol.iterInputAttributes():
                     input = {}
-                    input.setdefault(key, {})
                     try:
-                        input[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
-                        input[key]['info'] = str(attr.get())
+                        input['name'] = key
+                        input['paramClass'] = 'PointerParam'
+                        input['pointerClass'] = attr.get().getClassName() if attr and attr.get() else ""
+                        input['info'] = str(attr.get())
                     except Exception:
-                        input[key]['_class'] = ""
-                        input[key]['info'] = ""
+                        input['pointerClass'] = ""
+                        input['info'] = ""
 
-                    input[key]['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
-                    input[key]['_parentId'] = attr.getObjValue().getObjId()
+                    input['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
+                    input['_parentId'] = attr.getObjValue().getObjId()
                     inputs.append(input)
 
                 # Iterate over outputs
                 for key, attr in protocol.iterOutputAttributes():
                     output = {}
-                    output.setdefault(key, {})
-                    output[key]['_class'] = attr.__class__.__name__
+                    output['name'] = key
+                    output['paramClass'] = 'PointerParam'
+                    output['pointerClass'] = attr.__class__.__name__
                     try:
-                        output[key]['info'] = attr.__str__()
+                        output['info'] = attr.__str__()
                     except Exception:
-                        output[key]['info'] = ""
-                    output[key]['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
-                    output[key]['_parentId'] = protocol.getObjId()
+                        output['info'] = ""
+                    output['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
+                    output['_parentId'] = protocol.getObjId()
                     outputs.append(output)
 
             graphData[nodeId] = {
@@ -720,28 +722,32 @@ class ProjectService:
         # Inputs
         inputs = []
         for key, attr in protocol.iterInputAttributes():
-            inp = {key: {}}
-            inp[key]['_class'] = attr.get().getClassName() if attr and attr.get() else ""
+            inp = {}
+            inp['inputName'] = key
+            inp['paramClass'] = 'PointerParam'
+            inp['pointerClass'] = attr.get().getClassName() if attr and attr.get() else ""
             try:
-                inp[key]['info'] = str(attr.get())
+                inp['info'] = str(attr.get())
             except Exception:
-                inp[key]['info'] = ""
-            inp[key]['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
-            inp[key]['_parentId'] = attr.getObjValue().getObjId()
+                inp['info'] = ""
+            inp['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
+            inp['_parentId'] = attr.getObjValue().getObjId()
             inputs.append(inp)
         context['inputs'] = inputs
 
         # Outputs
         outputs = []
         for key, attr in protocol.iterOutputAttributes():
-            outp = {key: {}}
-            outp[key]['_class'] = attr.__class__.__name__
+            outp = {}
+            outp['outputName'] = key
+            outp['paramClass'] = 'PointerParam'
+            outp['pointerClass'] = attr.__class__.__name__
             try:
-                outp[key]['info'] = str(attr)
+                outp['info'] = str(attr)
             except Exception:
-                outp[key]['info'] = ""
-            outp[key]['_objValue'] = f"{protName}.{key}"
-            outp[key]['_parentId'] = protocol.getObjId()
+                outp['info'] = ""
+            outp['_objValue'] = f"{protName}.{key}"
+            outp['_parentId'] = protocol.getObjId()
             outputs.append(outp)
         context['outputs'] = outputs
 
@@ -813,7 +819,7 @@ class ProjectService:
                             paramProcessed['condition'] = None
                             paramProcessed['_isImportant'] = True
                             paramProcessed['help'] = 'Protocol comments'
-                            paramProcessed['_class'] = 'StringParam'
+                            paramProcessed['paramClass'] = 'StringParam'
                             paramProcessed['_objValue'] = paramValue
                             paramProcessed['default'] = paramValue
                             paramProcessed['readOnly'] = False
@@ -826,7 +832,7 @@ class ProjectService:
                             paramProcessed['help'] = pwutils.Message.HELP_USEQUEUE % (
                                 pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
                             )
-                            paramProcessed['_class'] = 'BooleanParam'
+                            paramProcessed['paramClass'] = 'BooleanParam'
                             paramProcessed['_objValue'] = paramValue
                             paramProcessed['default'] = paramValue
                             paramProcessed['readOnly'] = False
@@ -840,7 +846,7 @@ class ProjectService:
                             paramProcessed['help'] = pwutils.Message.HELP_WAIT_FOR % (
                                 pyworkflow.DOCSITEURLS.WAIT_FOR
                             )
-                            paramProcessed['_class'] = 'StringParam'
+                            paramProcessed['paramClass'] = 'StringParam'
                             paramProcessed['_objValue'] = paramValue
                             paramProcessed['default'] = paramValue
                             paramProcessed['readOnly'] = False
@@ -851,7 +857,7 @@ class ProjectService:
                             paramProcessed['choices'] = ['Normal', 'Advanced']
                             paramProcessed['condition'] = None
                             paramProcessed['_isImportant'] = True
-                            paramProcessed['_class'] = 'EnumParam'
+                            paramProcessed['paramClass'] = 'EnumParam'
                             paramProcessed['_objValue'] = 0
                             paramProcessed['default'] = 0
                             paramProcessed['readOnly'] = False
@@ -1090,7 +1096,7 @@ class ProjectService:
                 if name != "paramClass" and name != "_form":
                     paramDict[name] = serializeToJson(value)
 
-            paramDict["_class"] = param.__class__.__name__
+            paramDict["paramClass"] = param.__class__.__name__
 
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
