@@ -480,7 +480,7 @@ class ProjectService:
                         input['info'] = ""
 
                     input['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
-                    input['_parentId'] = attr.getObjValue().getObjId()
+                    input['parentId'] = attr.getObjValue().getObjId()
                     inputs.append(input)
 
                 # Iterate over outputs
@@ -494,7 +494,7 @@ class ProjectService:
                     except Exception:
                         output['info'] = ""
                     output['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
-                    output['_parentId'] = protocol.getObjId()
+                    output['parentId'] = protocol.getObjId()
                     outputs.append(output)
 
             graphData[nodeId] = {
@@ -731,7 +731,7 @@ class ProjectService:
             except Exception:
                 inp['info'] = ""
             inp['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
-            inp['_parentId'] = attr.getObjValue().getObjId()
+            inp['parentId'] = attr.getObjValue().getObjId()
             inputs.append(inp)
         context['inputs'] = inputs
 
@@ -747,7 +747,7 @@ class ProjectService:
             except Exception:
                 outp['info'] = ""
             outp['_objValue'] = f"{protName}.{key}"
-            outp['_parentId'] = protocol.getObjId()
+            outp['parentId'] = protocol.getObjId()
             outputs.append(outp)
         context['outputs'] = outputs
 
@@ -938,7 +938,7 @@ class ProjectService:
                 if isinstance(param, MultiPointerParam):
                     newInputs = PointerList()
                     for v in value:
-                        parentId = v.get("_parentId")
+                        parentId = v.get("parentId")
                         rawValue = v.get("value")
                         if parentId:
                             try:
@@ -956,7 +956,7 @@ class ProjectService:
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
-                    parentId = value.get("_parentId")
+                    parentId = value.get("parentId")
                     rawValue = value.get("value")
                     if parentId:
                         try:
@@ -1109,7 +1109,7 @@ class ProjectService:
                             "object": value,
                             "info": str(pointer.get()),
                             "_objValue": value,
-                            "_parentId": pointer.get().getObjParentId(),
+                            "parentId": pointer.get().getObjParentId(),
                         }
                         valueList.append(obj)
                         defaultValueList.append(obj)
@@ -1125,7 +1125,7 @@ class ProjectService:
                     paramDict["default"] = paramDict["_objValue"]
 
                     if protVar.get() is not None:
-                        paramDict["_parentId"] = protVar.get().getObjParentId()
+                        paramDict["parentId"] = protVar.get().getObjParentId()
 
                 else:
                     paramDict["_objValue"] = protVar.get() if protVar.get() is not None else ""
