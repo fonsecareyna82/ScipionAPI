@@ -957,8 +957,8 @@ class ProjectService:
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
                     parentId = value.get("parentId")
-                    rawValue = value.get("value")
-                    if parentId:
+                    rawValue = value.get("value") or value.get("_objValue")
+                    if parentId and rawValue:
                         try:
                             parentProtocol = self.currentProject.getProtocol(int(parentId))
                             val = value['value'] if 'value' in value else value['_objValue']
