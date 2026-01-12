@@ -694,8 +694,8 @@ class ProjectService:
         label = protocol._label if hasattr(protocol, '_label') else protName
         protocolClassName = protocol.getClassName()
         hosts = self.currentProject.getHostNames()
-
-        context = {
+        context = {}
+        form = {
             "label": label,
             "protocolName": protName,
             "status": status,
@@ -733,7 +733,7 @@ class ProjectService:
             inp['value'] = f"{attr.getObjValue()}.{attr.getExtended()}"
             inp['parentId'] = attr.getObjValue().getObjId()
             inputs.append(inp)
-        context['inputs'] = inputs
+        form['inputs'] = inputs
 
         # Outputs
         outputs = []
@@ -749,7 +749,7 @@ class ProjectService:
             outp['value'] = f"{protName}.{key}"
             outp['parentId'] = protocol.getObjId()
             outputs.append(outp)
-        context['outputs'] = outputs
+        form['outputs'] = outputs
 
         # Definition (params, sections, Line/Group)
         paramsData = []
@@ -900,8 +900,9 @@ class ProjectService:
 
                 paramsData.append(sectionData)
 
-        context["definition"] = paramsData
-        context["values"] = paramsValue
+        form["definition"] = paramsData
+        context['form'] = form
+        context['values'] = paramsValue
         return context
 
     def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
@@ -959,7 +960,7 @@ class ProjectService:
                 if isinstance(param, MultiPointerParam):
                     newInputs = PointerList()
                     for v in value:
-                        parentId, rawValue = v.split('.')
+                        parentId, rawValue = v.split('.') if v else ("", "")
                         if rawValue:
                             try:
                                 parentProtocol = self.currentProject.getProtocol(int(parentId))
@@ -976,7 +977,7 @@ class ProjectService:
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
-                    parentId, rawValue = value.split('.')
+                    parentId, rawValue = value.split('.') if value else ("", "")
                     if rawValue:
                         try:
                             parentProtocol = self.currentProject.getProtocol(int(parentId))
@@ -1123,8 +1124,12 @@ class ProjectService:
                     defaultValueList = []
 
                     for pointer in protVar:
-                        parentId = pointer.get().getObjParentId()
-                        value = "%s.%s" % (parentId, pointer.getExtended())
+                        if pointer.get() is not None:
+                            parentId = pointer.get().getObjParentId()
+                            value = "%s.%s" % (parentId, pointer.getExtended())
+                        else:
+                            parentId = None
+                            value = None
                         obj = {
                             "object": value,
                             "info": str(pointer.get()),
@@ -1138,9 +1143,13 @@ class ProjectService:
                     paramDict["default"] = defaultValueList
 
                 elif isinstance(param, PointerParam):
-                    parentId = protVar.get().getObjParentId()
-                    pointerValue = "%s.%s" % (parentId,
-                                              protVar.getExtended()) if protVar.getExtended() else ""
+                    parentId = None
+                    if protVar.get() is not None:
+                        parentId = protVar.get().getObjParentId()
+                        pointerValue = "%s.%s" % (parentId,
+                                                  protVar.getExtended()) if protVar.getExtended() else ""
+                    else:
+                        pointerValue = None
                     paramDict["value"] = pointerValue
                     paramDict["default"] = paramDict["value"]
 
@@ -1243,9 +1252,10 @@ class ProjectService:
                         errOffset: int = 0,
                         scheduleOffset: int = 0):
         protocol = self.getProtocolParams(projectId, protocolId)
-        logPath = protocol.get("stdoutLog")
-        errLogPath = protocol.get("stderrLog")
-        scheduleLogPath = protocol.get("scheduleLog")
+        form = protocol['form']
+        logPath = form.get("stdoutLog")
+        errLogPath = form.get("stderrLog")
+        scheduleLogPath = form.get("scheduleLog")
 
         stdoutContent, stderrContent, scheduleContent = "", "", ""
         newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
