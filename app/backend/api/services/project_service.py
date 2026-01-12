@@ -478,9 +478,9 @@ class ProjectService:
                     except Exception:
                         input['pointerClass'] = ""
                         input['info'] = ""
-
-                    input['value'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
-                    input['parentId'] = attr.getObjValue().getObjId()
+                    parentId = attr.getObjValue().getObjId()
+                    input['value'] = "%s.%s" % (str(parentId), attr.getExtended())
+                    input['parentId'] = parentId
                     inputs.append(input)
 
                 # Iterate over outputs
@@ -493,8 +493,9 @@ class ProjectService:
                         output['info'] = attr.__str__()
                     except Exception:
                         output['info'] = ""
-                    output['value'] = "%s.%s" % (str(nodeObj.run), key)
-                    output['parentId'] = protocol.getObjId()
+                    parentId = protocol.getObjId()
+                    output['value'] = "%s.%s" % (str(parentId), key)
+                    output['parentId'] = parentId
                     outputs.append(output)
 
             graphData[nodeId] = {
@@ -958,12 +959,11 @@ class ProjectService:
                 if isinstance(param, MultiPointerParam):
                     newInputs = PointerList()
                     for v in value:
-                        parentId = v.get("parentId")
-                        rawValue = v.get("value")
+                        parentId, rawValue = v.split('.')
                         if rawValue:
                             try:
                                 parentProtocol = self.currentProject.getProtocol(int(parentId))
-                                extended = (v['value'].split('.')[-1])
+                                extended = rawValue
                                 newInputs.append(Pointer(parentProtocol, extended=extended))
                                 logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                             except Exception as e:
@@ -976,12 +976,11 @@ class ProjectService:
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
-                    parentId = value.get("parentId")
-                    rawValue = value.get("value") or value.get("_objValue")
+                    parentId, rawValue = value.split('.')
                     if rawValue:
                         try:
                             parentProtocol = self.currentProject.getProtocol(int(parentId))
-                            val = value['value'] if 'value' in value else value['_objValue']
+                            val = value
                             param.set(val)
                             protocol.setAttributeValue(key, parentProtocol)
                             param.default.set(val)
@@ -1026,7 +1025,7 @@ class ProjectService:
             if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
                 continue
 
-            rawValue = value.get("value")
+            rawValue = value
             try:
                 castedValue = self.castParamValue(param, rawValue)
                 errors = param.validate(castedValue) if hasattr(param, 'validate') else []
@@ -1112,9 +1111,9 @@ class ProjectService:
                 paramDict[name] = value.get()
 
             # protectedAttributes
-            # for name, value in vars(param).items():
-            #     if name != "paramClass" and name != "_form":
-            #         paramDict[name] = serializeToJson(value)
+            for name, value in vars(param).items():
+                if name == "choices":
+                    paramDict[name] = serializeToJson(value)
 
             paramDict["paramClass"] = param.__class__.__name__
 
@@ -1124,12 +1123,13 @@ class ProjectService:
                     defaultValueList = []
 
                     for pointer in protVar:
-                        value = "%s.%s" % (pointer.getObjValue(), pointer.getExtended())
+                        parentId = pointer.get().getObjParentId()
+                        value = "%s.%s" % (parentId, pointer.getExtended())
                         obj = {
                             "object": value,
                             "info": str(pointer.get()),
                             "value": value,
-                            "parentId": pointer.get().getObjParentId(),
+                            "parentId": parentId
                         }
                         valueList.append(obj)
                         defaultValueList.append(obj)
@@ -1138,13 +1138,14 @@ class ProjectService:
                     paramDict["default"] = defaultValueList
 
                 elif isinstance(param, PointerParam):
-                    pointerValue = "%s.%s" % (protVar.getObjValue(),
+                    parentId = protVar.get().getObjParentId()
+                    pointerValue = "%s.%s" % (parentId,
                                               protVar.getExtended()) if protVar.getExtended() else ""
                     paramDict["value"] = pointerValue
                     paramDict["default"] = paramDict["value"]
 
                     if protVar.get() is not None:
-                        paramDict["parentId"] = protVar.get().getObjParentId()
+                        paramDict["parentId"] = parentId
 
                 else:
                     paramDict["value"] = protVar.get() if protVar.get() is not None else None
