@@ -479,7 +479,7 @@ class ProjectService:
                         input['pointerClass'] = ""
                         input['info'] = ""
 
-                    input['_objValue'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
+                    input['value'] = "%s.%s" % (attr.getObjValue(), attr.getExtended())
                     input['parentId'] = attr.getObjValue().getObjId()
                     inputs.append(input)
 
@@ -493,12 +493,12 @@ class ProjectService:
                         output['info'] = attr.__str__()
                     except Exception:
                         output['info'] = ""
-                    output['_objValue'] = "%s.%s" % (str(nodeObj.run), key)
+                    output['value'] = "%s.%s" % (str(nodeObj.run), key)
                     output['parentId'] = protocol.getObjId()
                     outputs.append(output)
 
             graphData[nodeId] = {
-                "id": nodeId,
+                "protocolId": nodeId,
                 "children": childrenIds,
                 "parents": parentIds,
                 "label": nodeObj.getLabel(),
@@ -695,7 +695,6 @@ class ProjectService:
         hosts = self.currentProject.getHostNames()
 
         context = {
-            "id": protocol.getObjId(),
             "label": label,
             "protocolName": protName,
             "status": status,
@@ -730,7 +729,7 @@ class ProjectService:
                 inp['info'] = str(attr.get())
             except Exception:
                 inp['info'] = ""
-            inp['_objValue'] = f"{attr.getObjValue()}.{attr.getExtended()}"
+            inp['value'] = f"{attr.getObjValue()}.{attr.getExtended()}"
             inp['parentId'] = attr.getObjValue().getObjId()
             inputs.append(inp)
         context['inputs'] = inputs
@@ -746,13 +745,14 @@ class ProjectService:
                 outp['info'] = str(attr)
             except Exception:
                 outp['info'] = ""
-            outp['_objValue'] = f"{protName}.{key}"
+            outp['value'] = f"{protName}.{key}"
             outp['parentId'] = protocol.getObjId()
             outputs.append(outp)
         context['outputs'] = outputs
 
         # Definition (params, sections, Line/Group)
         paramsData = []
+        paramsValue = {}
         for section in protocol._definition.iterSections():
             if section.getLabel() != 'Parallelization':
                 sectionData = {"label": section.getLabel(), "params": []}
@@ -763,8 +763,8 @@ class ProjectService:
                             if protVar is None:
                                 # Handle Group
                                 if isinstance(param, Group):
-                                    group = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                                    group['children'] = []
+                                    group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                    group['params'] = []
                                     for paramGroupName, paramGroup in param.iterParams():
                                         protVar = getattr(protocol, paramGroupName, None)
 
@@ -773,39 +773,43 @@ class ProjectService:
                                             for paramLineName, paramLine in paramGroup.iterParams():
                                                 protVar = getattr(protocol, paramLineName, None)
                                                 if protVar:
-                                                    paramChild = self.PreprocessParamForm(
+                                                    paramChild, paramValue = self.PreprocessParamForm(
                                                         paramLine, paramLineName, wizards, None, 0, protVar
                                                     )
                                                     if paramChild:
-                                                        group['children'].append(paramChild)
+                                                        group['params'].append(paramChild)
+                                                        paramsValue[paramLineName] = paramValue
                                         elif protVar:
-                                            paramChild = self.PreprocessParamForm(
+                                            paramChild, paramValue = self.PreprocessParamForm(
                                                 paramGroup, paramGroupName, wizards, None, 0, protVar
                                             )
                                             if paramChild:
-                                                group['children'].append(paramChild)
+                                                group['params'].append(paramChild)
+                                                paramsValue[paramGroupName] = paramValue
                                     if group:
                                         sectionData["params"].append(group)
 
                                 # Handle Line
                                 if isinstance(param, Line):
-                                    line = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                                    line['children'] = []
+                                    line, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                    line['params'] = []
                                     for paramLineName, paramLine in param.iterParams():
                                         protVar = getattr(protocol, paramLineName, None)
                                         if protVar:
-                                            paramChild = self.PreprocessParamForm(
+                                            paramChild, paramValue = self.PreprocessParamForm(
                                                 paramLine, paramLineName, wizards, None, 0, protVar
                                             )
                                             if paramChild:
-                                                line['children'].append(paramChild)
+                                                line['params'].append(paramChild)
+                                                paramsValue[paramLineName] = paramValue
                                     if line:
                                         sectionData["params"].append(line)
 
                             else:
-                                paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                paramProcessed, paramValue = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
                                 if paramProcessed:
                                     sectionData["params"].append(paramProcessed)
+                                    paramsValue[paramName] = paramValue
 
                 if section.getLabel() == 'General':
                     # Special params
@@ -820,10 +824,11 @@ class ProjectService:
                             paramProcessed['_isImportant'] = True
                             paramProcessed['help'] = 'Protocol comments'
                             paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['_objValue'] = paramValue
+                            paramProcessed['value'] = paramValue
                             paramProcessed['default'] = paramValue
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
+                            paramsValue[paramName] = paramValue
                         elif paramName == '_useQueue':
                             paramProcessed['label'] = 'Use a queue engine?'
                             paramProcessed['expertLevel'] = 0
@@ -833,10 +838,11 @@ class ProjectService:
                                 pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
                             )
                             paramProcessed['paramClass'] = 'BooleanParam'
-                            paramProcessed['_objValue'] = paramValue
-                            paramProcessed['default'] = paramValue
+                            paramProcessed['value'] = paramValue.get()
+                            paramProcessed['default'] = paramValue.get()
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
+                            paramsValue[paramName] = paramValue.get()
                         elif paramName == '_prerequisites':
                             paramProcessed.setdefault(paramName, {})
                             paramProcessed['label'] = 'Wait for'
@@ -847,10 +853,11 @@ class ProjectService:
                                 pyworkflow.DOCSITEURLS.WAIT_FOR
                             )
                             paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['_objValue'] = paramValue
+                            paramProcessed['value'] = paramValue
                             paramProcessed['default'] = paramValue
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
+                            paramsValue[paramName] = paramValue
                         elif paramName == 'expertLevel':
                             paramProcessed['label'] = 'Expert Level'
                             paramProcessed['display'] = 0
@@ -858,29 +865,42 @@ class ProjectService:
                             paramProcessed['condition'] = None
                             paramProcessed['_isImportant'] = True
                             paramProcessed['paramClass'] = 'EnumParam'
-                            paramProcessed['_objValue'] = 0
+                            paramProcessed['value'] = 0
                             paramProcessed['default'] = 0
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
+                            paramsValue[paramName] = 0
+                        elif paramName == 'runMode':
+                            paramProcessed['label'] = 'Expert Level'
+                            paramProcessed['display'] = 0
+                            paramProcessed['choices'] = ['Continue', 'Restart']
+                            paramProcessed['condition'] = None
+                            paramProcessed['_isImportant'] = True
+                            paramProcessed['paramClass'] = 'EnumParam'
+                            paramProcessed['value'] = 0
+                            paramProcessed['default'] = 0
+                            paramProcessed['readOnly'] = False
+                            sectionData["params"].append(paramProcessed)
+                            paramsValue[paramName] = 0
                         else:
                             param = protocol.getParam(paramName)
                             if param is not None:
                                 if paramName == 'gpuList':
                                     param.label.set('GPU IDs')
                                     param.condition.set(None)
-                                elif paramName == 'runMode':
-                                    param.choices = ['Continue', 'Restart']
-                                    param.display = 0
-                                paramProcessed = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
+                                paramProcessed, paramValue = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
                                 if paramProcessed:
                                     if paramName == 'runName':
-                                        paramProcessed['_objValue'] = protName
+                                        paramProcessed['value'] = protName
                                         paramProcessed['default'] = protName
+                                        paramValue = protName
                                     sectionData["params"].append(paramProcessed)
+                                paramsValue[paramName] = paramValue
 
                 paramsData.append(sectionData)
 
         context["definition"] = paramsData
+        context["values"] = paramsValue
         return context
 
     def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
@@ -940,10 +960,10 @@ class ProjectService:
                     for v in value:
                         parentId = v.get("parentId")
                         rawValue = v.get("value")
-                        if parentId:
+                        if rawValue:
                             try:
                                 parentProtocol = self.currentProject.getProtocol(int(parentId))
-                                extended = (v['_objValue'].split('.')[-1])
+                                extended = (v['value'].split('.')[-1])
                                 newInputs.append(Pointer(parentProtocol, extended=extended))
                                 logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                             except Exception as e:
@@ -958,7 +978,7 @@ class ProjectService:
                 elif isinstance(param, PointerParam):
                     parentId = value.get("parentId")
                     rawValue = value.get("value") or value.get("_objValue")
-                    if parentId and rawValue:
+                    if rawValue:
                         try:
                             parentProtocol = self.currentProject.getProtocol(int(parentId))
                             val = value['value'] if 'value' in value else value['_objValue']
@@ -1089,12 +1109,12 @@ class ProjectService:
 
             # publicAttributes
             for name, value in param.getAttributes():
-                paramDict[name] = serializeToJson(value)
+                paramDict[name] = value.get()
 
             # protectedAttributes
-            for name, value in vars(param).items():
-                if name != "paramClass" and name != "_form":
-                    paramDict[name] = serializeToJson(value)
+            # for name, value in vars(param).items():
+            #     if name != "paramClass" and name != "_form":
+            #         paramDict[name] = serializeToJson(value)
 
             paramDict["paramClass"] = param.__class__.__name__
 
@@ -1108,31 +1128,30 @@ class ProjectService:
                         obj = {
                             "object": value,
                             "info": str(pointer.get()),
-                            "_objValue": value,
+                            "value": value,
                             "parentId": pointer.get().getObjParentId(),
                         }
                         valueList.append(obj)
                         defaultValueList.append(obj)
 
-                    paramDict["_objValue"] = valueList
+                    paramDict["value"] = valueList
                     paramDict["default"] = defaultValueList
 
                 elif isinstance(param, PointerParam):
                     pointerValue = "%s.%s" % (protVar.getObjValue(),
                                               protVar.getExtended()) if protVar.getExtended() else ""
-                    paramDict["_objValue"] = pointerValue
                     paramDict["value"] = pointerValue
-                    paramDict["default"] = paramDict["_objValue"]
+                    paramDict["default"] = paramDict["value"]
 
                     if protVar.get() is not None:
                         paramDict["parentId"] = protVar.get().getObjParentId()
 
                 else:
-                    paramDict["_objValue"] = protVar.get() if protVar.get() is not None else ""
-                    paramDict["value"] = str(paramDict["_objValue"])
-                    paramDict["default"] = str(paramDict["_objValue"])
+                    paramDict["value"] = protVar.get() if protVar.get() is not None else None
+                    paramDict["default"] = paramDict["value"]
 
-            return paramDict
+            paramValue = paramDict['default'] if 'default' in paramDict else None
+            return paramDict, paramValue
 
         except Exception as ex:
             logger.error("ERROR with param: " + paramName)
