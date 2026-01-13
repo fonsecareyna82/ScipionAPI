@@ -46,7 +46,7 @@ from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
-from pyworkflow.object import PointerList, Pointer
+from pyworkflow.object import PointerList, Pointer, CsvList
 from pyworkflow.template import TemplateList
 
 logger = logging.getLogger(__name__)
@@ -825,8 +825,7 @@ class ProjectService:
                             paramProcessed['_isImportant'] = True
                             paramProcessed['help'] = 'Protocol comments'
                             paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['value'] = paramValue
-                            paramProcessed['default'] = paramValue
+                            paramProcessed['default'] = ''
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
                             paramsValue[paramName] = paramValue
@@ -839,8 +838,7 @@ class ProjectService:
                                 pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
                             )
                             paramProcessed['paramClass'] = 'BooleanParam'
-                            paramProcessed['value'] = paramValue.get()
-                            paramProcessed['default'] = paramValue.get()
+                            paramProcessed['default'] = False
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
                             paramsValue[paramName] = paramValue.get()
@@ -854,8 +852,7 @@ class ProjectService:
                                 pyworkflow.DOCSITEURLS.WAIT_FOR
                             )
                             paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['value'] = paramValue
-                            paramProcessed['default'] = paramValue
+                            paramProcessed['default'] = []
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
                             paramsValue[paramName] = paramValue
@@ -866,19 +863,17 @@ class ProjectService:
                             paramProcessed['condition'] = None
                             paramProcessed['_isImportant'] = True
                             paramProcessed['paramClass'] = 'EnumParam'
-                            paramProcessed['value'] = 0
                             paramProcessed['default'] = 0
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
                             paramsValue[paramName] = 0
                         elif paramName == 'runMode':
-                            paramProcessed['label'] = 'Expert Level'
+                            paramProcessed['label'] = 'Run Mode'
                             paramProcessed['display'] = 0
                             paramProcessed['choices'] = ['Continue', 'Restart']
                             paramProcessed['condition'] = None
                             paramProcessed['_isImportant'] = True
                             paramProcessed['paramClass'] = 'EnumParam'
-                            paramProcessed['value'] = 0
                             paramProcessed['default'] = 0
                             paramProcessed['readOnly'] = False
                             sectionData["params"].append(paramProcessed)
@@ -892,10 +887,12 @@ class ProjectService:
                                 paramProcessed, paramValue = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
                                 if paramProcessed:
                                     if paramName == 'runName':
-                                        paramProcessed['value'] = protName
-                                        paramProcessed['default'] = protName
+                                        paramProcessed['default'] = ''
                                         paramValue = protName
+                                    elif paramName == 'gpuList':
+                                        paramValue = protocol.gpuList.get()
                                     sectionData["params"].append(paramProcessed)
+
                                 paramsValue[paramName] = paramValue
 
                 paramsData.append(sectionData)
@@ -944,6 +941,8 @@ class ProjectService:
             return str(rawValue).lower() in ("true", "1", "yes", "y")
         elif isinstance(param, (StringParam, EnumParam)):
             return str(rawValue) if rawValue is not None else None
+        elif isinstance(param, CsvList):
+            return [rawValue]
         else:
             return rawValue
 
@@ -1016,6 +1015,22 @@ class ProjectService:
             protocol = self.currentProject.newProtocol(protClass)
         else:  # retrieve a protocol by id
             protocol = self.currentProject.getProtocol(int(protocolId))
+
+        # Set protected parameters
+        protectedParams = ['_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
+        for paramName in protectedParams:
+            if paramName in protectedParams:
+                protVar = getattr(protocol, paramName, None)
+                if protVar is not None:
+                    try:
+                        if paramName in params:
+                            value = params[paramName]
+                            if paramName == 'gpuList':
+                                value = str(value)[1:-1]
+                            protVar.set(value)
+                    except Exception:
+                        setattr(protocol, paramName, value)
+
         # Set non-pointer parameters
         for key, value in params.items():
             param = protocol.getParam(key)
@@ -1035,6 +1050,7 @@ class ProjectService:
                     errorList += errorListAux
                 param.set(castedValue)
                 protocol.setAttributeValue(key, castedValue)
+
                 logger.info(f"[INFO] Set param {key} = {castedValue}")
             except Exception as e:
                 import re
@@ -1044,8 +1060,8 @@ class ProjectService:
         # Apply pointer parameters
         errorList += self.applyParamsToProtocol(protocol, params)
 
-        if setToSave:
-            protocol.setSaved()
+        # if setToSave:
+        #     protocol.setSaved()
 
         if protocol.hasObjId():
             self.currentProject._storeProtocol(protocol)
@@ -1098,6 +1114,7 @@ class ProjectService:
         """
         try:
             paramDict = {}
+            paramValue = ''
 
             from pyworkflow.protocol import MultiPointerParam, PointerParam, RelationParam
 
@@ -1113,7 +1130,7 @@ class ProjectService:
 
             # protectedAttributes
             for name, value in vars(param).items():
-                if name == "choices":
+                if name == 'choices' or name == 'gpuList':
                     paramDict[name] = serializeToJson(value)
 
             paramDict["paramClass"] = param.__class__.__name__
@@ -1121,46 +1138,32 @@ class ProjectService:
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
                     valueList = []
-                    defaultValueList = []
 
                     for pointer in protVar:
                         if pointer.get() is not None:
                             parentId = pointer.get().getObjParentId()
                             value = "%s.%s" % (parentId, pointer.getExtended())
                         else:
-                            parentId = None
                             value = None
-                        obj = {
-                            "object": value,
-                            "info": str(pointer.get()),
-                            "value": value,
-                            "parentId": parentId
-                        }
-                        valueList.append(obj)
-                        defaultValueList.append(obj)
+                        valueList.append(value)
 
-                    paramDict["value"] = valueList
-                    paramDict["default"] = defaultValueList
+                    paramValue = valueList
 
                 elif isinstance(param, PointerParam):
                     parentId = None
                     if protVar.get() is not None:
                         parentId = protVar.get().getObjParentId()
-                        pointerValue = "%s.%s" % (parentId,
+                        paramValue = "%s.%s" % (parentId,
                                                   protVar.getExtended()) if protVar.getExtended() else ""
                     else:
-                        pointerValue = None
-                    paramDict["value"] = pointerValue
-                    paramDict["default"] = paramDict["value"]
+                        paramValue = None
 
                     if protVar.get() is not None:
                         paramDict["parentId"] = parentId
 
                 else:
-                    paramDict["value"] = protVar.get() if protVar.get() is not None else None
-                    paramDict["default"] = paramDict["value"]
+                    paramValue = protVar.get() if protVar.get() is not None else None
 
-            paramValue = paramDict['default'] if 'default' in paramDict else None
             return paramDict, paramValue
 
         except Exception as ex:
