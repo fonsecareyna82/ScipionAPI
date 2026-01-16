@@ -64,7 +64,7 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
-                                        MultiPointerParam, RelationParam)
+                                        MultiPointerParam, RelationParam, Group)
 import pyworkflow.utils as pwutils
 from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
@@ -695,24 +695,22 @@ class ProjectService:
         protocolClassName = protocol.getClassName()
         hosts = self.currentProject.getHostNames()
         context = {}
-        form = {
-            "label": label,
-            "protocolName": protName,
+        info = {
+            "protocolId": protocol.getObjId(),
+            # "label": label,
+            "label": protName,
             "status": status,
             "expertLevel": hasExpert,
             "color": self.getProtocolColor(status),
-            "projectName": self.currentProject.getName(),
-            "projectId": projectId,
-            "packageLogo": logoPath,
-            "protocolId": protocol.getObjId(),
             "hosts": hosts,
-            "favicon": self.getResourceIcon('favicon'),
-            "cite": protocol.citations(),
-            "help": protocol.getHelpText(),
+            "projectId": projectId,
             "protocolClassName": protocolClassName,
-            "stdoutLog": protocol.getStdoutLog(),
-            "stderrLog": protocol.getStderrLog(),
-            "scheduleLog": protocol.getScheduleLog(),
+            # "projectName": self.currentProject.getName(),
+        }
+
+        form = {
+            "references": protocol.citations(),
+            "help": protocol.getHelpText(),
         }
 
         # Detect available wizards and viewers
@@ -733,7 +731,7 @@ class ProjectService:
             inp['value'] = f"{attr.getObjValue()}.{attr.getExtended()}"
             inp['parentId'] = attr.getObjValue().getObjId()
             inputs.append(inp)
-        form['inputs'] = inputs
+        info['inputs'] = inputs
 
         # Outputs
         outputs = []
@@ -749,7 +747,7 @@ class ProjectService:
             outp['value'] = f"{protName}.{key}"
             outp['parentId'] = protocol.getObjId()
             outputs.append(outp)
-        form['outputs'] = outputs
+        info['outputs'] = outputs
 
         # Definition (params, sections, Line/Group)
         paramsData = []
@@ -897,7 +895,8 @@ class ProjectService:
 
                 paramsData.append(sectionData)
 
-        form["definition"] = paramsData
+        form["sections"] = paramsData
+        context['info'] = info
         context['form'] = form
         context['values'] = paramsValue
         return context
@@ -1133,7 +1132,10 @@ class ProjectService:
                 if name == 'choices' or name == 'gpuList':
                     paramDict[name] = serializeToJson(value)
 
-            paramDict["paramClass"] = param.__class__.__name__
+            paramClass = param.__class__.__name__
+            if paramClass == 'LabelParam':
+                paramClass = 'Label'
+            paramDict["paramClass"] = paramClass
 
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
@@ -1148,6 +1150,7 @@ class ProjectService:
                         valueList.append(value)
 
                     paramValue = valueList
+                    paramDict['readOnly'] = True
 
                 elif isinstance(param, PointerParam):
                     parentId = None
@@ -1160,6 +1163,7 @@ class ProjectService:
 
                     if protVar.get() is not None:
                         paramDict["parentId"] = parentId
+                    paramDict['readOnly'] = True
 
                 else:
                     paramValue = protVar.get() if protVar.get() is not None else None
@@ -1254,11 +1258,10 @@ class ProjectService:
                         offset: int = 0,
                         errOffset: int = 0,
                         scheduleOffset: int = 0):
-        protocol = self.getProtocolParams(projectId, protocolId)
-        form = protocol['form']
-        logPath = form.get("stdoutLog")
-        errLogPath = form.get("stderrLog")
-        scheduleLogPath = form.get("scheduleLog")
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        logPath = protocol.getStdoutLog()
+        errLogPath = protocol.getStderrLog()
+        scheduleLogPath = protocol.getScheduleLog()
 
         stdoutContent, stderrContent, scheduleContent = "", "", ""
         newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
