@@ -134,44 +134,44 @@ class FileHandlers:
         Supports:
         - Relative paths inside the protocol root (default mode).
         - Absolute paths under /home (absoluteMode).
-        Handles symbolic links safely:
-        - In protocol mode: entries are returned relative to the protocol root
-          without resolving symlinks; escaping attempts are skipped.
-        - In /home mode: entries are returned as absolute paths under /home;
-          symlinks that resolve outside /home will be rejected on next request.
+
+        Payload contract:
+        - dirName: absolute path of the directory being listed
+        - cwd: alias of dirName (kept temporarily for backward compatibility)
+        - items[].path: absolute path of the entry (file or directory)
+        - items[].name: basename
         """
         root = self._protocolRoot(protocolId).resolve()
         pRaw = (path or "").strip()
 
-        # Normalize trivial root-like inputs
+        # normalizeTrivialRootLikeInputs
         if pRaw in ("/", ".", "./"):
             pRaw = ""
 
         absoluteMode = False
 
         if not pRaw:
-            # Protocol root
+            # protocolRoot
             target = root
         else:
             candidate = FsPath(pRaw)
 
             if candidate.is_absolute():
-                # Absolute path: only allow /home and /home/*
-                candidate = candidate.resolve()
+                # absolutePathOnlyAllowHomeAndProtocolRootDescendants
+                candidateResolved = candidate.resolve()
                 try:
-                    # If inside protocol root, treat as protocol-relative
-                    rel = candidate.relative_to(root)
+                    # ifInsideProtocolRootTreatAsProtocolRelative
+                    rel = candidateResolved.relative_to(root)
                     target = (root / rel).resolve()
                 except ValueError:
-                    candStr = str(candidate)
+                    candStr = candidateResolved.as_posix()
                     if candStr == "/home" or candStr.startswith("/home/"):
                         absoluteMode = True
-                        target = candidate
+                        target = candidateResolved
                     else:
-                        # Any other absolute path is not allowed
                         raise HTTPException(status_code=400, detail="Invalid path")
             else:
-                # Relative path: must stay inside protocol root
+                # relativePathMustStayInsideProtocolRoot
                 target = self._guardJoin(root, pRaw)
 
         if not target.exists():
@@ -183,35 +183,29 @@ class FileHandlers:
 
         try:
             for child in target.iterdir():
-                # Safely determine if entry is a directory; ignore broken entries
+                # safelyDetermineIsDirIgnoreBrokenEntries
                 try:
                     isDir = child.is_dir()
                 except OSError:
-                    # Skip entries that cannot be stat'ed
                     continue
 
-                if absoluteMode:
-                    # In /home mode: build lexical child path without resolving symlinks
-                    childPath = (target / child.name).as_posix()
+                # buildAbsoluteEntryPathLexicallyWithoutResolvingSymlinks
+                childAbsLexical = (target / child.name).as_posix()
 
-                    # Enforce that listed paths stay under /home prefix
-                    if not (childPath == "/home" or childPath.startswith("/home/")):
-                        # Skip anything that visually escapes /home
+                if absoluteMode:
+                    # ensureListedEntriesStayUnderHomeLexically
+                    if not (childAbsLexical == "/home" or childAbsLexical.startswith("/home/")):
                         continue
                 else:
-                    # Protocol mode: return path relative to protocol root
-                    # Do not resolve symlinks here; only use lexical position.
+                    # protocolModeRejectEntriesOutsideRootLexically
                     try:
-                        rel = child.relative_to(root)
+                        _ = FsPath(childAbsLexical).relative_to(root)
                     except ValueError:
-                        # If for any reason this entry is outside root (symlink or mount),
-                        # skip it to avoid leaking or escaping.
                         continue
-                    childPath = rel.as_posix()
 
                 item: Dict[str, Any] = {
                     "name": child.name,
-                    "path": childPath.replace("\\", "/"),
+                    "path": childAbsLexical.replace("\\", "/"),
                     "isDir": isDir,
                 }
 
@@ -223,24 +217,22 @@ class FileHandlers:
                     item["mime"] = self._guessMime(child)
 
                 items.append(item)
+
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
 
-        # Sort: folders first, then files; alphabetical by name
+        # sortFoldersFirstThenFilesAlphabetically
         items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
 
-        # Compute cwd value for the client
-        if absoluteMode:
-            cwdValue = target.resolve().as_posix()
-        else:
-            try:
-                relCwd = target.resolve().relative_to(root).as_posix()
-            except ValueError:
-                # If something goes wrong, fall back to protocol root
-                relCwd = ""
-            cwdValue = "" if relCwd in ("", ".") else relCwd
+        # absoluteDirNameForClientDisplayAndNavigation
+        dirName = target.resolve().as_posix()
 
-        return {"cwd": cwdValue, "items": items}
+        # cwdIsAliasOfDirNameForCompatibility
+        return {
+            "dirName": dirName,
+            "cwd": dirName,
+            "items": items,
+        }
 
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
         """
@@ -250,8 +242,7 @@ class FileHandlers:
         - Text-like files -> UTF-8 text/plain (capped size).
         - Otherwise -> 415 (unsupported).
         """
-        root = self._protocolRoot(protocolId)
-        file_path: FsPath = self._guardJoin(root, path)
+        file_path = FsPath(path)
 
         if not file_path.exists() or not file_path.is_file():
             file_path = FsPath(path)
@@ -599,8 +590,7 @@ class FileHandlers:
               * if normal image -> raw image + X-Preview-* headers
               * else -> raw bytes + minimal headers
         """
-        root = self._protocolRoot(protocolId)
-        filePath = self._guardJoin(root, path)
+        filePath = FsPath(path)
 
         if (not filePath.exists()) or (not filePath.is_file()):
             filePath = FsPath(path)

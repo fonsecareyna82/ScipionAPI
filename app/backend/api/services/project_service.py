@@ -701,6 +701,7 @@ class ProjectService:
             "label": protName,
             "status": status,
             "expertLevel": hasExpert,
+            "packageLogo": logoPath,
             "color": self.getProtocolColor(status),
             "hosts": hosts,
             "projectId": projectId,
@@ -1358,7 +1359,7 @@ class ProjectService:
 
     def getProtocolPath(self, protocolId):
         protocol = self.currentProject.getProtocol(int(protocolId))
-        return protocol.getPath()
+        return {"path": os.path.abspath(protocol.getPath())}
 
     def _protocolRoot(self, protocolId: Union[int, str]) -> FsPath:
         """
