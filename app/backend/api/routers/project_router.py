@@ -62,7 +62,7 @@ def listProjectWorkflows(
         )
 
 @router.post(
-    "/{projectId}/workflows/apply",
+    "/{projectId}/workflows/load",
     response_model=Any,
     status_code=status.HTTP_200_OK,
 )
@@ -393,7 +393,7 @@ def deleteProtocol(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     try:
-        service.deleteProtocol(payload.ids)
+        service.deleteProtocol(payload.protocolIds)
         return {"status": "ok", "message": "Protocol deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
