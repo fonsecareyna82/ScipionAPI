@@ -34,7 +34,7 @@ class ProtocolService:
         project = self.projectService.getProjectById(mapper, projectId, currentUser)
         if not project:
             return None
-        return self.projectService.getProtocolParams(protocolId)
+        return self.projectService.getProtocolParams(projectId, protocolId)
 
     def getNewProtocolParams(
         self,

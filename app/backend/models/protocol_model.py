@@ -30,7 +30,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
 from pydantic import BaseModel, ConfigDict
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 from app.backend.models.project_model import Project
 
 # ------------------------ SQLAlchemy model ------------------------
@@ -116,4 +116,4 @@ class DuplicatePayload(BaseModel):
 
 
 class DeletePayload(BaseModel):
-    ids: List[str]
+    protocolIds: List[str]
