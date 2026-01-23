@@ -10,6 +10,7 @@ from fastapi import (
     Request,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
+from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
 
@@ -210,6 +211,7 @@ def revokeProjectShare(
     )
     return {"success": True}
 
+
 @router.get("/{projectId}/shares")
 def listProjectShares(
     projectId: int,
@@ -288,6 +290,14 @@ async def loadNewProtocol(
 #                        PROTOCOL SAVE / LAUNCH
 # ======================================================================
 
+def _normalizeErrors(detail: Any) -> List[str]:
+    if detail is None:
+        return ["Unknown error"]
+    if isinstance(detail, list):
+        return [str(item) for item in detail]
+    return [str(detail)]
+
+
 @router.post("/{projectId}/launch", response_model=Any)
 async def launchProtocol(
     projectId: int,
@@ -299,20 +309,40 @@ async def launchProtocol(
     """
     Launch a protocol in a given project.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     try:
+        project = service.getProjectById(mapper, projectId, currentUser)
+        if not project:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"status": 0,
+                         "errors": ["Project not found"],
+                         "workflow": []},
+            )
+
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
+
         service.launchProtocol(mapper, protocolId, protocolClassName, params)
-        return {"status": "ok"}
-    except HTTPException:
-        raise
+
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 0,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 0,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 
 @router.post("/{projectId}/save", response_model=Any)
@@ -326,20 +356,41 @@ async def saveProtocol(
     """
     Save protocol parameters in a given project.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     try:
+        project = service.getProjectById(mapper, projectId, currentUser)
+        if not project:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"status": 1,
+                         "errors": ["Project not found"],
+                         "workflow": []},
+            )
+
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
+
         protocol, errors = service.saveProtocol(mapper, protocolId, protocolClassName, params)
-        return {"status": "ok", "errors": errors, "protocolId": protocol.getObjId()}
-    except HTTPException:
-        raise
+        errors = errors or []
+
+        return {"status": 0 if not errors else 1,
+                "errors": [str(err) for err in errors],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 
 # ======================================================================
@@ -357,11 +408,43 @@ def renameProtocol(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1,
+                     "errors": ["Project not found"],
+                     "workflow": []},
+        )
+
     try:
-        return service.renameProtocol(protocolId, payload.name)
+        # Basic payload validation for semantic HTTP
+        newName = getattr(payload, "name", None)
+        if not newName or not str(newName).strip():
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={"status": 1,
+                         "errors": ["Missing name"],
+                         "workflow": []},
+            )
+
+        service.renameProtocol(protocolId, str(newName).strip())
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 
 @router.post("/{projectId}/protocols/duplicate", response_model=Any, status_code=status.HTTP_201_CREATED)
@@ -374,12 +457,43 @@ def duplicateProtocol(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    try:
-        return service.duplicateProtocol(payload.items)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1,
+                     "errors": ["Project not found"],
+                     "workflow": []},
+        )
 
+    try:
+        items = getattr(payload, "items", None) if payload is not None else None
+        if not items:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={"status": 1,
+                         "errors": ["Missing items"],
+                         "workflow": []},
+            )
+
+        service.duplicateProtocol(items)
+        # Keep 201 on success, but still return unified schema
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 @router.post("/{projectId}/protocols/delete", response_model=Any, status_code=status.HTTP_200_OK)
 def deleteProtocol(
@@ -389,17 +503,45 @@ def deleteProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     try:
-        service.deleteProtocol(payload.protocolIds)
-        return {"status": "ok", "message": "Protocol deleted"}
+        project = service.getProjectById(mapper, projectId, currentUser)
+        if not project:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"status": 1,
+                         "errors": ["Project not found"],
+                         "workflow": []},
+            )
+
+        protocolIds = getattr(payload, "protocolIds", None) if payload is not None else None
+        if not protocolIds:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"status": 1,
+                         "errors": ["Missing protocolIds"],
+                         "workflow": []},
+            )
+
+        service.deleteProtocol(protocolIds)
+
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": _normalizeErrors(str(e)),
+                     "workflow": []},
+        )
 
 
-@router.post("/{projectId}/protocols/{protocolId}/restart-all", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post(
+    "/{projectId}/protocols/{protocolId}/restart-all",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
 def restartProtocolAll(
     projectId: int,
     protocolId: int,
@@ -409,17 +551,47 @@ def restartProtocolAll(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1,
+                     "errors": ["Project not found"],
+                     "workflow": []},
+        )
+
     try:
         errorList = service.restartProtocolAll(protocolId)
-        if errorList:
-            return {"status": "failed", "details": errorList}
-        return {"status": "ok"}
+        errors = [str(e) for e in (errorList or [])]
+
+        if errors:
+            return {"status": 1,
+                    "errors": errors,
+                    "workflow": []}
+
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 
-@router.post("/{projectId}/protocols/{protocolId}/continue-all", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post(
+    "/{projectId}/protocols/{protocolId}/continue-all",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
 def continueProtocolAll(
     projectId: int,
     protocolId: int,
@@ -429,15 +601,32 @@ def continueProtocolAll(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1, "errors": ["Project not found"], "workflow": []},
+        )
+
     try:
         service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
-        return {"status": "ok"}
+        return {"status": 0, "errors": [], "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1, "errors": _normalizeErrors(e.detail), "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1, "errors": [str(e)], "workflow": []},
+        )
 
 
-@router.post("/{projectId}/protocols/{protocolId}/reset-from", response_model=Any, status_code=status.HTTP_200_OK)
+@router.post(
+    "/{projectId}/protocols/{protocolId}/reset-from",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
 def resetProtocolFrom(
     projectId: int,
     protocolId: int,
@@ -447,12 +636,25 @@ def resetProtocolFrom(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1, "errors": ["Project not found"], "workflow": []},
+        )
+
     try:
         service.resetProtocolFrom(protocolId)
-        return {"status": "ok"}
+        return {"status": 0, "errors": [], "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1, "errors": _normalizeErrors(e.detail), "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1, "errors": [str(e)], "workflow": []},
+        )
 
 
 @router.post("/{projectId}/protocols/stop", response_model=Any, status_code=status.HTTP_200_OK)
@@ -465,12 +667,42 @@ def stopProtocol(
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1,
+                     "errors": ["Project not found"],
+                     "workflow": []},
+        )
+
     try:
-        service.stopProtocol(payload.ids)
-        return {"status": "ok", "message": "Protocol stoped"}
+        protocolIds = getattr(payload, "protocolIds", None) if payload is not None else None
+        if not protocolIds:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={"status": 1,
+                         "errors": ["Missing protocolIds"],
+                         "workflow": []},
+            )
+
+        service.stopProtocol(protocolIds)
+        return {"status": 0,
+                "errors": [],
+                "workflow": []}
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"status": 1,
+                     "errors": _normalizeErrors(e.detail),
+                     "workflow": []},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": 1,
+                     "errors": [str(e)],
+                     "workflow": []},
+        )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
