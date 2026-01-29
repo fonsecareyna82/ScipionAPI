@@ -1464,6 +1464,15 @@ class ProjectService:
         return protocol, output
 
     # ======================================================================
+    # Analyze Results: Resolve viewer
+    # ======================================================================
+    def resolveAnalyzeViewerDecision(self, projectId: int, protocolId: int, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        # resolveAnalyzeViewerDecision
+        return {
+            "handled": False,
+        }
+
+    # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
     # ======================================================================
 

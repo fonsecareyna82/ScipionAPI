@@ -150,14 +150,13 @@ if serveWeb and webDistPath and (webDistPath / "index.html").exists():
     # mountApiBeforeStatic
     app.mount(apiMountPath, apiApp)
 
-    # mountSpaStaticRoot
-    app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")
-
-    @app.get("/health")
+    @app.get("/health", include_in_schema=False)
     def health_check():
         # healthCheckCombined
         return {"status": "ok", "mode": "combined", "apiMountPath": apiMountPath}
 
+    # mountSpaStaticRootLast
+    app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")
 else:
-    # apiOnlyMode
     app = apiApp
+
