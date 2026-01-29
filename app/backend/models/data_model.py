@@ -25,9 +25,33 @@
 # ******************************************************************************
 
 from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 
 class Volume3dResponse(BaseModel):
     dims: List[int] = Field(..., description="Volume dimensions in Z,Y,X order")
     values: List[float] = Field(..., description="Flattened voxel values (Z-major)")
+
+
+class AnalyzeViewerResolveContextIn(BaseModel):
+    outputName: str = Field(..., min_length=1)
+    protocolLabel: Optional[str] = None
+    pointerClass: Optional[str] = None
+    paramClass: Optional[str] = None
+    info: Optional[str] = None
+    value: Optional[str] = None
+    parentId: Optional[Union[int, str]] = None
+
+    class Config:
+        extra = "ignore"
+
+
+class AnalyzeViewerResolveDecisionOut(BaseModel):
+    handled: bool = False
+    url: Optional[str] = None
+    target: Literal["_self", "_blank"] = "_blank"
+    kind: Optional[str] = None
+    message: Optional[str] = None
+
+    class Config:
+        extra = "ignore"

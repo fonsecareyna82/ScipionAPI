@@ -19,6 +19,7 @@ from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
 from app.backend.api.services.project_service import ProjectService
+from app.backend.models.data_model import AnalyzeViewerResolveDecisionOut, AnalyzeViewerResolveContextIn
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -802,6 +803,47 @@ async def previewOutput(
         requestHeaders=dict(request.headers),
         colormap=cmapHeader or cmapQuery,
     )
+
+
+# ==============================================================================
+#                ANALYZE RESULTS: Resolve viewer
+# ==============================================================================
+
+from fastapi import Body
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/viewer/resolve",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def resolveAnalyzeViewer(
+    projectId: int,
+    protocolId: int,
+    payload: Dict[str, Any] = Body(...),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # resolveAnalyzeViewer
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ctx = payload.get("ctx") if isinstance(payload, dict) else None
+    if isinstance(ctx, dict):
+        payload = ctx  # unwrapCtx
+
+    try:
+        decision = service.resolveAnalyzeViewerDecision(
+            projectId=projectId,
+            protocolId=protocolId,
+            ctx=payload,
+
+        )
+        return decision or {"handled": False}
+    except Exception as e:
+        logger.exception("Error in resolveAnalyzeViewer: %s", e)
+        return {"handled": False, "message": str(e)}
 
 
 # ==============================================================================
