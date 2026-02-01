@@ -47,6 +47,7 @@ from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer, CsvList
+from pyworkflow.protocol import MODE_RESUME, MODE_RESTART
 from pyworkflow.template import TemplateList
 
 logger = logging.getLogger(__name__)
@@ -64,9 +65,8 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
-                                        MultiPointerParam, RelationParam, Group)
+                                        MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
-from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 
@@ -683,7 +683,7 @@ class ProjectService:
         hasExpert = protocol.hasExpert()
         if hasExpert:
             headerParams.append('expertLevel')
-        headerParams.append('runMode')
+        # headerParams.append('runMode')
         logoPath = ''
         path = getattr(package, '_logo', '')
         if path != '':
@@ -896,6 +896,18 @@ class ProjectService:
 
                 paramsData.append(sectionData)
 
+        info['executeMode'] = {'launch': {'label': 'Launch',
+                                          'help': 'Start the protocol from its current configuration'},
+                               'restart': {'label': 'Restart',
+                                           'help': 'Restart the protocol execution from scratch (keeps current params).'},
+
+                               }
+        emptyInput, openSetPointer, emptyPointers = protocol.getInputStatus()
+        if openSetPointer or emptyPointers:
+            info['executeMode'] = {'schedule': {'label': 'Schedule',
+                                                'help': 'Schedule the protocol from its current configuration'}
+                                   }
+
         form["sections"] = paramsData
         context['info'] = info
         context['form'] = form
@@ -981,18 +993,21 @@ class ProjectService:
                         try:
                             parentProtocol = self.currentProject.getProtocol(int(parentId))
                             val = value
+                            output = val.split('.')[-1]
                             param.set(val)
-                            protocol.setAttributeValue(key, parentProtocol)
-                            param.default.set(val)
-                            pointer = getattr(protocol, key)
-                            pointer.setExtended(val.split('.')[-1])
+                            parentOutput = hasattr(parentProtocol, output)
+                            if parentOutput:
+                                protocol.setAttributeValue(key, parentProtocol)
+                                param.default.set(val)
+                                pointer = getattr(protocol, key)
+                                pointer.setExtended(output)
 
                             logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
                         except Exception as e:
                             logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
                     else:
                         # Pointer without parentId, fallback
-                        if not param.allowsNull.get():
+                        if not param.allowsNull.get() and protocol.evalCondition(param.condition.get()):
                             errorList.append('**' + param.label.get() + '** it must not be empty.')
                         param.set(None)
         return errorList
@@ -1081,7 +1096,7 @@ class ProjectService:
 
         return protocol, errorList
 
-    def launchProtocol(self, mapper, protocolId, protocolClassName, params):
+    def launchProtocol(self, mapper, protocolId, protocolClassName, params, executeMode):
         """Launch a protocol in RESTART mode, applying all params."""
         protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
         try:
@@ -1091,6 +1106,21 @@ class ProjectService:
                 '**Other errors:**There are other validation errors that may be resolved by correcting the previous ones.'
             ]
         if not errors:
+            # mapExecuteModeToRunModeOrAction
+            modeToRunMode = {
+                "launch": MODE_RESUME,
+                "restart": MODE_RESTART,
+            }
+
+            if executeMode == "schedule":
+                self.currentProject.scheduleProtocol(protocol)
+                return
+
+            runMode = modeToRunMode.get(executeMode)
+            if runMode is None:
+                raise ValueError(f"Unknown executeMode: {executeMode}")
+
+            protocol.runMode.set(runMode)
             self.currentProject.launchProtocol(protocol)
         else:
             raise HTTPException(status_code=422, detail=errors)
@@ -1136,6 +1166,9 @@ class ProjectService:
             paramClass = param.__class__.__name__
             if paramClass == 'LabelParam':
                 paramClass = 'Label'
+
+            # if paramClass == 'PathParam':
+            #     paramDict["pointerClass"] = "StarFile"
             paramDict["paramClass"] = paramClass
 
             if protVar is not None:
@@ -1160,7 +1193,12 @@ class ProjectService:
                         paramValue = "%s.%s" % (parentId,
                                                   protVar.getExtended()) if protVar.getExtended() else ""
                     else:
-                        paramValue = None
+                        try:
+                            parentId = protVar.getObjParentId()
+                            paramValue = "%s.%s" % (parentId,
+                                                    protVar.getExtended()) if protVar.getExtended() else ""
+                        except Exception as e:
+                            paramValue = None
 
                     if protVar.get() is not None:
                         paramDict["parentId"] = parentId
@@ -1357,9 +1395,58 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    import os
+
     def getProtocolPath(self, protocolId):
+        # Resolve protocol absolute path
         protocol = self.currentProject.getProtocol(int(protocolId))
-        return {"path": os.path.abspath(protocol.getPath())}
+        protocolAbsPath = os.path.abspath(protocol.getPath())
+
+        # Infer a safe root boundary (project folder) to prevent browsing outside it
+        rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
+
+        # Compute startPath as relative to root ("" means root)
+        startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
+        if startRelPath == ".":
+            startRelPath = ""
+
+        # Clamp: never allow a startPath that would escape the root
+        if startRelPath.startswith(".."):
+            rootAbsPath = "/home"
+            startRelPath = ""
+
+        return {
+            "rootAbs": rootAbsPath,
+            "startPath": startRelPath,
+            "protocolRoot": startRelPath,
+
+            # Backward compatibility for older frontend code
+            "path": protocolAbsPath,
+        }
+
+    def _inferProjectRootAbs(self, protocolAbsPath: str) -> str:
+        # Try to infer project folder from a protocol path like: <project>/Runs/<protId>/...
+        normPath = os.path.abspath(protocolAbsPath)
+        runsMarker = f"{os.sep}Runs{os.sep}"
+        if runsMarker in normPath:
+            return normPath.split(runsMarker)[0] or ""
+
+        runsSuffix = f"{os.sep}Runs"
+        if normPath.endswith(runsSuffix):
+            return normPath[: -len(runsSuffix)] or ""
+
+        # Fallback: use project path if available
+        projectPath = ""
+        if hasattr(self.currentProject, "getPath"):
+            try:
+                projectPath = self.currentProject.getPath() or ""
+            except Exception:
+                projectPath = ""
+        elif hasattr(self.currentProject, "path"):
+            projectPath = getattr(self.currentProject, "path") or ""
+
+        return os.path.abspath(projectPath) if projectPath else ""
 
     def _protocolRoot(self, protocolId: Union[int, str]) -> FsPath:
         """

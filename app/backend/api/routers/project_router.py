@@ -19,7 +19,8 @@ from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.data_model import AnalyzeViewerResolveDecisionOut, AnalyzeViewerResolveContextIn
+from app.backend.models.data_model import AnalyzeViewerResolveDecisionOut, AnalyzeViewerResolveContextIn, \
+    RemoteListResultModel
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -323,8 +324,8 @@ async def launchProtocol(
         protocolId = request.getProtocolId()
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
-
-        service.launchProtocol(mapper, protocolId, protocolClassName, params)
+        executeMode = request.getMode()
+        service.launchProtocol(mapper, protocolId, protocolClassName, params, executeMode)
 
         return {"status": 0,
                 "errors": [],
@@ -706,6 +707,10 @@ def stopProtocol(
         )
 
 
+# ======================================================================
+#                FS REMOTE: list / preview / download
+# ======================================================================
+
 @router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
 async def getProtocolPath(
     projectId: int,
@@ -721,15 +726,18 @@ async def getProtocolPath(
     return service.getProtocolPath(protocolId)
 
 
-# ======================================================================
-#                FS REMOTE: list / preview / download
-# ======================================================================
-
-@router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
+@router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=RemoteListResultModel)
 async def listProtocolDir(
     projectId: int,
     protocolId: Union[int, str],
-    path: str = Query("", description="Relative path inside the protocol root"),
+    path: str = Query(
+        "",
+        description=(
+            "Path relative to the browser root (rootAbs). "
+            "Empty string lists root. Absolute paths are accepted only for legacy clients "
+            "and must be under rootAbs."
+        ),
+    ),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
