@@ -29,7 +29,7 @@ import io
 import os
 import mimetypes
 from pathlib import Path as FsPath
-from typing import Union, Dict, Any
+from typing import Union, Dict, Any, Optional
 
 import numpy as np
 from fastapi import HTTPException, Response
@@ -46,31 +46,122 @@ from matplotlib import cm as mplCm
 
 class FileHandlers:
     """
-    File/preview helpers scoped to a 'protocol root' inside the current project.
-    Expects an object with .getProtocol(int).getPath() (Scipion-like).
+    File/preview helpers scoped to a safe 'browser root' derived from the current project.
+
+    Contract:
+    - rootAbs is an absolute boundary folder (default: /home if not inferred).
+    - All navigation paths received by list/preview endpoints are relative to rootAbs.
+    - Absolute paths are accepted only for backward compatibility and must be lexically under rootAbs.
     """
 
     def __init__(self, currentProject):
         self.currentProject = currentProject
         mimetypes.init()
 
+    # -------------------------
+    # Root / path resolution
+    # -------------------------
     def getProtocolPath(self, protocolId):
-        """Return the protocol paths"""
+        """
+        Return the protocol browser paths.
+
+        Returns:
+          - rootAbs: absolute root boundary (project folder inferred)
+          - startPath: relative to rootAbs ("" means rootAbs)
+          - protocolRoot: relative to rootAbs (defaults to startPath)
+          - path: legacy absolute protocol path (backward compatibility)
+        """
         protocol = self.currentProject.getProtocol(int(protocolId))
-        return protocol.getPath()
+        protocolAbsPath = os.path.abspath(protocol.getPath())
 
-    def _protocolRoot(self, protocol_id: Union[int, str]) -> FsPath:
-        """
-        Resolve the absolute root folder for a protocol, using your service.
-        """
-        root = self.getProtocolPath(str(protocol_id))
-        if not root:
-            raise HTTPException(status_code=404, detail="Protocol path not found")
+        rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
 
-        p = FsPath(root).resolve()
+        startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
+        if startRelPath == ".":
+            startRelPath = ""
+
+        # Clamp: never allow a startPath that would escape rootAbs
+        if startRelPath.startswith(".."):
+            rootAbsPath = "/home"
+            startRelPath = ""
+
+        return {
+            "rootAbs": rootAbsPath.replace("\\", "/"),
+            "startPath": startRelPath.replace("\\", "/"),
+            "protocolRoot": startRelPath.replace("\\", "/"),
+            "path": protocolAbsPath.replace("\\", "/"),
+        }
+
+    def _inferProjectRootAbs(self, protocolAbsPath: str) -> str:
+        """
+        Infer project root from a protocol path like: <project>/Runs/<protId>/...
+        Fallback to currentProject.getPath() if available.
+        """
+        normPath = os.path.abspath(protocolAbsPath or "")
+        runsMarker = f"{os.sep}Runs{os.sep}"
+        if runsMarker in normPath:
+            return normPath.split(runsMarker)[0] or ""
+
+        runsSuffix = f"{os.sep}Runs"
+        if normPath.endswith(runsSuffix):
+            return normPath[: -len(runsSuffix)] or ""
+
+        projectPath = ""
+        if hasattr(self.currentProject, "getPath"):
+            try:
+                projectPath = self.currentProject.getPath() or ""
+            except Exception:
+                projectPath = ""
+        elif hasattr(self.currentProject, "path"):
+            projectPath = getattr(self.currentProject, "path") or ""
+
+        return os.path.abspath(projectPath) if projectPath else ""
+
+    def _browserRootAbs(self, protocolId: Union[int, str]) -> FsPath:
+        """
+        Resolve the absolute root folder boundary for browsing.
+        """
+        info = self.getProtocolPath(str(protocolId))
+        rootAbs = (info.get("rootAbs") or "/home").strip()
+
+        p = FsPath(rootAbs).resolve()
         if not p.exists() or not p.is_dir():
-            raise HTTPException(status_code=404, detail="Protocol root not found")
+            raise HTTPException(status_code=404, detail="Browser root not found")
         return p
+
+    @staticmethod
+    def _normalizeRelPath(relPath: str) -> str:
+        """
+        Normalize a root-relative path, clamping to root (never allowing escape).
+        """
+        raw = (relPath or "").strip().replace("\\", "/").lstrip("/")
+        if not raw or raw in (".", "./"):
+            return ""
+
+        parts = [p for p in raw.split("/") if p not in ("", ".")]
+        out = []
+
+        for part in parts:
+            if part == "..":
+                if not out:
+                    # Attempt to escape root -> clamp by ignoring
+                    continue
+                out.pop()
+                continue
+            out.append(part)
+
+        return "/".join(out)
+
+    @staticmethod
+    def _safeRelParts(relPath: str) -> list[str]:
+        """
+        Build a safe list of path parts that cannot escape the root.
+        """
+        norm = FileHandlers._normalizeRelPath(relPath)
+        if not norm:
+            return []
+        return [p for p in norm.split("/") if p]
 
     @staticmethod
     def _guardJoin(root: FsPath, relPath: str) -> FsPath:
@@ -78,46 +169,82 @@ class FileHandlers:
         Join root + relPath and ensure the resulting lexical path stays inside root.
 
         Rules:
-        - Input is treated as relative to root (absolute paths are rejected here).
-        - Symlinks under root are allowed even if they point outside root.
-          (We do not resolve the final target to decide.)
-        - Path traversal with ".." that would escape root is rejected.
-        - Special cases like /home are handled by the caller and must not reach here.
+        - Input is treated as relative to root (absolute paths rejected here).
+        - Path traversal with ".." that would escape root is clamped (never escapes).
+        - Symlinks under root are allowed even if they point outside root
+          (we do not resolve final targets to decide).
         """
         root = root.resolve()
 
         relNorm = (relPath or "").strip()
 
-        # Trivial values → root
+        # Trivial values -> root
         if relNorm in ("", "/", ".", "./"):
             return root
 
-        # Absolute paths are not allowed here; those are handled at a higher level
+        # Absolute paths are not allowed here; handle them via _resolveWithinRoot
         if FsPath(relNorm).is_absolute():
             raise HTTPException(status_code=400, detail="Invalid path")
 
-        # Normalize leading slashes
-        relNorm = relNorm.lstrip("/\\")
-        if not relNorm:
+        safeParts = FileHandlers._safeRelParts(relNorm)
+        if not safeParts:
             return root
 
-        candidate = root / relNorm
+        candidate = root.joinpath(*safeParts)
 
-        # Lexical containment check:
-        # - This does NOT resolve symlinks.
-        # - It only ensures that the composed path starts with root and
-        #   does not escape via "..".
+        # Final lexical containment check (candidate is built from safe parts)
         try:
             candidate.relative_to(root)
         except ValueError:
-            # Any attempt to escape root (e.g. "../..") is rejected
             raise HTTPException(status_code=400, detail="Invalid path")
 
-        # At this point:
-        # - candidate is inside root from a path-structure perspective.
-        # - If candidate is a symlink pointing outside, it is still allowed,
-        #   and will be resolved later when accessed.
         return candidate
+
+    def _resolveWithinRoot(self, root: FsPath, path: str) -> FsPath:
+        """
+        Accept either:
+        - root-relative path (preferred)
+        - absolute path (legacy) that is lexically under root
+
+        Returns a lexical path under root without resolving symlinks.
+        """
+        pRaw = (path or "").strip()
+        if not pRaw or pRaw in ("/", ".", "./"):
+            return root
+
+        candidate = FsPath(pRaw)
+
+        if candidate.is_absolute():
+            # Normalize ".." lexically without resolving symlinks
+            candidateNorm = FsPath(os.path.normpath(str(candidate))).absolute()
+
+            # Must be lexically under root
+            rootResolved = root.resolve()
+            try:
+                rel = candidateNorm.relative_to(rootResolved)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid path")
+
+            # Reject any traversal leftovers after normpath (should not contain "..")
+            relStr = rel.as_posix()
+            safeRel = self._normalizeRelPath(relStr)
+            return self._guardJoin(rootResolved, safeRel)
+
+        # Relative path: enforce root boundary
+        safeRel = self._normalizeRelPath(pRaw)
+        return self._guardJoin(root, safeRel)
+
+    def _relFromRoot(self, root: FsPath, target: FsPath) -> str:
+        """
+        Compute a root-relative path ("" means root).
+        """
+        rootResolved = root.resolve()
+        try:
+            rel = target.relative_to(rootResolved)
+        except ValueError:
+            return ""
+        relStr = rel.as_posix()
+        return "" if relStr == "." else relStr
 
     # -------------------------
     # Mime helpers
@@ -131,51 +258,27 @@ class FileHandlers:
         """
         Return the directory files list.
 
-        Supports:
-        - Relative paths inside the protocol root (default mode).
-        - Absolute paths under /home (absoluteMode).
+        Contract (updated):
+        - `path` is relative to the resolved browser root (rootAbs).
+        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
+        - items[].path is a leaf (basename) so the client can join cwd + leaf.
 
-        Payload contract:
-        - dirName: absolute path of the directory being listed
-        - cwd: alias of dirName (kept temporarily for backward compatibility)
-        - items[].path: absolute path of the entry (file or directory)
+        Response:
+        - dirName: absolute directory path (for debugging/backward compatibility)
+        - cwd: root-relative directory path ("" means root)
         - items[].name: basename
+        - items[].path: basename (leaf)
+        - items[].isDir, size, mime
         """
-        root = self._protocolRoot(protocolId).resolve()
-        pRaw = (path or "").strip()
-
-        # normalizeTrivialRootLikeInputs
-        if pRaw in ("/", ".", "./"):
-            pRaw = ""
-
-        absoluteMode = False
-
-        if not pRaw:
-            # protocolRoot
-            target = root
-        else:
-            candidate = FsPath(pRaw)
-
-            if candidate.is_absolute():
-                # absolutePathOnlyAllowHomeAndProtocolRootDescendants
-                candidateResolved = candidate.resolve()
-                try:
-                    # ifInsideProtocolRootTreatAsProtocolRelative
-                    rel = candidateResolved.relative_to(root)
-                    target = (root / rel).resolve()
-                except ValueError:
-                    candStr = candidateResolved.as_posix()
-                    if candStr == "/home" or candStr.startswith("/home/"):
-                        absoluteMode = True
-                        target = candidateResolved
-                    else:
-                        raise HTTPException(status_code=400, detail="Invalid path")
-            else:
-                # relativePathMustStayInsideProtocolRoot
-                target = self._guardJoin(root, pRaw)
+        root = self._browserRootAbs(protocolId).resolve()
+        target = self._resolveWithinRoot(root, path)
 
         if not target.exists():
-            raise HTTPException(status_code=404, detail="Path not found")
+            return {
+                "dirName": str(target),
+                "cwd": str(target),
+                "items": [],
+            }
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="Not a directory")
 
@@ -189,23 +292,9 @@ class FileHandlers:
                 except OSError:
                     continue
 
-                # buildAbsoluteEntryPathLexicallyWithoutResolvingSymlinks
-                childAbsLexical = (target / child.name).as_posix()
-
-                if absoluteMode:
-                    # ensureListedEntriesStayUnderHomeLexically
-                    if not (childAbsLexical == "/home" or childAbsLexical.startswith("/home/")):
-                        continue
-                else:
-                    # protocolModeRejectEntriesOutsideRootLexically
-                    try:
-                        _ = FsPath(childAbsLexical).relative_to(root)
-                    except ValueError:
-                        continue
-
                 item: Dict[str, Any] = {
                     "name": child.name,
-                    "path": childAbsLexical.replace("\\", "/"),
+                    "path": child.name,  # leaf-only contract
                     "isDir": isDir,
                 }
 
@@ -224,33 +313,35 @@ class FileHandlers:
         # sortFoldersFirstThenFilesAlphabetically
         items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
 
-        # absoluteDirNameForClientDisplayAndNavigation
-        dirName = target.resolve().as_posix()
+        cwdRel = self._relFromRoot(root, target)
+        dirNameAbs = target.as_posix()
 
-        # cwdIsAliasOfDirNameForCompatibility
         return {
-            "dirName": dirName,
-            "cwd": dirName,
+            "dirName": dirNameAbs,
+            "cwd": cwdRel,
             "items": items,
         }
 
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
         """
-        Return a lightweight preview for a file inside a protocol workspace.
+        Return a lightweight preview for a file under the browser root.
+
+        Contract (updated):
+        - `path` is relative to rootAbs ("" is root, but preview requires a file).
+        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
 
         Behaviors:
         - Text-like files -> UTF-8 text/plain (capped size).
         - Otherwise -> 415 (unsupported).
         """
-        file_path = FsPath(path)
+        root = self._browserRootAbs(protocolId).resolve()
+        filePath = self._resolveWithinRoot(root, path)
 
-        if not file_path.exists() or not file_path.is_file():
-            file_path = FsPath(path)
-            if (not file_path.exists()) or (not file_path.is_file()):
-                raise HTTPException(status_code=404, detail="File not found")
+        if not filePath.exists() or not filePath.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
 
-        suffix = file_path.suffix.lower()
-        mime = self._guessMime(file_path)  # e.g. "text/plain", etc.
+        suffix = filePath.suffix.lower()
+        mime = self._guessMime(filePath)  # e.g. "text/plain", etc.
 
         textual = (
             (mime.startswith("text/"))
@@ -266,18 +357,20 @@ class FileHandlers:
         if textual:
             MAX_BYTES = 1 * 1024 * 1024  # 1 MiB cap for preview
             try:
-                size = file_path.stat().st_size
+                size = filePath.stat().st_size
                 if size > MAX_BYTES:
                     raise HTTPException(
                         status_code=413,
                         detail="File too large to preview",
                     )
+            except HTTPException:
+                raise
             except Exception:
                 # best effort, continue to try reading
                 pass
 
             try:
-                text = file_path.read_text(encoding="utf-8", errors="ignore")
+                text = filePath.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 raise HTTPException(
                     status_code=500,
@@ -589,13 +682,16 @@ class FileHandlers:
               * if MRC/volume -> PNG slice + X-Preview-* headers (RGB colorized)
               * if normal image -> raw image + X-Preview-* headers
               * else -> raw bytes + minimal headers
+
+        Contract (updated):
+        - `path` is relative to rootAbs.
+        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
         """
-        filePath = FsPath(path)
+        root = self._browserRootAbs(protocolId).resolve()
+        filePath = self._resolveWithinRoot(root, path)
 
         if (not filePath.exists()) or (not filePath.is_file()):
-            filePath = FsPath(path)
-            if (not filePath.exists()) or (not filePath.is_file()):
-                raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="File not found")
 
         if inline:
             # MRC-like volume preview

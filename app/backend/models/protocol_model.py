@@ -59,6 +59,7 @@ class ProtocolRequest(BaseModel):
     protocolId: str
     protocolClassName: str
     params: Any
+    mode: str = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def getProtocolId(self):
@@ -69,6 +70,9 @@ class ProtocolRequest(BaseModel):
 
     def getProtocolClassName(self):
         return self.protocolClassName
+
+    def getMode(self):
+        return self.mode
 
 
 class ProtocolCreateRequest(BaseModel):

@@ -55,3 +55,17 @@ class AnalyzeViewerResolveDecisionOut(BaseModel):
 
     class Config:
         extra = "ignore"
+
+
+class RemoteEntryModel(BaseModel):
+    name: str
+    path: str  # leaf basename (client joins cwd + leaf)
+    isDir: bool
+    size: Optional[int] = None
+    mime: Optional[str] = None
+
+
+class RemoteListResultModel(BaseModel):
+    cwd: str  # root-relative dir path ("" means root)
+    dirName: Optional[str] = None  # absolute dir path (debug/compat)
+    items: List[RemoteEntryModel]
