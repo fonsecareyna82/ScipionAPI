@@ -26,7 +26,8 @@
 
 TEXT_FILE_EXTENSIONS = {".txt", ".log", ".json", ".yaml", ".yml", ".md", ".csv", ".tsv",
                         ".xml", ".star", ".coords", ".cbox", ".mdoc", ".tomostar",
-                        ".settings", ".com", ".tlt", ".xf", ".xtilt"}
+                        ".settings", ".com", ".tlt", ".xf", ".xtilt", ".stderr", ".stdout",
+                        ".out", ".err"}
 
 IMAGES_FILE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".em", ".stk"}
 

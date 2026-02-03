@@ -25,7 +25,7 @@
 # ******************************************************************************
 
 from pydantic import BaseModel, Field
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Union, Dict
 
 
 class Volume3dResponse(BaseModel):
@@ -66,6 +66,4 @@ class RemoteEntryModel(BaseModel):
 
 
 class RemoteListResultModel(BaseModel):
-    cwd: str  # root-relative dir path ("" means root)
-    dirName: Optional[str] = None  # absolute dir path (debug/compat)
     items: List[RemoteEntryModel]
