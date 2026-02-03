@@ -7,7 +7,7 @@ from fastapi import (
     status,
     Path as PathParam,
     Query,
-    Request,
+    Request, Body,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse
@@ -705,6 +705,237 @@ def stopProtocol(
                      "errors": [str(e)],
                      "workflow": []},
         )
+# ======================================================================
+#                            PROTOCOL LOGS
+# ======================================================================
+
+class LogChannelOut(BaseModel):
+    id: str
+    label: Optional[str] = None
+    order: Optional[int] = None
+
+
+class LogChunkOut(BaseModel):
+    channelId: str
+    text: str
+    nextOffset: int
+    hasMore: Optional[bool] = None
+
+
+class LogsPollResponse(BaseModel):
+    chunks: List[LogChunkOut]
+    done: bool = False
+
+
+def _ensureDefaultLogChannels(channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # ensureDefaultChannels
+    byId = {str(c.get("id")): c for c in (channels or []) if isinstance(c, dict) and c.get("id")}
+
+    defaults = [
+        {"id": "stdout", "label": "Output", "order": 10},
+        {"id": "stderr", "label": "Errors", "order": 20},
+        {"id": "schedule", "label": "Schedule", "order": 30},
+    ]
+
+    for d in defaults:
+        if d["id"] not in byId:
+            byId[d["id"]] = dict(d)
+        else:
+            # mergeDefaults
+            if not byId[d["id"]].get("label"):
+                byId[d["id"]]["label"] = d["label"]
+            if byId[d["id"]].get("order") is None:
+                byId[d["id"]]["order"] = d["order"]
+
+    out = list(byId.values())
+    out.sort(key=lambda x: (x.get("order") is None, x.get("order", 10**9), str(x.get("id", ""))))
+    return out
+
+
+def _coerceOffsets(payload: Any) -> Dict[str, int]:
+    # coerceOffsets
+    if payload is None:
+        return {}
+
+    if isinstance(payload, dict):
+        raw = payload.get("offsets") or payload.get("channels") or {}
+    else:
+        raw = getattr(payload, "offsets", None) or getattr(payload, "channels", None) or {}
+
+    offsets: Dict[str, int] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                offsets[str(k)] = int(v)
+            except Exception:
+                offsets[str(k)] = 0
+    return offsets
+
+
+def _coerceInt(payload: Any, key: str, default: Optional[int] = None) -> Optional[int]:
+    # coerceInt
+    if payload is None:
+        return default
+    val = payload.get(key) if isinstance(payload, dict) else getattr(payload, key, None)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except Exception:
+        return default
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/logs/channels",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProtocolLogChannels(
+    projectId: int,
+    protocolId: int,
+    includeDefault: bool = Query(True, description="If true, always include stdout/stderr/schedule"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # listProtocolLogChannels
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        channels = service.listProtocolLogChannelsService(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        # normalizeChannels
+        if isinstance(channels, dict) and isinstance(channels.get("channels"), list):
+            channels = channels.get("channels")
+        if channels is None:
+            channels = []
+        if not isinstance(channels, list):
+            channels = []
+
+        channelDicts: List[Dict[str, Any]] = []
+        for c in channels:
+            if isinstance(c, dict) and c.get("id"):
+                channelDicts.append(c)
+            elif isinstance(c, str):
+                channelDicts.append({"id": c})
+
+        # if includeDefault:
+        #     channelDicts = _ensureDefaultLogChannels(channelDicts)
+
+        return {"channels": channelDicts}
+
+    except Exception as e:
+        logger.exception("Error in listProtocolLogChannels: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to load log channels: {e}")
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/logs/chunk",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def pollProtocolLogs(
+    projectId: int,
+    protocolId: int,
+    payload: Any = Body(...),
+    includeDefault: bool = Query(False, description="If true, always poll stdout/stderr/schedule keys"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # pollProtocolLogs
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        offsets = _coerceOffsets(payload) or {}
+
+        if includeDefault:
+            # ensureDefaultOffsets
+            for k in ("stdout", "stderr", "schedule"):
+                offsets.setdefault(k, 0)
+
+        maxBytes = _coerceInt(payload, "maxBytes", 65536)
+        maxLines = _coerceInt(payload, "maxLines", 2000)
+
+        result = service.pollProtocolLogsService(
+            projectId=projectId,
+            protocolId=protocolId,
+            offsets=offsets,
+            maxBytes=maxBytes,
+            maxLines=maxLines,
+        )
+
+        # normalizePollResponse
+        if not isinstance(result, dict):
+            return {"chunks": [], "done": False}
+
+        rawChannels = result.get("channels") or {}
+
+        # normalizeChannelsToDict
+        channelsDict: Dict[str, Dict[str, Any]] = {}
+        if isinstance(rawChannels, dict):
+            for k, v in rawChannels.items():
+                if isinstance(v, dict):
+                    channelsDict[str(k)] = v
+                else:
+                    channelsDict[str(k)] = {}
+        elif isinstance(rawChannels, list):
+            # optionalSupportForListShape: [{"id":"...", ...}]
+            for item in rawChannels:
+                if isinstance(item, dict):
+                    cid = item.get("id") or item.get("channel") or item.get("name")
+                    if cid:
+                        channelsDict[str(cid)] = item
+
+        # decideWhichChannelsToReturn
+        requestedIds = list(offsets.keys())
+        if not requestedIds:
+            # ifClientDidNotSendOffsetsUseServiceKeys
+            requestedIds = list(channelsDict.keys())
+
+        # unionWithServiceKeysSoYouDon’tSilentlyDropDynamicChannels
+        # if youOnlyWantRequestedRemoveThisBlock
+        for cid in channelsDict.keys():
+            if cid not in offsets:
+                offsets[cid] = 0
+                requestedIds.append(cid)
+
+        chunks = []
+        anyTruncated = False
+
+        for channelId in requestedIds:
+            ch = channelsDict.get(channelId) or {}
+            truncated = bool(ch.get("truncated", False))
+            anyTruncated = anyTruncated or truncated
+
+            chunks.append({
+                "channel": channelId,
+                "content": ch.get("content", "") or "",
+                "offset": int(ch.get("offset", offsets.get(channelId, 0)) or 0),
+                # "resetOffset": bool(ch.get("resetOffset", False)),
+                # "truncated": truncated,
+                # "exists": bool(ch.get("exists", False)),
+                # "path": ch.get("path", "") or "",
+                # "bytesRead": int(ch.get("bytesRead", 0) or 0),
+                # "linesRead": int(ch.get("linesRead", 0) or 0),
+                # "sizeBytes": int(ch.get("sizeBytes", 0) or 0),
+            })
+
+        done = not anyTruncated
+        return {"chunks": chunks, "done": done}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in pollProtocolLogs: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to poll logs: {e}")
 
 
 # ======================================================================
@@ -726,7 +957,7 @@ async def getProtocolPath(
     return service.getProtocolPath(protocolId)
 
 
-@router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=RemoteListResultModel)
+@router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
 async def listProtocolDir(
     projectId: int,
     protocolId: Union[int, str],

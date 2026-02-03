@@ -254,7 +254,7 @@ class FileHandlers:
         mt, _ = mimetypes.guess_type(str(p))
         return mt or "application/octet-stream"
 
-    def listProtocolDir(self, protocolId: str, path: str) -> Dict[str, Any]:
+    def listProtocolDir(self, protocolId: str, path: str) -> list[Dict[str, Any]]:
         """
         Return the directory files list.
 
@@ -264,21 +264,19 @@ class FileHandlers:
         - items[].path is a leaf (basename) so the client can join cwd + leaf.
 
         Response:
-        - dirName: absolute directory path (for debugging/backward compatibility)
-        - cwd: root-relative directory path ("" means root)
-        - items[].name: basename
-        - items[].path: basename (leaf)
-        - items[].isDir, size, mime
+        - A list of items only (no cwd/dirName):
+          items[].name: basename
+          items[].path: basename (leaf)
+          items[].isDir: bool
+          items[].size: int | None (files only)
+          items[].mime: str (files only)
         """
         root = self._browserRootAbs(protocolId).resolve()
         target = self._resolveWithinRoot(root, path)
 
         if not target.exists():
-            return {
-                "dirName": str(target),
-                "cwd": str(target),
-                "items": [],
-            }
+            return []
+
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="Not a directory")
 
@@ -286,7 +284,7 @@ class FileHandlers:
 
         try:
             for child in target.iterdir():
-                # safelyDetermineIsDirIgnoreBrokenEntries
+                # Safely determine isDir and ignore broken entries
                 try:
                     isDir = child.is_dir()
                 except OSError:
@@ -310,17 +308,10 @@ class FileHandlers:
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
 
-        # sortFoldersFirstThenFilesAlphabetically
+        # Sort folders first, then files alphabetically
         items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
 
-        cwdRel = self._relFromRoot(root, target)
-        dirNameAbs = target.as_posix()
-
-        return {
-            "dirName": dirNameAbs,
-            "cwd": cwdRel,
-            "items": items,
-        }
+        return items
 
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
         """

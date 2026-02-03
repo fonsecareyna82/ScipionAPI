@@ -1293,6 +1293,233 @@ class ProjectService:
 
         return 'default'
 
+    def listProtocolLogChannelsService(self, projectId: int, protocolId: int):
+        """
+        Return available log channels for a protocol, including paths and basic file stats.
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        # Resolve log paths from Scipion protocol object
+        stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
+        stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
+        schedulePath = protocol.getScheduleLog() if hasattr(protocol, "getScheduleLog") else None
+
+        def buildChannel(channelId: str, label: str, order, filePath: Optional[str]) -> Dict[str, Any]:
+            # Build a stable channel descriptor
+            exists = bool(filePath) and os.path.exists(filePath)
+            sizeBytes = 0
+            mtimeUtc = None
+
+            if exists:
+                try:
+                    sizeBytes = int(os.path.getsize(filePath))
+                except Exception:
+                    sizeBytes = 0
+                try:
+                    ts = os.path.getmtime(filePath)
+                    mtimeUtc = datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                except Exception:
+                    mtimeUtc = None
+
+            return {
+                "id": channelId,
+                "label": label,
+                "order": order,
+                # "path": filePath or "",
+                # "exists": exists,
+                # "sizeBytes": sizeBytes,
+                # "mtimeUtc": mtimeUtc,
+            }
+
+        channels = [
+            buildChannel("stdout", "Output", 1, stdoutPath),
+            buildChannel("stderr", "Errors", 2, stderrPath),
+            buildChannel("schedule", "Schedule", 3, schedulePath),
+        ]
+
+        # Keep a consistent list but allow UI to filter by exists==True
+        return {
+            "projectId": projectId,
+            "protocolId": int(protocolId),
+            "channels": channels,
+        }
+
+    def pollProtocolLogsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            offsets: Dict[str, int],
+            maxBytes: Optional[int] = 65536,
+            maxLines: Optional[int] = 2000,
+    ):
+        """
+        Incrementally read protocol logs from the given offsets, applying maxBytes and maxLines limits.
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
+        stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
+        schedulePath = protocol.getScheduleLog() if hasattr(protocol, "getScheduleLog") else None
+
+        # Normalize incoming offsets keys to canonical channels
+        def normalizeOffsets(rawOffsets: Dict[str, int]) -> Dict[str, int]:
+            if not isinstance(rawOffsets, dict):
+                return {"stdout": 0, "stderr": 0, "schedule": 0}
+
+            keyMap = {
+                "stdout": "stdout",
+                "stdoutLog": "stdout",
+                "out": "stdout",
+                "stderr": "stderr",
+                "stderrLog": "stderr",
+                "err": "stderr",
+                "schedule": "schedule",
+                "scheduleLog": "schedule",
+            }
+
+            normalized = {"stdout": 0, "stderr": 0, "schedule": 0}
+            for k, v in rawOffsets.items():
+                canonical = keyMap.get(str(k), None)
+                if canonical is None:
+                    continue
+                try:
+                    normalized[canonical] = max(0, int(v))
+                except Exception:
+                    normalized[canonical] = 0
+            return normalized
+
+        normalizedOffsets = normalizeOffsets(offsets or {})
+
+        def readChunk(filePath: Optional[str], startOffset: int) -> Dict[str, Any]:
+            # Read a chunk with byte and line caps, keeping offset consistent (no partial lines)
+            if not filePath:
+                return {
+                    # "exists": False,
+                    # "path": "",
+                    "content": "",
+                    "offset": int(startOffset or 0),
+                    # "resetOffset": False,
+                    # "truncated": False,
+                    # "bytesRead": 0,
+                    # "linesRead": 0,
+                    # "sizeBytes": 0,
+                }
+
+            if not os.path.exists(filePath):
+                return {
+                    # "exists": False,
+                    # "path": filePath,
+                    "content": "",
+                    "offset": int(startOffset or 0),
+                    # "resetOffset": False,
+                    # "truncated": False,
+                    # "bytesRead": 0,
+                    # "linesRead": 0,
+                    # "sizeBytes": 0,
+                }
+
+            try:
+                sizeBytes = int(os.path.getsize(filePath))
+            except Exception:
+                sizeBytes = 0
+
+            resetOffset = False
+            safeOffset = int(startOffset or 0)
+            if safeOffset < 0:
+                safeOffset = 0
+
+            # resetOffsetIfTruncated: if file was rotated/truncated, restart from 0
+            if safeOffset > sizeBytes:
+                safeOffset = 0
+                resetOffset = True
+
+            bytesCap = None if maxBytes is None else max(1, int(maxBytes))
+            linesCap = None if maxLines is None else max(1, int(maxLines))
+
+            contentParts: List[str] = []
+            bytesRead = 0
+            linesRead = 0
+
+            try:
+                with open(filePath, "rb") as f:
+                    f.seek(safeOffset)
+
+                    while True:
+                        if linesCap is not None and linesRead >= linesCap:
+                            break
+                        if bytesCap is not None and bytesRead >= bytesCap:
+                            break
+
+                        posBefore = f.tell()
+                        lineBytes = f.readline()
+                        if not lineBytes:
+                            break
+
+                        # enforceByteCapWithoutPartialLine: do not return partial lines
+                        if bytesCap is not None and (bytesRead + len(lineBytes)) > bytesCap:
+                            f.seek(posBefore)
+                            break
+
+                        contentParts.append(lineBytes.decode("utf-8", errors="ignore"))
+                        bytesRead += len(lineBytes)
+                        linesRead += 1
+
+                    newOffset = f.tell()
+
+            except Exception as e:
+                # ioReadError: surface error but keep a stable response shape
+                return {
+                    # "exists": True,
+                    # "path": filePath,
+                    "content": "",
+                    "offset": safeOffset,
+                    # "resetOffset": resetOffset,
+                    # "truncated": False,
+                    # "bytesRead": 0,
+                    # "linesRead": 0,
+                    # "sizeBytes": sizeBytes,
+                    "error": str(e),
+                }
+
+            # truncatedMeansMoreDataAvailable: caller can poll again with returned offset
+            truncated = False
+            try:
+                truncated = newOffset < int(os.path.getsize(filePath))
+            except Exception:
+                truncated = False
+
+            return {
+                # "exists": True,
+                # "path": filePath,
+                "content": "".join(contentParts),
+                "offset": int(newOffset),
+                # "resetOffset": resetOffset,
+                # "truncated": bool(truncated),
+                # "bytesRead": int(bytesRead),
+                # "linesRead": int(linesRead),
+                # "sizeBytes": int(sizeBytes),
+            }
+
+        stdoutRes = readChunk(stdoutPath, normalizedOffsets.get("stdout", 0))
+        stderrRes = readChunk(stderrPath, normalizedOffsets.get("stderr", 0))
+        scheduleRes = readChunk(schedulePath, normalizedOffsets.get("schedule", 0))
+
+        return {
+            "projectId": projectId,
+            "protocolId": int(protocolId),
+            "channels": {
+                "stdout": stdoutRes,
+                "stderr": stderrRes,
+                "schedule": scheduleRes,
+            },
+        }
+
     def getProtocolLogs(self, projectId: int, protocolId: int,
                         offset: int = 0,
                         errOffset: int = 0,
@@ -1395,23 +1622,17 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    import os
-
     def getProtocolPath(self, protocolId):
-        # Resolve protocol absolute path
         protocol = self.currentProject.getProtocol(int(protocolId))
         protocolAbsPath = os.path.abspath(protocol.getPath())
 
-        # Infer a safe root boundary (project folder) to prevent browsing outside it
         rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
 
-        # Compute startPath as relative to root ("" means root)
         startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
         if startRelPath == ".":
             startRelPath = ""
 
-        # Clamp: never allow a startPath that would escape the root
         if startRelPath.startswith(".."):
             rootAbsPath = "/home"
             startRelPath = ""
@@ -1420,9 +1641,6 @@ class ProjectService:
             "rootAbs": rootAbsPath,
             "startPath": startRelPath,
             "protocolRoot": startRelPath,
-
-            # Backward compatibility for older frontend code
-            "path": protocolAbsPath,
         }
 
     def _inferProjectRootAbs(self, protocolAbsPath: str) -> str:
