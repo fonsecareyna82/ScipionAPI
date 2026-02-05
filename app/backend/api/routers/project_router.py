@@ -929,7 +929,7 @@ def pollProtocolLogs(
             })
 
         done = not anyTruncated
-        return {"chunks": chunks, "done": done}
+        return {"chunks": chunks}
 
     except HTTPException:
         raise

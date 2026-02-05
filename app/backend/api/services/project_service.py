@@ -47,7 +47,7 @@ from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer, CsvList
-from pyworkflow.protocol import MODE_RESUME, MODE_RESTART
+from pyworkflow.protocol import MODE_RESUME, MODE_RESTART, STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED
 from pyworkflow.template import TemplateList
 
 logger = logging.getLogger(__name__)
@@ -908,6 +908,11 @@ class ProjectService:
                                                 'help': 'Schedule the protocol from its current configuration'}
                                    }
 
+        if protocol.getStatus() in [STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED]:
+            info['executeMode'] = {'stop': {'label': 'Stop',
+                                            'help': 'Stop the protocol'}
+                                   }
+
         form["sections"] = paramsData
         context['info'] = info
         context['form'] = form
@@ -1098,6 +1103,15 @@ class ProjectService:
 
     def launchProtocol(self, mapper, protocolId, protocolClassName, params, executeMode):
         """Launch a protocol in RESTART mode, applying all params."""
+        if executeMode == 'stop':
+            try:
+                self.stopProtocol([protocolId])
+                return {"status": 0,
+                        "errors": [],
+                        "workflow": []}
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=str(e))
+
         protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
         try:
             errors += protocol._validate()
@@ -1623,10 +1637,16 @@ class ProjectService:
             raise HTTPException(status_code=500, detail=str(e))
 
     def getProtocolPath(self, protocolId):
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocolAbsPath = os.path.abspath(protocol.getPath())
+        fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
+        if protocolId != fakeProtocolId:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            protocolAbsPath = os.path.abspath(protocol.getPath())
+            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+        else:
+            projectPath = self.currentProject.getPath()
+            protocolAbsPath = os.path.abspath(projectPath)
+            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
 
-        rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
 
         startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)

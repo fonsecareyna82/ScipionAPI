@@ -271,8 +271,13 @@ class FileHandlers:
           items[].size: int | None (files only)
           items[].mime: str (files only)
         """
-        root = self._browserRootAbs(protocolId).resolve()
-        target = self._resolveWithinRoot(root, path)
+        fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
+        if protocolId != fakeProtocolId:
+            root = self._browserRootAbs(protocolId).resolve()
+            target = self._resolveWithinRoot(root, path)
+        else:
+            root = FsPath(os.path.abspath(self.currentProject.getPath())).resolve()
+            target = self._resolveWithinRoot(root, path)
 
         if not target.exists():
             return []
