@@ -709,9 +709,14 @@ class ProjectService:
             # "projectName": self.currentProject.getName(),
         }
 
+        references = protocol.citations()
+        protHelp = protocol.getHelpText() + '\n\n'
+        if references != ['No references provided']:
+            for reference in references:
+                protHelp += reference + '\n'
         form = {
-            "references": protocol.citations(),
-            "help": protocol.getHelpText(),
+            "references": references,
+            "help": protHelp,
         }
 
         # Detect available wizards and viewers
