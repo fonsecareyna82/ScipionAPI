@@ -769,6 +769,7 @@ class ProjectService:
                                 # Handle Group
                                 if isinstance(param, Group):
                                     group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                                    group['collapsed'] = False
                                     group['params'] = []
                                     for paramGroupName, paramGroup in param.iterParams():
                                         protVar = getattr(protocol, paramGroupName, None)
