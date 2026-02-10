@@ -289,80 +289,57 @@ class PostgresqlFlatMapper(Mapper):
         # getProtocolTagIds
         rows = self.db.fetchAll(
             """
-            SELECT "tagId"
-              FROM protocol_tag_assignments
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-             ORDER BY "tagId" ASC
+            SELECT pta."tagId"
+              FROM protocol_tag_assignments pta
+              JOIN protocols p ON p.id = pta."protocolDbId"
+             WHERE p."projectId" = %s
+               AND pta."protocolDbId" = %s
+             ORDER BY pta."tagId" ASC
             """,
             (projectId, protocolDbId),
         )
         return [r["tagId"] for r in rows if r.get("tagId")]
 
-    def setProtocolTagIds(self, projectId: int, protocolDbId: int, tagIds: List[str]) -> Dict[str, Any]:
+    def setProtocolTagIds(self, projectId: int, protocolId: int, tagIds: List[str]) -> dict:
         # setProtocolTagIds
-        cleanedTagIds: List[str] = []
-        for rawId in tagIds or []:
-            if rawId is None:
-                continue
-            tid = str(rawId).strip()
-            if tid and tid not in cleanedTagIds:
-                cleanedTagIds.append(tid)
+        clean = sorted({str(t).strip() for t in (tagIds or []) if str(t).strip()})
 
-        if not cleanedTagIds:
-            with self.db.transaction() as tx:
-                tx.execute(
-                    """
-                    DELETE FROM protocol_tag_assignments
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-                    """,
-                    (projectId, protocolDbId),
-                    commit=False,
-                )
-            return {"tagIds": [], "missingTagIds": []}
-
-        existing = self.db.fetchAll(
+        # validateProtocolBelongsToProject
+        row = self.db.fetchOne(
             """
-            SELECT id
-              FROM protocol_tags
-             WHERE "projectId" = %s
-               AND id = ANY(%s)
+            SELECT "id"
+              FROM "protocols"
+             WHERE "protocolId" = %s
+               AND "projectId" = %s
             """,
-            (projectId, cleanedTagIds),
+            (str(protocolId), projectId),
         )
-        existingSet = {r["id"] for r in existing if r.get("id")}
-        missingTagIds = [tid for tid in cleanedTagIds if tid not in existingSet]
-        finalTagIds = [tid for tid in cleanedTagIds if tid in existingSet]
+        if not row:
+            raise Exception("Protocol not found in project")
 
-        with self.db.transaction() as tx:
-            tx.execute(
+        # deleteExistingAssignments
+        protocolDbId = row['id']
+        self.db.execute(
+            """
+            DELETE FROM protocol_tag_assignments
+             WHERE "protocolDbId" = %s
+            """,
+            (protocolDbId,),
+        )
+
+        if clean:
+            # bulkInsertWithUnnest
+            self.db.execute(
                 """
-                DELETE FROM protocol_tag_assignments
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
+                INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
+                SELECT %s, x
+                  FROM unnest(%s::text[]) AS x
+                ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
                 """,
-                (projectId, protocolDbId),
-                commit=False,
+                (protocolDbId, clean),
             )
 
-            if finalTagIds:
-                valuesSql = ",".join(["(%s, %s, %s)"] * len(finalTagIds))
-                params: List[Any] = []
-                for tid in finalTagIds:
-                    params.extend([projectId, protocolDbId, tid])
-
-                tx.execute(
-                    f"""
-                       INSERT INTO protocol_tag_assignments ("projectId", "protocolDbId", "tagId")
-                       VALUES {valuesSql}
-                       ON CONFLICT DO NOTHING
-                       """,
-                    tuple(params),
-                    commit=False,
-                )
-
-        return {"tagIds": finalTagIds, "missingTagIds": missingTagIds}
+        return {"protocolId": protocolDbId, "tagIds": clean}
 
     # -----------------------------
     # Auth Methods
@@ -804,10 +781,10 @@ class PostgresqlFlatMapper(Mapper):
     # Protocol Methods
     # -----------------------------
     def saveProtocol(self, protocol: Dict[str, Any]) -> int:
-        """Insert a new protocol row and return its database id."""
-        protocolId = protocol.get("protocolId")
-        projectId = protocol.get("projectId")
-        protocolClassName = protocol.get("protocolClassName")
+        """Insert a new protocol row or update it if it already exists, then return its database id."""
+        protocolId = protocol["info"].get("protocolId")
+        projectId = protocol["info"].get("projectId")
+        protocolClassName = protocol["info"].get("protocolClassName")
 
         if not protocolId:
             raise ValueError("Missing required field: protocolId")
@@ -816,10 +793,15 @@ class PostgresqlFlatMapper(Mapper):
         if not protocolClassName:
             raise ValueError("Missing required field: protocolClassName")
 
-        status = protocol.get("status", "pending")
-        params = protocol.get("params")
-        parentIds = protocol.get("parentIds", [])
-        childIds = protocol.get("childIds", [])
+        status = protocol["info"].get("status", "pending")
+        params = protocol.get("values")
+        parentIds = protocol.get("parentIds", []) or []
+        childIds = protocol.get("childIds", []) or []
+
+        # serializeParamsToJson
+        paramsJson = None
+        if params is not None:
+            paramsJson = json.dumps(params, ensure_ascii=False)
 
         cur = self.db.execute(
             """
@@ -827,12 +809,18 @@ class PostgresqlFlatMapper(Mapper):
                 "projectId",
                 "protocolId",
                 "protocolClassName",
-                status,
-                params,
+                "status",
+                "params",
                 "parentIds",
                 "childIds"
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT ("projectId", "protocolId")
+            DO UPDATE SET
+                "status" = EXCLUDED."status",
+                "params" = EXCLUDED."params",
+                "parentIds" = EXCLUDED."parentIds",
+                "childIds" = EXCLUDED."childIds"
             RETURNING id
             """,
             (
@@ -840,7 +828,7 @@ class PostgresqlFlatMapper(Mapper):
                 str(protocolId),
                 protocolClassName,
                 status,
-                params,
+                paramsJson,
                 parentIds,
                 childIds,
             ),
@@ -892,13 +880,15 @@ class PostgresqlFlatMapper(Mapper):
         """
         self.db.execute(sql, tuple(params))
 
-    def deleteProtocol(self, protocolId: int) -> bool:
-        """Delete a protocol by id."""
-        cursor = self.db.execute(
-            'DELETE FROM protocols WHERE "id"=%s',
-            (protocolId,),
-        )
-        return cursor.rowcount > 0
+    def deleteProtocol(self, projectId, protocolList: Any) -> bool:
+        """Delete protocols"""
+        for prot in protocolList:
+            protId = prot.getObjId()
+            self.db.execute(
+                'DELETE FROM protocols  WHERE "protocolId" = %s AND "projectId" = %s',
+                (str(protId), projectId),
+            )
+        return True
 
     def updateProtocolDependencies(self, protocolId: str, parentIds: list, childIds: list):
         query = 'UPDATE protocols SET "parentIds" = %s, "childIds" = %s, "updatedAt" = NOW() WHERE "protocolId" = %s'

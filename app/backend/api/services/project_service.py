@@ -29,6 +29,7 @@ import logging
 import re
 import threading
 from functools import lru_cache
+from uuid import uuid4
 
 import numpy as np
 
@@ -1034,7 +1035,7 @@ class ProjectService:
         protocol.setAttributeValue(key, parentProtocol)
         param.default.set(value['editableValue'])
 
-    def saveProtocol(self, mapper, protocolId, protocolClassName, params, setToSave=True):
+    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
         if not protocolId:  # new protocol
             protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
@@ -1094,20 +1095,21 @@ class ProjectService:
         else:
             self.currentProject._setupProtocol(protocol)
 
-        # dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=27)
-        # if not dbProtocol:
-        #     # Insert a new protocol
-        #     pass
-        # else:
-        #     # Update parameters and status if exists
-        #     pass
+        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=27)
+        if not dbProtocol:
+            protocolContex = self._buildProtocolContext(projectId, protocol)
+            mapper.saveProtocol(protocolContex)
+            pass
+        else:
+            # Update parameters and status if exists
+            pass
         # Save dependencies
         # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
         # self.saveProtocolDependencies(mapper, graphData._nodesDict)
 
         return protocol, errorList
 
-    def launchProtocol(self, mapper, protocolId, protocolClassName, params, executeMode):
+    def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
         """Launch a protocol in RESTART mode, applying all params."""
         if executeMode == 'stop':
             try:
@@ -1118,7 +1120,7 @@ class ProjectService:
             except Exception as e:
                 raise HTTPException(status_code=422, detail=str(e))
 
-        protocol, errors = self.saveProtocol(mapper, protocolId, protocolClassName, params, setToSave=False)
+        protocol, errors = self.saveProtocol(mapper, projectId, protocolId, protocolClassName, params, setToSave=False)
         try:
             errors += protocol._validate()
         except Exception:
@@ -1592,22 +1594,28 @@ class ProjectService:
         self.currentProject._storeProtocol(protocol)
         return {"status": "ok", "message": "Protocol renamed successfully"}
 
-    def duplicateProtocol(self, protocols: Any):
+    def duplicateProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol.id)))
-            self.currentProject.copyProtocol(protList)
+            resultProtList = self.currentProject.copyProtocol(protList)
+
+            for prot in resultProtList:
+                protocolContex = self._buildProtocolContext(projectId, prot)
+                mapper.saveProtocol(protocolContex)
+
             return {"status": "ok", "message": "Protocol was duplicated successfully"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def deleteProtocol(self, protocols: Any):
+    def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol)))
             self.currentProject.deleteProtocol(*protList)
+            mapper.deleteProtocol(projectId, protList)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -4502,3 +4510,177 @@ class ProjectService:
                 "totalRows": int(totalRows),
                 "rows": resultRows,
             }
+
+
+    # -----------------------------
+    # Tags Service Methods
+    # -----------------------------
+
+    def listProjectTags(
+        self,
+        mapper,
+        projectId: int,
+        currentUser: dict,
+    ) -> List[Dict[str, Any]]:
+        # listProjectTags
+        listFn = getattr(mapper, "listProjectTags", None)
+        if callable(listFn):
+            return listFn(projectId=projectId)
+
+        # mapperMethodFallback: keep backward compatibility with older mapper name
+        legacyListFn = getattr(mapper, "listProtocolTags", None)
+        if callable(legacyListFn):
+            return legacyListFn(projectId=projectId)
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Mapper does not implement listProjectTags",
+        )
+
+
+    def createProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        currentUser: dict,
+        payload,
+    ) -> Dict[str, Any]:
+        # createProjectTag
+        title = (payload.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+
+        tagId = (payload.id or "").strip() if getattr(payload, "id", None) else ""
+        if not tagId:
+            tagId = str(uuid4())
+
+        tag = {
+            "id": tagId,
+            "title": title,
+            "description": getattr(payload, "description", None),
+            "color": getattr(payload, "color", None),
+        }
+
+        try:
+            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create tag: {e}",
+            )
+
+
+    def updateProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        tagId: str,
+        currentUser: dict,
+        payload,
+    ) -> Dict[str, Any]:
+        # updateProjectTag
+        tagId = (tagId or "").strip()
+        if not tagId:
+            raise HTTPException(status_code=400, detail="tagId is required")
+
+        existing = None
+        for t in self.listProjectTags(mapper=mapper, projectId=projectId, currentUser=currentUser):
+            if str(t.get("id", "")).strip() == tagId:
+                existing = t
+                break
+
+        if not existing:
+            raise HTTPException(status_code=404, detail="Tag not found")
+
+        nextTitle = getattr(payload, "title", None)
+        if nextTitle is None:
+            nextTitle = existing.get("title")
+        nextTitle = (nextTitle or "").strip()
+        if not nextTitle:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+
+        nextDescription = getattr(payload, "description", None)
+        if nextDescription is None:
+            nextDescription = existing.get("description")
+
+        nextColor = getattr(payload, "color", None)
+        if nextColor is None:
+            nextColor = existing.get("color")
+
+        tag = {
+            "id": tagId,
+            "title": nextTitle,
+            "description": nextDescription,
+            "color": nextColor,
+        }
+
+        try:
+            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update tag: {e}",
+            )
+
+
+    def deleteProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        tagId: str,
+        currentUser: dict,
+    ) -> bool:
+        # deleteProjectTag
+        tagId = (tagId or "").strip()
+        if not tagId:
+            raise HTTPException(status_code=400, detail="tagId is required")
+
+        # cascadeBehavior: protocol_tag_assignments(tagId) has ON DELETE CASCADE
+        try:
+            return bool(mapper.deleteProtocolTag(projectId=projectId, tagId=tagId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete tag: {e}",
+            )
+
+
+    def listProtocolTags(
+        self,
+        mapper,
+        projectId: int,
+        protocolId: int,
+        currentUser: dict,
+    ) -> Dict[str, Any]:
+        # listProtocolTags
+        try:
+            tagIds = mapper.getProtocolTagIds(projectId=projectId, protocolDbId=int(protocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list protocol tags: {e}",
+            )
+
+        return {"tagIds": tagIds}
+
+
+    def setProtocolTags(
+        self,
+        mapper,
+        projectId: int,
+        protocolId: int,
+        tagIds: List[str],
+        currentUser: dict,
+    ) -> Dict[str, Any]:
+        # setProtocolTags
+        try:
+            return mapper.setProtocolTagIds(
+                projectId=projectId,
+                protocolId=int(protocolId),
+                tagIds=tagIds or [],
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to set protocol tags: {e}",
+            )

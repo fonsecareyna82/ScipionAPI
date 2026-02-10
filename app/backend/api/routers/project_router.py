@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
@@ -325,7 +326,7 @@ async def launchProtocol(
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
         executeMode = request.getMode()
-        service.launchProtocol(mapper, protocolId, protocolClassName, params, executeMode)
+        service.launchProtocol(mapper, projectId, protocolId, protocolClassName, params, executeMode)
 
         return {"status": 0,
                 "errors": [],
@@ -372,7 +373,7 @@ async def saveProtocol(
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
 
-        protocol, errors = service.saveProtocol(mapper, protocolId, protocolClassName, params)
+        protocol, errors = service.saveProtocol(mapper, projectId, protocolId, protocolClassName, params)
         errors = errors or []
 
         return {"status": 0 if not errors else 1,
@@ -476,7 +477,7 @@ def duplicateProtocol(
                          "workflow": []},
             )
 
-        service.duplicateProtocol(items)
+        service.duplicateProtocol(mapper, projectId, items)
         # Keep 201 on success, but still return unified schema
         return {"status": 0,
                 "errors": [],
@@ -524,7 +525,7 @@ def deleteProtocol(
                          "workflow": []},
             )
 
-        service.deleteProtocol(protocolIds)
+        service.deleteProtocol(mapper, projectId, protocolIds)
 
         return {"status": 0,
                 "errors": [],
@@ -2155,3 +2156,157 @@ def getMetadataTableWindow(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
+
+# ======================================================================
+#                            PROTOCOL TAGS
+# ======================================================================
+
+
+@router.get(
+    "/{projectId}/tags",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProjectTags(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.listProjectTags(mapper=mapper, projectId=projectId, currentUser=currentUser)
+
+
+@router.post(
+    "/{projectId}/tags",
+    response_model=Any,
+    status_code=status.HTTP_201_CREATED,
+)
+def createProjectTag(
+    projectId: int,
+    payload: ProtocolTagCreateIn,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        return service.createProjectTag(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in createProjectTag: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to create tag: {e}")
+
+
+@router.put(
+    "/{projectId}/tags/{tagId}",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def updateProjectTag(
+    projectId: int,
+    tagId: str,
+    payload: ProtocolTagUpdateIn,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.updateProjectTag(
+        mapper=mapper,
+        projectId=projectId,
+        tagId=tagId,
+        currentUser=currentUser,
+        payload=payload,
+    )
+
+
+@router.delete(
+    "/{projectId}/tags/{tagId}",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def deleteProjectTag(
+    projectId: int,
+    tagId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    ok = service.deleteProjectTag(mapper=mapper, projectId=projectId, tagId=tagId, currentUser=currentUser)
+    return {"success": bool(ok)}
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/tags",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProtocolTags(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.listProtocolTags(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+        currentUser=currentUser,
+    )
+
+
+@router.put(
+    "/{projectId}/protocols/{protocolId}/tags",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def setProtocolTags(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolTagsSetIn,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # ensureProjectExists
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.setProtocolTags(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+        tagIds=payload.tagIds or [],
+        currentUser=currentUser,
+    )
