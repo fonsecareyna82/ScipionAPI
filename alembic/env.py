@@ -29,7 +29,7 @@ sys.path.insert(0, str(repoRoot))
 
 # importModelsForMetadata
 from app.backend.database import Base  # noqa: E402
-from app.backend.models import user_model, project_model, protocol_model  # noqa: F401,E402
+from app.backend.models import user_model, project_model, protocol_model, tag_model, protocol_tag_assignment_model  # noqa: F401,E402
 
 target_metadata = Base.metadata
 
