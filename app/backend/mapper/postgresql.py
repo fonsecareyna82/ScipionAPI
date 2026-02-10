@@ -3,7 +3,8 @@
 import json
 import psycopg2
 import psycopg2.extras
-from typing import Optional, List, Dict, Any
+from contextlib import contextmanager
+from typing import Optional, List, Dict, Any, Iterator
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
 
@@ -18,16 +19,25 @@ class PostgresqlDb:
     """Class to handle PostgreSQL connection and basic operations."""
 
     def __init__(self, dbName: str, user: str, password: str, host: str = "localhost", port: int = 5432):
-        self.conn = psycopg2.connect(
-            dbname=dbName, user=user, password=password, host=host, port=port
-        )
+        self.conn = psycopg2.connect(dbname=dbName, user=user, password=password, host=host, port=port)
         self.cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    def execute(self, query: str, params: Optional[tuple] = None) -> Any:
+    def execute(self, query: str, params: Optional[tuple] = None, commit: bool = True) -> Any:
         """Execute a SQL command."""
         self.cursor.execute(query, params)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return self.cursor
+
+    @contextmanager
+    def transaction(self) -> Iterator["PostgresqlDb"]:
+        # transaction
+        try:
+            yield self
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def fetchOne(self, query: str, params: Optional[tuple] = None) -> Optional[Dict]:
         """Fetch a single row."""
@@ -103,12 +113,21 @@ class PostgresqlFlatMapper(Mapper):
             """
             CREATE TABLE IF NOT EXISTS protocols (
                 id SERIAL PRIMARY KEY,
-                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                type TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                createdAt TIMESTAMP DEFAULT NOW(),
-                parameters JSONB
+               CREATE TABLE IF NOT EXISTS protocols (
+               id SERIAL PRIMARY KEY,
+               "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+               "protocolId" TEXT NOT NULL,
+               "protocolClassName" TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'pending',
+               params JSONB,
+               "parentIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
+               "childIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
+               "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               "updatedAt" TIMESTAMPTZ
             );
+            
+            CREATE UNIQUE INDEX IF NOT EXISTS protocols_project_protocol_ux
+              ON protocols("projectId", "protocolId");
             """
         )
 
@@ -127,6 +146,38 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
+        # Create ProjectTags
+        self.db.execute("""
+                          CREATE TABLE IF NOT EXISTS protocol_tags (
+                          id TEXT PRIMARY KEY,
+                          "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                          title TEXT NOT NULL,
+                          description TEXT,
+                          color TEXT,
+                          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                          "updatedAt" TIMESTAMPTZ
+                        );
+                        
+                        CREATE UNIQUE INDEX IF NOT EXISTS protocol_tags_project_title_ux
+                          ON protocol_tags("projectId", lower(title));
+                        """)
+
+        self.db.execute("""
+                          CREATE TABLE IF NOT EXISTS protocol_tag_assignments (
+                              "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                              "protocolDbId" INTEGER NOT NULL REFERENCES protocols(id) ON DELETE CASCADE,
+                              "tagId" TEXT NOT NULL REFERENCES protocol_tags(id) ON DELETE CASCADE,
+                              "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                              PRIMARY KEY ("projectId", "protocolDbId", "tagId")
+                            );
+                        
+                        CREATE INDEX IF NOT EXISTS protocol_tag_assignments_by_tag
+                          ON protocol_tag_assignments("projectId", "tagId");
+                        
+                        CREATE INDEX IF NOT EXISTS protocol_tag_assignments_by_protocol
+                          ON protocol_tag_assignments("projectId", "protocolDbId");
+
+                               """)
         # CreateUserSettingsTable
         self.db.execute(
             """
@@ -172,6 +223,146 @@ class PostgresqlFlatMapper(Mapper):
               ON instance_settings USING GIN (settings);
             """
         )
+
+    # -----------------------------
+    # Tags Methods
+    # -----------------------------
+
+    def listProtocolTags(self, projectId: int) -> List[Dict[str, Any]]:
+        # listProtocolTags
+        return self.db.fetchAll(
+            """
+            SELECT id, "projectId", title, description, color, "createdAt", "updatedAt"
+              FROM protocol_tags
+             WHERE "projectId" = %s
+             ORDER BY lower(title) ASC
+            """,
+            (projectId,),
+        )
+
+    def upsertProtocolTag(self, projectId: int, tag: Dict[str, Any]) -> Dict[str, Any]:
+        # upsertProtocolTag
+        tagId = (tag or {}).get("id")
+        title = (tag or {}).get("title")
+
+        if not tagId:
+            raise ValueError("Missing required field: tag.id")
+        if not title:
+            raise ValueError("Missing required field: tag.title")
+
+        description = (tag or {}).get("description")
+        color = (tag or {}).get("color")
+
+        cur = self.db.execute(
+            """
+            INSERT INTO protocol_tags (id, "projectId", title, description, color)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id)
+            DO UPDATE SET
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                color = EXCLUDED.color,
+                "updatedAt" = NOW()
+            RETURNING id, "projectId", title, description, color, "createdAt", "updatedAt"
+            """,
+            (str(tagId), projectId, title, description, color),
+        )
+        return cur.fetchone()
+
+    def deleteProtocolTag(self, projectId: int, tagId: str) -> bool:
+        # deleteProtocolTag
+        cur = self.db.execute(
+            """
+            DELETE FROM protocol_tags
+             WHERE id = %s
+               AND "projectId" = %s
+            """,
+            (str(tagId), projectId),
+        )
+        return cur.rowcount > 0
+
+        # -----------------------------
+        # Tag Assignments Methods
+        # -----------------------------
+
+    def getProtocolTagIds(self, projectId: int, protocolDbId: int) -> List[str]:
+        # getProtocolTagIds
+        rows = self.db.fetchAll(
+            """
+            SELECT "tagId"
+              FROM protocol_tag_assignments
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "tagId" ASC
+            """,
+            (projectId, protocolDbId),
+        )
+        return [r["tagId"] for r in rows if r.get("tagId")]
+
+    def setProtocolTagIds(self, projectId: int, protocolDbId: int, tagIds: List[str]) -> Dict[str, Any]:
+        # setProtocolTagIds
+        cleanedTagIds: List[str] = []
+        for rawId in tagIds or []:
+            if rawId is None:
+                continue
+            tid = str(rawId).strip()
+            if tid and tid not in cleanedTagIds:
+                cleanedTagIds.append(tid)
+
+        if not cleanedTagIds:
+            with self.db.transaction() as tx:
+                tx.execute(
+                    """
+                    DELETE FROM protocol_tag_assignments
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                    """,
+                    (projectId, protocolDbId),
+                    commit=False,
+                )
+            return {"tagIds": [], "missingTagIds": []}
+
+        existing = self.db.fetchAll(
+            """
+            SELECT id
+              FROM protocol_tags
+             WHERE "projectId" = %s
+               AND id = ANY(%s)
+            """,
+            (projectId, cleanedTagIds),
+        )
+        existingSet = {r["id"] for r in existing if r.get("id")}
+        missingTagIds = [tid for tid in cleanedTagIds if tid not in existingSet]
+        finalTagIds = [tid for tid in cleanedTagIds if tid in existingSet]
+
+        with self.db.transaction() as tx:
+            tx.execute(
+                """
+                DELETE FROM protocol_tag_assignments
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (projectId, protocolDbId),
+                commit=False,
+            )
+
+            if finalTagIds:
+                valuesSql = ",".join(["(%s, %s, %s)"] * len(finalTagIds))
+                params: List[Any] = []
+                for tid in finalTagIds:
+                    params.extend([projectId, protocolDbId, tid])
+
+                tx.execute(
+                    f"""
+                       INSERT INTO protocol_tag_assignments ("projectId", "protocolDbId", "tagId")
+                       VALUES {valuesSql}
+                       ON CONFLICT DO NOTHING
+                       """,
+                    tuple(params),
+                    commit=False,
+                )
+
+        return {"tagIds": finalTagIds, "missingTagIds": missingTagIds}
 
     # -----------------------------
     # Auth Methods
