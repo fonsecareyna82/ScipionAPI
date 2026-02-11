@@ -444,7 +444,7 @@ class ProjectService:
         except Exception:
             return 0
 
-    def buildProtocolsGraph(self, runs) -> dict:
+    def buildProtocolsGraph(self, runs, tags) -> dict:
         """Assemble dependency graph of protocols and their status."""
         nodesDict = runs._nodesDict
         graphData = {}
@@ -512,7 +512,8 @@ class ProjectService:
                 "elapsedTime": elapsedTime,
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
-                "stepsDone": stepsDone
+                "stepsDone": stepsDone,
+                "tags": tags[nodeId] if nodeId in tags else []
             }
         return graphData
 
@@ -521,7 +522,8 @@ class ProjectService:
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
-        graphData = self.buildProtocolsGraph(runs)
+        tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
+        graphData = self.buildProtocolsGraph(runs, tags)
         # self.saveProtocolDependencies(mapper, graphData)
 
         return {
