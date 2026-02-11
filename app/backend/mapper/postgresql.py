@@ -281,10 +281,6 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cur.rowcount > 0
 
-        # -----------------------------
-        # Tag Assignments Methods
-        # -----------------------------
-
     def getProtocolTagIds(self, projectId: int, protocolDbId: int) -> List[str]:
         # getProtocolTagIds
         rows = self.db.fetchAll(
@@ -340,6 +336,41 @@ class PostgresqlFlatMapper(Mapper):
             )
 
         return {"protocolId": protocolDbId, "tagIds": clean}
+
+    def getProjectProtocolTagIdsByProtocolId(self, projectId: int, includeEmpty: bool = False) -> Dict[str, List[str]]:
+        # getProjectProtocolTagIdsByProtocolId
+        rows = self.db.fetchAll(
+            """
+            SELECT
+                p."protocolId" AS "protocolId",
+                COALESCE(
+                    array_agg(DISTINCT pta."tagId" ORDER BY pta."tagId")
+                    FILTER (WHERE pta."tagId" IS NOT NULL),
+                    ARRAY[]::text[]
+                ) AS "tagIds"
+            FROM protocols p
+            LEFT JOIN protocol_tag_assignments pta
+              ON pta."protocolDbId" = p.id
+            LEFT JOIN protocol_tags pt
+              ON pt.id = pta."tagId"
+             AND pt."projectId" = p."projectId"
+            WHERE p."projectId" = %s
+            GROUP BY p."protocolId"
+            ORDER BY MIN(p.id)
+            """,
+            (projectId,),
+        )
+
+        result: Dict[str, List[str]] = {}
+        for r in rows:
+            # buildResultMap
+            protocolId = str(r["protocolId"])
+            tagIds = list(r.get("tagIds") or [])
+            if (not includeEmpty) and (not tagIds):
+                continue
+            result[protocolId] = tagIds
+
+        return result
 
     # -----------------------------
     # Auth Methods
