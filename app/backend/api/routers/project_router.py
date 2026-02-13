@@ -400,6 +400,25 @@ async def saveProtocol(
 #                   PROTOCOL OPERATIONS (RENAME / COPY / ETC.)
 # ======================================================================
 
+@router.get("/{projectId}/protocols/{protocolId}/suggestions/next", response_model=Any, status_code=status.HTTP_200_OK)
+def suggestionProtocol(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"status": 1,
+                     "errors": ["Project not found"],
+                     "workflow": []},
+        )
+    return service.getNextProtocolSuggestions(protocolId)
+
+
 @router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
 def renameProtocol(
     projectId: int,
@@ -497,6 +516,7 @@ def duplicateProtocol(
                      "errors": [str(e)],
                      "workflow": []},
         )
+
 
 @router.post("/{projectId}/protocols/delete", response_model=Any, status_code=status.HTTP_200_OK)
 def deleteProtocol(
