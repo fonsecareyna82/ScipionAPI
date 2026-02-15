@@ -4580,11 +4580,9 @@ class ProjectService:
                 "rows": resultRows,
             }
 
-
     # -----------------------------
     # Tags Service Methods
     # -----------------------------
-
     def listProjectTags(
         self,
         mapper,
@@ -4605,7 +4603,6 @@ class ProjectService:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Mapper does not implement listProjectTags",
         )
-
 
     def createProjectTag(
         self,
@@ -4637,7 +4634,6 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to create tag: {e}",
             )
-
 
     def updateProjectTag(
         self,
@@ -4691,7 +4687,6 @@ class ProjectService:
                 detail=f"Failed to update tag: {e}",
             )
 
-
     def deleteProjectTag(
         self,
         mapper,
@@ -4713,7 +4708,6 @@ class ProjectService:
                 detail=f"Failed to delete tag: {e}",
             )
 
-
     def listProtocolTags(
         self,
         mapper,
@@ -4731,7 +4725,6 @@ class ProjectService:
             )
 
         return {"tagIds": tagIds}
-
 
     def setProtocolTags(
         self,
@@ -4753,3 +4746,22 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to set protocol tags: {e}",
             )
+
+    def getContextMenuVisibilityPolicy(self) -> dict:
+        return {
+               "open":  True,
+               "browse":  True,
+               "rename":  True,
+               "duplicate":  True,
+               "delete":  True,
+               "restart":  True,
+               "continue":  True,
+               "reset":  True,
+               "stop":  True,
+               "selectFrom":  True,
+               "selectTo":  True,
+               "manageTags":  True,
+               "export":  True,
+               "upload":  True,
+               "nextSteps":  True,
+        }

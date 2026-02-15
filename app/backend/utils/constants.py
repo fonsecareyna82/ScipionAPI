@@ -27,7 +27,10 @@
 TEXT_FILE_EXTENSIONS = {".txt", ".log", ".json", ".yaml", ".yml", ".md", ".csv", ".tsv",
                         ".xml", ".star", ".coords", ".cbox", ".mdoc", ".tomostar",
                         ".settings", ".com", ".tlt", ".xf", ".xtilt", ".stderr", ".stdout",
-                        ".out", ".err"}
+                        ".out", ".err", ".script", ".text", ".markdown", ".rst", ".html",
+                        ".tex", ".toml", ".ini", ".cfg", ".conf", ".config", ".env",
+                        ".py", '.js', '.ts', '.tsx', '.java', '.c', '.cpp', '.h', '.cs',
+                        '.go', '.rs', '.sh', '.bat', '.ps1', '.srt', '.vtt'}
 
 IMAGES_FILE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".em", ".stk"}
 

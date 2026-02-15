@@ -2330,3 +2330,20 @@ def setProtocolTags(
         tagIds=payload.tagIds or [],
         currentUser=currentUser,
     )
+
+
+@router.get(
+    "/{projectId}/context-menu-visibility",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+async def getContextMenuVisibilityPolicy(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return service.getContextMenuVisibilityPolicy()
