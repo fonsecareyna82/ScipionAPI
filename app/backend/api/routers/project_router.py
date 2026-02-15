@@ -1017,6 +1017,22 @@ async def previewProtocolText(
     return service.previewProtocolTextFile(protocolId, path)
 
 
+@router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
+def previewRemoteEntry(
+    projectId: int,
+    protocolId: Union[int, str],
+    path: str = Query(..., description="Relative file path inside protocol root"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.previewRemoteEntry(protocolId, path)
+
+
 @router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
 async def previewProtocolImageFile(
     projectId: int,

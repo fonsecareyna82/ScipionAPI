@@ -318,6 +318,203 @@ class FileHandlers:
 
         return items
 
+    def previewProtocolRemoteEntry(self, protocolId: str, path: str) -> Response:
+        """
+        Return a lightweight preview for a file under the browser root.
+
+        Rules:
+        - Text-like files: returns UTF-8 text/plain (reuses previewProtocolTextFile size cap).
+        - Images / MRC-like files: returns inline preview (thumbnail for images and MRC).
+        - Other binaries: returns a truncated inline preview (first N bytes) to keep it lightweight.
+        - Supports optional stack specs like '3@Runs/.../particles.mrcs' for MRC-like stacks.
+        """
+        root = self._browserRootAbs(protocolId).resolve()
+
+        rawPath = (path or "").strip()
+        if not rawPath or rawPath in ("/", ".", "./"):
+            raise HTTPException(status_code=400, detail="A file path is required")
+
+        # parseOptionalStackSpec
+        stackIndex: Optional[int] = None
+        resolvedPath = rawPath
+
+        if "@" in rawPath:
+            prefix, rest = rawPath.split("@", 1)
+            prefixStr = prefix.strip()
+            if prefixStr.isdigit():
+                stackIndex = int(prefixStr)
+                resolvedPath = rest.strip()
+
+        filePath = self._resolveWithinRoot(root, resolvedPath)
+
+        if not filePath.exists():
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        if filePath.is_dir():
+            raise HTTPException(status_code=400, detail="Not a file")
+
+        suffix = filePath.suffix.lower()
+        mime = self._guessMime(filePath)
+
+        # detectTextual
+        textual = (
+                mime.startswith("text/")
+                or mime in ("application/json", "application/xml", "application/x-yaml", "text/x-log")
+                or suffix in TEXT_FILE_EXTENSIONS
+        )
+
+        if textual:
+            return self.previewProtocolTextFile(protocolId, resolvedPath)
+
+        # detectImageLikeOrMrc
+        isMrcLike = suffix in IMAGES_FILE_EXTENSIONS
+        isRegularImage = mime.startswith("image/")
+
+        if isMrcLike or isRegularImage:
+            # stackPreviewForMrcLike
+            if stackIndex is not None and isMrcLike:
+                imageSpec = f"{stackIndex}@{str(filePath)}"
+                pngBytes, meta = self._renderImageSpecAsPngAndMeta(imageSpec, filePath)
+                baseHeaders = {
+                    "Content-Disposition": f'inline; filename="{filePath.stem}.png"',
+                }
+                previewHeaders = self._buildPreviewHeaders(meta)
+                return Response(
+                    content=pngBytes,
+                    media_type="image/png",
+                    headers={**baseHeaders, **previewHeaders},
+                )
+
+            # genericInlinePreview
+            return self.previewProtocolImageFile(protocolId, resolvedPath, inline=True)
+
+        # binaryTruncatedPreview
+        MAX_BYTES = 256 * 1024  # 256 KiB lightweight binary preview cap
+        try:
+            sizeBytes = filePath.stat().st_size
+        except Exception:
+            sizeBytes = None
+
+        try:
+            with open(filePath, "rb") as f:
+                chunk = f.read(MAX_BYTES)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Could not read file")
+
+        meta = {
+            "mime": mime,
+            "sizeBytes": sizeBytes,
+            "note": f"Binary preview (first {len(chunk)} bytes)",
+        }
+
+        baseHeaders = {
+            "Content-Disposition": f'inline; filename="{filePath.name}"',
+        }
+        previewHeaders = self._buildPreviewHeaders(meta)
+
+        return Response(
+            content=chunk,
+            media_type=mime,
+            headers={**baseHeaders, **previewHeaders},
+        )
+
+    def _renderImageSpecAsPngAndMeta(self, imageSpec: str, backingPath: FsPath):
+        """
+        Render a preview PNG from an ImageReadersRegistry spec like '3@/abs/file.mrcs'.
+        """
+        try:
+            imageStk = ImageReadersRegistry.open(imageSpec)
+            data = imageStk.getImages()
+
+            if isinstance(data, list):
+                data = data[0]
+
+            if data.ndim == 3:
+                nz, ny, nx = data.shape
+            elif data.ndim == 2:
+                ny, nx = data.shape
+                nz = 1
+            else:
+                raise HTTPException(
+                    status_code=415,
+                    detail="Unsupported image dimensionality (only 2D or 3D supported)",
+                )
+
+            props = imageStk.getProperties() or {}
+            vx = props.get("sr", 1.0)
+            vy = vx
+            vz = vx
+
+            if data.ndim == 3:
+                midZ = nz // 2
+                img2d = data[midZ, :, :]
+                note = f"Central slice (z={midZ}) rendered as color PNG thumbnail"
+            else:
+                img2d = data
+                note = "2D image rendered as PNG thumbnail"
+
+            arr = np.asarray(img2d, dtype=np.float32)
+            if arr.ndim != 2 or arr.size == 0:
+                raise HTTPException(status_code=500, detail="Invalid image dimensions")
+
+            try:
+                arr = imageStk.highlightSlice(arr)
+                arr = imageStk.normalizeSlice(arr)
+            except Exception:
+                pass
+
+            origHeight, origWidth = arr.shape
+            scale = min(
+                maxThumbSize / float(origWidth),
+                maxThumbSize / float(origHeight),
+                1.0,
+            )
+            thumbWidth = max(1, int(round(origWidth * scale)))
+            thumbHeight = max(1, int(round(origHeight * scale)))
+
+            amin, amax = float(np.min(arr)), float(np.max(arr))
+            if not np.isfinite(amin) or not np.isfinite(amax) or amax <= amin:
+                arrNorm = np.zeros_like(arr, dtype=np.uint8)
+            else:
+                arrNorm = (arr - amin) / (amax - amin + 1e-12)
+                arrNorm = (255.0 * arrNorm).astype(np.uint8)
+
+            pilGray = Image.fromarray(arrNorm, mode="L")
+            if thumbWidth < origWidth or thumbHeight < origHeight:
+                pilGray = pilGray.resize((thumbWidth, thumbHeight), Image.LANCZOS)
+
+            cmapName = self._colormapName() if data.ndim == 3 else "gray"
+            rgb = self._applyColormap(np.array(pilGray, dtype=np.float32), cmapName=cmapName)
+            img = Image.fromarray(rgb, mode="RGB")
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            pngBytes = buf.getvalue()
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not read/convert image: {str(e)}")
+
+        meta = {
+            "mime": "volume/mrc" if backingPath.suffix.lower() in IMAGES_FILE_EXTENSIONS else self._guessMime(
+                backingPath),
+            "width": int(nx),
+            "height": int(ny),
+            "depth": int(nz),
+            "thumbWidth": int(thumbWidth),
+            "thumbHeight": int(thumbHeight),
+            "sizeBytes": backingPath.stat().st_size,
+            "note": f"{note} (cmap={cmapName})",
+        }
+
+        try:
+            meta["voxelSize"] = [float(vx), float(vy), float(vz)]
+        except Exception:
+            pass
+
+        return pngBytes, meta
+
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
         """
         Return a lightweight preview for a file under the browser root.
