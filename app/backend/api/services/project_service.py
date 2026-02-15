@@ -1809,6 +1809,13 @@ class ProjectService:
         previewProtTextFile = FileHandlers(self.currentProject)
         return previewProtTextFile.previewProtocolTextFile(protocolId, path)
 
+    def previewRemoteEntry(self, protocolId: str, path: str):
+        """
+        Return a preview.
+        """
+        previewProtRemoteEntry = FileHandlers(self.currentProject)
+        return previewProtRemoteEntry.previewProtocolRemoteEntry(protocolId, path)
+
     def previewProtocolImageFile(self, protocolId, path, inline: bool):
         """
         inline == False:
