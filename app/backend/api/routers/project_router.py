@@ -1001,7 +1001,7 @@ async def listProtocolDir(
     return service.listProtocolDir(protocolId, path)
 
 
-@router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
+@router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
 async def previewProtocolText(
     projectId: int,
     protocolId: Union[int, str],
@@ -1017,7 +1017,7 @@ async def previewProtocolText(
     return service.previewProtocolTextFile(protocolId, path)
 
 
-@router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
+@router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
 def previewRemoteEntry(
     projectId: int,
     protocolId: Union[int, str],
