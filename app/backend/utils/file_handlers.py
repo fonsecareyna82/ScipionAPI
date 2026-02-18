@@ -323,10 +323,10 @@ class FileHandlers:
         Return a lightweight preview for a file under the browser root.
 
         Rules:
-        - Text-like files: returns UTF-8 text/plain (reuses previewProtocolTextFile size cap).
-        - Images / MRC-like files: returns inline preview (thumbnail for images and MRC).
-        - Other binaries: returns a truncated inline preview (first N bytes) to keep it lightweight.
-        - Supports optional stack specs like '3@Runs/.../particles.mrcs' for MRC-like stacks.
+        - Text-like files: returns utf8 text/plain (reuses previewProtocolTextFile size cap).
+        - Images / mrc-like files: returns inline preview (thumbnail for images and mrc).
+        - Other binaries: returns a truncated inline preview (first n bytes) to keep it lightweight.
+        - Supports optional stack specs like '3@Runs/.../particles.mrcs' for mrc-like stacks.
         """
         root = self._browserRootAbs(protocolId).resolve()
 
@@ -349,12 +349,17 @@ class FileHandlers:
 
         if not filePath.exists():
             raise HTTPException(status_code=404, detail="Entry not found")
-
         if filePath.is_dir():
             raise HTTPException(status_code=400, detail="Not a file")
 
         suffix = filePath.suffix.lower()
         mime = self._guessMime(filePath)
+
+        # bestEffortSizeBytes
+        try:
+            sizeBytes = filePath.stat().st_size
+        except Exception:
+            sizeBytes = None
 
         # detectTextual
         textual = (
@@ -364,7 +369,18 @@ class FileHandlers:
         )
 
         if textual:
-            return self.previewProtocolTextFile(protocolId, resolvedPath)
+            resp = self.previewProtocolTextFile(protocolId, resolvedPath)
+            meta = {
+                "name": filePath.name,
+                "mime": mime,
+                "sizeBytes": sizeBytes,
+            }
+            return self._attachPreviewContract(
+                resp,
+                kind="text",
+                name=filePath.name,
+                meta=meta,
+            )
 
         # detectImageLikeOrMrc
         isMrcLike = suffix in IMAGES_FILE_EXTENSIONS
@@ -375,47 +391,84 @@ class FileHandlers:
             if stackIndex is not None and isMrcLike:
                 imageSpec = f"{stackIndex}@{str(filePath)}"
                 pngBytes, meta = self._renderImageSpecAsPngAndMeta(imageSpec, filePath)
-                baseHeaders = {
-                    "Content-Disposition": f'inline; filename="{filePath.stem}.png"',
-                }
-                previewHeaders = self._buildPreviewHeaders(meta)
-                return Response(
+
+                # inferKindFromMeta
+                depth = meta.get("depth")
+                kind = "volume" if (isinstance(depth, int) and depth > 1) else "image"
+
+                resp = Response(
                     content=pngBytes,
                     media_type="image/png",
-                    headers={**baseHeaders, **previewHeaders},
+                    headers={
+                        "Content-Disposition": f'inline; filename="{filePath.stem}.png"',
+                    },
+                )
+                return self._attachPreviewContract(
+                    resp,
+                    kind=kind,
+                    name=filePath.name,
+                    meta=meta,
+                    responseMime="image/png",
                 )
 
             # genericInlinePreview
-            return self.previewProtocolImageFile(protocolId, resolvedPath, inline=True)
+            resp = self.previewProtocolImageFile(protocolId, resolvedPath, inline=True)
+
+            # inferKindFromHeaders
+            previewMime = resp.headers.get("X-Preview-Mime", "") or ""
+            previewDepth = resp.headers.get("X-Preview-Depth")
+
+            kind = "image"
+            if previewMime.startswith("volume/"):
+                kind = "volume"
+            elif previewDepth:
+                try:
+                    if int(previewDepth) > 1:
+                        kind = "volume"
+                except Exception:
+                    pass
+
+            meta = {
+                "name": filePath.name,
+                "mime": previewMime or mime,
+                "sizeBytes": sizeBytes,
+            }
+
+            return self._attachPreviewContract(
+                resp,
+                kind=kind,
+                name=filePath.name,
+                meta=meta,
+            )
 
         # binaryTruncatedPreview
-        MAX_BYTES = 256 * 1024  # 256 KiB lightweight binary preview cap
-        try:
-            sizeBytes = filePath.stat().st_size
-        except Exception:
-            sizeBytes = None
-
+        maxBytes = 256 * 1024  # 256KiB
         try:
             with open(filePath, "rb") as f:
-                chunk = f.read(MAX_BYTES)
+                chunk = f.read(maxBytes)
         except Exception:
             raise HTTPException(status_code=500, detail="Could not read file")
 
         meta = {
+            "name": filePath.name,
             "mime": mime,
             "sizeBytes": sizeBytes,
-            "note": f"Binary preview (first {len(chunk)} bytes)",
+            "note": f"binaryPreviewFirstBytes={len(chunk)}",
         }
 
-        baseHeaders = {
-            "Content-Disposition": f'inline; filename="{filePath.name}"',
-        }
-        previewHeaders = self._buildPreviewHeaders(meta)
-
-        return Response(
+        resp = Response(
             content=chunk,
             media_type=mime,
-            headers={**baseHeaders, **previewHeaders},
+            headers={
+                "Content-Disposition": f'inline; filename="{filePath.name}"',
+            },
+        )
+
+        return self._attachPreviewContract(
+            resp,
+            kind="binary",
+            name=filePath.name,
+            meta=meta,
         )
 
     def _renderImageSpecAsPngAndMeta(self, imageSpec: str, backingPath: FsPath):
@@ -727,6 +780,7 @@ class FileHandlers:
             )
 
         meta = {
+            "name": filePath.name,
             "mime": "volume/mrc",
             "width": int(nx),
             "height": int(ny),
@@ -812,6 +866,7 @@ class FileHandlers:
             thumbMediaType = mediaType
 
         meta = {
+            "name": filePath.name,
             # Original image mime (semantic type)
             "mime": mediaType,
             # Original dimensions (if available)
@@ -833,38 +888,95 @@ class FileHandlers:
         to read these headers in a cross-origin fetch.
         """
         previewHeaders: Dict[str, str] = {}
+
+        if "kind" in meta and meta["kind"] is not None:
+            previewHeaders["X-Preview-Kind"] = str(meta["kind"])
+        if "name" in meta and meta["name"] is not None:
+            previewHeaders["X-Preview-Name"] = str(meta["name"])
         if "mime" in meta and meta["mime"] is not None:
             previewHeaders["X-Preview-Mime"] = str(meta["mime"])
+        if "responseMime" in meta and meta["responseMime"] is not None:
+            previewHeaders["X-Preview-ResponseMime"] = str(meta["responseMime"])
+
         if "width" in meta and meta["width"] is not None:
             previewHeaders["X-Preview-Width"] = str(meta["width"])
         if "height" in meta and meta["height"] is not None:
             previewHeaders["X-Preview-Height"] = str(meta["height"])
         if "depth" in meta and meta["depth"] is not None:
             previewHeaders["X-Preview-Depth"] = str(meta["depth"])
+
+        if "thumbWidth" in meta and meta["thumbWidth"] is not None:
+            previewHeaders["X-Preview-ThumbWidth"] = str(meta["thumbWidth"])
+        if "thumbHeight" in meta and meta["thumbHeight"] is not None:
+            previewHeaders["X-Preview-ThumbHeight"] = str(meta["thumbHeight"])
+
         if "sizeBytes" in meta and meta["sizeBytes"] is not None:
             previewHeaders["X-Preview-SizeBytes"] = str(meta["sizeBytes"])
+
         if "voxelSize" in meta and meta["voxelSize"] is not None:
             try:
                 vx, vy, vz = meta["voxelSize"]
                 previewHeaders["X-Preview-VoxelSize"] = f"{vx},{vy},{vz}"
             except Exception:
                 pass
+
         if "note" in meta and meta["note"]:
             previewHeaders["X-Preview-Note"] = meta["note"]
 
+        previewHeaders['X-Preview-Schema'] = 'scipion'
+
         exposeList = [
             "Content-Disposition",
+            "X-Preview-Kind",
+            "X-Preview-Name",
             "X-Preview-Mime",
+            "X-Preview-ResponseMime",
             "X-Preview-Width",
             "X-Preview-Height",
             "X-Preview-Depth",
+            "X-Preview-ThumbWidth",
+            "X-Preview-ThumbHeight",
             "X-Preview-SizeBytes",
             "X-Preview-VoxelSize",
             "X-Preview-Note",
+            "X-Preview-Columns",
+            "X-Preview-RowCount",
+            "X-Preview-Type",
+            "X-Preview-Mode",
+            "X-Preview-Truncated",
+            'X-Preview-Schema'
         ]
         previewHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeList)
 
         return previewHeaders
+
+    def _attachPreviewContract(
+            self,
+            response: Response,
+            kind: str,
+            name: str,
+            meta: Optional[Dict[str, Any]] = None,
+            responseMime: Optional[str] = None,
+    ) -> Response:
+        # ensureResponseMime
+        resolvedResponseMime = responseMime
+        if not resolvedResponseMime:
+            resolvedResponseMime = getattr(response, "media_type", None) or response.headers.get("content-type")
+        if not resolvedResponseMime:
+            resolvedResponseMime = "application/octet-stream"
+
+        mergedMeta: Dict[str, Any] = dict(meta or {})
+        mergedMeta["kind"] = kind
+        mergedMeta["name"] = name
+        mergedMeta["responseMime"] = resolvedResponseMime
+
+        # ensureContentDisposition
+        if "Content-Disposition" not in response.headers:
+            response.headers["Content-Disposition"] = f'inline; filename="{name}"'
+
+        previewHeaders = self._buildPreviewHeaders(mergedMeta)
+        response.headers.update(previewHeaders)
+        return response
 
     def previewProtocolImageFile(self, protocolId, path, inline: bool) -> Response:
         """
@@ -917,6 +1029,7 @@ class FileHandlers:
             # Fallback: other file types inline
             rawBytes = filePath.read_bytes()
             meta = {
+                "name": filePath.name,
                 "mime": mediaType,
                 "sizeBytes": filePath.stat().st_size,
             }

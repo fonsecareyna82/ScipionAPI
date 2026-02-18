@@ -77,6 +77,7 @@ def _buildApiApp() -> FastAPI:
             "X-Colormap",
             "Scipion-Colormap",
             "Colormap",
+            "X-Preview-Schema"
         ],
         expose_headers=[
             "Content-Disposition",
@@ -92,6 +93,7 @@ def _buildApiApp() -> FastAPI:
             "X-Preview-RowCount",
             "X-Archive-Kind",
             "X-Preview-VoxelSize",
+            "X-Preview-Schema"
         ],
     )
 
@@ -143,20 +145,33 @@ serveWeb = _shouldServeWeb()
 webDistPath = _resolveWebDistPath()
 apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
 
+# alwaysMountApiUnderApiMountPath
+app = FastAPI(title="Scipion Web", debug=True)
+
+app.mount(apiMountPath, apiApp)
+
+@app.get("/health", include_in_schema=False)
+def health_check():
+    # healthCheckRoot
+    return {"status": "ok", "mode": "api-only" if not serveWeb else "combined", "apiMountPath": apiMountPath}
+
+
+# optional: keepConvenienceRedirects
+@app.get("/docs", include_in_schema=False)
+def docs_redirect():
+    # redirectDocsToApiDocs
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{apiMountPath}/docs")
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_redirect():
+    # redirectOpenApiToApiOpenApi
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{apiMountPath}/openapi.json")
+
+
 if serveWeb and webDistPath and (webDistPath / "index.html").exists():
-    # buildCombinedApp
-    app = FastAPI(title="Scipion Web", debug=True)
-
-    # mountApiBeforeStatic
-    app.mount(apiMountPath, apiApp)
-
-    @app.get("/health", include_in_schema=False)
-    def health_check():
-        # healthCheckCombined
-        return {"status": "ok", "mode": "combined", "apiMountPath": apiMountPath}
-
     # mountSpaStaticRootLast
     app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")
-else:
-    app = apiApp
 
