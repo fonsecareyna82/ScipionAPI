@@ -17,8 +17,7 @@ if [[ "${repoRoot}" == "/" ]]; then
 fi
 
 # configDefaults
-condaExe="${SCIPIONAPI_CONDA_EXE:-conda}"
-condaEnvName="${SCIPIONAPI_ENV_NAME:-scipion4Web}"
+condaEnvName="${SCIPIONAPI_CONDA_ENV:-scipion4Web}"
 pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
 
 # scipionCoreInstallToggle
@@ -26,97 +25,140 @@ installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
 scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scipion-em scipion-app}"
 
 # ensureConda
-if ! command -v "${condaExe}" >/dev/null 2>&1; then
-  echo "ERROR: conda is required but was not found in PATH (or SCIPIONAPI_CONDA_EXE is invalid)." >&2
+if ! command -v conda >/dev/null 2>&1; then
+  echo "ERROR: conda is required but was not found in PATH." >&2
   exit 1
 fi
 
-# envExistsNow
+printWrapperHelp() {
+  # printWrapperHelp
+  cat <<EOF
+ScipionAPI wrapper (conda-managed)
+
+This script runs the scipionapi CLI inside a conda env.
+
+Conda env:
+  ${condaEnvName}
+
+Typical usage:
+  ./scripts/scipionapi bootstrap
+  ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
+  ./scripts/scipionapi install --user ... --email ... --pass ...
+  ./scripts/scipionapi start|stop|restart|status|logs
+
+Notes:
+  - The conda env is only created/bootstrapped by: bootstrap, provision
+  - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
+EOF
+}
+
 envExistsNow() {
-  if "${condaExe}" env list | awk '{print $1}' | grep -qx "${condaEnvName}"; then
+  # envExistsNow
+  if conda env list | awk '{print $1}' | grep -qx "${condaEnvName}"; then
     echo "1"
   else
     echo "0"
   fi
 }
 
-# ensureScipionCoreInstalled
+scipionapiInstalled() {
+  # scipionapiInstalled
+  conda run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1
+}
+
 ensureScipionCoreInstalled() {
+  # ensureScipionCoreInstalled
   if [[ "${installScipionCore}" != "1" ]]; then
     return 0
   fi
 
   # checkPyworkflowImport
-  if "${condaExe}" run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
+  if conda run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
     return 0
   fi
 
   echo "Installing Scipion core packages (pyworkflow/em/app)"
-  "${condaExe}" run -n "${condaEnvName}" python -m pip install ${scipionCorePackages}
+  conda run -n "${condaEnvName}" python -m pip install ${scipionCorePackages}
 
   # verifyPyworkflowImport
-  "${condaExe}" run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
+  conda run -n "${condaEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
     echo "ERROR: pyworkflow import still failing after installing Scipion core packages." >&2
     exit 1
   }
 }
 
-# bootstrapEnv
 bootstrapEnv() {
+  # bootstrapEnv
   cd "${repoRoot}"
 
-  local envExists
-  envExists="$(envExistsNow)"
+  local exists
+  exists="$(envExistsNow)"
 
-  if [[ "${envExists}" == "0" ]]; then
+  if [[ "${exists}" == "0" ]]; then
     echo "Creating conda env: ${condaEnvName} (python=${pythonVersion})"
-    "${condaExe}" create -y -n "${condaEnvName}" "python=${pythonVersion}"
+    conda create -y -n "${condaEnvName}" "python=${pythonVersion}"
   fi
 
   echo "Upgrading pip"
-  "${condaExe}" run -n "${condaEnvName}" python -m pip install --upgrade pip
+  conda run -n "${condaEnvName}" python -m pip install --upgrade pip
 
   if [[ -f "${repoRoot}/requirements.txt" ]]; then
     echo "Installing requirements.txt"
-    "${condaExe}" run -n "${condaEnvName}" python -m pip install -r "${repoRoot}/requirements.txt"
+    conda run -n "${condaEnvName}" python -m pip install -r "${repoRoot}/requirements.txt"
   fi
 
   # optionalScipionCoreInstall
   ensureScipionCoreInstalled
 
   echo "Installing package (editable)"
-  "${condaExe}" run -n "${condaEnvName}" python -m pip install -e "${repoRoot}"
+  conda run -n "${condaEnvName}" python -m pip install -e "${repoRoot}"
+
+  echo "Bootstrap completed."
 }
 
-# ensureCliInstalled
-ensureCliInstalled() {
-  if "${condaExe}" run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1; then
-    return 0
+requireEnvOrExplain() {
+  # requireEnvOrExplain
+  if [[ "$(envExistsNow)" == "0" ]]; then
+    echo "ERROR: conda env '${condaEnvName}' does not exist." >&2
+    echo "Run: ./scripts/scipionapi bootstrap" >&2
+    echo "Or:  ./scripts/scipionapi provision --user ... --email ... --pass ..." >&2
+    exit 1
   fi
-  bootstrapEnv
+
+  if ! scipionapiInstalled; then
+    echo "ERROR: scipionapi is not installed in conda env '${condaEnvName}'." >&2
+    echo "Run: ./scripts/scipionapi bootstrap" >&2
+    exit 1
+  fi
 }
 
 # routeCommand
 cmd="${1:-}"
-if [[ -z "${cmd}" ]]; then
-  ensureCliInstalled
-  exec "${condaExe}" run -n "${condaEnvName}" scipionapi --help
+
+# wrapperHelpFastPath (do not create env for help)
+if [[ -z "${cmd}" ]] || [[ "${cmd}" == "--help" ]] || [[ "${cmd}" == "-h" ]] || [[ "${cmd}" == "help" ]]; then
+  if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+    exec conda run -n "${condaEnvName}" scipionapi --help
+  fi
+  printWrapperHelp
+  exit 0
 fi
 
 if [[ "${cmd}" == "bootstrap" ]]; then
+  shift || true
   bootstrapEnv
-  echo "Bootstrap completed."
   exit 0
 fi
 
 if [[ "${cmd}" == "provision" ]]; then
-  # delegateToTyperProvision
-  shift
-  ensureCliInstalled
+  shift || true
+  bootstrapEnv
   cd "${repoRoot}"
-  exec "${condaExe}" run -n "${condaEnvName}" scipionapi provision "$@"
+  exec conda run -n "${condaEnvName}" scipionapi provision "$@"
 fi
 
-ensureCliInstalled
+# for any other command: require env + cli, do not auto-create
+requireEnvOrExplain
+
 cd "${repoRoot}"
-exec "${condaExe}" run -n "${condaEnvName}" scipionapi "$@"
+exec conda run -n "${condaEnvName}" scipionapi "$@"
