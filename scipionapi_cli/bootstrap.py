@@ -1,23 +1,24 @@
+# scipionapi_cli/bootstrap.py
+
 from __future__ import annotations
 
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from shutil import which
+from typing import List, Optional
 
 from scipionapi_cli.shell import resolveRepoRoot
-from scipionapi_cli.install import installCommand
-from scipionapi_cli.runtime import startCommand
 
 
-def _run(cmd: list[str], cwd: Optional[Path] = None) -> None:
+def _run(cmd: List[str], cwd: Optional[Path] = None) -> None:
     # runCommandOrFail
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
 
 
-def _runCapture(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+def _runCapture(cmd: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
     # runCommandCapture
     return subprocess.run(
         cmd,
@@ -27,13 +28,19 @@ def _runCapture(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.Comple
     )
 
 
-def _requireConda() -> str:
-    # requireCondaInPath
-    condaExe = (os.getenv("CONDA_EXE") or "conda").strip()
-    proc = _runCapture([condaExe, "--version"])
-    if proc.returncode != 0:
-        raise RuntimeError("conda is required but was not found in PATH (or CONDA_EXE is invalid).")
-    return condaExe
+def _resolveCondaExe() -> str:
+    # resolveCondaExeFromEnvOrPath
+    candidates = [
+        (os.getenv("SCIPIONAPI_CONDA_EXE") or "").strip(),
+        (os.getenv("CONDA_EXE") or "").strip(),
+        which("conda") or "",
+    ]
+    for c in candidates:
+        if c:
+            proc = _runCapture([c, "--version"])
+            if proc.returncode == 0:
+                return c
+    raise RuntimeError("conda is required but was not found in PATH (or SCIPIONAPI_CONDA_EXE/CONDA_EXE is invalid).")
 
 
 def _condaEnvExists(condaExe: str, envName: str) -> bool:
@@ -53,7 +60,7 @@ def _condaEnvExists(condaExe: str, envName: str) -> bool:
     return False
 
 
-def _pip(condaExe: str, envName: str, args: list[str], cwd: Path) -> None:
+def _pip(condaExe: str, envName: str, args: List[str], cwd: Path) -> None:
     # runPipInCondaEnv
     _run([condaExe, "run", "-n", envName, "python", "-m", "pip"] + args, cwd=cwd)
 
@@ -72,7 +79,7 @@ def bootstrapCommand(
 ) -> None:
     # bootstrapCommand
     repoRoot = resolveRepoRoot()
-    condaExe = _requireConda()
+    condaExe = _resolveCondaExe()
 
     if not _condaEnvExists(condaExe, envName):
         print(f"Creating conda env: {envName} (python={pythonVersion})")
@@ -88,7 +95,7 @@ def bootstrapCommand(
 
     if installScipionCore:
         if not _pythonImportOk(condaExe, envName, "pyworkflow"):
-            print("Installing Scipion core packages (pyworkflow/em/app/tomo)")
+            print("Installing Scipion core packages")
             packages = [p for p in scipionCorePackages.split(" ") if p.strip()]
             _pip(condaExe, envName, ["install"] + packages, cwd=repoRoot)
 
@@ -99,28 +106,3 @@ def bootstrapCommand(
     _pip(condaExe, envName, ["install", "-e", str(repoRoot)], cwd=repoRoot)
 
     print("Bootstrap completed.")
-
-
-def provisionCommand(
-    adminUser: str,
-    adminEmail: str,
-    adminPassword: str,
-    envName: str,
-    pythonVersion: str,
-    installScipionCore: bool,
-    scipionCorePackages: str,
-    runBootstrap: bool,
-) -> None:
-    # provisionCommand
-    if runBootstrap:
-        bootstrapCommand(
-            envName=envName,
-            pythonVersion=pythonVersion,
-            installScipionCore=installScipionCore,
-            scipionCorePackages=scipionCorePackages,
-        )
-
-    installCommand(adminUser=adminUser, adminEmail=adminEmail, adminPassword=adminPassword)
-    startCommand()
-
-    print("Provision completed.")

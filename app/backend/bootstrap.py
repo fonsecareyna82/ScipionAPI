@@ -29,14 +29,23 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _resolveDefaultScipionHome() -> Path:
+    # resolveDefaultScipionHomeFromRepoRoot
+    # bootstrap.py lives at: <repoRoot>/app/backend/bootstrap.py
+    repoRoot = Path(__file__).resolve().parents[2]
+    return (repoRoot / "scipion_home").resolve()
+
+
 def bootstrapEnv() -> None:
     # bootstrapEnvFromScipionHome
-    scipionHome = (os.getenv("SCIPION_HOME") or "").strip()
-    if not scipionHome:
-        return
+    scipionHomeRaw = (os.getenv("SCIPION_HOME") or "").strip()
+    scipionHome = Path(scipionHomeRaw).expanduser().resolve() if scipionHomeRaw else _resolveDefaultScipionHome()
 
-    envPath = Path(scipionHome) / ".env"
+    envPath = scipionHome / ".env"
     if not envPath.exists():
+        # optionalStrictMode
+        if (os.getenv("SCIPIONAPI_BOOTSTRAP_STRICT") or "").strip() == "1":
+            raise RuntimeError(f"Missing .env at: {envPath}. Run `./scripts/scipionapi install` (or `provision`).")
         return
 
     # doNotOverrideExistingEnv

@@ -77,7 +77,7 @@ def _buildApiApp() -> FastAPI:
             "X-Colormap",
             "Scipion-Colormap",
             "Colormap",
-            "X-Preview-Schema"
+            "X-Preview-Schema",
             "X-Preview-Name"
         ],
         expose_headers=[
@@ -95,7 +95,7 @@ def _buildApiApp() -> FastAPI:
             "X-Archive-Kind",
             "X-Preview-VoxelSize",
             "X-Preview-Schema",
-            "X-Preview-Name"
+            "X-Preview-Name",
         ],
     )
 

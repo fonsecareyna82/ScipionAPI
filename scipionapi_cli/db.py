@@ -30,23 +30,6 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
     safeDbUser = _escapeSqlLiteral(dbUser)
     safeDbPass = _escapeSqlLiteral(dbPass)
 
-    createRoleSql = (
-        "DO $$ BEGIN "
-        f"IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{safeDbUser}') THEN "
-        f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}'; "
-        "END IF; END $$;"
-    )
-
-    createDbSql = (
-        "DO $$ BEGIN "
-        f"IF NOT EXISTS (SELECT FROM pg_database WHERE datname='{safeDbName}') THEN "
-        f"CREATE DATABASE {dbName} OWNER {dbUser}; "
-        "END IF; END $$;"
-    )
-
-    alterDbOwnerSql = f"ALTER DATABASE {dbName} OWNER TO {dbUser};"
-    grantDbSql = f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};"
-
     postgresHost = (env.get("POSTGRES_HOST") or "localhost").strip()
     isLocalHost = postgresHost in ("localhost", "127.0.0.1", "::1", "")
 
@@ -56,7 +39,6 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
             "or implement DATABASE_ADMIN_USER/DATABASE_ADMIN_PASS bootstrap."
         )
 
-    # useUnixSocketPeerAuth
     sudoArgs = ["sudo", "-u", "postgres"]
     if os.environ.get("SCIPIONAPI_SUDO_NONINTERACTIVE", "").strip() == "1":
         # doNotPromptForSudoPassword
@@ -64,22 +46,42 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
 
     psqlBase = sudoArgs + ["psql", "-v", "ON_ERROR_STOP=1"]
 
-    proc = runCmd(psqlBase + ["-c", createRoleSql], capture=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            "Failed to create PostgreSQL role using local peer auth.\n"
-            "If sudo is prompting, run 'sudo -v' once and retry, or set sudoers for /usr/bin/psql.\n"
-            f"{proc.stderr}"
-        )
+    def psqlScalar(sql: str) -> str:
+        # psqlScalar
+        proc = runCmd(psqlBase + ["-tA", "-c", sql], capture=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stderr}")
+        return (proc.stdout or "").strip()
 
-    runCmd(psqlBase + ["-c", createDbSql], capture=False)
+    def psqlExec(sql: str) -> None:
+        # psqlExec
+        proc = runCmd(psqlBase + ["-c", sql], capture=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stdout}\n{proc.stderr}")
+
+    # ensureRoleExists
+    roleExists = psqlScalar(f"SELECT 1 FROM pg_roles WHERE rolname='{safeDbUser}'")
+    if roleExists != "1":
+        psqlExec(f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}';")
+
+    # ensureDatabaseExists
+    dbExists = psqlScalar(f"SELECT 1 FROM pg_database WHERE datname='{safeDbName}'")
+    if dbExists != "1":
+        # createDatabaseMustNotRunInsideDoOrTransaction
+        psqlExec(f"CREATE DATABASE {dbName} OWNER {dbUser};")
 
     # ensureDbOwnerAndPrivilegesEvenIfDbAlreadyExisted
-    runCmd(psqlBase + ["-c", alterDbOwnerSql], capture=False)
-    runCmd(psqlBase + ["-c", grantDbSql], capture=False)
+    psqlExec(f"ALTER DATABASE {dbName} OWNER TO {dbUser};")
+    psqlExec(f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};")
 
     # ensureSchemaPrivilegesAndOwnership
-    psqlDb = psqlBase + ["-d", dbName]
+    psqlDbBase = psqlBase + ["-d", dbName]
+
+    def psqlDbExec(sql: str) -> None:
+        # psqlDbExec
+        proc = runCmd(psqlDbBase + ["-c", sql], capture=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stdout}\n{proc.stderr}")
 
     ensureSchemaSql = (
         f"ALTER SCHEMA public OWNER TO {dbUser};"
@@ -88,10 +90,9 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         f" GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {dbUser};"
         f" GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO {dbUser};"
     )
-    runCmd(psqlDb + ["-c", ensureSchemaSql], capture=False)
+    psqlDbExec(ensureSchemaSql)
 
     # fixOwnershipForExistingObjects
-    # This is important when the DB already existed and tables were created by a different owner.
     fixOwnershipSql = f"""
 DO $$
 DECLARE r RECORD;
@@ -109,7 +110,7 @@ BEGIN
   END LOOP;
 END $$;
 """.strip()
-    runCmd(psqlDb + ["-c", fixOwnershipSql], capture=False)
+    psqlDbExec(fixOwnershipSql)
 
     # ensureDefaultPrivilegesForFutureMigrations
     defaultPrivsSql = (
@@ -117,7 +118,7 @@ END $$;
         f" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO {dbUser};"
         f" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON FUNCTIONS TO {dbUser};"
     )
-    runCmd(psqlDb + ["-c", defaultPrivsSql], capture=False)
+    psqlDbExec(defaultPrivsSql)
 
 
 def _parseUpgradeTargetRevision(output: str) -> Optional[str]:

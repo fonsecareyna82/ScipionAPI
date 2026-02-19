@@ -1,5 +1,6 @@
 import typer
 
+from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.runtime import logsCommand, restartCommand, startCommand, statusCommand, stopCommand
@@ -9,11 +10,26 @@ app = typer.Typer(
     help=(
         "Scipion API CLI.\n\n"
         "Typical usage:\n"
-        "  scipionapi install --user ... --email ... --pass ...\n"
-        "  scipionapi start|stop|restart|status|logs\n"
         "  scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]\n"
+        "  scipionapi start|stop|restart|status|logs\n"
     ),
 )
+
+
+@app.command("bootstrap", help="Create/update the conda env, install requirements, and install this package editable.")
+def bootstrap(
+    envName: str = typer.Option("scipion4Web", "--env-name", envvar="SCIPIONAPI_ENV_NAME"),
+    pythonVersion: str = typer.Option("3.8", "--python", envvar="SCIPIONAPI_PYTHON_VERSION"),
+    installScipionCore: bool = typer.Option(True, "--install-scipion-core/--no-install-scipion-core", envvar="SCIPIONAPI_INSTALL_SCIPION_CORE"),
+    scipionCorePackages: str = typer.Option("scipion-pyworkflow scipion-em scipion-app", "--scipion-core-packages", envvar="SCIPIONAPI_SCIPION_CORE_PACKAGES"),
+) -> None:
+    # bootstrapCondaEnv
+    bootstrapCommand(
+        envName=envName,
+        pythonVersion=pythonVersion,
+        installScipionCore=installScipionCore,
+        scipionCorePackages=scipionCorePackages,
+    )
 
 
 @app.command("install", help="Create/update SCIPION_HOME/.env, folders, local DB/user (if needed), run migrations, ensure admin user.")
@@ -26,13 +42,7 @@ def install(
     installCommand(adminUser=user, adminEmail=email, adminPassword=password)
 
 
-@app.command(
-    "provision",
-    help=(
-        "One-shot provisioning: install + optional web deploy + start uvicorn and celery.\n"
-        "If --web-dist is provided, the API is mounted at /api and the web is served at /."
-    ),
-)
+@app.command("provision", help="One-shot provisioning: bootstrap + install + optional web deploy + start uvicorn and celery.")
 def provision(
     user: str = typer.Option(..., "--user", help="Admin username."),
     email: str = typer.Option(..., "--email", help="Admin email."),
@@ -40,6 +50,11 @@ def provision(
     webDist: str = typer.Option(None, "--web-dist", help="Path to Vite dist directory or a .zip containing the dist."),
     apiMountPath: str = typer.Option("/api", "--api-mount-path", help="Where the API should be mounted in integrated mode."),
     apiBaseUrl: str = typer.Option(None, "--api-base-url", help="API base URL the web should use (defaults to apiMountPath)."),
+    runBootstrap: bool = typer.Option(True, "--bootstrap/--no-bootstrap", help="Run conda bootstrap before install/start."),
+    envName: str = typer.Option("scipion4Web", "--env-name", envvar="SCIPIONAPI_ENV_NAME"),
+    pythonVersion: str = typer.Option("3.8", "--python", envvar="SCIPIONAPI_PYTHON_VERSION"),
+    installScipionCore: bool = typer.Option(True, "--install-scipion-core/--no-install-scipion-core", envvar="SCIPIONAPI_INSTALL_SCIPION_CORE"),
+    scipionCorePackages: str = typer.Option("scipion-pyworkflow scipion-em scipion-app", "--scipion-core-packages", envvar="SCIPIONAPI_SCIPION_CORE_PACKAGES"),
 ) -> None:
     # provisionOneShot
     provisionCommand(
@@ -49,6 +64,11 @@ def provision(
         webDist=webDist,
         apiMountPath=apiMountPath,
         apiBaseUrl=apiBaseUrl,
+        runBootstrap=runBootstrap,
+        envName=envName,
+        pythonVersion=pythonVersion,
+        installScipionCore=installScipionCore,
+        scipionCorePackages=scipionCorePackages,
     )
 
 

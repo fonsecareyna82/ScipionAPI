@@ -46,6 +46,7 @@ def run_migrations_offline():
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        version_table_schema="public",
     )
 
     with context.begin_transaction():
