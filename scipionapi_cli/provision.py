@@ -1,3 +1,5 @@
+# scipionapi_cli/provision.py
+
 # ******************************************************************************
 # *
 # * Authors:     Yunior C. Fonseca Reyna
@@ -23,6 +25,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+
 from __future__ import annotations
 
 import json
@@ -98,6 +101,32 @@ def _writeWebConfigJs(distDir: Path, apiBaseUrl: str) -> None:
     configPath.write_text(content, encoding="utf-8")
 
 
+def _normalizeMountPath(value: str) -> str:
+    # normalizeMountPath
+    mountPath = (value or "/api").strip()
+    if not mountPath:
+        mountPath = "/api"
+    if not mountPath.startswith("/"):
+        mountPath = f"/{mountPath}"
+    if mountPath != "/" and mountPath.endswith("/"):
+        mountPath = mountPath.rstrip("/")
+    return mountPath
+
+
+def _normalizeApiBaseUrl(value: str, fallbackMountPath: str) -> str:
+    # normalizeApiBaseUrl
+    apiBaseUrl = (value or "").strip()
+    if not apiBaseUrl:
+        apiBaseUrl = fallbackMountPath
+    if not apiBaseUrl.startswith("/"):
+        # allow full urls too, but default to mount-like paths
+        # if user passes "http://..." keep it as-is
+        if "://" in apiBaseUrl:
+            return apiBaseUrl.rstrip("/")
+        apiBaseUrl = f"/{apiBaseUrl}"
+    return apiBaseUrl.rstrip("/") or "/"
+
+
 def deployWebDist(
     scipionHome: Path,
     webDist: Path,
@@ -116,8 +145,10 @@ def deployWebDist(
         normalizedSrc = webDist
         if (webDist / "dist" / "index.html").exists() and not (webDist / "index.html").exists():
             normalizedSrc = webDist / "dist"
+
         if not (normalizedSrc / "index.html").exists():
             raise RuntimeError(f"Invalid web dist directory: {webDist} (index.html not found)")
+
         _copyDirContents(normalizedSrc, targetDist)
 
     elif webDist.is_file() and webDist.suffix.lower() == ".zip":
@@ -145,18 +176,35 @@ def provisionCommand(
     webDist: Optional[str] = None,
     apiMountPath: str = "/api",
     apiBaseUrl: Optional[str] = None,
+    runBootstrap: bool = True,
+    envName: str = "scipion4Web",
+    pythonVersion: str = "3.8",
+    installScipionCore: bool = True,
+    scipionCorePackages: str = "scipion-pyworkflow scipion-em scipion-app",
 ) -> None:
     # provisionCommandOneShot
     from scipionapi_cli.install import installCommand
     from scipionapi_cli.runtime import startCommand
 
+    # optionalBootstrapFirst
+    if runBootstrap:
+        from scipionapi_cli.bootstrap import bootstrapCommand
+
+        bootstrapCommand(
+            envName=envName,
+            pythonVersion=pythonVersion,
+            installScipionCore=installScipionCore,
+            scipionCorePackages=scipionCorePackages,
+        )
+
     repoRoot = resolveRepoRoot()
 
+    # resolveScipionHomeFromExistingDefaultEnvIfPresent
     defaultScipionHome = (repoRoot / "scipion_home").resolve()
     defaultEnvPath = defaultScipionHome / ".env"
-    existing = readEnvFile(defaultEnvPath)
+    existingDefault = readEnvFile(defaultEnvPath)
 
-    scipionHome = _resolveScipionHome(repoRoot, existing)
+    scipionHome = _resolveScipionHome(repoRoot, existingDefault)
     envPath = scipionHome / ".env"
 
     # runInstallFirst
@@ -164,12 +212,11 @@ def provisionCommand(
 
     env = readEnvFile(envPath)
 
+    resolvedApiMountPath = _normalizeMountPath(apiMountPath)
+    resolvedApiBaseUrl = _normalizeApiBaseUrl(apiBaseUrl or "", resolvedApiMountPath)
+
     # optionalWebDeploy
     if webDist:
-        # enableIntegratedModeDefaults
-        resolvedApiMountPath = (apiMountPath or "/api").strip()
-        resolvedApiBaseUrl = (apiBaseUrl or resolvedApiMountPath).strip() or "/api"
-
         distPath = deployWebDist(
             scipionHome=scipionHome,
             webDist=Path(webDist),
@@ -185,12 +232,16 @@ def provisionCommand(
         writeEnvFile(envPath, updates)
         exportEnvToOs(envPath)
         env = readEnvFile(envPath)
+
     else:
-        # keepApiOnlyModeByDefault
-        if (env.get("SERVE_WEB") or "").strip() != "1":
-            writeEnvFile(envPath, {"SERVE_WEB": "0"})
-            exportEnvToOs(envPath)
-            env = readEnvFile(envPath)
+        # forceApiOnlyModeWhenNoWebDistProvided
+        updates: Dict[str, str] = {
+            "SERVE_WEB": "0",
+            "API_MOUNT_PATH": resolvedApiMountPath,
+        }
+        writeEnvFile(envPath, updates)
+        exportEnvToOs(envPath)
+        env = readEnvFile(envPath)
 
     # startServices
     startCommand()
@@ -198,7 +249,7 @@ def provisionCommand(
     apiHost = env.get("API_HOST", "0.0.0.0")
     apiPort = env.get("API_PORT", "8080")
     serveWeb = (env.get("SERVE_WEB") or "").strip() == "1"
-    mountPath = (env.get("API_MOUNT_PATH") or "/api").strip()
+    mountPath = _normalizeMountPath(env.get("API_MOUNT_PATH") or resolvedApiMountPath)
 
     if serveWeb:
         print(f"Provision completed. Web: http://{apiHost}:{apiPort}/")
