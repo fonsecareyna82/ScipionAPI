@@ -65,7 +65,7 @@ async def signup(
         institution=userData.institution,
         role="user",
         isActive=True,
-        isVerified=False,
+        isVerified=True,
         verificationCode=verificationCode,
     )
 
