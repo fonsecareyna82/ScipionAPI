@@ -43,16 +43,23 @@ from app.backend.api.routers.user_router import router as users
 from app.backend.api.routers.settings_router import router as settingsRouter
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.utils.error_handlers import registerAllErrorHandlers
+from starlette.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHttpException
 
 
 class SpaStaticFiles(StaticFiles):
     # spaStaticFilesFallbackToIndex
     async def get_response(self, path: str, scope):
         # getResponseOrFallbackToIndexHtml
-        response = await super().get_response(path, scope)
-        if response.status_code == 404:
-            return await super().get_response("index.html", scope)
-        return response
+        try:
+            response = await super().get_response(path, scope)
+            if getattr(response, "status_code", None) == 404:
+                return await super().get_response("index.html", scope)
+            return response
+        except StarletteHttpException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
 
 
 def _buildApiApp() -> FastAPI:
