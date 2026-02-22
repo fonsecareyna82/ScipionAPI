@@ -1,5 +1,5 @@
 ==========================================================
-Scipion API (Backend)
+Scipion API (Backend) + Optional Scipion Web Bundle
 ==========================================================
 
 A FastAPI-based backend that exposes a REST API around Scipion project
@@ -9,7 +9,8 @@ and user authentication.
 The backend uses PostgreSQL for persistence, Redis for task brokering, and runs
 inside a Scipion-capable Python environment.
 
-This repository is backend-only.
+This repository is backend-only, but it can optionally serve a precompiled
+ScipionWeb (React/Vite) bundle in integrated mode.
 
 ----------------------------------------------------------
 1. Highlights
@@ -20,6 +21,7 @@ This repository is backend-only.
   - Authentication (JWT access/refresh) + email verification flow
   - Users listing (for project sharing)
   - Plugins inspection and install/uninstall endpoints
+  - Settings endpoints (if enabled in your current codebase)
 
 * PostgreSQL persistence:
   - SQLAlchemy ORM models (users/projects/protocols)
@@ -32,14 +34,186 @@ This repository is backend-only.
 * Output preview pipeline:
   - Volume slices and downsampled 3D data
   - Text/CSV/STAR/PDF/archive/SQLite previews (where applicable)
-  - Preview metadata returned via response headers (see section 10)
+  - Preview metadata returned via response headers
 
 * Celery + Redis:
   - Task queue available (plugin install task is implemented)
-  - Redis is used both as broker and result backend (default configuration)
+  - Redis is used as broker and result backend (default configuration)
+
+* Human-friendly provisioning workflow:
+  - Conda environment bootstrap
+  - Runtime ``SCIPION_HOME/.env`` generation
+  - Local PostgreSQL DB/user creation (optional, via sudo)
+  - Alembic migrations
+  - Admin user bootstrap
+  - Detached API + Celery runtime management
+  - Optional integrated Web deployment via ``--web-dist``
 
 ----------------------------------------------------------
-2. Repository Layout
+2. Packaging / Distribution Model
+----------------------------------------------------------
+
+This project is designed to support a deployment flow similar to tools like
+CryoSPARC (download bundles, unpack, run setup/provision commands).
+
+Typical distribution for end users:
+
+* **ScipionAPI bundle (server)**:
+  - Contains the backend source, CLI, Alembic migrations, and wrapper scripts.
+
+* **ScipionWeb bundle (compiled UI)**:
+  - A prebuilt React/Vite ``dist/`` (or ZIP containing it), downloaded separately.
+  - Can be deployed into ``SCIPION_HOME/web/dist`` and served by the API process.
+
+You can install API-only first, and later add the web bundle without reinstalling
+everything.
+
+----------------------------------------------------------
+3. Download and Unpack (API + Web)
+----------------------------------------------------------
+
+Versioned ZIPs are published under:
+
+* ``https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/``
+
+Recommended installation layout (example):
+
+::
+
+    $HOME/scipionweb/
+      ScipionAPI-<version>/
+      ScipionWeb-<version>-dist.zip   (optional)
+
+Example download + unpack flow (adjust filenames to the published version):
+
+::
+
+    mkdir -p "$HOME/scipionweb"
+    cd "$HOME/scipionweb"
+
+    # Download API bundle
+    wget https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/ScipionAPI-<version>.zip
+
+    # Download compiled web bundle (optional but recommended for integrated mode)
+    wget https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/ScipionWeb-<version>-dist.zip
+
+    # Unpack API bundle
+    unzip ScipionAPI-<version>.zip
+    cd ScipionAPI-<version>
+
+Notes:
+
+* The API bundle is the one that provides ``./scripts/scipionapi``.
+* The Web ZIP can remain outside the repo and be passed via ``--web-dist``.
+* If your web bundle is already unpacked, you can pass the directory instead of the ZIP.
+
+----------------------------------------------------------
+4. Requirements
+----------------------------------------------------------
+
+* Linux recommended for Scipion runtime
+* Conda (Miniconda/Anaconda) available in PATH (required by the wrapper script)
+* Python version managed by conda (default used by wrapper: 3.8)
+* PostgreSQL (required)
+* Redis (required for Celery broker/backend in default config)
+* Sudo privileges for local DB bootstrap (only if using automatic DB/user creation)
+
+----------------------------------------------------------
+5. System Prerequisites (Ubuntu example)
+----------------------------------------------------------
+
+----------------------------------------------------------
+5.1 Base utilities
+----------------------------------------------------------
+
+Install common tools (Ubuntu/Debian):
+
+::
+
+    sudo apt update
+    sudo apt install -y curl wget unzip bzip2 ca-certificates
+
+----------------------------------------------------------
+5.2 Install PostgreSQL (system service)
+----------------------------------------------------------
+
+Install PostgreSQL and start the service:
+
+::
+
+    sudo apt update
+    sudo apt install -y postgresql postgresql-contrib
+    sudo systemctl enable postgresql
+    sudo systemctl start postgresql
+    sudo systemctl status postgresql
+
+Notes:
+
+* The installer/provisioner can create the database and role automatically
+  using local peer auth via:
+
+  ::
+
+      sudo -u postgres psql ...
+
+* This is only supported for local PostgreSQL (``POSTGRES_HOST=localhost``).
+
+----------------------------------------------------------
+5.3 Install Redis (system service)
+----------------------------------------------------------
+
+Redis is used for Celery broker/result backend (default config):
+
+::
+
+    sudo apt update
+    sudo apt install -y redis-server
+    sudo systemctl enable redis-server
+    sudo systemctl start redis-server
+    sudo systemctl status redis-server
+
+Quick check:
+
+::
+
+    redis-cli ping
+
+Expected output:
+
+::
+
+    PONG
+
+----------------------------------------------------------
+5.4 Install Conda (Miniconda recommended)
+----------------------------------------------------------
+
+Miniconda is recommended (user-local installation, no sudo required).
+
+Example (Linux x86_64):
+
+::
+
+    cd /tmp
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash Miniconda3-latest-Linux-x86_64.sh
+
+After installation, restart your shell (or source your shell rc), then verify:
+
+::
+
+    conda --version
+
+Important:
+
+* ``./scripts/scipionapi`` requires ``conda`` to be available in ``PATH``.
+* The installer will auto-detect ``CONDA_EXE`` and persist:
+  - ``CONDA_EXE``
+  - ``CONDA_ACTIVATION_CMD``
+  in ``${SCIPION_HOME}/.env`` when possible.
+
+----------------------------------------------------------
+6. Repository Layout
 ----------------------------------------------------------
 
 ::
@@ -52,6 +226,7 @@ This repository is backend-only.
     app/
       backend/
         main.py
+        bootstrap.py                     # loads ${SCIPION_HOME}/.env at runtime
         database.py
         api/
           dependencies.py
@@ -67,116 +242,110 @@ This repository is backend-only.
       services/
       utils/
 
-    scipion/                             # default SCIPION_HOME (runtime workspace)
-      .env                               # generated by `scipionapi install/provision`
-      config/                            # Scipion-related config (repo-managed)
-      projects/                          # runtime projects workspace
-      logs/                              # app.log, celery.log, etc.
-
     scipionapi_cli/
       cli.py                             # Typer CLI (scipionapi ...)
       install.py                         # creates .env, DB/user, migrations, admin
+      provision.py                       # optional web deploy + start services
       runtime.py                         # start/stop/status/logs (uvicorn + celery)
       db.py                              # local Postgres bootstrap + alembic upgrade
       envfile.py
+      shell.py
 
     scripts/
       scipionapi                         # wrapper: conda bootstrap + runs scipionapi
 
-    .run/                                # runtime PIDs (api.pid, worker.pid)
+    .run/                                # runtime PIDs (api.pid, worker.pid) (generated)
     requirements.txt
     pyproject.toml
     alembic.ini
     README.rst
 
+Runtime workspace (generated by install/provision, default):
+
+::
+
+    <repoRoot>/scipion_home/
+      .env
+      config/
+      projects/
+      logs/
+      web/
+        dist/                            # deployed compiled ScipionWeb bundle (optional)
+
 Notes:
+
 * The runtime workspace lives under ``SCIPION_HOME`` (default: ``<repoRoot>/scipion_home``).
 * The PID directory ``.run/`` is created under the repo root by the runtime manager.
-* Do not commit runtime artifacts: ``scipion/.env``, ``scipion/projects``, ``scipion/logs``, ``.run``.
 
 ----------------------------------------------------------
-3. Runtime Architecture
+7. Quickstart (Recommended)
 ----------------------------------------------------------
+
+The wrapper script ``./scripts/scipionapi`` is the main entry point for end users.
+
+It can:
+
+1) Bootstrap a conda env (default name: ``scipion4Web``)
+2) Install requirements + editable package
+3) Run the CLI commands (install/start/stop/.../provision)
+
+----------------------------------------------------------
+7.1 API-only one-shot provisioning
+----------------------------------------------------------
+
+From the API repo root:
 
 ::
 
-    +----------------------------+
-    |          Clients           |
-    |  (Frontend / REST callers) |
-    +-------------+--------------+
-                  |
-                  v
-    +----------------------------+
-    |          FastAPI           |
-    | app/backend/main.py        |
-    | Routers + schemas + DI     |
-    +-------------+--------------+
-                  |
-                  v
-    +----------------------------+
-    |  Services + Mapper/ORM     |
-    | project_service.py         |
-    | protocol_service.py        |
-    | plugin_service.py          |
-    | PostgresqlFlatMapper       |
-    +-------------+--------------+
-                  |
-                  +--------------------+
-                  |                    |
-                  v                    v
-    +--------------------+    +---------------------------+
-    |   PostgreSQL DB     |    |  Scipion / Pyworkflow     |
-    | users/projects/...  |    | prepareEnvironment()      |
-    +--------------------+    +---------------------------+
-                  |
-                  v
-    +----------------------------+
-    |  Filesystem (SCIPION_HOME) |
-    | projects, previews, logs   |
-    +----------------------------+
+    ./scripts/scipionapi provision --user "admin" --email "admin@local" --pass "changeMe"
 
-Celery/Redis is used for async tasks (plugin install task is implemented).
+What this does (one-shot):
 
-----------------------------------------------------------
-4. Requirements
-----------------------------------------------------------
-
-* Linux recommended for Scipion runtime
-* Conda (Miniconda/Anaconda) available in PATH (required by the wrapper script)
-* Python version managed by conda (default: 3.8)
-* PostgreSQL (required)
-* Redis (required for Celery broker/backend in default config)
-* Sudo privileges for local DB bootstrap (only if using automatic DB/user creation)
-
-----------------------------------------------------------
-5. Quickstart (recommended)
-----------------------------------------------------------
-
-This repo provides a wrapper script that:
-1) Bootstraps a conda env (default name: ``scipion4Web``)
-2) Installs ``requirements.txt`` and installs this package editable
-3) Exposes the Typer CLI commands (``scipionapi ...``)
-
-From the repo root:
-
-::
-
-    ./scripts/scipionapi provision --user "pepe" --email "pepe@pepe.com" --pass "1q2w3e4r"
-
-What ``provision`` does (one-shot):
-* Bootstraps the conda environment if missing (same as ``bootstrap``)
-* Creates/updates ``SCIPION_HOME/.env`` and required folders
+* Bootstraps the conda environment if missing (same effect as ``bootstrap``)
+* Creates/updates ``SCIPION_HOME/.env`` and runtime folders
 * Creates local PostgreSQL DB/user if missing (via ``sudo -u postgres psql``)
 * Runs Alembic migrations
 * Ensures an admin user exists (creates or updates)
 * Starts FastAPI (uvicorn) and Celery worker (detached), writing logs under ``LOGS_PATH``
 
 ----------------------------------------------------------
-6. CLI Commands
+7.2 Integrated mode (API + compiled Web at /)
+----------------------------------------------------------
+
+If you downloaded the compiled ScipionWeb ZIP, pass it to ``--web-dist``:
+
+::
+
+    ./scripts/scipionapi provision \
+      --user "admin" \
+      --email "admin@local" \
+      --pass "changeMe" \
+      --web-dist "$HOME/scipionweb/ScipionWeb-<version>-dist.zip"
+
+This enables integrated mode:
+
+* Web served at ``/``
+* API mounted under ``/api`` (default)
+* API docs available at ``/api/docs``
+
+The provisioning step will:
+
+* Deploy the web build into ``${SCIPION_HOME}/web/dist``
+* Write ``config.js`` into the deployed dist with runtime API base URL
+* Set integrated-mode env vars (e.g., ``SERVE_WEB=1``)
+
+If the web bundle is already unpacked:
+
+::
+
+    ./scripts/scipionapi provision ... --web-dist /path/to/dist
+
+----------------------------------------------------------
+8. CLI Commands
 ----------------------------------------------------------
 
 The Typer CLI lives in ``scipionapi_cli/cli.py`` and is executed via the wrapper
-script (conda-managed). The main commands are:
+script (conda-managed).
 
 Bootstrap only (create/update conda env + install requirements + editable install):
 
@@ -190,7 +359,7 @@ Install only (create/update .env + folders + DB/user + migrations + admin):
 
     ./scripts/scipionapi install --user "admin" --email "admin@local" --pass "changeMe"
 
-Start/stop/restart/status/logs (detached uvicorn + celery; logs are tailed by ``logs``):
+Start/stop/restart/status/logs (detached uvicorn + celery):
 
 ::
 
@@ -206,8 +375,19 @@ Provision (recommended “do everything”):
 
     ./scripts/scipionapi provision --user "admin" --email "admin@local" --pass "changeMe"
 
+Provision with integrated web:
+
+::
+
+    ./scripts/scipionapi provision \
+      --user "admin" \
+      --email "admin@local" \
+      --pass "changeMe" \
+      --web-dist /path/to/ScipionWeb-dist.zip \
+      --api-mount-path /api
+
 ----------------------------------------------------------
-7. Configuration and Runtime Workspace (SCIPION_HOME)
+9. Configuration and Runtime Workspace (SCIPION_HOME)
 ----------------------------------------------------------
 
 Runtime workspace is controlled by ``SCIPION_HOME``.
@@ -216,12 +396,13 @@ Default:
 * ``SCIPION_HOME=<repoRoot>/scipion_home``
 
 This directory is expected to contain:
-* ``config/`` (repo-managed Scipion configuration)
+* ``config/`` (Scipion-related configuration)
 * ``projects/`` (runtime projects workspace)
 * ``logs/`` (runtime logs)
+* ``web/dist`` (optional compiled web bundle)
 * ``.env`` (generated by install/provision; DO NOT commit secrets)
 
-You can override the location by exporting ``SCIPION_HOME`` before running install/provision:
+Override the location before running install/provision:
 
 ::
 
@@ -229,10 +410,10 @@ You can override the location by exporting ``SCIPION_HOME`` before running insta
     ./scripts/scipionapi provision --user ... --email ... --pass ...
 
 ----------------------------------------------------------
-8. .env Variables
+10. .env Variables (generated under SCIPION_HOME)
 ----------------------------------------------------------
 
-The ``.env`` file is generated and maintained by the installer under:
+The installer writes/maintains:
 
 * ``${SCIPION_HOME}/.env``
 
@@ -242,7 +423,9 @@ Core variables:
 * ``DATABASE_NAME`` (used by PostgresqlDb)
 * ``DATABASE_USER`` (used by PostgresqlDb)
 * ``DATABASE_PASS`` (used by PostgresqlDb)
-* ``SECRET_KEY`` (JWT signing secret)
+* ``POSTGRES_HOST`` (default: ``localhost``)
+* ``POSTGRES_PORT`` (default: ``5432``)
+* ``SECRET_KEY`` (JWT signing secret; auto-generated if missing)
 
 Runtime paths:
 
@@ -262,6 +445,13 @@ Conda integration (auto-detected when possible):
 * ``CONDA_EXE`` (absolute path to ``conda``)
 * ``CONDA_ACTIVATION_CMD`` (bash hook command used by some plugins)
 
+Integrated web mode (set by ``provision --web-dist``):
+
+* ``SERVE_WEB`` (``1`` or ``0``)
+* ``API_MOUNT_PATH`` (default: ``/api``)
+* ``WEB_DIST_PATH`` (default: ``${SCIPION_HOME}/web/dist``)
+* ``WEB_API_BASE_URL`` (default: ``/api``)
+
 Admin bootstrap inputs (written by install/provision):
 
 * ``ADMIN_USERNAME``
@@ -269,46 +459,64 @@ Admin bootstrap inputs (written by install/provision):
 * ``ADMIN_PASSWORD``
 
 Security note:
-Never commit real credentials. Use placeholders in documentation.
+Never commit real credentials. Use placeholders in documentation and examples.
 
 ----------------------------------------------------------
-9. Database Setup and Migrations
+11. Database Setup and Migrations
 ----------------------------------------------------------
 
-Automatic (recommended):
-* ``install`` / ``provision`` will attempt to create the role+database locally
-  using peer auth:
+Automatic local DB bootstrap (recommended):
+
+* ``install`` / ``provision`` attempts to create the PostgreSQL role and database
+  locally using peer auth:
 
 ::
 
     sudo -u postgres psql ...
 
 This requires:
-* Local PostgreSQL (``POSTGRES_HOST`` = localhost)
+
+* Local PostgreSQL (``POSTGRES_HOST`` must be ``localhost`` / loopback)
 * Sudo permissions to run ``psql`` as ``postgres``
 
+Then the installer runs:
+
+::
+
+    alembic upgrade head
+
 Remote PostgreSQL:
-* If Postgres is remote, create DB/user manually (or extend the installer to
-  support admin credentials). Then set DATABASE_URL accordingly.
 
-Migrations:
-* Alembic migrations are executed by ``install/provision`` (``alembic upgrade head``).
+* If PostgreSQL is remote, create the database and user manually first.
+* Set ``DATABASE_URL``, ``DATABASE_NAME``, ``DATABASE_USER``, ``DATABASE_PASS``
+  accordingly in ``${SCIPION_HOME}/.env``.
+* The current installer intentionally refuses automatic DB/user creation for
+  non-local hosts.
+
+Migration caveat:
+
+* If your migration history has been heavily edited (deleted/reordered revisions),
+  provisioning may fail. In that case, rebuild a clean migration baseline first,
+  then retry provisioning on a fresh database.
 
 ----------------------------------------------------------
-10. Running the API (manual / dev)
+12. Running the API (manual / dev)
 ----------------------------------------------------------
 
-In production, prefer:
+In normal operation, prefer:
 
 ::
 
     ./scripts/scipionapi start
 
-For local debugging (e.g., IDE), ensure the process receives the same
-environment variables that ``install`` writes into ``${SCIPION_HOME}/.env``.
-At minimum: ``DATABASE_URL`` and ``SECRET_KEY``.
+For local debugging (PyCharm / VSCode / manual uvicorn), ensure the process
+receives the same environment variables that ``install`` writes into
+``${SCIPION_HOME}/.env`` (at minimum: ``DATABASE_URL`` and ``SECRET_KEY``).
 
-Example manual run:
+The backend also loads ``${SCIPION_HOME}/.env`` at startup via
+``app.backend.bootstrap.bootstrapEnv()`` when ``SCIPION_HOME`` is defined.
+
+Manual uvicorn example:
 
 ::
 
@@ -320,33 +528,14 @@ Health endpoint:
 
     GET /health  ->  {"status": "ok"}
 
-Interactive docs:
+Docs (API-only mode):
+* ``http://localhost:8080/docs``
 
-::
-
-    http://localhost:8080/docs
-
-----------------------------------------------------------
-10.1 CORS / Preview Headers
-----------------------------------------------------------
-
-CORS origins configured in ``app/backend/main.py`` include:
-
-* ``http://localhost:5173``
-* ``http://localhost:5174``
-
-The API also exposes preview-related headers (examples):
-
-* ``X-Preview-Mime``
-* ``X-Preview-Width``, ``X-Preview-Height``, ``X-Preview-Depth``
-* ``X-Preview-Colormap``, ``X-Preview-Colormap-Note``
-* ``X-Preview-Tiles``, ``X-Preview-SizeBytes``
-* ``X-Preview-Columns``, ``X-Preview-RowCount``
-* ``X-Archive-Kind``
-* ``X-Preview-VoxelSize``
+Docs (integrated mode with API mounted at ``/api``):
+* ``http://localhost:8080/api/docs``
 
 ----------------------------------------------------------
-11. Running Celery (Redis Broker)
+13. Running Celery (Redis Broker)
 ----------------------------------------------------------
 
 Redis (local):
@@ -368,50 +557,122 @@ Manual worker command (if needed):
     PYTHONPATH=. celery -A app.workers.task_queue worker --loglevel=info
 
 ----------------------------------------------------------
-12. Docker / Compose Notes
+14. Separate Deployment vs Integrated Deployment
 ----------------------------------------------------------
 
-Scipion execution typically requires a specialized environment and system-level
-dependencies. For real Scipion execution inside Docker, you will likely need a
-custom image that includes Scipion and its runtime stack.
-
 ----------------------------------------------------------
-13. API Endpoints Summary
+14.1 Integrated deployment (single host/process entrypoint)
 ----------------------------------------------------------
 
-Refer to:
-``app/backend/api/routers/*.py``
+Use ``provision --web-dist``.
+
+Benefits:
+* One URL to open in the browser
+* API and web version can be provisioned together
+* Simple user experience
+
+Default routing:
+* Web: ``/``
+* API: ``/api``
 
 ----------------------------------------------------------
-14. Security Notes
+14.2 Separate deployment (API on one host, Web on another)
 ----------------------------------------------------------
 
-* JWT is decoded in ``api/dependencies.py`` using HS256 and SECRET_KEY.
-* Access tokens rely on the ``sub`` claim (email) and fetch user from DB.
-* Keep SECRET_KEY private and rotate in production.
-* Use HTTPS behind a reverse proxy for real deployments.
+This remains fully supported.
+
+In that case:
+
+* Run API normally on the server (e.g., ``http://api-host:8080``)
+* Build ScipionWeb separately with the appropriate API URL (e.g., ``VITE_API_URL``)
+* Serve the compiled Web using nginx / Apache / static hosting / CDN
+
+This is useful for:
+* reverse-proxy setups
+* isolated frontend hosting
+* scaling API and UI independently
 
 ----------------------------------------------------------
-15. Troubleshooting
+15. CORS / Preview Headers
 ----------------------------------------------------------
 
-* ImportError: scipion / pyworkflow not found
-  - Ensure you run inside the conda environment where Scipion is importable.
-  - Startup calls ``prepareEnvironment()`` from ``environment.py``.
+CORS origins in ``app/backend/main.py`` typically include local dev URLs such as:
 
-* 401 / "Invalid authentication credentials"
-  - Ensure Authorization header includes a Bearer token.
-  - Verify SECRET_KEY matches the one used to sign tokens.
+* ``http://localhost:5173``
+* ``http://localhost:5174``
 
-* Postgres connection errors
-  - Validate DATABASE_URL, DATABASE_NAME, DATABASE_USER, DATABASE_PASS.
-  - For automatic DB bootstrap, ensure local Postgres and sudo permissions.
+The API exposes preview-related headers (examples):
+
+* ``X-Preview-Mime``
+* ``X-Preview-Width``, ``X-Preview-Height``, ``X-Preview-Depth``
+* ``X-Preview-Colormap``, ``X-Preview-Colormap-Note``
+* ``X-Preview-Tiles``, ``X-Preview-SizeBytes``
+* ``X-Preview-Columns``, ``X-Preview-RowCount``
+* ``X-Archive-Kind``
+* ``X-Preview-VoxelSize``
+* (optionally) ``X-Preview-Schema``, ``X-Preview-Name`` if present in your current code
+
+----------------------------------------------------------
+16. Troubleshooting
+----------------------------------------------------------
+
+* ``conda: command not found``
+  - Install Miniconda/Anaconda and ensure ``conda`` is in PATH.
+  - Restart the shell and verify with ``conda --version``.
+
+* ``password authentication failed for user ...`` (PostgreSQL)
+  - Verify ``DATABASE_URL`` and ``DATABASE_PASS`` in ``${SCIPION_HOME}/.env``.
+  - Confirm the actual DB role password in PostgreSQL (pgAdmin/psql).
+
+* JWT error ``Expecting a string- or bytes-formatted key``
+  - ``SECRET_KEY`` is missing/empty in the environment.
+  - Ensure ``${SCIPION_HOME}/.env`` exists and is being loaded, and that
+    ``SECRET_KEY`` is non-empty.
+
+* Alembic error ``relation "projects" does not exist``
+  - Your migration chain likely assumes earlier tables that are missing.
+  - Rebuild a clean initial migration baseline or restore the missing revisions.
+
+* Alembic error ``relation "alembic_version" does not exist``
+  - Usually caused by a broken initial migration script or a failed migration that
+    interfered with Alembic metadata initialization.
+  - Recreate a clean initial migration and retry on a fresh empty DB.
+
+* API starts but web is not served
+  - Verify ``SERVE_WEB=1`` and ``WEB_DIST_PATH`` points to a valid folder with
+    ``index.html``.
+  - Re-run ``provision --web-dist ...``.
 
 * Celery task not executing
-  - Ensure Redis is running and broker_url/result_backend are reachable.
+  - Ensure Redis is running and reachable at ``BROKER_URL``.
+  - Check ``${LOGS_PATH}/celery.log`` and run ``./scripts/scipionapi logs``.
 
 ----------------------------------------------------------
-16. License
+17. Runtime Artifacts and Git Hygiene
+----------------------------------------------------------
+
+Do not commit generated runtime files, for example:
+
+* ``scipion_home/.env``
+* ``scipion_home/projects/``
+* ``scipion_home/logs/``
+* ``scipion_home/web/dist/`` (if deployed locally from a downloaded bundle)
+* ``.run/``
+
+Keep these ignored in ``.gitignore`` (repo-level) and/or globally as needed.
+
+----------------------------------------------------------
+18. Security Notes
+----------------------------------------------------------
+
+* JWT uses ``HS256`` and ``SECRET_KEY``.
+* Access tokens rely on the ``sub`` claim (email) and DB lookup.
+* Keep ``SECRET_KEY`` private and rotate in production.
+* Use HTTPS behind a reverse proxy for real deployments.
+* Avoid storing real admin passwords in shell history on shared machines.
+
+----------------------------------------------------------
+19. License
 ----------------------------------------------------------
 
 See LICENSE in the repository root.
