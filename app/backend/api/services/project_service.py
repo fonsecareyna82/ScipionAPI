@@ -46,9 +46,10 @@ from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_utils import readVolumeArray3d
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
+from pwem.protocols import ProtUserSubSet
 from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
-from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
+from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE, SCIPION_OBJECT_ID
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer, CsvList
 from pyworkflow.protocol import MODE_RESUME, MODE_RESTART, STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED
@@ -3839,6 +3840,7 @@ class ProjectService:
             visibleLabels = []
             orderLabels = []
             renderLabels = []
+            actions = []
 
             if table.getName() == SQLITE_OBJECT_TABLE:
                 from pwem.viewers.viewers_data import RegistryViewerConfig
@@ -3864,6 +3866,8 @@ class ProjectService:
                 visibleLabels = visibleLabelsStr.split()
                 orderLabels = orderLabelsStr.split()
                 renderLabels = renderLabelsStr.split()
+                for action in table.getActions():
+                    actions.append(action.getName())
 
             try:
                 hasColumnId = table.hasColumnId()
@@ -3875,6 +3879,9 @@ class ProjectService:
                 "name": tableName,
                 "alias": table.getAlias(),
                 "hasColumnId": bool(hasColumnId),
+                "actions": actions,
+                # "renderLabels": renderLabels,
+                # "orderLabels": orderLabels,
                 "columns": [],
             }
 
@@ -3925,6 +3932,82 @@ class ProjectService:
                 })
 
             return schema
+
+    def runMetadataTableActionService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            action: str,
+            subsetName: str,
+            ids: List[int],
+            currentUser: Any,
+            mapper: Any,
+    ) -> Any:
+        timeFormat = '%Y%m%d%H%M%S'
+        now = datetime.now()
+        timestamp = now.strftime(timeFormat)
+        path = 'Logs/selection_%s.txt' % timestamp
+        try:
+            with open(path, 'w') as file:
+                for rowId in ids:
+                    file.write(str(rowId+1) + ' ')
+                file.close()
+            logger.debug(f"The file: {path} was created correctly.")
+        except Exception as e:
+            logger.error(f"Error creating the file: {e}")
+        path += ","  # Always add a comma, it is expected by the user subset protocol
+        if tableName != OBJECT_TABLE:
+            path += tableName.split('_Objects')[0]
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol"
+            )
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None"
+            )
+
+        getFileNameFn = getattr(output, "getFileName", None)
+        if not callable(getFileNameFn):
+            raise HTTPException(
+                status_code=404,
+                detail="Output has no metadata file (getFileName not available)"
+            )
+
+        objMgr = self._getMetadataObjectManager(str(output.getFileName()))
+
+        dao = objMgr.getDAO()
+        table = objMgr.getTable(tableName)
+        dao.fillTable(table, objMgr)
+        if table.getAlias() == 'Class2D':
+            dao._objectsType['Averages'] = 'SetOfAverages'
+        elif table.getAlias() == 'Class3D':
+            dao._objectsType['Volumes'] = 'SetOfVolumes'
+        outputClassName = dao._objectsType[action]
+
+        try:
+            batchProt = self.currentProject.newProtocol(ProtUserSubSet,
+                                                        inputObject=output,
+                                                        sqliteFile=path,
+                                                        outputClassName=outputClassName,
+                                                        other='',
+                                                        label=subsetName)
+            self.currentProject.launchProtocol(batchProt)
+            return True
+        except Exception as e:
+            return False
 
     def getMetadataTablePageService(
         self,

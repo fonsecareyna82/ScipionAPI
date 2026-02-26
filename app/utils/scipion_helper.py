@@ -23,7 +23,9 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from pyworkflow.object import Scalar
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 def toSerializable(obj):
@@ -60,4 +62,17 @@ def toSerializable(obj):
 def serializeToJson(obj):
     """Serialize any Python object to JSON, preserving order of all dictionaries and nested structures."""
     return toSerializable(obj)
+
+
+def getFreePort(basePort=0, host=''):
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((host, basePort))
+        ipaddr, port = s.getsockname()
+        s.close()
+    except Exception as e:
+        logger.error("Can't get a free port", exc_info=e)
+        return 0
+    return port
 

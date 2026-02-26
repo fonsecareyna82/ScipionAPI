@@ -12,7 +12,7 @@ from fastapi import (
 from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
@@ -1875,6 +1875,17 @@ def renderCoords3dTomogramSlice(
 #            ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
 # ==============================================================================
 
+class MetadataTableActionRequest(BaseModel):
+    action: str = Field(..., description="Action label provided by schema.actions")
+    subsetName: Optional[str] = Field(None, description="Subset name for the new output/protocol")
+    ids: List[int] = Field(default_factory=list, description="Selected row ids")
+
+
+class MetadataTableActionResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
+    errors: Optional[List[str]] = None
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables",
     response_model=Any,
@@ -1945,6 +1956,89 @@ def getMetadataTableSchema(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/actions",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def runMetadataTableAction(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    payload: MetadataTableActionRequest = Body(...),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    # runMetadataTableAction
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    actionLabel = (payload.action or "").strip()
+    if not actionLabel:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Missing action")
+
+    rowIds = payload.ids or []
+    if not isinstance(rowIds, list) or len(rowIds) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Missing ids",
+        )
+
+    subsetName = (payload.subsetName or "").strip() or "create subset"
+
+    try:
+        result = service.runMetadataTableActionService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tableName=tableName,
+            action=actionLabel,
+            subsetName=subsetName,
+            ids=rowIds,
+            currentUser=currentUser,
+            mapper=mapper,
+        )
+
+        # normalizeServiceResult
+        success = True
+        message = None
+        errors = None
+
+        if isinstance(result, bool):
+            success = bool(result)
+        elif isinstance(result, dict):
+            if "success" in result:
+                success = bool(result.get("success"))
+            if isinstance(result.get("message"), str):
+                message = result.get("message")
+            if isinstance(result.get("errors"), list):
+                errors = [str(x) for x in result.get("errors") if x is not None]
+        elif result is None:
+            success = True
+        else:
+            # treatNonEmptyTruthinessAsSuccess
+            success = True
+
+        respPayload: Dict[str, Any] = {"success": success}
+        if message:
+            respPayload["message"] = message
+        if errors:
+            respPayload["errors"] = errors
+
+        return JSONResponse(respPayload)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in runMetadataTableAction: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to run metadata table action: {e}",
+        )
 
 
 @router.get(
