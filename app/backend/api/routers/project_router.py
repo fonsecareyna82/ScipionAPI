@@ -2258,6 +2258,13 @@ def getMetadataTableWindow(
         False,
         description="If true, use server-side selection instead of the full table",
     ),
+    sortBy: str = Query(
+        'id',
+        description="Column used to sort",
+    ),
+    asc: bool = Query(
+        True,
+        description="Sort order"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2277,6 +2284,8 @@ def getMetadataTableWindow(
         offset=offset,
         limit=limit,
         selectionOnly=selectionOnly,
+        sortBy=sortBy,
+        asc=asc,
     )
 
     from fastapi.responses import JSONResponse
