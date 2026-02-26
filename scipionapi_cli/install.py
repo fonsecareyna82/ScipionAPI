@@ -4,6 +4,7 @@ import secrets
 from shutil import which
 from typing import Dict, Optional
 
+from app.utils.scipion_helper import getFreePort
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, writeEnvFile, exportEnvToOs
 from scipionapi_cli.db import ensureDatabaseAndRole, runAlembicUpgrade
@@ -80,6 +81,9 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     condaActivationCmd = existing.get("CONDA_ACTIVATION_CMD")
     if not condaActivationCmd and condaExe:
         condaActivationCmd = _buildCondaActivationCmd(condaExe)
+    scipionPort = existing.get("SCIPION_PORT")
+    if not scipionPort:
+        scipionPort = getFreePort()
 
     updates: Dict[str, str] = {
         "SCIPION_HOME": str(scipionHome),
@@ -113,6 +117,9 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     if condaActivationCmd and not existing.get("CONDA_ACTIVATION_CMD"):
         # persistCondaActivationCmdIfDetected
         updates["CONDA_ACTIVATION_CMD"] = condaActivationCmd
+
+    if scipionPort and not existing.get('SCIPION_PORT'):
+        updates['SCIPION_PORT'] = scipionPort
 
     writeEnvFile(envPath, updates)
     exportEnvToOs(envPath)
