@@ -4569,6 +4569,8 @@ class ProjectService:
             offset: int,
             limit: int,
             selectionOnly: bool,
+            sortBy: str,
+            asc: bool,
     ):
         """
         Return a window of rows for a metadata table using offset + limit.
@@ -4585,6 +4587,8 @@ class ProjectService:
         with _metadataLock:
             objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
             columns = list(table.getColumns())
+            table.setSortingColumn(sortBy)
+            table.setSortingAsc(asc)
 
             # Sanitize window parameters
             offset = max(0, int(offset or 0))
