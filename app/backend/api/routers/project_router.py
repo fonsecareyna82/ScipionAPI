@@ -1870,6 +1870,56 @@ def renderCoords3dTomogramSlice(
     resp.headers["Vary"] = "Authorization"
     return resp
 
+class Coords3dPointIn(BaseModel):
+    x: float
+    y: float
+    z: float
+    id: Optional[Union[int, str]] = None
+    score: Optional[float] = None
+    classId: Optional[Union[int, str]] = None
+    radius: Optional[float] = None
+    tomoId: Optional[Union[int, str]] = None
+    class Config: extra = "allow"
+
+
+class CreateCoords3dOutputFromPointsIn(BaseModel):
+    newOutputName: str = Field(..., min_length=1, description="Name for the newly created output")
+    tomoId: Union[int, str] = Field(..., description="Tomogram identifier inside the source SetOfCoordinates3D")
+    coords: List[Coords3dPointIn] = Field(default_factory=list, description="Full coordinates list for this tomogram")
+    dims: Optional[List[int]] = Field( None, description="Optional tomogram dimensions [X, Y, Z] for backend validation", )
+    voxelSize: Optional[List[float]] = Field( None, description="Optional voxel size [sx, sy, sz] for backend bookkeeping", )
+
+
+@router.post( "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/new-output",
+              response_model=Any,
+              status_code=status.HTTP_200_OK, )
+def createCoords3dOutputFromPoints(projectId: int,
+                                   protocolId: int,
+                                   outputName: str,
+                                   payload: Dict[str, Any] = Body(...),
+                                   currentUser=Depends(getCurrentUser),
+                                   mapper: PostgresqlFlatMapper = Depends(getMapper),
+                                   service: ProjectService = Depends(getProjectService), ):
+    """ Create a new SetOfCoordinates3D output from an edited full point list for a given tomogram.
+    The backend must interpret `coords` as a full replacement for that tomogram inside `outputName`. """
+
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        result = service.createCoords3dOutputFromPointsService(projectId=projectId,
+                                                               protocolId=protocolId,
+                                                               outputName=outputName,
+                                                               payload=payload)
+        resp = JSONResponse(result or {"success": True, "outputName": result['outputName']})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        resp.headers["Vary"] = "Authorization"
+
+        return resp
+    except HTTPException as e:
+        logger.exception("Error in createCoords3dOutputFromPoints: %s", e)
+        raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
 
 # ==============================================================================
 #            ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
@@ -2230,7 +2280,6 @@ def renderMetadataImageCell(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
-
 
 
 @router.get(

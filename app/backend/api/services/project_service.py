@@ -39,7 +39,7 @@ import numpy as np
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries, TiltSeries, SetOfCTFTomoSeries, CTFTomoSeries, CTFTomo
+from tomo.objects import SetOfTiltSeries, TiltSeries, SetOfCTFTomoSeries, CTFTomoSeries, CTFTomo, Coordinate3D
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
@@ -3154,6 +3154,7 @@ class ProjectService:
             "weight"?: number,
             "radius"?: number,
             "tomoId"?: number | str,
+            "matrix"?: list
           },
           ...
         ]
@@ -3271,6 +3272,9 @@ class ProjectService:
 
             if boxSize is not None:
                 p["radius"] = float(boxSize)
+
+            matrix = coord.getMatrix()
+            p['matrix'] = matrix.tolist()
 
             p["tomoId"] = tomoId
 
@@ -3627,6 +3631,109 @@ class ProjectService:
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
+    def createCoords3dOutputFromPointsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            payload: Any,
+    ) -> Dict[str, Any]:
+
+        tomograms = payload['tomograms']
+
+        # ---------------------------------
+        # 1. Obtaining protocol and origin
+        # ---------------------------------
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(404, "Protocol not found")
+
+        srcSet = getattr(protocol, outputName, None)
+        if srcSet is None:
+            raise HTTPException(404, f"Output '{outputName}' not found in protocol")
+
+        # -------------------------------
+        # 2. Ensure tomograms
+        # -------------------------------
+        if not self.tomoList:
+            self.listCoordinates3dTomogramsService(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+        # -----------------------------------
+        # 3. Creating new SetOfCoordinates3D
+        # -----------------------------------
+        try:
+            outName = protocol.getNextOutputName(outputName)
+        except Exception:
+            outName = f"{'SetOfCoordinates3D'}_{uuid4().hex[:6]}"
+
+        try:
+            dstSet = srcSet.createCopy(protocol._getPath(), prefix=outName, copyInfo=True)
+        except TypeError:
+            dstSet = srcSet.createCopy(protocol._getPath(), prefix=outName)
+
+        if hasattr(srcSet, "getTomograms"):
+            try:
+                dstSet.setTomograms(srcSet.getTomograms())
+            except Exception:
+                pass
+
+        # -------------------------------
+        # 4. Build new coordinates
+        # -------------------------------
+        replaced = 0
+        copied = 0
+
+        for tomoKey, tomoObj in self.tomoList.items():
+            for tomogram in tomograms:
+                if tomogram['tomoId'] == tomoKey:
+                    coords = tomogram['coords']
+                    for coord in coords:
+                        c = Coordinate3D()
+                        c.setObjId(None)
+                        c.setVolume(tomoObj)
+                        c.setPosition(coord['x'], coord['y'], coord['z'], BOTTOM_LEFT_CORNER)
+                        groupId = coord['groupId'] if 'groupId' in coord else 0
+                        c.setGroupId(groupId)
+                        c.setTomoId(coord['tomoId'])
+                        c.setBoxSize(dstSet.getSamplingRate())
+                        score = coord['score'] if 'score' in coord else 0
+                        c.setScore(score)
+                        transformMatrix = coord['matrix'] if 'matrix' in coord else None
+                        if transformMatrix:
+                            transformMatrix = np.array(transformMatrix)
+                            c.setMatrix(transformMatrix)
+                        dstSet.append(c)
+                        replaced += 1
+                    break
+        # ------------------------------------
+        # 7. Saving and registering the output
+        # ------------------------------------
+        try:
+            dstSet.write()
+        except Exception:
+            pass
+        try:
+            protocol._defineOutputs(**{outName: dstSet})
+            protocol._store()
+        except Exception as e:
+            raise HTTPException(500, f"Failed to attach new coords3d output: {e}")
+
+        return {
+            "success": True,
+            "outputName": outName,
+            "message": f"Created new coords3d output '{outName}'",
+            "data": {
+                "sourceOutputName": outputName,
+                "replacedPoints": replaced,
+                "copiedPoints": copied,
+            },
+        }
+
     # ======================================================================
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
     # ======================================================================
@@ -3952,7 +4059,7 @@ class ProjectService:
         try:
             with open(path, 'w') as file:
                 for rowId in ids:
-                    file.write(str(rowId+1) + ' ')
+                    file.write(str(rowId) + ' ')
                 file.close()
             logger.debug(f"The file: {path} was created correctly.")
         except Exception as e:
@@ -4531,7 +4638,7 @@ class ProjectService:
             else:
                 arrGray = arr if arr.ndim == 2 else arr.mean(axis=-1)
 
-            im255 = self._normalize2dSlice(arrGray, mode="minmax")
+            im255 = self._normalize2dSlice(arrGray, mode="zscore")
             pilImg = PILImage.fromarray(im255, mode="L")
         except Exception:
             # If any normalization fails, keep whatever pilImg we have
