@@ -70,11 +70,11 @@ async def signup(
     )
 
     # Send verification email (errors here do not block signup)
-    try:
-        await sendVerificationEmail(userData.email, verificationCode)
-    except Exception as e:
-        # Log the error but do not abort user creation
-        print("Error sending verification email:", e)
+    # try:
+    #     await sendVerificationEmail(userData.email, verificationCode)
+    # except Exception as e:
+    #     # Log the error but do not abort user creation
+    #     print("Error sending verification email:", e)
 
     # Return confirmation message and new user ID
     return {
