@@ -1,163 +1,159 @@
-import subprocess
-
 import logging
-from typing import List, Dict, Optional
+from threading import Lock
+from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
+
+from packaging.version import parse as parseVersion  # type: ignore
 
 from pyworkflow import Config
 from pyworkflow.project import Manager
 from scipion.install.plugin_funcs import PluginRepository
+
 from app.utils.scipion_helper import serializeToJson
 
 logger = logging.getLogger(__name__)
 
 
 class PluginService:
-    """
-    Manages loading and serialization of plugins.
-    """
-
     def __init__(
         self,
         pluginRepository: Optional[PluginRepository] = None,
         projectManager: Optional[Manager] = None,
     ):
-        # Use injected repository or default one
         self.pluginRepository = pluginRepository or PluginRepository()
-        # Use injected manager or default project manager
         self.projectManager = projectManager or Manager()
-        # Internal cache for serialized plugins
-        self._pluginsCache: Optional[List[Dict]] = None
+        self._pluginsCache: Optional[List[Dict[str, Any]]] = None
+        self._cacheLock = Lock()
+        self._logoBaseUrl = "https://scipion.i2pc.es/"
 
-    def getPlugins(self, forceRefresh: bool = False) -> List[Dict]:
-        """
-        Returns the list of serialized plugins.
-        If forceRefresh is True, reloads from the repository.
-        """
-        if self._pluginsCache is None or forceRefresh:
+    def clearCache(self) -> None:
+        self._pluginsCache = None
+
+    def _buildFullLogo(self, serializedPlugin: Dict[str, Any]) -> str:
+        logo = (serializedPlugin.get("logo") or "").lstrip("/")
+        return urljoin(self._logoBaseUrl, logo) if logo else ""
+
+    def _isUpdateAvailable(self, latestRelease: Optional[str], pipVersion: Optional[str]) -> bool:
+        if not latestRelease or not pipVersion:
+            return False
+        try:
+            return parseVersion(latestRelease) > parseVersion(pipVersion)
+        except Exception:
+            return False
+
+    def _resolvePluginKeyByPipName(self, pipName: str, rawPlugins: Dict[str, Any]) -> str:
+        if pipName in rawPlugins:
+            return pipName
+
+        for key, pluginObj in rawPlugins.items():
             try:
-                # Fetch raw plugin objects including pip metadata
+                candidate = getattr(pluginObj, "pipName", None)
+                if isinstance(candidate, str) and candidate == pipName:
+                    return key
+            except Exception:
+                continue
+
+        raise KeyError(f"Plugin not found: {pipName}")
+
+    def getPlugins(self, forceRefresh: bool = False) -> List[Dict[str, Any]]:
+        with self._cacheLock:
+            if self._pluginsCache is not None and not forceRefresh:
+                return list(self._pluginsCache)
+
+            try:
                 rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
                 Config.setDomain("pwem")
                 Config.getDomain()
             except Exception as e:
-                # Raise a clear error when retrieval fails
                 raise RuntimeError("Failed to retrieve plugins") from e
 
-            serializedList: List[Dict] = []
-            # Sort plugin names in reverse order and serialize each
-            for pluginName in sorted(rawPlugins.keys(), reverse=True):
-                pluginObj = rawPlugins[pluginName]
-                if pluginObj is not None:
-                    if pluginObj._getPlugin():
-                        serializedPlugin = serializeToJson(pluginObj)
-                        serializedPlugin['installed'] = True
-                        serializedPlugin['toUpdate'] = False
-                        if pluginObj.latestRelease > pluginObj.pipVersion:
-                            serializedPlugin['toUpdate'] = True
-                        logo = serializedPlugin['logo'].lstrip('/')
-                        # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
-                        fullLogo = ''
-                        if logo:
-                            fullLogo = urljoin('https://scipion.i2pc.es/', logo)
-                        serializedPlugin['fullLogo'] = fullLogo
-                        pluginBinaryList = pluginObj.getInstallenv()
-                        if pluginBinaryList is not None:
-                            binaryList = pluginBinaryList.getPackages()
-                            keys = sorted(binaryList.keys())
-                            serializedPlugin.setdefault('binaries', {})
-                            for k in keys:
-                                pVersions = binaryList[k]
-                                serializedPlugin['binaries'][k] = {}
-                                for binary, version in pVersions:
-                                    installed = pluginBinaryList._isInstalled(binary, version)
-                                    serializedPlugin['binaries'][k][binary + '-' + version] = installed
+            serializedList: List[Dict[str, Any]] = []
 
-                    else:
-                        serializedPlugin = serializeToJson(pluginObj)
-                        logo = serializedPlugin['logo'].lstrip('/')
-                        # https://scipion.i2pc.es/uploads/packages/scipion_logo.png
-                        fullLogo = ''
-                        if logo:
-                            fullLogo = urljoin('https://scipion.i2pc.es/', logo)
+            for pluginKey in sorted(rawPlugins.keys(), reverse=True):
+                pluginObj = rawPlugins.get(pluginKey)
+                if pluginObj is None:
+                    continue
 
-                        serializedPlugin['fullLogo'] = fullLogo
-                        serializedPlugin['installed'] = False
+                serializedPlugin = serializeToJson(pluginObj)
+                serializedPlugin["fullLogo"] = self._buildFullLogo(serializedPlugin)
 
-                    serializedList.append(serializedPlugin)
+                isInstalled = False
+                try:
+                    isInstalled = bool(pluginObj._getPlugin())
+                except Exception:
+                    isInstalled = False
 
-            # Cache the result for subsequent calls
+                serializedPlugin["installed"] = isInstalled
+
+                if isInstalled:
+                    latestRelease = getattr(pluginObj, "latestRelease", None)
+                    pipVersion = getattr(pluginObj, "pipVersion", None)
+                    serializedPlugin["toUpdate"] = self._isUpdateAvailable(latestRelease, pipVersion)
+                else:
+                    serializedPlugin["toUpdate"] = False
+
+                try:
+                    pluginBinaryList = pluginObj.getInstallenv()
+                    if pluginBinaryList is not None:
+                        binaryList = pluginBinaryList.getPackages()
+                        keys = sorted(binaryList.keys())
+                        serializedPlugin.setdefault("binaries", {})
+                        for k in keys:
+                            pVersions = binaryList[k]
+                            serializedPlugin["binaries"][k] = {}
+                            for binary, version in pVersions:
+                                installed = pluginBinaryList._isInstalled(binary, version)
+                                serializedPlugin["binaries"][k][f"{binary}-{version}"] = bool(installed)
+                except Exception:
+                    pass
+
+                serializedList.append(serializedPlugin)
+
             self._pluginsCache = serializedList
+            return list(self._pluginsCache)
 
-        # Return a shallow copy to avoid external mutation
-        return list(self._pluginsCache)
-
-    def getPlugin(self, pluginName):
+    def getPlugin(self, pluginName: str) -> Optional[Dict[str, Any]]:
         plugins = self.getPlugins()
         for plugin in plugins:
-            if plugin['pipName'] == pluginName:
+            if plugin.get("pipName") == pluginName:
                 return plugin
         return None
 
-    def clearCache(self) -> None:
-        """
-        Clears the internal plugins cache.
-        """
-        self._pluginsCache = None
+    def installPlugin(self, pluginName: str) -> Dict[str, Any]:
+        rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
+        resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
+        plugin = rawPlugins[resolvedKey]
 
-    # def installPlugin(self, pluginName) -> dict:
-    #     status = 'SUCCESS'
-    #
-    #     try:
-    #         result = subprocess.run(
-    #             ['./scipion3', 'installp', '-p', pluginName],
-    #             capture_output=True,
-    #             text=True
-    #         )
-    #         if result.returncode != 0:
-    #             logger.error(f"Error installing plugin '{pluginName}': {result.stderr}")
-    #             status = 'FAILURE'
-    #         else:
-    #             logger.info(f"Plugin '{pluginName}' installed successfully: {result.stdout}")
-    #
-    #     except Exception as e:
-    #         logger.exception(f"Exception during plugin installation: {e}")
-    #         status = 'FAILURE'
-    #
-    #     self.clearCache()
-    #     self.getPlugins(forceRefresh=True)
-    #
-    #     return {'installed': status}
-
-    def installPlugin(self, pluginName) -> dict:
-        plugin = self.pluginRepository.getPlugins(getPipData=True)[pluginName]
-        status = 'SUCCESS'
-        # installing the plugin
+        status = "SUCCESS"
         try:
             installed = plugin.installPipModule()
             if installed:
                 plugin.installBin()
-        except Exception as e:  # Rollback the installation
-            plugin.uninstallBins()
-            plugin.uninstallPip()
+        except Exception:
+            try:
+                plugin.uninstallBins()
+                plugin.uninstallPip()
+            except Exception:
+                pass
             logger.exception("Error installing the plugin.")
-            status = 'FAILURE'
-        self.clearCache()
-        self.getPlugins(forceRefresh=True)
-        return {'installed': status}
+            status = "FAILURE"
 
-    def uninstallPlugin(self, pluginName) -> dict:
-        plugin = self.pluginRepository.getPlugins()[pluginName]
-        pluginClassName = plugin.getPluginClass().name
-        status = 'SUCCESS'
-        # installing the plugin
+        self.clearCache()
+        return {"installed": status}
+
+    def uninstallPlugin(self, pluginName: str) -> Dict[str, Any]:
+        rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
+        resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
+        plugin = rawPlugins[resolvedKey]
+
+        status = "SUCCESS"
         try:
             if plugin.isInstalled():
                 plugin.uninstallBins()
                 plugin.uninstallPip()
-        except Exception as e:
+        except Exception:
             logger.exception("Error uninstalling the plugin.")
-            status = 'FAILURE'
+            status = "FAILURE"
+
         self.clearCache()
-        self.getPlugins(forceRefresh=True)
-        return {'uninstalled': status}
+        return {"uninstalled": status}
