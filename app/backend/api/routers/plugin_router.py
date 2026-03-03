@@ -24,15 +24,43 @@
 # *
 # ******************************************************************************
 import asyncio
-from fastapi import APIRouter, HTTPException
+import logging
+from typing import Any, Dict, Optional
+from uuid import uuid4
 
-from pyworkflow.project import Manager
-from typing import Any
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
 from app.backend.api.services.plugin_service import PluginService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/plugins", tags=["Plugins"])
-manager = Manager()
 service = PluginService()
+
+try:
+    from app.workers.task_queue import installPluginTask, uninstallPluginTask  # type: ignore
+    _celeryAvailable = True
+except Exception:
+    installPluginTask = None  # type: ignore
+    uninstallPluginTask = None  # type: ignore
+    _celeryAvailable = False
+
+
+_inProcessResults: Dict[str, Dict[str, Any]] = {}
+_inProcessTasks: Dict[str, asyncio.Task] = {}
+
+
+class TaskStartResponse(BaseModel):
+    taskId: str = Field(..., description="Task identifier")
+    status: str = Field(..., description="Initial task status")
+
+
+class TaskStatusResponse(BaseModel):
+    taskId: str
+    status: str
+    result: Optional[Any] = None
+    error: Optional[str] = None
 
 
 @router.get("/", response_model=Any)
@@ -42,32 +70,71 @@ def loadPlugins():
 
 @router.get("/{pluginName}", response_model=Any)
 def loadPlugin(pluginName: str):
-    return service.getPlugin(pluginName)
+    plugin = service.getPlugin(pluginName)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    return plugin
 
 
-@router.post("/install/{pluginName}", response_model=Any)
+async def _startInProcessTask(taskFn, *args) -> TaskStartResponse:
+    taskId = uuid4().hex
+    loop = asyncio.get_running_loop()
+
+    async def runner():
+        try:
+            result = await loop.run_in_executor(None, taskFn, *args)
+            _inProcessResults[taskId] = {"status": "SUCCESS", "result": result, "error": None}
+        except Exception as e:
+            logger.exception("In-process task failed.")
+            _inProcessResults[taskId] = {"status": "FAILURE", "result": None, "error": str(e)}
+
+    _inProcessTasks[taskId] = asyncio.create_task(runner())
+    _inProcessResults[taskId] = {"status": "STARTED", "result": None, "error": None}
+    return TaskStartResponse(taskId=taskId, status="STARTED")
+
+
+@router.post("/install/{pluginName}", response_model=TaskStartResponse)
 async def installPlugin(pluginName: str):
     try:
-        loop = asyncio.get_running_loop()
-        await asyncio.ensure_future(
-            loop.run_in_executor(None, service.installPlugin, pluginName)
-        )
-        return {"status": "installation_started"}
+        if _celeryAvailable and installPluginTask is not None:
+            asyncResult = installPluginTask.delay(pluginName)
+            return TaskStartResponse(taskId=str(asyncResult.id), status="PENDING")
+        return await _startInProcessTask(service.installPlugin, pluginName)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/uninstall/{pluginName}", response_model=Any)
+@router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
 async def uninstallPlugin(pluginName: str):
-    loop = asyncio.get_running_loop()
-    await asyncio.ensure_future(
-        loop.run_in_executor(None, service.uninstallPlugin, pluginName)
+    try:
+        if _celeryAvailable and uninstallPluginTask is not None:
+            asyncResult = uninstallPluginTask.delay(pluginName)
+            return TaskStartResponse(taskId=str(asyncResult.id), status="PENDING")
+        return await _startInProcessTask(service.uninstallPlugin, pluginName)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tasks/{taskId}", response_model=TaskStatusResponse)
+async def getTaskStatus(taskId: str):
+    if _celeryAvailable and installPluginTask is not None:
+        task = installPluginTask.AsyncResult(taskId)
+        status = task.status
+
+        if status == "SUCCESS":
+            return TaskStatusResponse(taskId=taskId, status=status, result=task.result, error=None)
+        if status == "FAILURE":
+            return TaskStatusResponse(taskId=taskId, status=status, result=None, error=str(task.result))
+
+        return TaskStatusResponse(taskId=taskId, status=status, result=None, error=None)
+
+    local = _inProcessResults.get(taskId)
+    if local is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return TaskStatusResponse(
+        taskId=taskId,
+        status=str(local.get("status", "UNKNOWN")),
+        result=local.get("result"),
+        error=local.get("error"),
     )
-    return {"status": "installation_started"}
-
-
-@router.get("/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    from app.workers.task_queue import installPluginTask
-    task = installPluginTask.AsyncResult(task_id)
-    return {"status": task.status, "result": task.result}
