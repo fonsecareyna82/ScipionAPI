@@ -4,10 +4,13 @@ from contextlib import contextmanager
 
 from celery import Celery, Task
 
+from app.backend.api.services.plugin_revision import bumpPluginsRevision
+
 celeryApp = Celery("scipionweb")
 celeryApp.config_from_object("app.workers.celeryconfig")
 
 from app.backend.api.services.environment import prepareEnvironment
+from app.backend.api.services.reload_trigger import triggerBackendReloadIfEnabled
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,8 @@ def installPluginTask(self, pip_name: str) -> str:
         raise
 
     self.update_state(state="PROGRESS", meta={"step": "Completed"})
+    bumpPluginsRevision()
+    triggerBackendReloadIfEnabled()
     return f"Plugin {pip_name} installed successfully!"
 
 
@@ -100,4 +105,6 @@ def uninstallPluginTask(self, pip_name: str) -> str:
         raise
 
     self.update_state(state="PROGRESS", meta={"step": "Completed."})
+    bumpPluginsRevision()
+    triggerBackendReloadIfEnabled()
     return f"Plugin {pip_name} uninstalled successfully!"
