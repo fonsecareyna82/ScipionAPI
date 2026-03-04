@@ -58,6 +58,8 @@ class PluginService:
     def getPlugins(self, forceRefresh: bool = False) -> List[Dict[str, Any]]:
         with self._cacheLock:
             if self._pluginsCache is not None and not forceRefresh:
+                import importlib
+                importlib.invalidate_caches()
                 return list(self._pluginsCache)
 
             try:
