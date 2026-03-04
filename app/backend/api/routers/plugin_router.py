@@ -1,28 +1,3 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
 import asyncio
 import logging
 from typing import Any, Dict, Optional
@@ -39,12 +14,25 @@ router = APIRouter(prefix="/plugins", tags=["Plugins"])
 service = PluginService()
 
 try:
-    from app.workers.task_queue import installPluginTask, uninstallPluginTask  # type: ignore
-    _celeryAvailable = True
+    from app.workers.task_queue import celeryApp  # type: ignore
+    _celeryAppAvailable = True
+except Exception:
+    celeryApp = None  # type: ignore
+    _celeryAppAvailable = False
+
+try:
+    from app.workers.task_queue import installPluginTask  # type: ignore
+    _celeryInstallAvailable = True
 except Exception:
     installPluginTask = None  # type: ignore
+    _celeryInstallAvailable = False
+
+try:
+    from app.workers.task_queue import uninstallPluginTask  # type: ignore
+    _celeryUninstallAvailable = True
+except Exception:
     uninstallPluginTask = None  # type: ignore
-    _celeryAvailable = False
+    _celeryUninstallAvailable = False
 
 
 _inProcessResults: Dict[str, Dict[str, Any]] = {}
@@ -96,7 +84,7 @@ async def _startInProcessTask(taskFn, *args) -> TaskStartResponse:
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
 async def installPlugin(pluginName: str):
     try:
-        if _celeryAvailable and installPluginTask is not None:
+        if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
             asyncResult = installPluginTask.delay(pluginName)
             return TaskStartResponse(taskId=str(asyncResult.id), status="PENDING")
         return await _startInProcessTask(service.installPlugin, pluginName)
@@ -107,7 +95,7 @@ async def installPlugin(pluginName: str):
 @router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
 async def uninstallPlugin(pluginName: str):
     try:
-        if _celeryAvailable and uninstallPluginTask is not None:
+        if _celeryAppAvailable and _celeryUninstallAvailable and uninstallPluginTask is not None:
             asyncResult = uninstallPluginTask.delay(pluginName)
             return TaskStartResponse(taskId=str(asyncResult.id), status="PENDING")
         return await _startInProcessTask(service.uninstallPlugin, pluginName)
@@ -117,9 +105,17 @@ async def uninstallPlugin(pluginName: str):
 
 @router.get("/tasks/{taskId}", response_model=TaskStatusResponse)
 async def getTaskStatus(taskId: str):
-    if _celeryAvailable and installPluginTask is not None:
-        task = installPluginTask.AsyncResult(taskId)
+    if _celeryAppAvailable and celeryApp is not None:
+        task = celeryApp.AsyncResult(taskId)
         status = task.status
+
+        if status in ("SUCCESS", "FAILURE"):
+            service.clearCache()
+            try:
+                import importlib
+                importlib.invalidate_caches()
+            except Exception:
+                pass
 
         if status == "SUCCESS":
             return TaskStatusResponse(taskId=taskId, status=status, result=task.result, error=None)

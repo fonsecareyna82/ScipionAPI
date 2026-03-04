@@ -28,7 +28,7 @@ from celery import Celery, Task
 
 
 celeryApp = Celery('scipionweb')
-celeryApp.config_from_object('app.celeryconfig')
+celeryApp.config_from_object("app.workers.celeryconfig")
 
 from app.backend.api.services.environment import prepareEnvironment
 
