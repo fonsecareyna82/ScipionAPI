@@ -49,6 +49,7 @@ class TaskStatusResponse(BaseModel):
     status: str
     result: Optional[Any] = None
     error: Optional[str] = None
+    meta: Optional[Any] = None
 
 
 @router.get("/", response_model=Any)
@@ -109,6 +110,12 @@ async def getTaskStatus(taskId: str):
         task = celeryApp.AsyncResult(taskId)
         status = task.status
 
+        meta = None
+        try:
+            meta = task.info
+        except Exception:
+            meta = None
+
         if status in ("SUCCESS", "FAILURE"):
             service.clearCache()
             try:
@@ -118,11 +125,11 @@ async def getTaskStatus(taskId: str):
                 pass
 
         if status == "SUCCESS":
-            return TaskStatusResponse(taskId=taskId, status=status, result=task.result, error=None)
+            return TaskStatusResponse(taskId=taskId, status=status, result=task.result, error=None, meta=meta)
         if status == "FAILURE":
-            return TaskStatusResponse(taskId=taskId, status=status, result=None, error=str(task.result))
+            return TaskStatusResponse(taskId=taskId, status=status, result=None, error=str(task.result), meta=meta)
 
-        return TaskStatusResponse(taskId=taskId, status=status, result=None, error=None)
+        return TaskStatusResponse(taskId=taskId, status=status, result=None, error=None, meta=meta)
 
     local = _inProcessResults.get(taskId)
     if local is None:
@@ -133,4 +140,5 @@ async def getTaskStatus(taskId: str):
         status=str(local.get("status", "UNKNOWN")),
         result=local.get("result"),
         error=local.get("error"),
+        meta=None,
     )

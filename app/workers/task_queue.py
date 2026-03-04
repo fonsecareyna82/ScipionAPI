@@ -1,38 +1,26 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
 import logging
+import sys
+from contextlib import contextmanager
+
 from celery import Celery, Task
 
-
-celeryApp = Celery('scipionweb')
+celeryApp = Celery("scipionweb")
 celeryApp.config_from_object("app.workers.celeryconfig")
 
 from app.backend.api.services.environment import prepareEnvironment
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def restoreStdStreams():
+    # restoreStdStreams
+    oldStdout, oldStderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+    try:
+        yield
+    finally:
+        sys.stdout, sys.stderr = oldStdout, oldStderr
 
 
 class InstallPluginTask(Task):
@@ -43,51 +31,73 @@ class InstallPluginTask(Task):
     acks_late = True
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
-        self.update_state(state="RETRY", meta={"error": str(exc)})
+        # logRetryOnly
+        logger.warning("Task %s retrying: %s", task_id, exc)
         super().on_retry(exc, task_id, args, kwargs, einfo)
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
-        logger.error(f"Task {task_id} failed: {exc}")
+        # logFailureOnly
+        logger.error("Task %s failed: %s", task_id, exc)
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
 
-@celeryApp.task(
-    base=InstallPluginTask,
-    bind=True,
-    name="app.tasks.installPluginTask",
-)
+@celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.installPluginTask")
 def installPluginTask(self, pip_name: str) -> str:
-    # Step 1: Load the service
-    self.update_state(state="PROGRESS", meta={"step": "loading_service"})
+    self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
     from app.backend.api.services.plugin_service import PluginService
     service = PluginService()
 
-    # Step 2: Get the plugin
-    self.update_state(state="PROGRESS", meta={"step": "fetching_plugin"})
+    self.update_state(state="PROGRESS", meta={"step": "Fetching plugin..."})
     plugins_map = service.pluginRepository.getPlugins(getPipData=True)
     plugin = plugins_map.get(pip_name)
     if plugin is None:
-        raise ValueError(f"No existe plugin con pipName ‘{pip_name}’")
+        raise ValueError(f"No plugin found for pipName '{pip_name}'")
 
-    # Step 3: Prepare the environment
-    self.update_state(state="PROGRESS", meta={"step": "preparing_environment"})
-    prepareEnvironment()
-
-    # Step 4: Install the plugin
-    self.update_state(state="PROGRESS", meta={"step": "installing_pip_module"})
+    self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
     try:
-        plugin.installPipModule()
-    except Exception as e:
-        logger.exception("Error en installPipModule")
+        prepareEnvironment()
+    except SystemExit as e:
+        raise RuntimeError(str(e)) from e
+
+    self.update_state(state="PROGRESS", meta={"step": "Installing pip module..."})
+    try:
+        with restoreStdStreams():
+            plugin.installPipModule()
+    except Exception:
+        logger.exception("Error in installPipModule")
         raise
 
-    # Step 5: Install binaries
-    self.update_state(state="PROGRESS", meta={"step": "installing_binaries"})
+    self.update_state(state="PROGRESS", meta={"step": "Installing binaries..."})
     try:
-        plugin.installBin({"args": ["-j", 3]})
-    except Exception as e:
-        logger.exception("Error en installBin")
+        with restoreStdStreams():
+            plugin.installBin({"args": ["-j", "3"]})
+    except Exception:
+        logger.exception("Error in installBin")
         raise
-    # Final
-    self.update_state(state="SUCCESS", meta={"step": "completed"})
+
+    self.update_state(state="PROGRESS", meta={"step": "Completed"})
     return f"Plugin {pip_name} installed successfully!"
+
+
+@celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.uninstallPluginTask")
+def uninstallPluginTask(self, pip_name: str) -> str:
+    self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
+    from app.backend.api.services.plugin_service import PluginService
+    service = PluginService()
+
+    self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+    try:
+        prepareEnvironment()
+    except SystemExit as e:
+        raise RuntimeError(str(e)) from e
+
+    self.update_state(state="PROGRESS", meta={"step": "Uninstalling plugin..."})
+    try:
+        with restoreStdStreams():
+            service.uninstallPlugin(pip_name)
+    except Exception:
+        logger.exception("Error uninstalling plugin")
+        raise
+
+    self.update_state(state="PROGRESS", meta={"step": "Completed."})
+    return f"Plugin {pip_name} uninstalled successfully!"

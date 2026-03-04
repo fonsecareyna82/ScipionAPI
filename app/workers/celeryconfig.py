@@ -31,4 +31,6 @@ task_serializer = "json"
 result_serializer = "json"
 timezone = "UTC"
 enable_utc = True
+worker_redirect_stdouts = False
+worker_hijack_root_logger = False
 
