@@ -25,14 +25,17 @@
 # ******************************************************************************
 import collections
 import io
-import json
 import logging
 import re
-import threading
 from functools import lru_cache
 from urllib.request import urlopen
 from uuid import uuid4
-from itertools import chain
+import copy
+import json
+import sys
+import threading
+import time
+import textwrap
 
 import numpy as np
 
@@ -77,6 +80,14 @@ from app.backend.utils.file_handlers import FileHandlers
 
 from app.utils.scipion_helper import serializeToJson
 from contextvars import ContextVar
+
+from app.backend.api.services.plugin_revision import getPluginsRevision
+
+# protocolsTreeCacheByRevision
+_protocolsTreeLock = threading.Lock()
+_protocolsTreeCache: Dict[int, Dict[str, Any]] = {}
+_protocolsTreeCacheTs: Dict[int, float] = {}
+_PROTOCOLS_TREE_TTL_S = 10  # 1 minute
 
 
 # Per-request context for current project and tomoList
@@ -1305,17 +1316,83 @@ class ProjectService:
             logger.error("ERROR with param: " + paramName)
             raise ex
 
+    def _buildProtocolsTreeInSubprocess(self) -> Dict[str, Any]:
+        # buildProtocolsTreeInSubprocess
+        code = textwrap.dedent(
+            """
+            import json
+            import os
+
+            from pyworkflow import Config
+            from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
+            from app.utils.scipion_helper import serializeToJson
+
+            Config.setDomain("pwem")
+            domain = Config.getDomain()
+
+            protConf = os.path.join(Config.SCIPION_LOCAL_CONFIG, Config.SCIPION_PROTOCOLS)
+            tree = ProtocolTreeConfig.load(domain, protConf)
+
+            print(json.dumps(serializeToJson(tree)))
+            """
+        ).strip()
+
+        # projectRootResolve: .../app/backend/api/services/project_service.py -> repo root
+        projectRoot = Path(__file__).resolve().parents[4]
+
+        env = os.environ.copy()
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existing if existing else "")
+
+        res = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(projectRoot),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        if res.returncode != 0:
+            err = (res.stderr or "").strip()
+            out = (res.stdout or "").strip()
+            raise RuntimeError(f"Failed to build protocols tree. rc={res.returncode} stderr={err} stdout={out}")
+
+        return json.loads(res.stdout)
+
     def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
-        # Retrieve all protocols
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser['id'])
+        # getProtocols
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             return None
-        from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
-        configProtocols = Config.SCIPION_PROTOCOLS
-        localDir = Config.SCIPION_LOCAL_CONFIG
-        protConf = os.path.join(localDir, configProtocols)
-        protocolsTree = ProtocolTreeConfig.load(self.currentProject.getDomain(), protConf)
-        protocolsTree = serializeToJson(protocolsTree)
+
+        pluginsRevision = int(getPluginsRevision() or 0)
+        now = time.time()
+
+        with _protocolsTreeLock:
+            cached = _protocolsTreeCache.get(pluginsRevision)
+            cachedTs = _protocolsTreeCacheTs.get(pluginsRevision)
+            if cached is not None and cachedTs is not None and (now - cachedTs) < _PROTOCOLS_TREE_TTL_S:
+                protocolsTree = copy.deepcopy(cached)
+                self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
+                return protocolsTree
+
+        # rebuildOncePerRevision
+        protocolsTree = self._buildProtocolsTreeInSubprocess()
+
+        with _protocolsTreeLock:
+            _protocolsTreeCache[pluginsRevision] = protocolsTree
+            _protocolsTreeCacheTs[pluginsRevision] = now
+
+            # pruneOldRevisionsBestEffort
+            for rev in list(_protocolsTreeCache.keys()):
+                ts = _protocolsTreeCacheTs.get(rev)
+                if ts is None:
+                    continue
+                if (now - ts) > _PROTOCOLS_TREE_TTL_S:
+                    _protocolsTreeCache.pop(rev, None)
+                    _protocolsTreeCacheTs.pop(rev, None)
+
+        protocolsTree = copy.deepcopy(protocolsTree)
         self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
         return protocolsTree
 
