@@ -1,19 +1,29 @@
 import logging
 import sys
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# loadDotEnvFromRepoRoot
+repoRoot = Path(__file__).resolve().parents[2]  # ScipionAPI/
+dotEnvPath = (repoRoot / "scipion_home" / ".env").resolve()
+load_dotenv(dotEnvPath, override=False)
+
 from contextlib import contextmanager
-
 from celery import Celery, Task
-
-from app.backend.api.services.plugin_revision import bumpPluginsRevision
-
-celeryApp = Celery("scipionweb")
-celeryApp.config_from_object("app.workers.celeryconfig")
-
+from app.backend.api.services.plugins_revision import bumpPluginsRevision
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.api.services.reload_trigger import triggerBackendReloadIfEnabled
 
+celeryApp = Celery("scipionweb")
+celeryApp.config_from_object("app.workers.celeryconfig")
 logger = logging.getLogger(__name__)
 
+logger.debug(
+    "celeryEnvLoaded dotEnvPath=%s scipionHome=%s",
+    str(dotEnvPath),
+    os.environ.get("SCIPION_HOME"),
+)
 
 @contextmanager
 def restoreStdStreams():
@@ -79,7 +89,13 @@ def installPluginTask(self, pip_name: str) -> str:
         raise
 
     self.update_state(state="PROGRESS", meta={"step": "Completed"})
-    bumpPluginsRevision()
+    newRev = bumpPluginsRevision()
+    logger.warning("pluginsRevisionBumped=%s", newRev)
+    logger.warning(
+        "pluginsRevisionBumped=%s scipionHome=%s",
+        newRev,
+        os.environ.get("SCIPION_HOME"),
+    )
     triggerBackendReloadIfEnabled()
     return f"Plugin {pip_name} installed successfully!"
 
@@ -105,6 +121,12 @@ def uninstallPluginTask(self, pip_name: str) -> str:
         raise
 
     self.update_state(state="PROGRESS", meta={"step": "Completed."})
-    bumpPluginsRevision()
+    newRev = bumpPluginsRevision()
+    logger.warning("pluginsRevisionBumped=%s", newRev)
+    logger.warning(
+        "pluginsRevisionBumped=%s scipionHome=%s",
+        newRev,
+        os.environ.get("SCIPION_HOME"),
+    )
     triggerBackendReloadIfEnabled()
     return f"Plugin {pip_name} uninstalled successfully!"

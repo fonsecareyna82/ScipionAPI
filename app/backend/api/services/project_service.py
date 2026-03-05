@@ -81,13 +81,17 @@ from app.backend.utils.file_handlers import FileHandlers
 from app.utils.scipion_helper import serializeToJson
 from contextvars import ContextVar
 
-from app.backend.api.services.plugin_revision import getPluginsRevision
+from app.backend.api.services.plugins_revision import getPluginsRevision
 
 # protocolsTreeCacheByRevision
 _protocolsTreeLock = threading.Lock()
 _protocolsTreeCache: Dict[int, Dict[str, Any]] = {}
-_protocolsTreeCacheTs: Dict[int, float] = {}
-_PROTOCOLS_TREE_TTL_S = 10  # 1 minute
+_lastProtocolsTreeRevision = -1
+
+# newProtocolContextCacheRevisionDriven
+_newProtocolLock = threading.Lock()
+_newProtocolCache: Dict[str, Dict[str, Any]] = {}
+_lastNewProtocolRevision = -1
 
 
 # Per-request context for current project and tomoList
@@ -100,6 +104,32 @@ _tomoListVar: ContextVar[Optional[Dict[Any, Any]]] = ContextVar(
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
+
+
+def _invalidateProtocolsTreeCacheIfNeeded() -> int:
+    # invalidateProtocolsTreeCacheIfNeeded
+    global _lastProtocolsTreeRevision
+    rev = int(getPluginsRevision() or 0)
+
+    with _protocolsTreeLock:
+        if rev != _lastProtocolsTreeRevision:
+            _protocolsTreeCache.clear()
+            _lastProtocolsTreeRevision = rev
+
+    return rev
+
+
+def _invalidateNewProtocolCacheIfNeeded() -> int:
+    # invalidateNewProtocolCacheIfNeeded
+    global _lastNewProtocolRevision
+    rev = int(getPluginsRevision() or 0)
+
+    with _newProtocolLock:
+        if rev != _lastNewProtocolRevision:
+            _newProtocolCache.clear()
+            _lastNewProtocolRevision = rev
+
+    return rev
 
 
 class ProjectService:
@@ -943,15 +973,103 @@ class ProjectService:
         context['values'] = paramsValue
         return context
 
+    def _buildNewProtocolContextInSubprocess(self, projectId: int, protocolClassName: str) -> Dict[str, Any]:
+        # buildNewProtocolContextInSubprocess
+        projectPath = None
+        for attr in ("path", "_path"):
+            if hasattr(self.currentProject, attr):
+                projectPath = getattr(self.currentProject, attr)
+                break
+        if not projectPath and hasattr(self.currentProject, "getPath"):
+            projectPath = self.currentProject.getPath()
+
+        if not projectPath:
+            raise RuntimeError("Cannot resolve currentProject path for subprocess protocol build")
+
+        code = textwrap.dedent(
+            """
+            import json
+            import os
+            from pyworkflow.project import Manager
+
+            from app.backend.api.services.project_service import ProjectService
+
+            projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
+            projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
+            protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
+
+            mgr = Manager()
+            project = mgr.loadProject(projectPath)
+
+            domain = project.getDomain()
+            protClass = domain.getProtocols().get(protocolClassName)
+            if protClass is None:
+                raise RuntimeError(f"Protocol class not found: {protocolClassName}")
+
+            protocol = project.newProtocol(protClass)
+
+            svc = ProjectService()
+            svc.currentProject = project
+
+            ctx = svc._buildProtocolContext(projectId, protocol)
+            print(json.dumps(ctx))
+            """
+        ).strip()
+
+        projectRoot = Path(__file__).resolve().parents[4]
+        env = os.environ.copy()
+
+        env["SCIPIONWEB_PROJECT_PATH"] = str(projectPath)
+        env["SCIPIONWEB_PROJECT_ID"] = str(int(projectId))
+        env["SCIPIONWEB_PROTOCOL_CLASS"] = str(protocolClassName)
+
+        existingPythonPath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existingPythonPath if existingPythonPath else "")
+
+        res = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(projectRoot),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        if res.returncode != 0:
+            err = (res.stderr or "").strip()
+            out = (res.stdout or "").strip()
+            raise RuntimeError(f"Failed to build new protocol context. rc={res.returncode} stderr={err} stdout={out}")
+
+        return json.loads(res.stdout)
+
     def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
-        """
-        Returns the parameters of a new protocol given its class name.
-        """
+        # getNewProtocolParams
+        _invalidateNewProtocolCacheIfNeeded()
+
+        key = str(protocolClassName)
+
+        with _newProtocolLock:
+            cached = _newProtocolCache.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+
+        # tryInProcessFirst
         protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
         if protClass:
             protocol = self.currentProject.newProtocol(protClass)
-            return self._buildProtocolContext(projectId, protocol)
-        return {}
+            ctx = self._buildProtocolContext(projectId, protocol)
+
+            with _newProtocolLock:
+                _newProtocolCache[key] = ctx
+
+            return copy.deepcopy(ctx)
+
+        # fallbackSubprocessWhenDomainIsStale
+        ctx = self._buildNewProtocolContextInSubprocess(int(projectId), str(protocolClassName))
+
+        with _newProtocolLock:
+            _newProtocolCache[key] = ctx
+
+        return copy.deepcopy(ctx)
 
     def getProtocolParams(self, projectId: int, protocolId: int) -> dict:
         """
@@ -1361,40 +1479,25 @@ class ProjectService:
 
     def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
         # getProtocols
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            return None
+        _invalidateProtocolsTreeCacheIfNeeded()
 
-        pluginsRevision = int(getPluginsRevision() or 0)
-        now = time.time()
+        cacheKey = "protocolsTree"
+        with _protocolsTreeLock:
+            cached = _protocolsTreeCache.get(cacheKey)
+            if cached is not None:
+                tree = copy.deepcopy(cached)
+                self.walkAndReplaceProtocols(tree, self.getProtocolName)
+                return tree
+
+        # computeFreshTreeOncePerRevision
+        protocolsTree = self._buildProtocolsTreeInSubprocess()  # el que ya te funciona
 
         with _protocolsTreeLock:
-            cached = _protocolsTreeCache.get(pluginsRevision)
-            cachedTs = _protocolsTreeCacheTs.get(pluginsRevision)
-            if cached is not None and cachedTs is not None and (now - cachedTs) < _PROTOCOLS_TREE_TTL_S:
-                protocolsTree = copy.deepcopy(cached)
-                self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
-                return protocolsTree
+            _protocolsTreeCache[cacheKey] = protocolsTree
 
-        # rebuildOncePerRevision
-        protocolsTree = self._buildProtocolsTreeInSubprocess()
-
-        with _protocolsTreeLock:
-            _protocolsTreeCache[pluginsRevision] = protocolsTree
-            _protocolsTreeCacheTs[pluginsRevision] = now
-
-            # pruneOldRevisionsBestEffort
-            for rev in list(_protocolsTreeCache.keys()):
-                ts = _protocolsTreeCacheTs.get(rev)
-                if ts is None:
-                    continue
-                if (now - ts) > _PROTOCOLS_TREE_TTL_S:
-                    _protocolsTreeCache.pop(rev, None)
-                    _protocolsTreeCacheTs.pop(rev, None)
-
-        protocolsTree = copy.deepcopy(protocolsTree)
-        self.walkAndReplaceProtocols(protocolsTree, self.getProtocolName)
-        return protocolsTree
+        tree = copy.deepcopy(protocolsTree)
+        self.walkAndReplaceProtocols(tree, self.getProtocolName)
+        return tree
 
     def replaceDefaultProtocolText(self, node: dict, resolverFn):
         # Determine type and extract text, tag, and children

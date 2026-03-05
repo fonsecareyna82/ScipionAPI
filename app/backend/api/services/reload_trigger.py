@@ -24,7 +24,20 @@
 # *
 # ******************************************************************************
 import os
+import time
 from pathlib import Path
+
+
+def _getRepoRoot() -> Path:
+    # getRepoRoot
+    return Path(__file__).resolve().parents[4]
+
+
+def _resolvePath(rawPath: str, baseDir: Path) -> Path:
+    # resolvePath
+    p = Path(rawPath)
+    return p if p.is_absolute() else (baseDir / p).resolve()
+
 
 def triggerBackendReloadIfEnabled() -> None:
     # triggerBackendReloadIfEnabled
@@ -32,16 +45,26 @@ def triggerBackendReloadIfEnabled() -> None:
     if not enabled:
         return
 
-    touchPathRaw = os.environ.get("BACKEND_RELOAD_TOUCH_PATH", "").strip()
-    if touchPathRaw:
-        touchPath = Path(touchPathRaw)
+    mode = os.environ.get("BACKEND_RELOAD_MODE", "dev").strip().lower()
+
+    # dev: write inside repo so uvicorn --reload sees it
+    # prod: write inside SCIPION_HOME so systemd/k8s can watch it
+    if mode == "prod":
+        scipionHome = os.environ.get("SCIPION_HOME", "").strip()
+        if not scipionHome:
+            return
+        baseDir = Path(scipionHome)
+        defaultRel = ".backend_reload_marker"
     else:
-        # defaultTouchPath
-        touchPath = Path("app/backend/_reload_marker.py")
+        baseDir = _getRepoRoot()
+        defaultRel = "app/backend/_reload_marker.py"
+
+    raw = os.environ.get("BACKEND_RELOAD_TOUCH_PATH", "").strip() or defaultRel
+    touchPath = _resolvePath(raw, baseDir)
 
     try:
         touchPath.parent.mkdir(parents=True, exist_ok=True)
-        touchPath.touch()
+        touchPath.write_text(f"reloadMarker={time.time()}\n", encoding="utf-8")
     except Exception:
         # bestEffortOnly
         pass
