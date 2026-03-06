@@ -143,7 +143,7 @@ def getProject(
     return project
 
 
-@router.put("/{projectId}", response_model=ProjectOut, status_code=status.HTTP_200_OK)
+@router.put("/{projectId}", response_model=Any, status_code=status.HTTP_200_OK)
 def updateProject(
     projectId: int,
     projectData: ProjectUpdate,
