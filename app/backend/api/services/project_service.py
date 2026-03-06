@@ -454,7 +454,7 @@ class ProjectService:
             raise HTTPException(status_code=404, detail="Project not found")
 
         self.manager.renameProject(project['name'], projectData.name)
-        mapper.updateProject(projectId, currentUser['id'],
+        project = mapper.updateProject(projectId, currentUser['id'],
                              self.manager.getProjectPath(projectData.name),
                              projectData.description)
 
