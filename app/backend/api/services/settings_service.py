@@ -27,9 +27,16 @@
 # settingsService
 from __future__ import annotations
 
+import logging
+import os
+import threading
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, status
+
+import pyworkflow
+from app.backend.api.services.reload_trigger import triggerBackendReloadIfEnabled
+from pyworkflow import VariablesRegistry
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.api.schemas.settings_schema import (
@@ -40,6 +47,14 @@ from app.backend.api.schemas.settings_schema import (
     InstanceSettingsIn,
     InstanceSettingsPatch,
 )
+
+_envLock = threading.Lock()
+
+
+def _isScipionEnvVar(name: str) -> bool:
+    # isScipionEnvVar
+    upper = (name or "").strip().upper()
+    return upper.startswith("SCIPION_")
 
 
 def _getUserId(currentUser: Any) -> int:
@@ -163,3 +178,44 @@ class SettingsService:
 
         stored = mapper.upsertInstanceSettings(_modelDump(normalized))
         return _modelValidate(InstanceSettingsOut, stored or {})
+
+    def getEnvironmentVariables(self, currentUser: Any) -> list[dict[str, str]]:
+        # getEnvironmentVariables
+        self._requireAdmin(currentUser)
+        with _envLock:
+            rows = []
+            for v in VariablesRegistry.__iter__():
+                try:
+                    rows.append(
+                        {
+                            "name": str(v.name),
+                            "value": "" if v is None else str(v.value),
+                            "default": "" if v.default is None else str(v.default),
+                            "description": "" if v.description is None else str(v.description),
+                            "source": "" if v.source is None else str(v.source),
+                            "isDefault": "" if v.isDefault is None else v.isDefault,
+                            "type": "STRING" if v.var_type is None else str(v.var_type.name),
+                        })
+                except Exception as e:
+                    print(v.name)
+
+            rows.sort(key=lambda x: (x.get("name") or "").upper())
+            return rows
+
+    def patchEnvironmentVariables(self, currentUser: Any, patch: Dict[str, Any]) -> list[dict[str, str]]:
+        # patchEnvironmentVariables
+        self._requireAdmin(currentUser)
+
+        if not isinstance(patch, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid payload: expected an object mapping variable names to values.",
+            )
+        for v in VariablesRegistry.__iter__():
+            if v.name in patch:
+                v.value = patch[v.name]
+                v.isDefault = False
+        VariablesRegistry.save(pyworkflow.Config.SCIPION_CONFIG)
+        if patch:
+            triggerBackendReloadIfEnabled()
+        return self.getEnvironmentVariables(currentUser)

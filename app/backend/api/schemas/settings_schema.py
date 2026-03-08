@@ -87,3 +87,13 @@ class InstanceSettingsPatch(BaseModel):
 
     requireConfirmBeforeExecute: Optional[bool] = None
     requireConfirmBeforeDelete: Optional[bool] = None
+
+
+class EnvironmentVariableOut(BaseModel):
+    name: str
+    value: str
+    default: str
+    description: str
+    source: str
+    isDefault: bool
+    type: str

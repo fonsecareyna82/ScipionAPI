@@ -121,6 +121,10 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     if scipionPort and not existing.get('SCIPION_PORT'):
         updates['SCIPION_PORT'] = scipionPort
 
+    updates['AUTO_RELOAD_ON_PLUGIN_CHANGE'] = '1'
+    updates['BACKEND_RELOAD_MODE'] = 'prod'
+    updates['BACKEND_RELOAD_TOUCH_PATH'] ='.backend_reload_marker'
+
     writeEnvFile(envPath, updates)
     exportEnvToOs(envPath)
 
