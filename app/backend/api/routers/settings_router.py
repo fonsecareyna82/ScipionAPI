@@ -28,6 +28,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Dict, List
 from app.backend.api.dependencies import getCurrentUser, requireAdmin
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -39,6 +40,7 @@ from app.backend.api.schemas.settings_schema import (
     InstanceSettingsOut,
     InstanceSettingsIn,
     InstanceSettingsPatch,
+    EnvironmentVariableOut,
 )
 from app.backend.api.services.settings_service import SettingsService
 
@@ -203,4 +205,47 @@ def patchInstanceSettings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to patch instance settings: {e}",
+        )
+
+
+@router.get(
+    "/environment",
+    response_model=List[EnvironmentVariableOut],
+    status_code=status.HTTP_200_OK,
+)
+def getEnvironmentVariables(
+    currentUser=Depends(requireAdmin),
+    service: SettingsService = Depends(getSettingsService),
+):
+    try:
+        return service.getEnvironmentVariables(currentUser)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getEnvironmentVariables: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load environment variables: {e}",
+        )
+
+
+@router.patch(
+    "/environment",
+    response_model=List[EnvironmentVariableOut],
+    status_code=status.HTTP_200_OK,
+)
+def patchEnvironmentVariables(
+    patch: Dict[str, str],
+    currentUser=Depends(requireAdmin),
+    service: SettingsService = Depends(getSettingsService),
+):
+    try:
+        return service.patchEnvironmentVariables(currentUser, patch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in patchEnvironmentVariables: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to patch environment variables: {e}",
         )

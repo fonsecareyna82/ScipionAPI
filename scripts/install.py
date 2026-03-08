@@ -120,6 +120,10 @@ def ensureEnv(repoRoot: Path, adminUser: str, adminEmail: str, adminPassword: st
         "ADMIN_PASSWORD": adminPassword,
         "POSTGRES_HOST": dbHost,
         "POSTGRES_PORT": dbPort,
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "prod",
+        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
+
     }
 
     writeEnvFile(envPath, updates)
