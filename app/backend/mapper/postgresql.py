@@ -1,6 +1,8 @@
 # postgresql.py
 
 import json
+from datetime import datetime
+
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
@@ -704,7 +706,7 @@ class PostgresqlFlatMapper(Mapper):
                 WHERE ps."userId" = %s
                   AND p."ownerId" <> %s
             ) AS sub
-            ORDER BY "createdAt" DESC
+            ORDER BY "updatedAt" DESC
             """,
             (ownerId, ownerId, ownerId),
         )
@@ -737,6 +739,29 @@ class PostgresqlFlatMapper(Mapper):
             return self.getProject(projectId, ownerId)
 
         setClauses.append('"updatedAt" = NOW()')
+
+        sql = f"""
+            UPDATE "projects"
+               SET {", ".join(setClauses)}
+             WHERE "id" = %s
+               AND "ownerId" = %s
+        """
+        params.extend([projectId, ownerId])
+        self.db.execute(sql, tuple(params))
+        return self.getProject(projectId, ownerId)
+
+    def updateProjectModificationTime(
+        self,
+        projectId: int,
+        ownerId: int,
+        updateAt: datetime,
+    ) -> Optional[Dict[str, Any]]:
+        """Update the given fields on a project owned by ownerId."""
+        setClauses = []
+        params = []
+
+        setClauses.append('"updatedAt" = %s')
+        params.append(updateAt)
 
         sql = f"""
             UPDATE "projects"
