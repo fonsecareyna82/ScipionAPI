@@ -338,6 +338,7 @@ class ProjectService:
                 "isShared": bool(isShared),
                 "permission": permission,
                 "projectOwnerId": projectOwnerId,
+                "updatedAt": dbProj.get("updatedAt"),
             })
 
         return result
@@ -563,12 +564,17 @@ class ProjectService:
         return graphData
 
     def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
-        projPath = dbProj['name']
-        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), projPath)
+        projPath = Path(dbProj['name'])
+        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
         tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
         graphData = self.buildProtocolsGraph(runs, tags)
+
+        stats = projPath.stat()
+        updatedAt = datetime.fromtimestamp(stats.st_mtime)
+        if updatedAt != dbProj['updatedAt']:
+            mapper.updateProjectModificationTime(dbProj['id'], dbProj['ownerId'], updatedAt)
         # self.saveProtocolDependencies(mapper, graphData)
 
         return {
