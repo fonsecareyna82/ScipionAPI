@@ -1,4 +1,5 @@
 import logging
+import traceback
 from threading import Lock
 from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
@@ -9,6 +10,7 @@ from pyworkflow import Config
 from pyworkflow.project import Manager
 from scipion.install.plugin_funcs import PluginRepository
 
+from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
 from app.utils.scipion_helper import serializeToJson
 
 logger = logging.getLogger(__name__)
@@ -121,41 +123,72 @@ class PluginService:
                 return plugin
         return None
 
-    def installPlugin(self, pluginName: str) -> Dict[str, Any]:
-        rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
-        resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
-        plugin = rawPlugins[resolvedKey]
-
-        status = "SUCCESS"
+    def installPlugin(self, pluginName: str, taskId: Optional[str] = None) -> Dict[str, Any]:
         try:
+            if taskId:
+                writePluginTaskStep(taskId, "Resolving plugin...")
+            rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
+            resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
+            plugin = rawPlugins[resolvedKey]
+
+            if taskId:
+                writePluginTaskStep(taskId, "Installing pip module...")
             installed = plugin.installPipModule()
+
             if installed:
-                plugin.installBin()
+                if taskId:
+                    writePluginTaskStep(taskId, "Installing binaries...")
+                plugin.installBin({"args": ["-j", "3"]})
+            else:
+                if taskId:
+                    writePluginTaskStep(taskId, "Pip module reported no installation action.")
+
+            self.clearCache()
+            if taskId:
+                writePluginTaskStep(taskId, "Plugin installed successfully.")
+            return {"installed": "SUCCESS"}
+
         except Exception:
-            try:
-                plugin.uninstallBins()
-                plugin.uninstallPip()
-            except Exception:
-                pass
             logger.exception("Error installing the plugin.")
-            status = "FAILURE"
+            if taskId:
+                appendPluginTaskLog(taskId, traceback.format_exc())
+                writePluginTaskStep(taskId, "Rolling back installation...")
+            try:
+                plugin.uninstallBins()  # type: ignore[name-defined]
+                plugin.uninstallPip()   # type: ignore[name-defined]
+            except Exception:
+                logger.exception("Error during install rollback.")
+                if taskId:
+                    appendPluginTaskLog(taskId, traceback.format_exc())
+            raise
 
-        self.clearCache()
-        return {"installed": status}
-
-    def uninstallPlugin(self, pluginName: str) -> Dict[str, Any]:
-        rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
-        resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
-        plugin = rawPlugins[resolvedKey]
-
-        status = "SUCCESS"
+    def uninstallPlugin(self, pluginName: str, taskId: Optional[str] = None) -> Dict[str, Any]:
         try:
+            if taskId:
+                writePluginTaskStep(taskId, "Resolving plugin...")
+            rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
+            resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
+            plugin = rawPlugins[resolvedKey]
+
             if plugin.isInstalled():
+                if taskId:
+                    writePluginTaskStep(taskId, "Uninstalling binaries...")
                 plugin.uninstallBins()
+
+                if taskId:
+                    writePluginTaskStep(taskId, "Uninstalling pip module...")
                 plugin.uninstallPip()
+            else:
+                if taskId:
+                    writePluginTaskStep(taskId, "Plugin is not installed. Nothing to do.")
+
+            self.clearCache()
+            if taskId:
+                writePluginTaskStep(taskId, "Plugin uninstalled successfully.")
+            return {"uninstalled": "SUCCESS"}
+
         except Exception:
             logger.exception("Error uninstalling the plugin.")
-            status = "FAILURE"
-
-        self.clearCache()
-        return {"uninstalled": status}
+            if taskId:
+                appendPluginTaskLog(taskId, traceback.format_exc())
+            raise
