@@ -1,0 +1,732 @@
+from __future__ import annotations
+
+import importlib
+import sys
+import types
+from pathlib import Path
+from typing import Iterator, Any
+from datetime import datetime, timezone
+from fastapi import HTTPException
+
+import pytest
+from fastapi import APIRouter, FastAPI
+from fastapi.testclient import TestClient
+from starlette.responses import PlainTextResponse
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
+def _makeRouterModule(moduleName: str) -> types.ModuleType:
+    # makeRouterModule
+    module = types.ModuleType(moduleName)
+    router = APIRouter()
+    module.router = router
+    return module
+
+
+def _installStubModules() -> dict[str, types.ModuleType | None]:
+    # installStubModules
+    moduleNames = [
+        "app.backend.bootstrap",
+        "app.backend.api.services.environment",
+        "app.backend.utils.error_handlers",
+        "app.backend.api.routers.project_router",
+        "app.backend.api.routers.protocol_router",
+        "app.backend.api.routers.plugin_router",
+        "app.backend.api.routers.auth_router",
+        "app.backend.api.routers.user_router",
+        "app.backend.api.routers.settings_router",
+    ]
+
+    previousModules: dict[str, types.ModuleType | None] = {
+        name: sys.modules.get(name) for name in moduleNames
+    }
+
+    bootstrapModule = types.ModuleType("app.backend.bootstrap")
+    bootstrapModule.bootstrapEnv = lambda: None
+    sys.modules["app.backend.bootstrap"] = bootstrapModule
+
+    environmentModule = types.ModuleType("app.backend.api.services.environment")
+    environmentModule.prepareEnvironment = lambda: None
+    sys.modules["app.backend.api.services.environment"] = environmentModule
+
+    errorHandlersModule = types.ModuleType("app.backend.utils.error_handlers")
+    errorHandlersModule.registerAllErrorHandlers = lambda app: None
+    sys.modules["app.backend.utils.error_handlers"] = errorHandlersModule
+
+    sys.modules["app.backend.api.routers.project_router"] = _makeRouterModule(
+        "app.backend.api.routers.project_router"
+    )
+    sys.modules["app.backend.api.routers.protocol_router"] = _makeRouterModule(
+        "app.backend.api.routers.protocol_router"
+    )
+    sys.modules["app.backend.api.routers.plugin_router"] = _makeRouterModule(
+        "app.backend.api.routers.plugin_router"
+    )
+    sys.modules["app.backend.api.routers.auth_router"] = _makeRouterModule(
+        "app.backend.api.routers.auth_router"
+    )
+    sys.modules["app.backend.api.routers.user_router"] = _makeRouterModule(
+        "app.backend.api.routers.user_router"
+    )
+    sys.modules["app.backend.api.routers.settings_router"] = _makeRouterModule(
+        "app.backend.api.routers.settings_router"
+    )
+
+    return previousModules
+
+
+def _restoreStubModules(previousModules: dict[str, types.ModuleType | None]) -> None:
+    # restoreStubModules
+    for moduleName, previousModule in previousModules.items():
+        if previousModule is None:
+            sys.modules.pop(moduleName, None)
+        else:
+            sys.modules[moduleName] = previousModule
+
+
+def _importMainModule():
+    # importMainModule
+    sys.modules.pop("app.backend.main", None)
+    return importlib.import_module("app.backend.main")
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):
+    # makeProjectOut
+    payload = {
+        "id": projectId,
+        "name": name,
+        "description": "Demo description",
+        "status": "active",
+        "createdAt": datetime.now(timezone.utc),
+        "updatedAt": datetime.now(timezone.utc),
+        "protocolsCount": 0,
+        "diskUsage": "0.0 GB",
+        "isOwner": True,
+        "isShared": False,
+        "permission": "full",
+        "projectOwnerId": 1,
+    }
+    payload.update(overrides)
+    return payload
+
+class FakeProjectService:
+    # fakeProjectService
+    def __init__(self):
+        self.listProjectWorkflowsResult = [{"id": "wf-1", "name": "Workflow 1"}]
+        self.listProjectWorkflowsError = None
+
+        self.projectByIdResult = makeProjectOut()
+        self.lastGetProjectByIdCall = None
+
+        self.protocolsResult = [{"id": 11, "name": "Prot A"}]
+
+        self.logChannelsResult = [{"id": "stdout", "label": "Output"}]
+        self.pollLogsResult = {
+            "channels": {
+                "stdout": {"content": "hello", "offset": 5, "truncated": False},
+            }
+        }
+        self.lastPollLogsCall = None
+
+        self.resolveViewerResult = {"handled": True, "viewer": "volume"}
+        self.resolveViewerError = None
+        self.lastResolveViewerCall = None
+
+        self.runMetadataTableActionResult = {"success": True, "message": "Subset created"}
+        self.lastRunMetadataTableActionCall = None
+
+        self.exportMetadataTableResponse = PlainTextResponse(
+            "id,name\n1,row1\n",
+            media_type="text/csv",
+        )
+        self.lastExportMetadataTableCall = None
+
+        self.listProjectsResult = [makeProjectOut()]
+        self.lastListProjectsCall = None
+
+        self.createProjectResult = makeProjectOut(projectId=2, name="Created Project")
+        self.lastCreateProjectCall = None
+
+        self.updateProjectResult = makeProjectOut(projectId=1, name="Updated Project",
+                                                  description="Updated description")
+        self.lastUpdateProjectCall = None
+
+        self.deleteProjectResult = {"success": True}
+        self.lastDeleteProjectCall = None
+
+        self.shareProjectResult = {"success": True, "sharedUserIds": [2, 3]}
+        self.lastShareProjectCall = None
+
+        self.lastRevokeProjectShareCall = None
+
+        self.projectSharesResult = [
+            {"userId": 2, "permission": "read"},
+            {"userId": 3, "permission": "full"},
+        ]
+        self.lastListProjectSharesCall = None
+
+        self.applyWorkflowResult = {"success": True, "workflowId": "wf-1"}
+        self.applyWorkflowError = None
+        self.lastApplyWorkflowCall = None
+
+        self.protocolParamsResult = {
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        }
+        self.lastGetProtocolParamsCall = None
+
+        self.newProtocolParamsResult = {
+            "protocolClassName": "ProtClass",
+            "params": {"x": 2},
+        }
+        self.lastGetNewProtocolParamsCall = None
+
+        self.launchProtocolError = None
+        self.lastLaunchProtocolCall = None
+
+        self.saveProtocolError = None
+        self.saveProtocolResult = ({"protocolId": "10"}, [])
+        self.lastSaveProtocolCall = None
+
+        self.nextProtocolSuggestionsResult = [{"id": "next-1", "name": "Next protocol"}]
+        self.lastGetNextProtocolSuggestionsCall = None
+
+        self.renameProtocolError = None
+        self.lastRenameProtocolCall = None
+
+        self.duplicateProtocolError = None
+        self.lastDuplicateProtocolCall = None
+
+        self.deleteProtocolError = None
+        self.lastDeleteProtocolCall = None
+
+        self.restartProtocolAllError = None
+        self.restartProtocolAllResult = []
+        self.lastRestartProtocolAllCall = None
+
+        self.continueProtocolAllError = None
+        self.lastContinueProtocolAllCall = None
+
+        self.resetProtocolFromError = None
+        self.lastResetProtocolFromCall = None
+
+        self.stopProtocolError = None
+        self.lastStopProtocolCall = None
+
+    def listProjectWorkflows(self):
+        if self.listProjectWorkflowsError is not None:
+            raise self.listProjectWorkflowsError
+        return self.listProjectWorkflowsResult
+
+    def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
+        self.lastGetProjectByIdCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "refresh": refresh,
+            "checkPid": checkPid,
+        }
+        return self.projectByIdResult
+
+    def getProtocols(self, mapper, projectId, currentUser):
+        return self.protocolsResult
+
+    def listProjectLogChannelsService(self, projectId, protocolId):
+        return self.logChannelsResult
+
+    def listProtocolLogChannelsService(self, projectId, protocolId):
+        return self.logChannelsResult
+
+    def pollProtocolLogsService(self, projectId, protocolId, offsets, maxBytes, maxLines):
+        self.lastPollLogsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "offsets": dict(offsets),
+            "maxBytes": maxBytes,
+            "maxLines": maxLines,
+        }
+        return self.pollLogsResult
+
+    def resolveAnalyzeViewerDecision(self, projectId, protocolId, ctx):
+        self.lastResolveViewerCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "ctx": ctx,
+        }
+        if self.resolveViewerError is not None:
+            raise self.resolveViewerError
+        return self.resolveViewerResult
+
+    def runMetadataTableActionService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            action,
+            subsetName,
+            ids,
+            currentUser,
+            mapper,
+    ):
+        self.lastRunMetadataTableActionCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "action": action,
+            "subsetName": subsetName,
+            "ids": ids,
+            "currentUser": currentUser,
+            "mapper": mapper,
+        }
+        return self.runMetadataTableActionResult
+
+    def exportMetadataTableService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            fmt,
+            selectionOnly,
+            ids,
+    ):
+        self.lastExportMetadataTableCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "fmt": fmt,
+            "selectionOnly": selectionOnly,
+            "ids": ids,
+        }
+        return self.exportMetadataTableResponse
+
+    def listProjects(self, mapper, currentUser):
+        self.lastListProjectsCall = {
+            "mapper": mapper,
+            "currentUser": currentUser,
+        }
+        return self.listProjectsResult
+
+    def createProject(self, mapper, projectData, currentUser):
+        self.lastCreateProjectCall = {
+            "mapper": mapper,
+            "projectData": projectData,
+            "currentUser": currentUser,
+        }
+        return self.createProjectResult
+
+    def updateProject(self, mapper, projectId, currentUser, projectData):
+        self.lastUpdateProjectCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "projectData": projectData,
+        }
+        return self.updateProjectResult
+
+    def deleteProject(self, mapper, currentUser, projectId):
+        self.lastDeleteProjectCall = {
+            "mapper": mapper,
+            "currentUser": currentUser,
+            "projectId": projectId,
+        }
+        return self.deleteProjectResult
+
+    def shareProjectWithUser(self, mapper, projectId, currentUser, targetUserIds, permission):
+        self.lastShareProjectCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "targetUserIds": targetUserIds,
+            "permission": permission,
+        }
+        return self.shareProjectResult
+
+    def revokeProjectShareForUser(self, mapper, projectId, currentUser, targetUserId):
+        self.lastRevokeProjectShareCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "targetUserId": targetUserId,
+        }
+
+    def listProjectShares(self, mapper, projectId, currentUser):
+        self.lastListProjectSharesCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectSharesResult
+
+    def applyWorkflowToProject(self, mapper, projectId, workflowId, currentUser):
+        self.lastApplyWorkflowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "workflowId": workflowId,
+            "currentUser": currentUser,
+        }
+        if self.applyWorkflowError is not None:
+            raise self.applyWorkflowError
+        return self.applyWorkflowResult
+
+    def getProtocolParams(self, projectId, protocolId):
+        self.lastGetProtocolParamsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+        }
+        return self.protocolParamsResult
+
+    def getNewProtocolParams(self, projectId, protClassName):
+        self.lastGetNewProtocolParamsCall = {
+            "projectId": projectId,
+            "protClassName": protClassName,
+        }
+        return self.newProtocolParamsResult
+
+    def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
+        self.lastLaunchProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "protocolClassName": protocolClassName,
+            "params": params,
+            "executeMode": executeMode,
+        }
+        if self.launchProtocolError is not None:
+            raise self.launchProtocolError
+
+    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params):
+        self.lastSaveProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "protocolClassName": protocolClassName,
+            "params": params,
+        }
+        if self.saveProtocolError is not None:
+            raise self.saveProtocolError
+        return self.saveProtocolResult
+
+    def getNextProtocolSuggestions(self, protocolId):
+        self.lastGetNextProtocolSuggestionsCall = {"protocolId": protocolId}
+        return self.nextProtocolSuggestionsResult
+
+    def renameProtocol(self, protocolId, newName):
+        self.lastRenameProtocolCall = {
+            "protocolId": protocolId,
+            "newName": newName,
+        }
+        if self.renameProtocolError is not None:
+            raise self.renameProtocolError
+
+    def duplicateProtocol(self, mapper, projectId, items):
+        self.lastDuplicateProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "items": items,
+        }
+        if self.duplicateProtocolError is not None:
+            raise self.duplicateProtocolError
+
+    def deleteProtocol(self, mapper, projectId, protocolIds):
+        self.lastDeleteProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
+        if self.deleteProtocolError is not None:
+            raise self.deleteProtocolError
+
+    def restartProtocolAll(self, protocolId):
+        self.lastRestartProtocolAllCall = {"protocolId": protocolId}
+        if self.restartProtocolAllError is not None:
+            raise self.restartProtocolAllError
+        return self.restartProtocolAllResult
+
+    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+        self.lastContinueProtocolAllCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "currentUser": currentUser,
+        }
+        if self.continueProtocolAllError is not None:
+            raise self.continueProtocolAllError
+
+    def resetProtocolFrom(self, protocolId):
+        self.lastResetProtocolFromCall = {"protocolId": protocolId}
+        if self.resetProtocolFromError is not None:
+            raise self.resetProtocolFromError
+
+    def stopProtocol(self, protocolIds):
+        self.lastStopProtocolCall = {"protocolIds": protocolIds}
+        if self.stopProtocolError is not None:
+            raise self.stopProtocolError
+
+
+@pytest.fixture
+def authTestEnv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # authTestEnv
+    scipionHome = tmp_path / "scipion_home"
+    scipionHome.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("DATABASE_NAME", "scipion_test")
+    monkeypatch.setenv("DATABASE_USER", "scipion_test")
+    monkeypatch.setenv("DATABASE_PASS", "scipion_test")
+    monkeypatch.setenv("POSTGRES_HOST", "localhost")
+    monkeypatch.setenv("POSTGRES_PORT", "5432")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+
+    return scipionHome
+
+@pytest.fixture
+def projectRouterModule(authTestEnv):
+    # projectRouterModule
+    return importlib.import_module("app.backend.api.routers.project_router")
+
+
+@pytest.fixture
+def fakeProjectMapper():
+    # fakeProjectMapper
+    return object()
+
+
+@pytest.fixture
+def fakeProjectService():
+    # fakeProjectServiceFixture
+    return FakeProjectService()
+
+
+@pytest.fixture
+def projectClient(
+    projectRouterModule,
+    fakeProjectMapper,
+    fakeProjectService,
+) -> Iterator[TestClient]:
+    # projectClient
+    app = FastAPI()
+    app.include_router(projectRouterModule.router)
+
+    app.dependency_overrides[projectRouterModule.getMapper] = lambda: fakeProjectMapper
+    app.dependency_overrides[projectRouterModule.getCurrentUser] = lambda: {
+        "id": 1,
+        "email": "user@example.com",
+        "role": "user",
+    }
+    app.dependency_overrides[projectRouterModule.getProjectService] = lambda: fakeProjectService
+
+    with TestClient(app) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+
+class FakeMapper:
+    # fakeMapper
+    def __init__(self):
+        self.usersByEmail: dict[str, dict[str, Any]] = {}
+        self.usersById: dict[int, dict[str, Any]] = {}
+        self.usersByVerificationCode: dict[str, dict[str, Any]] = {}
+        self.insertedUsers: list[dict[str, Any]] = []
+        self.updatedVerificationCodes: list[tuple[int, str]] = []
+        self.updatedUserFields: list[tuple[int, dict[str, Any]]] = []
+        self.verifiedUserIds: list[int] = []
+        self.nextUserId = 1
+
+    def getUserByEmail(self, email: str):
+        return self.usersByEmail.get(email)
+
+    def insertUser(
+        self,
+        *,
+        email: str,
+        hashedPassword: str,
+        firstName: str,
+        lastName: str,
+        institution: str,
+        role: str,
+        isActive: bool,
+        isVerified: bool,
+        verificationCode: str,
+    ):
+        userId = self.nextUserId
+        self.nextUserId += 1
+
+        user = {
+            "id": userId,
+            "email": email,
+            "hashedPassword": hashedPassword,
+            "firstName": firstName,
+            "lastName": lastName,
+            "institution": institution,
+            "role": role,
+            "isActive": isActive,
+            "isVerified": isVerified,
+            "verificationCode": verificationCode,
+        }
+
+        self.usersByEmail[email] = user
+        self.usersById[userId] = user
+        self.usersByVerificationCode[verificationCode] = user
+        self.insertedUsers.append(user)
+        return userId
+
+    def getUserByVerificationCode(self, verificationCode: str):
+        return self.usersByVerificationCode.get(verificationCode)
+
+    def verifyUser(self, userId: int):
+        user = self.usersById.get(userId)
+        if user is not None:
+            user["isVerified"] = True
+            self.verifiedUserIds.append(userId)
+
+    def updateUserVerificationCode(self, userId: int, newCode: str):
+        user = self.usersById[userId]
+        oldCode = user.get("verificationCode")
+        if oldCode:
+            self.usersByVerificationCode.pop(oldCode, None)
+        user["verificationCode"] = newCode
+        self.usersByVerificationCode[newCode] = user
+        self.updatedVerificationCodes.append((userId, newCode))
+
+    def getUserById(self, userId: int):
+        return self.usersById.get(userId)
+
+    def updateUserFields(self, userId: int, fields: dict[str, Any]):
+        user = self.usersById[userId]
+        user.update(fields)
+        self.updatedUserFields.append((userId, fields))
+
+@pytest.fixture
+def mainModule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # mainModule
+    scipionHome = tmp_path / "scipion_home"
+    webDistPath = scipionHome / "web" / "dist"
+    webDistPath.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+    monkeypatch.setenv("SERVE_WEB", "0")
+    monkeypatch.setenv("API_MOUNT_PATH", "/api")
+    monkeypatch.setenv("WEB_DIST_PATH", str(webDistPath))
+
+    previousModules = _installStubModules()
+
+    try:
+        module = _importMainModule()
+        yield module
+    finally:
+        sys.modules.pop("app.backend.main", None)
+        _restoreStubModules(previousModules)
+
+
+@pytest.fixture
+def client(mainModule) -> Iterator[TestClient]:
+    # client
+    with TestClient(mainModule.app) as testClient:
+        yield testClient
+
+
+@pytest.fixture
+def loadMainModule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # loadMainModuleWithCustomEnv
+    def _load(
+        *,
+        serveWeb: str = "0",
+        apiMountPath: str = "/api",
+        createIndexHtml: bool = False,
+    ):
+        scipionHome = tmp_path / "scipion_home"
+        webDistPath = scipionHome / "web" / "dist"
+        webDistPath.mkdir(parents=True, exist_ok=True)
+
+        if createIndexHtml:
+            (webDistPath / "index.html").write_text(
+                "<!doctype html><html><body>web ok</body></html>",
+                encoding="utf-8",
+            )
+
+        monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+        monkeypatch.setenv("SERVE_WEB", serveWeb)
+        monkeypatch.setenv("API_MOUNT_PATH", apiMountPath)
+        monkeypatch.setenv("WEB_DIST_PATH", str(webDistPath))
+
+        previousModules = _installStubModules()
+        try:
+            sys.modules.pop("app.backend.main", None)
+            module = importlib.import_module("app.backend.main")
+            return module
+        finally:
+            sys.modules.pop("app.backend.main", None)
+            _restoreStubModules(previousModules)
+
+    return _load
+
+
+@pytest.fixture
+def fakeMapper():
+    # fakeMapperFixture
+    return FakeMapper()
+
+
+@pytest.fixture
+def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # authClient
+    import app.backend.api.routers.auth_router as authRouterModule
+
+    monkeypatch.setattr(authRouterModule, "hashPassword", lambda password: f"hashed::{password}")
+    monkeypatch.setattr(
+        authRouterModule,
+        "verifyPassword",
+        lambda plainPassword, hashedPassword: hashedPassword == f"hashed::{plainPassword}",
+    )
+    monkeypatch.setattr(
+        authRouterModule,
+        "createAccessToken",
+        lambda data: f"access::{data['sub']}",
+    )
+    monkeypatch.setattr(
+        authRouterModule,
+        "createRefreshToken",
+        lambda data: f"refresh::{data['sub']}",
+    )
+    monkeypatch.setattr(
+        authRouterModule,
+        "verifyToken",
+        lambda token, expected_type="refresh": {"sub": "user@example.com"} if token == "valid-refresh" else {},
+    )
+
+    sentEmails: list[tuple[str, str]] = []
+
+    async def fakeSendVerificationEmail(email: str, code: str):
+        sentEmails.append((email, code))
+
+    monkeypatch.setattr(authRouterModule, "sendVerificationEmail", fakeSendVerificationEmail)
+
+    app = FastAPI()
+    app.include_router(authRouterModule.router)
+
+    app.dependency_overrides[authRouterModule.getMapper] = lambda: fakeMapper
+    app.dependency_overrides[authRouterModule.getCurrentUser] = lambda: {
+        "id": 1,
+        "email": "user@example.com",
+        "role": "user",
+    }
+
+    app.state.sentEmails = sentEmails
+
+    with TestClient(app) as client:
+        yield client
+
+    app.dependency_overrides.clear()

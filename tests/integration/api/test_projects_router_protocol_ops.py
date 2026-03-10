@@ -1,0 +1,412 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+from fastapi import HTTPException
+
+
+def test_LoadProtocolReturns404WhenProjectMissing(projectClient, fakeProjectService):
+    fakeProjectService.projectByIdResult = None
+
+    response = projectClient.get("/projects/1/protocols/10")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+
+def test_LoadProtocolReturnsParams(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/10")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "protocolId": "10",
+        "protocolClassName": "ProtClass",
+        "params": {"a": 1},
+    }
+
+    assert fakeProjectService.lastGetProtocolParamsCall == {
+        "projectId": 1,
+        "protocolId": 10,
+    }
+
+
+def test_LoadNewProtocolReturnsParams(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protclass/MyProtClass")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "protocolClassName": "ProtClass",
+        "params": {"x": 2},
+    }
+
+    assert fakeProjectService.lastGetNewProtocolParamsCall == {
+        "projectId": 1,
+        "protClassName": "MyProtClass",
+    }
+
+
+def test_LaunchProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
+    fakeProjectService.projectByIdResult = None
+
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+            "mode": "resume",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 0,
+        "errors": ["Project not found"],
+        "workflow": [],
+    }
+
+
+def test_LaunchProtocolDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+            "mode": "resume",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastLaunchProtocolCall == {
+        "mapper": fakeProjectService.lastLaunchProtocolCall["mapper"],
+        "projectId": 1,
+        "protocolId": "10",
+        "protocolClassName": "ProtClass",
+        "params": {"a": 1},
+        "executeMode": "resume",
+    }
+
+
+def test_LaunchProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.launchProtocolError = HTTPException(status_code=409, detail=["conflict", "busy"])
+
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+            "mode": "resume",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "status": 0,
+        "errors": ["conflict", "busy"],
+        "workflow": [],
+    }
+
+
+def test_SaveProtocolReturnsSuccessWhenNoErrors(projectClient, fakeProjectService):
+    fakeProjectService.saveProtocolResult = ({"protocolId": "10"}, [])
+
+    response = projectClient.post(
+        "/projects/1/save",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastSaveProtocolCall == {
+        "mapper": fakeProjectService.lastSaveProtocolCall["mapper"],
+        "projectId": 1,
+        "protocolId": "10",
+        "protocolClassName": "ProtClass",
+        "params": {"a": 1},
+    }
+
+
+def test_SaveProtocolReturnsStatusOneWhenServiceReturnsErrors(projectClient, fakeProjectService):
+    fakeProjectService.saveProtocolResult = (
+        {"protocolId": "10"},
+        ["bad param", "missing input"],
+    )
+
+    response = projectClient.post(
+        "/projects/1/save",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 1,
+        "errors": ["bad param", "missing input"],
+        "workflow": [],
+    }
+
+
+def test_SuggestionProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
+    fakeProjectService.projectByIdResult = None
+
+    response = projectClient.get("/projects/1/protocols/10/suggestions/next")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Project not found"],
+        "workflow": [],
+    }
+
+
+def test_SuggestionProtocolReturnsSuggestions(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/10/suggestions/next")
+
+    assert response.status_code == 200
+    assert response.json() == [{"id": "next-1", "name": "Next protocol"}]
+
+    assert fakeProjectService.lastGetNextProtocolSuggestionsCall == {"protocolId": 10}
+
+
+def test_RenameProtocolRejectsBlankName(projectClient):
+    response = projectClient.put(
+        "/projects/1/protocols/10/rename",
+        json={"name": "   "},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Missing name"],
+        "workflow": [],
+    }
+
+
+def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.put(
+        "/projects/1/protocols/10/rename",
+        json={"name": "  Renamed protocol  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastRenameProtocolCall == {
+        "protocolId": 10,
+        "newName": "Renamed protocol",
+    }
+
+
+def test_DuplicateProtocolRejectsMissingItems(projectClient):
+    response = projectClient.post(
+        "/projects/1/protocols/duplicate",
+        json={"items": []},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Missing items"],
+        "workflow": [],
+    }
+
+
+def test_DuplicateProtocolDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/protocols/duplicate",
+        json={
+            "items": [
+                {"id": "10", "name": "Copy 1"},
+                {"id": "11"},
+            ]
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    items = fakeProjectService.lastDuplicateProtocolCall["items"]
+    assert fakeProjectService.lastDuplicateProtocolCall["projectId"] == 1
+    assert len(items) == 2
+    assert items[0].id == "10"
+    assert items[0].name == "Copy 1"
+    assert items[1].id == "11"
+    assert items[1].name is None
+
+
+def test_DeleteProtocolRejectsMissingProtocolIds(projectClient):
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": []},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Missing protocolIds"],
+        "workflow": [],
+    }
+
+
+def test_DeleteProtocolDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": ["10", "11"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastDeleteProtocolCall == {
+        "mapper": fakeProjectService.lastDeleteProtocolCall["mapper"],
+        "projectId": 1,
+        "protocolIds": ["10", "11"],
+    }
+
+
+def test_RestartProtocolAllReturnsErrorsWhenServiceReturnsErrors(projectClient, fakeProjectService):
+    fakeProjectService.restartProtocolAllResult = ["cannot restart", "blocked"]
+
+    response = projectClient.post("/projects/1/protocols/10/restart-all")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 1,
+        "errors": ["cannot restart", "blocked"],
+        "workflow": [],
+    }
+
+
+def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
+    fakeProjectService.restartProtocolAllResult = []
+
+    response = projectClient.post("/projects/1/protocols/10/restart-all")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastRestartProtocolAllCall == {"protocolId": 10}
+
+
+def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post("/projects/1/protocols/10/continue-all")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastContinueProtocolAllCall == {
+        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
+def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post("/projects/1/protocols/10/reset-from")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastResetProtocolFromCall == {"protocolId": 10}
+
+
+def test_StopProtocolRejectsMissingProtocolIds(projectClient):
+    response = projectClient.post(
+        "/projects/1/protocols/stop",
+        json={"protocolIds": []},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Missing protocolIds"],
+        "workflow": [],
+    }
+
+
+def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/protocols/stop",
+        json={"protocolIds": ["10", "11"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastStopProtocolCall == {
+        "protocolIds": ["10", "11"],
+    }

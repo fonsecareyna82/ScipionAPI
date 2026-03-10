@@ -33,7 +33,6 @@ bootstrapEnv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
 
 from app.backend.api.routers.project_router import router as projects
 from app.backend.api.routers.protocol_router import router as protocols
@@ -64,7 +63,11 @@ class SpaStaticFiles(StaticFiles):
 
 def _buildApiApp() -> FastAPI:
     # buildApiApp
-    apiApp = FastAPI(title="Scipion API", debug=True)
+    apiApp = FastAPI(title="Scipion API",
+                     debug=True,
+                     docs_url="/docs",
+                     redoc_url="/redoc",
+                     openapi_url="/openapi.json",)
 
     # registerCustomErrorHandlers
     registerAllErrorHandlers(apiApp)
@@ -155,7 +158,9 @@ webDistPath = _resolveWebDistPath()
 apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
 
 # alwaysMountApiUnderApiMountPath
-app = FastAPI(title="Scipion Web", debug=True)
+app = FastAPI(title="Scipion Web", debug=True, docs_url=None,
+              redoc_url=None,
+              openapi_url=None,)
 
 app.mount(apiMountPath, apiApp)
 

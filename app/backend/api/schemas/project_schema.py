@@ -48,7 +48,7 @@ class ProjectOut(BaseModel):
     status: str
     createdAt: datetime
     updatedAt: Optional[datetime]
-    protocolsCount: int = 0,
+    protocolsCount: int = 0
     diskUsage: str = f"{0.0} GB"
     isOwner: bool
     isShared: bool
@@ -60,10 +60,8 @@ class ProjectOut(BaseModel):
 
 
 class ProjectShareCreate(BaseModel):
-    userIds: list = []
+    userIds = []
     permission: Optional[str] = "full"
-
-
 
 class TiltSeriesNewSetRequest(BaseModel):
     """
