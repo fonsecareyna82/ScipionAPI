@@ -876,6 +876,7 @@ class ProjectService:
                     for paramName in headerParams:
                         paramProcessed = {'name': paramName}
                         paramValue = getattr(protocol, paramName, None)
+
                         if paramName == '_objComment':
                             paramProcessed.setdefault(paramName, {})
                             paramProcessed['label'] = 'Comment'
@@ -948,6 +949,8 @@ class ProjectService:
                                     if paramName == 'runName':
                                         paramProcessed['default'] = ''
                                         paramValue = protName
+                                    elif paramName == 'numberOfThreads':
+                                        paramValue = protocol.getScipionThreads()
                                     elif paramName == 'gpuList':
                                         paramValue = protocol.gpuList.get()
                                     sectionData["params"].append(paramProcessed)
@@ -1251,17 +1254,14 @@ class ProjectService:
         # Set protected parameters
         protectedParams = ['_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
         for paramName in protectedParams:
-            if paramName in protectedParams:
-                protVar = getattr(protocol, paramName, None)
-                if protVar is not None:
-                    try:
-                        if paramName in params:
-                            value = params[paramName]
-                            if paramName == 'gpuList':
-                                value = str(value)[1:-1]
-                            protVar.set(value)
-                    except Exception:
-                        setattr(protocol, paramName, value)
+            protVar = getattr(protocol, paramName, None)
+            if protVar is not None:
+                try:
+                    if paramName in params:
+                        value = params[paramName]
+                        protVar.set(value)
+                except Exception:
+                    setattr(protocol, paramName, value)
 
         # Set non-pointer parameters
         for key, value in params.items():
@@ -1282,6 +1282,9 @@ class ProjectService:
                     errorList += errorListAux
                 param.set(castedValue)
                 protocol.setAttributeValue(key, castedValue)
+
+                if key == 'runName':
+                    protocol.setObjLabel(castedValue)
 
                 logger.info(f"[INFO] Set param {key} = {castedValue}")
             except Exception as e:
