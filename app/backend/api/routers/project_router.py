@@ -20,8 +20,6 @@ from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.data_model import AnalyzeViewerResolveDecisionOut, AnalyzeViewerResolveContextIn, \
-    RemoteListResultModel
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -64,6 +62,7 @@ def listProjectWorkflows(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load workflows: {e}",
         )
+
 
 @router.post(
     "/{projectId}/workflows/load",
@@ -310,41 +309,53 @@ async def launchProtocol(
     service: ProjectService = Depends(getProjectService),
 ):
     """
-    Launch a protocol in a given project.
+    Launch, restart, schedule, or stop a protocol in a given project.
     """
     try:
         project = service.getProjectById(mapper, projectId, currentUser)
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
-                content={"status": 0,
-                         "errors": ["Project not found"],
-                         "workflow": []},
+                content={
+                    "status": 0,
+                    "errors": ["Project not found"],
+                    "workflow": [],
+                },
             )
 
-        protocolId = request.getProtocolId()
-        protocolClassName = request.getProtocolClassName()
-        params = request.getParams()
-        executeMode = request.getMode()
-        service.launchProtocol(mapper, projectId, protocolId, protocolClassName, params, executeMode)
+        service.launchProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=request.getProtocolId(),
+            protocolClassName=request.getProtocolClassName(),
+            params=request.getParams(),
+            executeMode=request.getMode(),
+        )
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        return {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
 
     except HTTPException as e:
         return JSONResponse(
             status_code=e.status_code,
-            content={"status": 0,
-                     "errors": _normalizeErrors(e.detail),
-                     "workflow": []},
+            content={
+                "status": 0,
+                "errors": _normalizeErrors(e.detail),
+                "workflow": [],
+            },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Unexpected error while launching protocol")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": 0,
-                     "errors": [str(e)],
-                     "workflow": []},
+            content={
+                "status": 0,
+                "errors": ["Internal server error"],
+                "workflow": [],
+            },
         )
 
 
