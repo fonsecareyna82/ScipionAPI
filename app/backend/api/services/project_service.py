@@ -1318,42 +1318,66 @@ class ProjectService:
         return protocol, errorList
 
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
-        """Launch a protocol in RESTART mode, applying all params."""
-        if executeMode == 'stop':
+        """
+        Save, validate, and execute a protocol action.
+        Supported execute modes: launch, restart, schedule, stop.
+        """
+        allowedModes = {"launch", "restart", "schedule", "stop"}
+        if executeMode not in allowedModes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown executeMode: {executeMode}",
+            )
+
+        if executeMode == "stop":
             try:
                 self.stopProtocol([protocolId])
-                return {"status": 0,
-                        "errors": [],
-                        "workflow": []}
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=str(e))
-
-        protocol, errors = self.saveProtocol(mapper, projectId, protocolId, protocolClassName, params, setToSave=False)
-        try:
-            errors += protocol._validate()
-        except Exception:
-            errors += [
-                '**Other errors:**There are other validation errors that may be resolved by correcting the previous ones.'
-            ]
-        if not errors:
-            # mapExecuteModeToRunModeOrAction
-            modeToRunMode = {
-                "launch": MODE_RESUME,
-                "restart": MODE_RESTART,
-            }
-
-            if executeMode == "schedule":
-                self.currentProject.scheduleProtocol(protocol)
                 return
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(e),
+                ) from e
 
-            runMode = modeToRunMode.get(executeMode)
-            if runMode is None:
-                raise ValueError(f"Unknown executeMode: {executeMode}")
+        protocol, errors = self.saveProtocol(
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            setToSave=False,
+        )
 
-            protocol.runMode.set(runMode)
-            self.currentProject.launchProtocol(protocol)
-        else:
-            raise HTTPException(status_code=422, detail=errors)
+        try:
+            validationErrors = protocol._validate()
+            if validationErrors:
+                errors += validationErrors
+        except Exception:
+            logger.exception("Unexpected error during protocol validation")
+            errors += [
+                "**Other errors:** There are other validation errors that may be resolved by correcting the previous ones."
+            ]
+
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=errors,
+            )
+
+        if executeMode == "schedule":
+            self.currentProject.scheduleProtocol(protocol)
+            return
+
+        modeToRunMode = {
+            "launch": MODE_RESUME,
+            "restart": MODE_RESTART,
+        }
+
+        runMode = modeToRunMode[executeMode]
+        protocol.runMode.set(runMode)
+        self.currentProject.launchProtocol(protocol)
 
     def findWizardsWeb(self, protocol):
         # TODO: Find wizards...
