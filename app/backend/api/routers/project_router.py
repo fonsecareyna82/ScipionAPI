@@ -2644,6 +2644,7 @@ def getProtocolThumbnail(
     projectId: int,
     protocolId: int,
     size: int = Query(320, ge=128, le=1024),
+    outputName: Optional[str] = Query(None),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2659,6 +2660,7 @@ def getProtocolThumbnail(
             protocolId=protocolId,
             force=False,
             size=size,
+            outputName=outputName,
         )
 
         thumbPath = result.get("absolutePath")
@@ -2694,6 +2696,7 @@ def rebuildProtocolThumbnail(
     projectId: int,
     protocolId: int,
     size: int = Query(320, ge=128, le=1024),
+    outputName: Optional[str] = Query(None),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2709,6 +2712,7 @@ def rebuildProtocolThumbnail(
             protocolId=protocolId,
             force=True,
             size=size,
+            outputName=outputName,
         )
 
         response = JSONResponse(
@@ -2738,6 +2742,7 @@ def listProjectThumbnailItems(
         projectId: int,
         size: int = Query(320, ge=128, le=1024),
         maxProtocols: int = Query(12, ge=1, le=24),
+        maxOutputsPerProtocol: int = Query(4, ge=1, le=12),
         currentUser=Depends(getCurrentUser),
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: ProjectService = Depends(getProjectService),
@@ -2754,6 +2759,7 @@ def listProjectThumbnailItems(
             force=False,
             size=size,
             maxProtocols=maxProtocols,
+            maxOutputsPerProtocol=maxOutputsPerProtocol,
         )
 
         response = JSONResponse(items)
@@ -2766,4 +2772,58 @@ def listProjectThumbnailItems(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to list project thumbnail items: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail",
+    response_model=None,
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolOutputThumbnail(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    size: int = Query(320, ge=128, le=1024),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        result = service.buildProtocolOutputThumbnail(
+            protocolId=protocolId,
+            outputName=outputName,
+            force=False,
+            size=size,
+        )
+
+        thumbPath = result.get("absolutePath")
+        if not thumbPath:
+            raise HTTPException(status_code=404, detail="Protocol output thumbnail not found")
+
+        response = FileResponse(
+            path=thumbPath,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": (
+                    f'inline; filename="protocol_{protocolId}_{outputName}_thumbnail.png"'
+                ),
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getProtocolOutputThumbnail: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load protocol output thumbnail: {e}",
         )

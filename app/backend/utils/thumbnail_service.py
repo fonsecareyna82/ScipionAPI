@@ -29,6 +29,8 @@ import io
 import logging
 import os
 import re
+import hashlib
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -63,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 
 class ThumbnailService:
-    CACHE_VERSION = "v2"
+    CACHE_VERSION = "v5"
     PROTOCOL_ASPECT_RATIO = 0.68
 
     def __init__(self, currentProject):
@@ -125,18 +127,19 @@ class ThumbnailService:
             protocolId: int,
             force: bool = False,
             size: int = 360,
+            outputName: Optional[str] = None,
     ) -> Dict[str, Any]:
         protocol = self.currentProject.getProtocol(int(protocolId))
         if protocol is None:
             raise ValueError(f"Protocol {protocolId} not found")
 
-        cachePath = self._getProtocolCachePath(protocolId, size=size)
+        cachePath = self._getProtocolCachePath(protocolId, size=size, outputName=outputName)
         if cachePath.exists() and not force:
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
                 "status": self._getProtocolStatus(protocol),
-                "outputName": None,
+                "outputName": outputName,
                 "outputClassName": None,
                 "absolutePath": str(cachePath),
                 "cached": True,
@@ -146,6 +149,13 @@ class ThumbnailService:
         selectedCandidate = None
         previewImage: Optional[Image.Image] = None
         candidates = self._collectSortedOutputCandidates(protocol)
+
+        if outputName:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("outputName") or "") == str(outputName)
+            ]
 
         for candidate in candidates:
             try:
@@ -170,23 +180,12 @@ class ThumbnailService:
                 )
 
         if previewImage is None:
-            try:
-                previewImage = self._renderProtocolFilesystemFallback(protocol, size=size)
-            except Exception:
-                logger.debug(
-                    "Filesystem thumbnail fallback failed. protocolId=%s",
-                    protocolId,
-                    exc_info=True,
-                )
-                previewImage = None
-
-        if previewImage is None:
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
                 "status": self._getProtocolStatus(protocol),
-                "outputName": selectedCandidate["outputName"] if selectedCandidate else None,
-                "outputClassName": selectedCandidate["outputClassName"] if selectedCandidate else None,
+                "outputName": outputName,
+                "outputClassName": None,
                 "absolutePath": None,
                 "cached": False,
                 "exists": False,
@@ -203,7 +202,7 @@ class ThumbnailService:
             "protocolId": int(protocolId),
             "protocolLabel": self._getProtocolLabel(protocol),
             "status": self._getProtocolStatus(protocol),
-            "outputName": selectedCandidate["outputName"] if selectedCandidate else None,
+            "outputName": selectedCandidate["outputName"] if selectedCandidate else outputName,
             "outputClassName": selectedCandidate["outputClassName"] if selectedCandidate else None,
             "absolutePath": str(cachePath),
             "cached": False,
@@ -333,6 +332,140 @@ class ThumbnailService:
 
         draw.text((tx + 1, ty + 1), text, fill=(0, 0, 0), font=font)
         draw.text((tx, ty), text, fill=(255, 255, 255), font=font)
+
+    def _cacheSafeToken(self, value: str) -> str:
+        raw = str(value or "").strip()
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+        if not safe:
+            safe = "output"
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+        return f"{safe}_{digest}"
+
+    def _getProtocolOutputCachePath(self, protocolId: int, outputName: str, size: int) -> Path:
+        token = self._cacheSafeToken(outputName)
+        return self._getCacheDir() / (
+            f"protocol_{int(protocolId)}_{token}_{int(size)}_{self.CACHE_VERSION}.png"
+        )
+
+    def buildProtocolOutputThumbnail(
+            self,
+            protocolId: int,
+            outputName: str,
+            force: bool = False,
+            size: int = 320,
+    ) -> Dict[str, Any]:
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        if protocol is None:
+            raise ValueError(f"Protocol {protocolId} not found")
+
+        if not hasattr(protocol, outputName):
+            raise ValueError(f"Output '{outputName}' not found in protocol {protocolId}")
+
+        output = getattr(protocol, outputName, None)
+        if output is None:
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": None,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
+
+        outputClassName = self._getOutputClassName(output)
+        score = self._scoreOutput(outputName, output)
+
+        if score <= 0 and not self._looksRenderableOutput(output):
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": outputClassName,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
+
+        cachePath = self._getProtocolOutputCachePath(
+            protocolId=int(protocolId),
+            outputName=outputName,
+            size=size,
+        )
+
+        if cachePath.exists() and not force:
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": outputClassName,
+                "absolutePath": str(cachePath),
+                "cached": True,
+                "exists": True,
+            }
+
+        previewImage: Optional[Image.Image] = None
+
+        try:
+            previewImage = self._renderProtocolPreviewImage(
+                protocol=protocol,
+                output=output,
+                outputName=outputName,
+                outputClassName=outputClassName,
+                size=size,
+            )
+        except Exception:
+            logger.debug(
+                "Output thumbnail render failed. protocolId=%s output=%s class=%s",
+                protocolId,
+                outputName,
+                outputClassName,
+                exc_info=True,
+            )
+
+        if previewImage is None:
+            try:
+                previewImage = self._renderGenericPreview(protocol, output, size=size)
+            except Exception:
+                logger.debug(
+                    "Generic output thumbnail render failed. protocolId=%s output=%s",
+                    protocolId,
+                    outputName,
+                    exc_info=True,
+                )
+
+        if previewImage is None:
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": outputClassName,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
+
+        thumbnail = self._finalizeProtocolThumbnail(
+            previewImage=previewImage,
+            size=size,
+            protocolId=int(protocolId),
+        )
+        self._saveImage(thumbnail, cachePath)
+
+        return {
+            "protocolId": int(protocolId),
+            "protocolLabel": self._getProtocolLabel(protocol),
+            "status": self._getProtocolStatus(protocol),
+            "outputName": outputName,
+            "outputClassName": outputClassName,
+            "absolutePath": str(cachePath),
+            "cached": False,
+            "exists": True,
+        }
 
     # ------------------------------------------------------------------
     # Candidate selection
@@ -502,49 +635,68 @@ class ThumbnailService:
             force: bool = False,
             size: int = 320,
             maxProtocols: int = 12,
+            maxOutputsPerProtocol: int = 4,
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
 
-        for protocol in self._iterProtocols():
-            if len(items) >= max(1, int(maxProtocols)):
-                break
+        usefulProtocols = self.listUsefulProtocols(maxProtocols=maxProtocols)
 
-            try:
-                protocolId = int(protocol.getObjId())
-            except Exception:
+        for protocolInfo in usefulProtocols:
+            protocolId = int(protocolInfo["protocolId"])
+            protocol = self.currentProject.getProtocol(protocolId)
+            if protocol is None:
                 continue
 
-            try:
-                built = self.buildProtocolThumbnail(
-                    protocolId=protocolId,
-                    force=force,
-                    size=size,
+            candidates = self._collectSortedOutputCandidates(protocol)
+            if not candidates:
+                continue
+
+            candidates = candidates[: max(1, int(maxOutputsPerProtocol))]
+
+            for candidate in candidates:
+                outputName = candidate.get("outputName")
+                if not outputName:
+                    continue
+
+                try:
+                    built = self.buildProtocolThumbnail(
+                        protocolId=protocolId,
+                        force=force,
+                        size=size,
+                        outputName=outputName,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed building protocol thumbnail while listing items. protocolId=%s output=%s",
+                        protocolId,
+                        outputName,
+                        exc_info=True,
+                    )
+                    continue
+
+                if not built.get("exists") or not built.get("absolutePath"):
+                    continue
+
+                encodedOutputName = quote(str(outputName), safe="")
+
+                items.append(
+                    {
+                        "protocolId": protocolId,
+                        "label": self._getProtocolLabel(protocol),
+                        "status": self._getProtocolStatus(protocol),
+                        "outputName": outputName,
+                        "outputClassName": candidate.get("outputClassName"),
+                        "exists": True,
+                        "thumbnailUrl": (
+                            f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail"
+                            f"?outputName={encodedOutputName}&size={int(size)}"
+                        ),
+                        "thumbnailRebuildUrl": (
+                            f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail/rebuild"
+                            f"?outputName={encodedOutputName}&size={int(size)}"
+                        ),
+                    }
                 )
-            except Exception:
-                logger.debug(
-                    "Failed building protocol thumbnail while listing items. protocolId=%s",
-                    protocolId,
-                    exc_info=True,
-                )
-                continue
-
-            if not built.get("exists") or not built.get("absolutePath"):
-                continue
-
-            bestOutput = self._selectBestOutput(protocol)
-
-            items.append(
-                {
-                    "protocolId": protocolId,
-                    "label": self._getProtocolLabel(protocol),
-                    "status": self._getProtocolStatus(protocol),
-                    "outputName": bestOutput["outputName"] if bestOutput else None,
-                    "outputClassName": bestOutput["outputClassName"] if bestOutput else None,
-                    "exists": True,
-                    "thumbnailUrl": f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail",
-                    "thumbnailRebuildUrl": f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail/rebuild",
-                }
-            )
 
         return items
 
@@ -1952,8 +2104,17 @@ class ThumbnailService:
         cacheDir.mkdir(parents=True, exist_ok=True)
         return cacheDir
 
-    def _getProtocolCachePath(self, protocolId: int, size: int) -> Path:
-        return self._getCacheDir() / f"protocol_{int(protocolId)}_{int(size)}_{self.CACHE_VERSION}.png"
+    def _sanitizeCacheToken(self, value: Optional[str]) -> str:
+        text = str(value or "").strip().lower()
+        text = re.sub(r"[^a-z0-9._-]+", "_", text)
+        text = re.sub(r"_+", "_", text).strip("._-")
+        return text or "default"
+
+    def _getProtocolCachePath(self, protocolId: int, size: int, outputName: Optional[str] = None) -> Path:
+        outputToken = self._sanitizeCacheToken(outputName)
+        return self._getCacheDir() / (
+            f"protocol_{int(protocolId)}_{outputToken}_{int(size)}_{self.CACHE_VERSION}.png"
+        )
 
     def _getProjectCachePath(self, size: int, maxProtocols: int) -> Path:
         return self._getCacheDir() / f"project_{int(size)}_{int(maxProtocols)}_{self.CACHE_VERSION}.png"

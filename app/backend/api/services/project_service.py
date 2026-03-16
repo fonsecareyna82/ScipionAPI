@@ -776,22 +776,41 @@ class ProjectService:
         # buildProtocolThumbnailRebuildUrl
         return f"/projects/{projectId}/protocols/{protocolId}/thumbnail/rebuild"
 
+    @staticmethod
+    def buildProtocolOutputThumbnailUrl(projectId: int, protocolId: int, outputName: str) -> str:
+        # buildProtocolOutputThumbnailUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail"
+
+    def buildProtocolOutputThumbnail(
+            self,
+            protocolId: int,
+            outputName: str,
+            force: bool = False,
+            size: int = 320,
+    ) -> Dict[str, Any]:
+        service = ThumbnailService(self.currentProject)
+        return service.buildProtocolOutputThumbnail(
+            protocolId=protocolId,
+            outputName=outputName,
+            force=force,
+            size=size,
+        )
+
     def listProjectThumbnailItems(
             self,
             projectId: int,
             force: bool = False,
             size: int = 320,
             maxProtocols: int = 12,
+            maxOutputsPerProtocol: int = 4,
     ):
-        if self.currentProject is None:
-            raise ValueError("Thumbnail project is not loaded")
-
         thumbnailService = ThumbnailService(self.currentProject)
         return thumbnailService.listProtocolThumbnailItems(
             projectId=projectId,
             force=force,
             size=size,
             maxProtocols=maxProtocols,
+            maxOutputsPerProtocol=maxOutputsPerProtocol,
         )
 
     def _buildProtocolContext(self, projectId, protocol) -> dict:
@@ -2132,19 +2151,19 @@ class ProjectService:
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
 
-
     def buildProtocolThumbnail(
-        self,
-        protocolId: int,
-        force: bool = False,
-        size: int = 320,
+            self,
+            protocolId: int,
+            force: bool = False,
+            size: int = 320,
+            outputName: Optional[str] = None,
     ) -> Dict[str, Any]:
-        # buildProtocolThumbnail
         service = ThumbnailService(self.currentProject)
         return service.buildProtocolThumbnail(
             protocolId=protocolId,
             force=force,
             size=size,
+            outputName=outputName,
         )
 
     def buildProjectThumbnail(
