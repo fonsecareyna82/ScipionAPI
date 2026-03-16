@@ -42,7 +42,7 @@ import numpy as np
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries, TiltSeries, SetOfCTFTomoSeries, CTFTomoSeries, CTFTomo, Coordinate3D
+from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
@@ -52,7 +52,7 @@ from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
 from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
-from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE, SCIPION_OBJECT_ID
+from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer, CsvList
 from pyworkflow.protocol import MODE_RESUME, MODE_RESTART, STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED
@@ -82,6 +82,7 @@ from app.utils.scipion_helper import serializeToJson
 from contextvars import ContextVar
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.utils.thumbnail_service import ThumbnailService
 
 # protocolsTreeCacheByRevision
 _protocolsTreeLock = threading.Lock()
@@ -225,54 +226,47 @@ class ProjectService:
         return name
 
     def createProject(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectData: ProjectCreate,
-        currentUser,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectData: ProjectCreate,
+            currentUser,
     ) -> dict:
         # Sanitize incoming name for filesystem usage
         originalName = projectData.name
         sanitizedName = self.sanitizeProjectName(originalName)
 
-        # Optional: if you want, overwrite the projectData.name so that
-        # DB and UI use the sanitized version as well.
         projectData.name = sanitizedName
 
-        # Check if a project with the same (sanitized) name already exists for this user
         existingProjects = mapper.listProjects(ownerId=currentUser["id"])
         if any(p["name"] == sanitizedName for p in existingProjects):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "A project with this name already exists for the current user "
-                    "(sanitized name: '%s')" % sanitizedName
+                        "A project with this name already exists for the current user "
+                        "(sanitized name: '%s')" % sanitizedName
                 ),
             )
 
-        # Check if the project already exists in the file system (Scipion)
         scipionPath = self.manager.getProjectPath(sanitizedName)
         if os.path.exists(scipionPath):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "A project with this name already exists in the file system "
-                    "(sanitized name: '%s')" % sanitizedName
+                        "A project with this name already exists in the file system "
+                        "(sanitized name: '%s')" % sanitizedName
                 ),
             )
 
-        # Create the project in Scipion using the sanitized name
         proj = self.manager.createProject(sanitizedName)
         proj.setComment(projectData.description or "")
 
-        # Insert project metadata into PostgreSQL via mapper
         dbProjectId = mapper.insertProject(
             ownerId=currentUser["id"],
-            name=scipionPath,  # store the sanitized name, not the full path
+            name=scipionPath,
             description=projectData.description,
             status=projectData.status,
         )
 
-        # Return the response payload
         return {
             "id": dbProjectId,
             "name": sanitizedName,
@@ -285,6 +279,9 @@ class ProjectService:
             "isShared": False,
             "permission": "full",
             "projectOwnerId": currentUser["id"],
+            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProjectId),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProjectId),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProjectId),
         }
 
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
@@ -297,18 +294,13 @@ class ProjectService:
         result = []
 
         for dbProj in dbProjects:
-            # projects.name currently stores the absolute Scipion project path
             projectPath = dbProj.get("name")
-
             if not projectPath:
-                # Skip inconsistent rows
                 continue
 
-            # If name is not absolute, normalize it using Scipion manager
             if not os.path.isabs(projectPath):
                 projectPath = self.manager.getProjectPath(projectPath)
 
-            # Compute size and number of protocols for this project
             try:
                 sizeGB = self.getProjectSize(projectPath) / (1024 ** 3)
             except Exception:
@@ -317,17 +309,14 @@ class ProjectService:
             runsPath = os.path.join(projectPath, "Runs")
             protCount = self.countProtocols(runsPath)
 
-            # Ownership and sharing flags coming from the mapper
             isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUser["id"])
             isShared = dbProj.get("isShared", False)
-            permission = dbProj.get(
-                "permission",
-                "owner" if isOwner else "full"
-            )
+            permission = dbProj.get("permission", "owner" if isOwner else "full")
             projectOwnerId = dbProj.get("ownerId")
+            projectId = dbProj["id"]
 
             result.append({
-                "id": dbProj["id"],
+                "id": projectId,
                 "name": os.path.basename(projectPath),
                 "description": dbProj.get("description", ""),
                 "createdAt": dbProj.get("createdAt"),
@@ -339,6 +328,9 @@ class ProjectService:
                 "permission": permission,
                 "projectOwnerId": projectOwnerId,
                 "updatedAt": dbProj.get("updatedAt"),
+                "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
+                "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
+                "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
             })
 
         return result
@@ -448,6 +440,31 @@ class ProjectService:
 
         return self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
 
+    def getProjectDbRow(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict) -> Optional[dict]:
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            return None
+
+        projectPath = dbProj.get("name")
+        if not projectPath:
+            return None
+
+        if not os.path.isabs(projectPath):
+            projectPath = self.manager.getProjectPath(projectPath)
+
+        if not os.path.exists(projectPath):
+            return None
+
+        dbProj = dict(dbProj)
+        dbProj["name"] = projectPath
+        return dbProj
+
+    def loadProjectForThumbnails(self, dbProj: dict):
+        projPath = Path(dbProj["name"])
+        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
+        self.currentProject.load(dbPath=self.currentProject.getDbPath())
+        return self.currentProject
+
     def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
         project = self.getProjectById(mapper, projectId, currentUser)
 
@@ -490,10 +507,11 @@ class ProjectService:
         except Exception:
             return 0
 
-    def buildProtocolsGraph(self, runs, tags) -> dict:
+    def buildProtocolsGraph(self, projectId: int, runs, tags) -> dict:
         """Assemble dependency graph of protocols and their status."""
         nodesDict = runs._nodesDict
         graphData = {}
+
         for nodeId, nodeObj in nodesDict.items():
             childrenIds = [child.getName() for child in nodeObj._children]
             parentIds = [parent.getName() for parent in nodeObj._parents]
@@ -505,6 +523,9 @@ class ProjectService:
             isinteractive = False
             numberOfSteps = 0
             stepsDone = 0
+            thumbnailUrl = None
+            thumbnailRebuildUrl = None
+
             if nodeId != 'PROJECT':
                 protocol = self.currentProject.getProtocol(int(nodeId))
                 cpuTime = str(protocol.cpuTime)
@@ -514,7 +535,9 @@ class ProjectService:
                 stepsDone = protocol.stepsDone
                 self.currentProject._fixProtParamsConfiguration(protocol)
 
-                # Iterate over inputs
+                thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, int(nodeId))
+                thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, int(nodeId))
+
                 for key, attr in protocol.iterInputAttributes():
                     input = {}
                     try:
@@ -530,7 +553,6 @@ class ProjectService:
                     input['parentId'] = parentId
                     inputs.append(input)
 
-                # Iterate over outputs
                 for key, attr in protocol.iterOutputAttributes():
                     output = {}
                     output['name'] = key
@@ -559,8 +581,11 @@ class ProjectService:
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
-                "tags": tags[nodeId] if nodeId in tags else []
+                "tags": tags[nodeId] if nodeId in tags else [],
+                "thumbnailUrl": thumbnailUrl,
+                "thumbnailRebuildUrl": thumbnailRebuildUrl,
             }
+
         return graphData
 
     def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
@@ -569,13 +594,12 @@ class ProjectService:
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
         tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
-        graphData = self.buildProtocolsGraph(runs, tags)
+        graphData = self.buildProtocolsGraph(dbProj['id'], runs, tags)
 
         stats = projPath.stat()
         updatedAt = datetime.fromtimestamp(stats.st_mtime)
         if updatedAt != dbProj['updatedAt']:
             mapper.updateProjectModificationTime(dbProj['id'], dbProj['ownerId'], updatedAt)
-        # self.saveProtocolDependencies(mapper, graphData)
 
         return {
             "id": dbProj['id'],
@@ -584,7 +608,10 @@ class ProjectService:
             "createdAt": str(dbProj['createdAt']),
             "status": str(dbProj['status']),
             "path": projPath,
-            "protocols": graphData
+            "protocols": graphData,
+            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProj['id']),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProj['id']),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
     def listProjectWorkflows(self):
@@ -724,6 +751,49 @@ class ProjectService:
         }
         return statusColors.get(status.lower(), "#9e9e9e")
 
+    @staticmethod
+    def buildProjectThumbnailUrl(projectId: int) -> str:
+        # buildProjectThumbnailUrl
+        return f"/projects/{projectId}/thumbnail"
+
+    @staticmethod
+    def buildProjectThumbnailRebuildUrl(projectId: int) -> str:
+        # buildProjectThumbnailRebuildUrl
+        return f"/projects/{projectId}/thumbnail/rebuild"
+
+    @staticmethod
+    def buildProjectThumbnailItemsUrl(projectId: int) -> str:
+        # buildProjectThumbnailItemsUrl
+        return f"/projects/{projectId}/thumbnail-items"
+
+    @staticmethod
+    def buildProtocolThumbnailUrl(projectId: int, protocolId: int) -> str:
+        # buildProtocolThumbnailUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/thumbnail"
+
+    @staticmethod
+    def buildProtocolThumbnailRebuildUrl(projectId: int, protocolId: int) -> str:
+        # buildProtocolThumbnailRebuildUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/thumbnail/rebuild"
+
+    def listProjectThumbnailItems(
+            self,
+            projectId: int,
+            force: bool = False,
+            size: int = 320,
+            maxProtocols: int = 12,
+    ):
+        if self.currentProject is None:
+            raise ValueError("Thumbnail project is not loaded")
+
+        thumbnailService = ThumbnailService(self.currentProject)
+        return thumbnailService.listProtocolThumbnailItems(
+            projectId=projectId,
+            force=force,
+            size=size,
+            maxProtocols=maxProtocols,
+        )
+
     def _buildProtocolContext(self, projectId, protocol) -> dict:
         """
         Build the common context dictionary for a protocol,
@@ -732,12 +802,11 @@ class ProjectService:
         from pyworkflow.protocol import Line, Group
 
         headerParams = ['runName', '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
-        # Basic metadata
         package = protocol.getClassPackage()
         hasExpert = protocol.hasExpert()
         if hasExpert:
             headerParams.append('expertLevel')
-        # headerParams.append('runMode')
+
         logoPath = ''
         path = getattr(package, '_logo', '')
         if path != '':
@@ -751,7 +820,6 @@ class ProjectService:
         context = {}
         info = {
             "protocolId": protocol.getObjId(),
-            # "label": label,
             "label": protName,
             "status": status,
             "expertLevel": hasExpert,
@@ -760,7 +828,8 @@ class ProjectService:
             "hosts": hosts,
             "projectId": projectId,
             "protocolClassName": protocolClassName,
-            # "projectName": self.currentProject.getName(),
+            "thumbnailUrl": self.buildProtocolThumbnailUrl(projectId, int(protocol.getObjId())) if protocol.hasObjId() else None,
+            "thumbnailRebuildUrl": self.buildProtocolThumbnailRebuildUrl(projectId, int(protocol.getObjId())) if protocol.hasObjId() else None,
         }
 
         references = protocol.citations()
@@ -2062,6 +2131,35 @@ class ProjectService:
         )
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
+
+
+    def buildProtocolThumbnail(
+        self,
+        protocolId: int,
+        force: bool = False,
+        size: int = 320,
+    ) -> Dict[str, Any]:
+        # buildProtocolThumbnail
+        service = ThumbnailService(self.currentProject)
+        return service.buildProtocolThumbnail(
+            protocolId=protocolId,
+            force=force,
+            size=size,
+        )
+
+    def buildProjectThumbnail(
+        self,
+        force: bool = False,
+        size: int = 640,
+        maxProtocols: int = 6,
+    ) -> Dict[str, Any]:
+        # buildProjectThumbnail
+        service = ThumbnailService(self.currentProject)
+        return service.buildProjectThumbnail(
+            force=force,
+            size=size,
+            maxProtocols=maxProtocols,
+        )
 
     # ----------------------------------------------------------------------
     # Internal helpers for TiltSeries (SetOfTiltSeries)
