@@ -332,14 +332,6 @@ ALTER TABLE ONLY public.protocols
 
 
 --
--- Name: protocols protocols_protocolId_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.protocols
-    ADD CONSTRAINT "protocols_protocolId_key" UNIQUE ("protocolId");
-
-
---
 -- Name: project_shares uq_project_shares_project_user; Type: CONSTRAINT; Schema: public; Owner: -
 --
 

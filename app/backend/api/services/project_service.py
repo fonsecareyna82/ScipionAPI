@@ -1391,7 +1391,7 @@ class ProjectService:
         else:
             self.currentProject._setupProtocol(protocol)
 
-        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=27)
+        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=projectId)
         if not dbProtocol:
             protocolContex = self._buildProtocolContext(projectId, protocol)
             mapper.saveProtocol(protocolContex)
