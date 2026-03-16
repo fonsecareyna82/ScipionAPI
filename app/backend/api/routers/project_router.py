@@ -10,7 +10,7 @@ from fastapi import (
     Request, Body,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 from pydantic import BaseModel, Field
 
@@ -2526,3 +2526,244 @@ async def getContextMenuVisibilityPolicy(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return service.getContextMenuVisibilityPolicy()
+
+
+# ======================================================================
+#                            THUMBNAILS
+# ======================================================================
+def _attachDebugHeaders(response, currentUser):
+    # _attachDebugHeaders
+    response.headers["X-Debug-Auth"] = "ok"
+    response.headers["X-Debug-UserId"] = str(
+        getattr(currentUser, "id", currentUser.get("id", ""))
+    )
+    response.headers["Vary"] = "Authorization"
+    return response
+
+
+@router.get(
+    "/{projectId}/thumbnail",
+    response_model=None,
+    status_code=status.HTTP_200_OK,
+)
+def getProjectThumbnail(
+    projectId: int,
+    size: int = Query(640, ge=128, le=2048),
+    maxProtocols: int = Query(6, ge=1, le=12),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        result = service.buildProjectThumbnail(
+            force=False,
+            size=size,
+            maxProtocols=maxProtocols,
+        )
+
+        thumbPath = result.get("absolutePath")
+        if not thumbPath:
+            raise HTTPException(status_code=404, detail="Project thumbnail not found")
+
+        response = FileResponse(
+            path=thumbPath,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": 'inline; filename="project_thumbnail.png"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getProjectThumbnail: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load project thumbnail: {e}",
+        )
+
+
+@router.post(
+    "/{projectId}/thumbnail/rebuild",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def rebuildProjectThumbnail(
+    projectId: int,
+    size: int = Query(640, ge=128, le=2048),
+    maxProtocols: int = Query(6, ge=1, le=12),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        result = service.buildProjectThumbnail(
+            force=True,
+            size=size,
+            maxProtocols=maxProtocols,
+        )
+
+        response = JSONResponse(
+            {
+                "success": True,
+                "thumbnail": result,
+            }
+        )
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in rebuildProjectThumbnail: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to rebuild project thumbnail: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/thumbnail",
+    response_model=None,
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolThumbnail(
+    projectId: int,
+    protocolId: int,
+    size: int = Query(320, ge=128, le=1024),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        result = service.buildProtocolThumbnail(
+            protocolId=protocolId,
+            force=False,
+            size=size,
+        )
+
+        thumbPath = result.get("absolutePath")
+        if not thumbPath:
+            raise HTTPException(status_code=404, detail="Protocol thumbnail not found")
+
+        response = FileResponse(
+            path=thumbPath,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'inline; filename="protocol_{protocolId}_thumbnail.png"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getProtocolThumbnail: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load protocol thumbnail: {e}",
+        )
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/thumbnail/rebuild",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def rebuildProtocolThumbnail(
+    projectId: int,
+    protocolId: int,
+    size: int = Query(320, ge=128, le=1024),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        result = service.buildProtocolThumbnail(
+            protocolId=protocolId,
+            force=True,
+            size=size,
+        )
+
+        response = JSONResponse(
+            {
+                "success": True,
+                "thumbnail": result,
+            }
+        )
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in rebuildProtocolThumbnail: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to rebuild protocol thumbnail: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/thumbnail-items",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listProjectThumbnailItems(
+        projectId: int,
+        size: int = Query(320, ge=128, le=1024),
+        maxProtocols: int = Query(12, ge=1, le=24),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    try:
+        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        service.loadProjectForThumbnails(dbProj)
+
+        items = service.listProjectThumbnailItems(
+            projectId=projectId,
+            force=False,
+            size=size,
+            maxProtocols=maxProtocols,
+        )
+
+        response = JSONResponse(items)
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in listProjectThumbnailItems: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list project thumbnail items: {e}",
+        )

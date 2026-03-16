@@ -25,8 +25,28 @@
 # ******************************************************************************
 
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
+
+
+thumbnailUrl: Optional[str] = None
+thumbnailRebuildUrl: Optional[str] = None
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    status: Optional[str] = None
+    protocolsCount: Optional[Union[int, str]] = None
+    diskUsage: Optional[str] = None
+    isOwner: Optional[bool] = None
+    isShared: Optional[bool] = None
+    permission: Optional[str] = None
+    projectOwnerId: Optional[int] = None
+    thumbnailUrl: Optional[str] = None
+    thumbnailRebuildUrl: Optional[str] = None
 
 
 class ProjectCreate(BaseModel):
@@ -54,6 +74,9 @@ class ProjectOut(BaseModel):
     isShared: bool
     permission: str
     projectOwnerId: int
+    thumbnailItemsUrl: Optional[str] = None
+    thumbnailUrl: Optional[str] = None
+    thumbnailRebuildUrl: Optional[str] = None
 
     class Config:
         orm_mode = True
