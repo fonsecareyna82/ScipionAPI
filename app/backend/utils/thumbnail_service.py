@@ -1450,25 +1450,27 @@ class ThumbnailService:
         if volume.ndim != 3:
             return None
 
-        zSize, ySize, xSize = volume.shape
-        slices = [
-            volume[zSize // 2, :, :],
-            volume[:, ySize // 2, :],
-            volume[:, :, xSize // 2],
-        ]
-        panels: List[Image.Image] = []
-        cmapName = self._volumeColormapName()
+        zSize, _ySize, _xSize = volume.shape
+        centerZ = zSize // 2
 
-        for slice2d in slices:
-            image = self._arrayToImage(slice2d, cmapName=cmapName)
-            if image is not None:
-                panels.append(image)
+        maxSlices = 5
+        halfWindow = maxSlices // 2
 
-        if not panels:
+        z0 = max(0, centerZ - halfWindow)
+        z1 = min(zSize, centerZ + halfWindow + 1)
+
+        slab = volume[z0:z1, :, :]
+        if slab.size == 0:
             return None
 
-        targetHeight = max(180, int(round(size * 0.34)))
-        return self._composeTriptych(panels, targetHeight=targetHeight)
+        meanSliceZ = np.mean(slab.astype(np.float32, copy=False), axis=0)
+
+        cmapName = self._volumeColormapName()
+        image = self._arrayToImage(meanSliceZ, cmapName=cmapName)
+        if image is None:
+            return None
+
+        return image
 
     # ------------------------------------------------------------------
     # Object manager
