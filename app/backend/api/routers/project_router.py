@@ -1,4 +1,7 @@
 import logging
+import os
+import hashlib
+from email.utils import formatdate
 
 from fastapi import (
     APIRouter,
@@ -10,7 +13,7 @@ from fastapi import (
     Request, Body,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 
 from pydantic import BaseModel, Field
 
@@ -2541,12 +2544,63 @@ def _attachDebugHeaders(response, currentUser):
     return response
 
 
+def _buildThumbnailEtag(filePath: str) -> str:
+    # _buildThumbnailEtag
+    statResult = os.stat(filePath)
+    payload = f"{filePath}:{int(statResult.st_mtime_ns)}:{int(statResult.st_size)}"
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return f'"{digest}"'
+
+
+def _isNotModified(request: Request, etag: str) -> bool:
+    # _isNotModified
+    inm = request.headers.get("if-none-match")
+    if not inm:
+        return False
+
+    tokens = [token.strip() for token in inm.split(",") if token.strip()]
+    return etag in tokens
+
+
+def _buildCachedThumbnailResponse(
+    request: Request,
+    filePath: str,
+    filename: str,
+    currentUser,
+    maxAge: int = 120,
+):
+    # _buildCachedThumbnailResponse
+    statResult = os.stat(filePath)
+    etag = _buildThumbnailEtag(filePath)
+
+    cacheHeaders = {
+        "Cache-Control": f"private, max-age={int(maxAge)}, stale-while-revalidate=300",
+        "ETag": etag,
+        "Last-Modified": formatdate(statResult.st_mtime, usegmt=True),
+        "Access-Control-Expose-Headers": "Content-Disposition, ETag, Last-Modified, Cache-Control",
+    }
+
+    if _isNotModified(request, etag):
+        response = Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cacheHeaders)
+        return _attachDebugHeaders(response, currentUser)
+
+    response = FileResponse(
+        path=filePath,
+        media_type="image/png",
+        headers={
+            **cacheHeaders,
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
+    return _attachDebugHeaders(response, currentUser)
+
 @router.get(
     "/{projectId}/thumbnail",
     response_model=None,
     status_code=status.HTTP_200_OK,
 )
 def getProjectThumbnail(
+    request: Request,
     projectId: int,
     size: int = Query(640, ge=128, le=2048),
     maxProtocols: int = Query(6, ge=1, le=12),
@@ -2571,15 +2625,13 @@ def getProjectThumbnail(
         if not thumbPath:
             raise HTTPException(status_code=404, detail="Project thumbnail not found")
 
-        response = FileResponse(
-            path=thumbPath,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": 'inline; filename="project_thumbnail.png"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
+        return _buildCachedThumbnailResponse(
+            request=request,
+            filePath=thumbPath,
+            filename="project_thumbnail.png",
+            currentUser=currentUser,
+            maxAge=120,
         )
-        return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
         raise
@@ -2641,6 +2693,7 @@ def rebuildProjectThumbnail(
     status_code=status.HTTP_200_OK,
 )
 def getProtocolThumbnail(
+    request: Request,
     projectId: int,
     protocolId: int,
     size: int = Query(320, ge=128, le=1024),
@@ -2667,15 +2720,13 @@ def getProtocolThumbnail(
         if not thumbPath:
             raise HTTPException(status_code=404, detail="Protocol thumbnail not found")
 
-        response = FileResponse(
-            path=thumbPath,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": f'inline; filename="protocol_{protocolId}_thumbnail.png"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
+        return _buildCachedThumbnailResponse(
+            request=request,
+            filePath=thumbPath,
+            filename=f"protocol_{protocolId}_thumbnail.png",
+            currentUser=currentUser,
+            maxAge=120,
         )
-        return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
         raise
@@ -2763,6 +2814,8 @@ def listProjectThumbnailItems(
         )
 
         response = JSONResponse(items)
+        response.headers["Cache-Control"] = "private, max-age=20, stale-while-revalidate=60"
+        response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
         return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
@@ -2781,6 +2834,7 @@ def listProjectThumbnailItems(
     status_code=status.HTTP_200_OK,
 )
 def getProtocolOutputThumbnail(
+    request: Request,
     projectId: int,
     protocolId: int,
     outputName: str,
@@ -2807,17 +2861,13 @@ def getProtocolOutputThumbnail(
         if not thumbPath:
             raise HTTPException(status_code=404, detail="Protocol output thumbnail not found")
 
-        response = FileResponse(
-            path=thumbPath,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": (
-                    f'inline; filename="protocol_{protocolId}_{outputName}_thumbnail.png"'
-                ),
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
+        return _buildCachedThumbnailResponse(
+            request=request,
+            filePath=thumbPath,
+            filename=f"protocol_{protocolId}_{outputName}_thumbnail.png",
+            currentUser=currentUser,
+            maxAge=120,
         )
-        return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
         raise
