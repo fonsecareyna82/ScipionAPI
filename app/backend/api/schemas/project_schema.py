@@ -32,22 +32,6 @@ from datetime import datetime
 thumbnailUrl: Optional[str] = None
 thumbnailRebuildUrl: Optional[str] = None
 
-class ProjectOut(BaseModel):
-    id: int
-    name: str
-    description: Optional[str] = None
-    createdAt: Optional[datetime] = None
-    updatedAt: Optional[datetime] = None
-    status: Optional[str] = None
-    protocolsCount: Optional[Union[int, str]] = None
-    diskUsage: Optional[str] = None
-    isOwner: Optional[bool] = None
-    isShared: Optional[bool] = None
-    permission: Optional[str] = None
-    projectOwnerId: Optional[int] = None
-    thumbnailUrl: Optional[str] = None
-    thumbnailRebuildUrl: Optional[str] = None
-
 
 class ProjectCreate(BaseModel):
     name: str
@@ -77,6 +61,7 @@ class ProjectOut(BaseModel):
     thumbnailItemsUrl: Optional[str] = None
     thumbnailUrl: Optional[str] = None
     thumbnailRebuildUrl: Optional[str] = None
+    thumbnailVersion: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -85,6 +70,7 @@ class ProjectOut(BaseModel):
 class ProjectShareCreate(BaseModel):
     userIds = []
     permission: Optional[str] = "full"
+
 
 class TiltSeriesNewSetRequest(BaseModel):
     """
