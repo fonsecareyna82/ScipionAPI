@@ -313,6 +313,14 @@ class ProjectService:
             permission = dbProj.get("permission", "owner" if isOwner else "full")
             projectOwnerId = dbProj.get("ownerId")
             projectId = dbProj["id"]
+            updatedAt = dbProj.get("updatedAt")
+
+            thumbnailVersion = self._buildProjectThumbnailVersion(
+                projectPath=projectPath,
+                projectId=projectId,
+                updatedAt=updatedAt,
+                protocolsCount=protCount,
+            )
 
             result.append({
                 "id": projectId,
@@ -326,10 +334,11 @@ class ProjectService:
                 "isShared": bool(isShared),
                 "permission": permission,
                 "projectOwnerId": projectOwnerId,
-                "updatedAt": dbProj.get("updatedAt"),
+                "updatedAt": updatedAt,
                 "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
                 "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
                 "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
+                "thumbnailVersion": thumbnailVersion,
             })
 
         return result
@@ -505,6 +514,25 @@ class ProjectService:
             return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
         except Exception:
             return 0
+
+    @staticmethod
+    def _buildProjectThumbnailVersion(
+            projectPath: str,
+            projectId,
+            updatedAt=None,
+            protocolsCount: int = 0,
+    ) -> str:
+        # _buildProjectThumbnailVersion
+        runsPath = os.path.join(projectPath, "Runs")
+
+        try:
+            runsMtime = int(os.path.getmtime(runsPath)) if os.path.exists(runsPath) else 0
+        except Exception:
+            runsMtime = 0
+
+        updatedText = str(updatedAt) if updatedAt is not None else ""
+
+        return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
     def buildProtocolsGraph(self, projectId: int, runs, tags) -> dict:
         """Assemble dependency graph of protocols and their status."""
