@@ -1935,6 +1935,77 @@ def createCoords3dOutputFromPoints(projectId: int,
         logger.exception("Error in createCoords3dOutputFromPoints: %s", e)
         raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
 
+
+# ==============================================================================
+#        ANALYZE RESULTS: FSC (SetOfFSCs)
+# ==============================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/fsc/rows",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getFscRows(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return FSC curves for a SetOfFSCs-like output.
+
+    Response shape:
+    {
+      "curves": [
+        {
+          "label": "FSC 1",
+          "resolution": 3.21,
+          "xKind": "frequency",
+          "points": [
+            {"x": 0.01, "y": 0.95},
+            {"x": 0.02, "y": 0.87},
+          ],
+        },
+      ],
+      "threshold": 0.143,
+    }
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        payload = service.getFscRowsService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        resp = JSONResponse(payload or {"curves": [], "threshold": 0.143})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(
+            getattr(currentUser, "id", currentUser.get("id", ""))
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getFscRows: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load FSC rows: {e}",
+        )
+
 # ==============================================================================
 #            ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
 # ==============================================================================
