@@ -4092,6 +4092,157 @@ class ProjectService:
         }
 
     # ======================================================================
+    # Internal helpers for FSCs
+    # ======================================================================
+    def getFscRowsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        """
+        Return FSC curves for a SetOfFSCs-like output.
+
+        Response shape:
+        {
+          "threshold": 0.143,
+          "rows": [
+            {
+              "label": "No mask",
+              "resolution": 3.21,
+              "x": [0.0, 0.01, 0.02, ...],
+              "y": [1.0, 0.98, 0.95, ...],
+            },
+            ...
+          ],
+        }
+        """
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Protocol not found")
+
+        output = getattr(protocol, outputName, None)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        threshold = 0.143
+
+        def iterFscObjects():
+            # iterateWithoutReusingSameMutableObject
+            iterItemsFn = getattr(output, "iterItems", None)
+            if callable(iterItemsFn):
+                try:
+                    for item in iterItemsFn(iterate=False):
+                        yield item
+                    return
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+
+                try:
+                    for item in iterItemsFn():
+                        clone = getattr(item, "clone", lambda: item)()
+                        yield clone
+                    return
+                except Exception:
+                    pass
+
+            # singleFscObjectFallback
+            if hasattr(output, "getData") and callable(getattr(output, "getData", None)):
+                yield output
+                return
+
+            # genericIterableFallback
+            try:
+                for item in output:
+                    clone = getattr(item, "clone", lambda: item)()
+                    yield clone
+                return
+            except Exception:
+                pass
+
+            raise HTTPException(
+                status_code=500,
+                detail="Output does not expose iterable FSC objects",
+            )
+
+        def getXY(fsc):
+            # getXYExactlyLikeThumbnailPreview
+            data = fsc.getData()
+
+            if isinstance(data, (list, tuple)) and len(data) == 2:
+                x, y = data
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+            else:
+                arr = np.asarray(data, dtype=float)
+
+                if arr.ndim != 2:
+                    raise ValueError("Invalid FSC data shape")
+
+                if arr.shape[1] >= 2:
+                    x, y = arr[:, 0], arr[:, 1]
+                elif arr.shape[0] >= 2:
+                    x, y = arr[0, :], arr[1, :]
+                else:
+                    raise ValueError("Invalid FSC data shape")
+
+            mask = np.isfinite(x) & np.isfinite(y)
+            x = x[mask]
+            y = y[mask]
+
+            return x, y
+
+        rows: List[Dict[str, Any]] = []
+
+        for i, fsc in enumerate(iterFscObjects()):
+            if fsc is None:
+                continue
+
+            clone = getattr(fsc, "clone", lambda: fsc)()
+
+            label = getattr(clone, "getObjLabel", lambda: None)() or f"FSC {i + 1}"
+
+            try:
+                x, y = getXY(clone)
+            except Exception as e:
+                logger.warning("Skipping FSC '%s' because data could not be parsed: %s", label, e)
+                continue
+
+            if x.size == 0:
+                continue
+
+            resolution = None
+            if hasattr(clone, "calculateResolution"):
+                try:
+                    res = clone.calculateResolution(threshold)
+                    if res is not None:
+                        res = float(res)
+                        if np.isfinite(res) and res > 0:
+                            resolution = res
+                except Exception:
+                    resolution = None
+
+            rows.append(
+                {
+                    "label": str(label),
+                    "resolution": resolution,
+                    "x": x.astype(float).tolist(),
+                    "y": y.astype(float).tolist(),
+                }
+            )
+
+        return {
+            "threshold": threshold,
+            "rows": rows,
+        }
+
+    # ======================================================================
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
     # ======================================================================
 
