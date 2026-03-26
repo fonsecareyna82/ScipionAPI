@@ -21,7 +21,8 @@ from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
-                                                    ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest)
+                                                    ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
+                                                    ProjectImportIn)
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -130,6 +131,16 @@ def createProject(
     service: ProjectService = Depends(getProjectService),
 ):
     return service.createProject(mapper, projectData, currentUser)
+
+
+@router.post("/import", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+def importProject(
+    projectData: ProjectImportIn,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    return service.importProject(mapper, projectData, currentUser)
 
 
 @router.get("/{projectId}", response_model=Any)
@@ -977,6 +988,35 @@ def pollProtocolLogs(
 #                FS REMOTE: list / preview / download
 # ======================================================================
 
+def _isGlobalFsBrowserMode(projectId: int, protocolId: Union[int, str]) -> bool:
+    return str(projectId).strip() == "-1" and str(protocolId).strip() == "-1"
+
+def _ensureProjectForFsRequest(
+    projectId: int,
+    protocolId: Union[int, str],
+    currentUser,
+    mapper: PostgresqlFlatMapper,
+    service: ProjectService,
+    *,
+    refresh: bool = True,
+    checkPid: bool = True,
+):
+    if _isGlobalFsBrowserMode(projectId, protocolId):
+        return None
+
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=refresh,
+        checkPid=checkPid,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return project
+
+
 @router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
 async def getProtocolPath(
     projectId: int,
@@ -985,10 +1025,7 @@ async def getProtocolPath(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
+    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
     return service.getProtocolPath(protocolId)
 
 
@@ -1008,10 +1045,7 @@ async def listProtocolDir(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
+    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
     return service.listProtocolDir(protocolId, path)
 
 
@@ -1024,10 +1058,7 @@ async def previewProtocolText(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
+    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
     return service.previewProtocolTextFile(protocolId, path)
 
 
@@ -1040,10 +1071,15 @@ def previewRemoteEntry(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
+    _ensureProjectForFsRequest(
+        projectId,
+        protocolId,
+        currentUser,
+        mapper,
+        service,
+        refresh=False,
+        checkPid=False,
+    )
     return service.previewRemoteEntry(protocolId, path)
 
 
@@ -1057,10 +1093,7 @@ async def previewProtocolImageFile(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
+    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
     return service.previewProtocolImageFile(protocolId, path, inline)
 
 

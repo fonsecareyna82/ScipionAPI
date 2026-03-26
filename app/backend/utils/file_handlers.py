@@ -130,6 +130,332 @@ class FileHandlers:
             raise HTTPException(status_code=404, detail="Browser root not found")
         return p
 
+    def _coerceExistingRoot(self, root: Union[str, FsPath]) -> FsPath:
+        """
+        Normalize an arbitrary browser root and ensure it exists as a directory.
+        """
+        p = FsPath(root).expanduser().resolve()
+        if not p.exists() or not p.is_dir():
+            raise HTTPException(status_code=404, detail="Browser root not found")
+        return p
+
+    def listRemoteDirectoryUnderRoot(self, root: Union[str, FsPath], path: str) -> list[Dict[str, Any]]:
+        """
+        List a directory under an arbitrary safe root.
+
+        Response contract:
+          - name: basename of the entry
+          - path: path relative to root
+          - absPath: absolute lexical path of the entry
+          - isDir: whether the entry is a directory
+          - size/mime: only for files
+        """
+        rootPath = self._coerceExistingRoot(root)
+        target = self._resolveWithinRoot(rootPath, path)
+
+        if not target.exists():
+            return []
+
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Not a directory")
+
+        items: list[Dict[str, Any]] = []
+
+        try:
+            for child in target.iterdir():
+                try:
+                    isDir = child.is_dir()
+                except OSError:
+                    continue
+
+                relPath = self._relFromRoot(rootPath, child)
+                absPath = str(child.absolute()).replace("\\", "/")
+
+                item: Dict[str, Any] = {
+                    "name": child.name,
+                    "path": relPath,
+                    "absPath": absPath,
+                    "isDir": isDir,
+                }
+
+                if not isDir:
+                    try:
+                        item["size"] = child.stat().st_size
+                    except OSError:
+                        item["size"] = None
+
+                    item["mime"] = self._guessMime(child)
+
+                items.append(item)
+
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
+        return items
+
+    def previewTextFileUnderRoot(self, root: Union[str, FsPath], path: str) -> Response:
+        """
+        Return a text preview for a file under an arbitrary safe root.
+        """
+        rootPath = self._coerceExistingRoot(root)
+        filePath = self._resolveWithinRoot(rootPath, path)
+
+        if not filePath.exists() or not filePath.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        suffix = filePath.suffix.lower()
+        mime = self._guessMime(filePath)
+
+        textual = (
+                mime.startswith("text/")
+                or mime in (
+                    "application/json",
+                    "application/xml",
+                    "application/x-yaml",
+                    "text/x-log",
+                )
+                or suffix in TEXT_FILE_EXTENSIONS
+        )
+
+        if not textual:
+            raise HTTPException(
+                status_code=415,
+                detail="Preview not available for this file type",
+            )
+
+        maxBytes = 1 * 1024 * 1024
+        try:
+            size = filePath.stat().st_size
+            if size > maxBytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File too large to preview",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+        try:
+            text = filePath.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not read file as text",
+            )
+
+        return Response(
+            content=text,
+            media_type="text/plain; charset=utf-8",
+        )
+
+    def previewImageFileUnderRoot(self, root: Union[str, FsPath], path: str, inline: bool) -> Response:
+        """
+        Preview or download a file under an arbitrary safe root.
+
+        - inline=False: attachment download
+        - inline=True:
+          * MRC-like files -> PNG thumbnail with preview headers
+          * regular images -> image preview with preview headers
+          * other files -> raw inline bytes with minimal metadata
+        """
+        rootPath = self._coerceExistingRoot(root)
+        filePath = self._resolveWithinRoot(rootPath, path)
+
+        if not filePath.exists() or not filePath.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if inline:
+            if self._isPreviewableMrc(filePath):
+                pngBytes, meta = self._renderImageAsPngAndMeta(filePath)
+                baseHeaders = {
+                    "Content-Disposition": f'inline; filename="{filePath.stem}.png"'
+                }
+                previewHeaders = self._buildPreviewHeaders(meta)
+                return Response(
+                    content=pngBytes,
+                    media_type="image/png",
+                    headers={**baseHeaders, **previewHeaders},
+                )
+
+            mediaType = self._guessMime(filePath)
+            if mediaType.startswith("image/"):
+                imgBytes, realMediaType, meta = self._renderImageAndMeta(filePath)
+                baseHeaders = {
+                    "Content-Disposition": f'inline; filename="{filePath.name}"'
+                }
+                previewHeaders = self._buildPreviewHeaders(meta)
+                return Response(
+                    content=imgBytes,
+                    media_type=realMediaType,
+                    headers={**baseHeaders, **previewHeaders},
+                )
+
+            rawBytes = filePath.read_bytes()
+            meta = {
+                "name": filePath.name,
+                "mime": mediaType,
+                "sizeBytes": filePath.stat().st_size,
+            }
+            baseHeaders = {
+                "Content-Disposition": f'inline; filename="{filePath.name}"'
+            }
+            previewHeaders = self._buildPreviewHeaders(meta)
+            return Response(
+                content=rawBytes,
+                media_type=mediaType,
+                headers={**baseHeaders, **previewHeaders},
+            )
+
+        mediaType = self._guessMime(filePath)
+        return Response(
+            content=filePath.read_bytes(),
+            media_type=mediaType,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filePath.name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    def previewRemoteEntryUnderRoot(self, root: Union[str, FsPath], path: str) -> Response:
+        """
+        Return a unified lightweight preview for a file under an arbitrary safe root.
+        """
+        rootPath = self._coerceExistingRoot(root)
+
+        rawPath = (path or "").strip()
+        if not rawPath or rawPath in ("/", ".", "./"):
+            raise HTTPException(status_code=400, detail="A file path is required")
+
+        stackIndex: Optional[int] = None
+        resolvedPath = rawPath
+
+        if "@" in rawPath:
+            prefix, rest = rawPath.split("@", 1)
+            prefixStr = prefix.strip()
+            if prefixStr.isdigit():
+                stackIndex = int(prefixStr)
+                resolvedPath = rest.strip()
+
+        filePath = self._resolveWithinRoot(rootPath, resolvedPath)
+
+        if not filePath.exists():
+            raise HTTPException(status_code=404, detail="Entry not found")
+        if filePath.is_dir():
+            raise HTTPException(status_code=400, detail="Not a file")
+
+        suffix = filePath.suffix.lower()
+        mime = self._guessMime(filePath)
+
+        try:
+            sizeBytes = filePath.stat().st_size
+        except Exception:
+            sizeBytes = None
+
+        textual = (
+                mime.startswith("text/")
+                or mime in ("application/json", "application/xml", "application/x-yaml", "text/x-log")
+                or suffix in TEXT_FILE_EXTENSIONS
+        )
+
+        if textual:
+            resp = self.previewTextFileUnderRoot(rootPath, resolvedPath)
+            meta = {
+                "name": filePath.name,
+                "mime": mime,
+                "sizeBytes": sizeBytes,
+            }
+            return self._attachPreviewContract(
+                resp,
+                kind="text",
+                name=filePath.name,
+                meta=meta,
+            )
+
+        isMrcLike = suffix in IMAGES_FILE_EXTENSIONS
+        isRegularImage = mime.startswith("image/")
+
+        if isMrcLike or isRegularImage:
+            if stackIndex is not None and isMrcLike:
+                imageSpec = f"{stackIndex}@{str(filePath)}"
+                pngBytes, meta = self._renderImageSpecAsPngAndMeta(imageSpec, filePath)
+
+                depth = meta.get("depth")
+                kind = "volume" if (isinstance(depth, int) and depth > 1) else "image"
+
+                resp = Response(
+                    content=pngBytes,
+                    media_type="image/png",
+                    headers={
+                        "Content-Disposition": f'inline; filename="{filePath.stem}.png"',
+                    },
+                )
+                return self._attachPreviewContract(
+                    resp,
+                    kind=kind,
+                    name=filePath.name,
+                    meta=meta,
+                    responseMime="image/png",
+                )
+
+            resp = self.previewImageFileUnderRoot(rootPath, resolvedPath, inline=True)
+
+            previewMime = resp.headers.get("X-Preview-Mime", "") or ""
+            previewDepth = resp.headers.get("X-Preview-Depth")
+
+            kind = "image"
+            if previewMime.startswith("volume/"):
+                kind = "volume"
+            elif previewDepth:
+                try:
+                    if int(previewDepth) > 1:
+                        kind = "volume"
+                except Exception:
+                    pass
+
+            meta = {
+                "name": filePath.name,
+                "mime": previewMime or mime,
+                "sizeBytes": sizeBytes,
+            }
+
+            return self._attachPreviewContract(
+                resp,
+                kind=kind,
+                name=filePath.name,
+                meta=meta,
+            )
+
+        maxBytes = 256 * 1024
+        try:
+            with open(filePath, "rb") as f:
+                chunk = f.read(maxBytes)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Could not read file")
+
+        meta = {
+            "name": filePath.name,
+            "mime": mime,
+            "sizeBytes": sizeBytes,
+            "note": f"binaryPreviewFirstBytes={len(chunk)}",
+        }
+
+        resp = Response(
+            content=chunk,
+            media_type=mime,
+            headers={
+                "Content-Disposition": f'inline; filename="{filePath.name}"',
+            },
+        )
+
+        return self._attachPreviewContract(
+            resp,
+            kind="binary",
+            name=filePath.name,
+            meta=meta,
+        )
+
     @staticmethod
     def _normalizeRelPath(relPath: str) -> str:
         """
@@ -255,221 +581,12 @@ class FileHandlers:
         return mt or "application/octet-stream"
 
     def listProtocolDir(self, protocolId: str, path: str) -> list[Dict[str, Any]]:
-        """
-        Return the directory files list.
-
-        Contract (updated):
-        - `path` is relative to the resolved browser root (rootAbs).
-        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
-        - items[].path is a leaf (basename) so the client can join cwd + leaf.
-
-        Response:
-        - A list of items only (no cwd/dirName):
-          items[].name: basename
-          items[].path: basename (leaf)
-          items[].isDir: bool
-          items[].size: int | None (files only)
-          items[].mime: str (files only)
-        """
-        fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
-        if protocolId != fakeProtocolId:
-            root = self._browserRootAbs(protocolId).resolve()
-            target = self._resolveWithinRoot(root, path)
-        else:
-            root = FsPath(os.path.abspath(self.currentProject.getPath())).resolve()
-            target = self._resolveWithinRoot(root, path)
-
-        if not target.exists():
-            return []
-
-        if not target.is_dir():
-            raise HTTPException(status_code=400, detail="Not a directory")
-
-        items: list[Dict[str, Any]] = []
-
-        try:
-            for child in target.iterdir():
-                # Safely determine isDir and ignore broken entries
-                try:
-                    isDir = child.is_dir()
-                except OSError:
-                    continue
-
-                item: Dict[str, Any] = {
-                    "name": child.name,
-                    "path": child.name,  # leaf-only contract
-                    "isDir": isDir,
-                }
-
-                if not isDir:
-                    try:
-                        item["size"] = child.stat().st_size
-                    except OSError:
-                        item["size"] = None
-                    item["mime"] = self._guessMime(child)
-
-                items.append(item)
-
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied")
-
-        # Sort folders first, then files alphabetically
-        items.sort(key=lambda it: (not it["isDir"], it["name"].lower()))
-
-        return items
+        root = self._browserRootAbs(protocolId).resolve()
+        return self.listRemoteDirectoryUnderRoot(root, path)
 
     def previewProtocolRemoteEntry(self, protocolId: str, path: str) -> Response:
-        """
-        Return a lightweight preview for a file under the browser root.
-
-        Rules:
-        - Text-like files: returns utf8 text/plain (reuses previewProtocolTextFile size cap).
-        - Images / mrc-like files: returns inline preview (thumbnail for images and mrc).
-        - Other binaries: returns a truncated inline preview (first n bytes) to keep it lightweight.
-        - Supports optional stack specs like '3@Runs/.../particles.mrcs' for mrc-like stacks.
-        """
         root = self._browserRootAbs(protocolId).resolve()
-
-        rawPath = (path or "").strip()
-        if not rawPath or rawPath in ("/", ".", "./"):
-            raise HTTPException(status_code=400, detail="A file path is required")
-
-        # parseOptionalStackSpec
-        stackIndex: Optional[int] = None
-        resolvedPath = rawPath
-
-        if "@" in rawPath:
-            prefix, rest = rawPath.split("@", 1)
-            prefixStr = prefix.strip()
-            if prefixStr.isdigit():
-                stackIndex = int(prefixStr)
-                resolvedPath = rest.strip()
-
-        filePath = self._resolveWithinRoot(root, resolvedPath)
-
-        if not filePath.exists():
-            raise HTTPException(status_code=404, detail="Entry not found")
-        if filePath.is_dir():
-            raise HTTPException(status_code=400, detail="Not a file")
-
-        suffix = filePath.suffix.lower()
-        mime = self._guessMime(filePath)
-
-        # bestEffortSizeBytes
-        try:
-            sizeBytes = filePath.stat().st_size
-        except Exception:
-            sizeBytes = None
-
-        # detectTextual
-        textual = (
-                mime.startswith("text/")
-                or mime in ("application/json", "application/xml", "application/x-yaml", "text/x-log")
-                or suffix in TEXT_FILE_EXTENSIONS
-        )
-
-        if textual:
-            resp = self.previewProtocolTextFile(protocolId, resolvedPath)
-            meta = {
-                "name": filePath.name,
-                "mime": mime,
-                "sizeBytes": sizeBytes,
-            }
-            return self._attachPreviewContract(
-                resp,
-                kind="text",
-                name=filePath.name,
-                meta=meta,
-            )
-
-        # detectImageLikeOrMrc
-        isMrcLike = suffix in IMAGES_FILE_EXTENSIONS
-        isRegularImage = mime.startswith("image/")
-
-        if isMrcLike or isRegularImage:
-            # stackPreviewForMrcLike
-            if stackIndex is not None and isMrcLike:
-                imageSpec = f"{stackIndex}@{str(filePath)}"
-                pngBytes, meta = self._renderImageSpecAsPngAndMeta(imageSpec, filePath)
-
-                # inferKindFromMeta
-                depth = meta.get("depth")
-                kind = "volume" if (isinstance(depth, int) and depth > 1) else "image"
-
-                resp = Response(
-                    content=pngBytes,
-                    media_type="image/png",
-                    headers={
-                        "Content-Disposition": f'inline; filename="{filePath.stem}.png"',
-                    },
-                )
-                return self._attachPreviewContract(
-                    resp,
-                    kind=kind,
-                    name=filePath.name,
-                    meta=meta,
-                    responseMime="image/png",
-                )
-
-            # genericInlinePreview
-            resp = self.previewProtocolImageFile(protocolId, resolvedPath, inline=True)
-
-            # inferKindFromHeaders
-            previewMime = resp.headers.get("X-Preview-Mime", "") or ""
-            previewDepth = resp.headers.get("X-Preview-Depth")
-
-            kind = "image"
-            if previewMime.startswith("volume/"):
-                kind = "volume"
-            elif previewDepth:
-                try:
-                    if int(previewDepth) > 1:
-                        kind = "volume"
-                except Exception:
-                    pass
-
-            meta = {
-                "name": filePath.name,
-                "mime": previewMime or mime,
-                "sizeBytes": sizeBytes,
-            }
-
-            return self._attachPreviewContract(
-                resp,
-                kind=kind,
-                name=filePath.name,
-                meta=meta,
-            )
-
-        # binaryTruncatedPreview
-        maxBytes = 256 * 1024  # 256KiB
-        try:
-            with open(filePath, "rb") as f:
-                chunk = f.read(maxBytes)
-        except Exception:
-            raise HTTPException(status_code=500, detail="Could not read file")
-
-        meta = {
-            "name": filePath.name,
-            "mime": mime,
-            "sizeBytes": sizeBytes,
-            "note": f"binaryPreviewFirstBytes={len(chunk)}",
-        }
-
-        resp = Response(
-            content=chunk,
-            media_type=mime,
-            headers={
-                "Content-Disposition": f'inline; filename="{filePath.name}"',
-            },
-        )
-
-        return self._attachPreviewContract(
-            resp,
-            kind="binary",
-            name=filePath.name,
-            meta=meta,
-        )
+        return self.previewRemoteEntryUnderRoot(root, path)
 
     def _renderImageSpecAsPngAndMeta(self, imageSpec: str, backingPath: FsPath):
         """
@@ -569,69 +686,8 @@ class FileHandlers:
         return pngBytes, meta
 
     def previewProtocolTextFile(self, protocolId: str, path: str) -> Response:
-        """
-        Return a lightweight preview for a file under the browser root.
-
-        Contract (updated):
-        - `path` is relative to rootAbs ("" is root, but preview requires a file).
-        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
-
-        Behaviors:
-        - Text-like files -> UTF-8 text/plain (capped size).
-        - Otherwise -> 415 (unsupported).
-        """
         root = self._browserRootAbs(protocolId).resolve()
-        filePath = self._resolveWithinRoot(root, path)
-
-        if not filePath.exists() or not filePath.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-
-        suffix = filePath.suffix.lower()
-        mime = self._guessMime(filePath)  # e.g. "text/plain", etc.
-
-        textual = (
-            (mime.startswith("text/"))
-            or mime in (
-                "application/json",
-                "application/xml",
-                "application/x-yaml",
-                "text/x-log",
-            )
-            or suffix in TEXT_FILE_EXTENSIONS
-        )
-
-        if textual:
-            MAX_BYTES = 1 * 1024 * 1024  # 1 MiB cap for preview
-            try:
-                size = filePath.stat().st_size
-                if size > MAX_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail="File too large to preview",
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                # best effort, continue to try reading
-                pass
-
-            try:
-                text = filePath.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Could not read file as text",
-                )
-
-            return Response(
-                content=text,
-                media_type="text/plain; charset=utf-8",
-            )
-
-        raise HTTPException(
-            status_code=415,
-            detail="Preview not available for this file type",
-        )
+        return self.previewTextFileUnderRoot(root, path)
 
     def _isPreviewableMrc(self, filePath: FsPath) -> bool:
         """
@@ -979,77 +1035,5 @@ class FileHandlers:
         return response
 
     def previewProtocolImageFile(self, protocolId, path, inline: bool) -> Response:
-        """
-        inline == False:
-            - attachment download (binary as-is)
-        inline == True:
-            - preview mode:
-              * if MRC/volume -> PNG slice + X-Preview-* headers (RGB colorized)
-              * if normal image -> raw image + X-Preview-* headers
-              * else -> raw bytes + minimal headers
-
-        Contract (updated):
-        - `path` is relative to rootAbs.
-        - Absolute paths are accepted only for backward compatibility and must be under rootAbs.
-        """
         root = self._browserRootAbs(protocolId).resolve()
-        filePath = self._resolveWithinRoot(root, path)
-
-        if (not filePath.exists()) or (not filePath.is_file()):
-            raise HTTPException(status_code=404, detail="File not found")
-
-        if inline:
-            # MRC-like volume preview
-            if self._isPreviewableMrc(filePath):
-                pngBytes, meta = self._renderImageAsPngAndMeta(filePath)
-                baseHeaders = {
-                    "Content-Disposition": f'inline; filename="{filePath.stem}.png"'
-                }
-                previewHeaders = self._buildPreviewHeaders(meta)
-                return Response(
-                    content=pngBytes,
-                    media_type="image/png",
-                    headers={**baseHeaders, **previewHeaders},
-                )
-
-            # Regular image preview
-            mediaType = self._guessMime(filePath)
-            if mediaType.startswith("image/"):
-                imgBytes, realMediaType, meta = self._renderImageAndMeta(filePath)
-                baseHeaders = {
-                    "Content-Disposition": f'inline; filename="{filePath.name}"'
-                }
-                previewHeaders = self._buildPreviewHeaders(meta)
-                return Response(
-                    content=imgBytes,
-                    media_type=realMediaType,
-                    headers={**baseHeaders, **previewHeaders},
-                )
-
-            # Fallback: other file types inline
-            rawBytes = filePath.read_bytes()
-            meta = {
-                "name": filePath.name,
-                "mime": mediaType,
-                "sizeBytes": filePath.stat().st_size,
-            }
-            baseHeaders = {
-                "Content-Disposition": f'inline; filename="{filePath.name}"'
-            }
-            previewHeaders = self._buildPreviewHeaders(meta)
-            return Response(
-                content=rawBytes,
-                media_type=mediaType,
-                headers={**baseHeaders, **previewHeaders},
-            )
-
-        # attachment / download (inline == False)
-        mediaType = self._guessMime(filePath)
-        return Response(
-            content=filePath.read_bytes(),
-            media_type=mediaType,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filePath.name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
-        )
+        return self.previewImageFileUnderRoot(root, path, inline)
