@@ -35,6 +35,7 @@ import json
 import sys
 import threading
 import textwrap
+import shutil
 
 import numpy as np
 
@@ -283,30 +284,427 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProjectId),
         }
 
+    def _normalizeProjectPath(self, projectPath: str) -> str:
+        """
+        Normalize a stored project path to an absolute filesystem path.
+
+        Important:
+        - Do NOT resolve symlinks here.
+        - We want the project entry path, not the real target path.
+        """
+        if not projectPath:
+            return ""
+
+        normalized = os.path.expanduser(str(projectPath).strip())
+
+        if not os.path.isabs(normalized):
+            normalized = self.manager.getProjectPath(normalized)
+
+        return os.path.abspath(normalized)
+
+    def _isManagedProjectPath(self, projectPath: str) -> bool:
+        """
+        Return True when the project entry iºtself lives under the managed projects root.
+
+        Important:
+        - This checks the lexical path of the entry.
+        - It must not resolve symlinks, otherwise linked external projects would
+          look "outside" even if their symlink entry is inside the workspace.
+        """
+        try:
+            managedRoot = self._normalizeProjectPath(self.manager.PROJECTS)
+            normalizedPath = self._normalizeProjectPath(projectPath)
+
+            common = os.path.commonpath([managedRoot, normalizedPath])
+            return common == managedRoot
+        except Exception:
+            return False
+
+    def _isLinkedProjectPath(self, projectPath: str) -> bool:
+        """
+        Return True if the stored project entry is a symbolic link.
+        """
+        normalizedPath = self._normalizeProjectPath(projectPath)
+        return os.path.islink(normalizedPath)
+
+    def _validateImportableScipionProject(self, sourcePath: Path) -> Dict[str, Any]:
+        """
+        Validate that a folder is a real Scipion project by trying to load it.
+
+        Returns a small metadata dict that can be reused by importProject.
+        """
+        if sourcePath is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid source project path",
+            )
+
+        if not sourcePath.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source project path does not exist",
+            )
+
+        if not sourcePath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source project path must be a directory",
+            )
+
+        try:
+            importedProject = ScipionProject(
+                pyworkflow.Config.getDomain(),
+                str(sourcePath),
+            )
+            importedProject.load(dbPath=importedProject.getDbPath())
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Source path is not a valid Scipion project: {e}",
+            )
+
+        try:
+            description = importedProject.getComment() or ""
+        except Exception:
+            description = ""
+
+        try:
+            statusValue = str(importedProject.getStatus()) if importedProject.getStatus() else "active"
+        except Exception:
+            statusValue = "active"
+
+        return {
+            "description": description,
+            "status": statusValue or "active",
+        }
+
+    def importProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectData,
+            currentUser,
+    ) -> dict:
+        rawLocation = (getattr(projectData, "projectLocation", None) or "").strip()
+        if not rawLocation:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="projectLocation is required",
+            )
+
+        try:
+            sourcePath = Path(rawLocation).expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source project path does not exist",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid source project path: {e}",
+            )
+
+        if not sourcePath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source project path must be a directory",
+            )
+
+        # Validate that this is a real Scipion project before importing it
+        try:
+            importedProject = ScipionProject(
+                pyworkflow.Config.getDomain(),
+                str(sourcePath),
+            )
+            importedProject.load(dbPath=importedProject.getDbPath())
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Source path is not a valid Scipion project: {e}",
+            )
+
+        copyProject = bool(getattr(projectData, "copyProject", True))
+
+        requestedName = (getattr(projectData, "projectName", None) or "").strip()
+        rawName = requestedName or sourcePath.name
+        sanitizedName = self.sanitizeProjectName(rawName)
+
+        existingProjects = mapper.listProjects(ownerId=currentUser["id"]) or []
+
+        existingNames = set()
+        existingResolvedPaths = set()
+
+        for proj in existingProjects:
+            storedName = str(proj.get("name") or "").strip()
+            if not storedName:
+                continue
+
+            storedPath = Path(storedName)
+            if not storedPath.is_absolute():
+                storedPath = Path(self.manager.getProjectPath(storedName))
+
+            existingNames.add(os.path.basename(str(storedPath)))
+
+            try:
+                if storedPath.exists():
+                    existingResolvedPaths.add(str(storedPath.resolve()))
+            except Exception:
+                pass
+
+        if sanitizedName in existingNames:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A project with this name already exists: '{sanitizedName}'",
+            )
+
+        if str(sourcePath) in existingResolvedPaths:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This Scipion project is already imported for the current user",
+            )
+
+        targetPath = Path(self.manager.getProjectPath(sanitizedName)).expanduser()
+
+        if targetPath.exists() or targetPath.is_symlink():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Target project path already exists: '{targetPath}'",
+            )
+
+        try:
+            targetResolved = targetPath.resolve(strict=False)
+        except Exception:
+            targetResolved = targetPath
+
+        if sourcePath == targetPath or sourcePath == targetResolved:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source and target project paths cannot be the same",
+            )
+
+        targetPath.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if copyProject:
+                shutil.copytree(str(sourcePath), str(targetPath), symlinks=True)
+            else:
+                targetPath.symlink_to(sourcePath, target_is_directory=True)
+        except Exception as e:
+            try:
+                if targetPath.is_symlink() or targetPath.exists():
+                    if targetPath.is_dir() and not targetPath.is_symlink():
+                        shutil.rmtree(targetPath, ignore_errors=True)
+                    else:
+                        targetPath.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Failed to {'copy' if copyProject else 'link'} project directory: {e}"
+                ),
+            )
+
+        try:
+            description = importedProject.getComment() or ""
+        except Exception:
+            description = ""
+
+        try:
+            importedStatus = importedProject.getStatus()
+            statusValue = str(importedStatus) if importedStatus else "active"
+        except Exception:
+            statusValue = "active"
+
+        storedProjectPath = str(targetPath)
+
+        dbProjectId = mapper.insertProject(
+            ownerId=currentUser["id"],
+            name=storedProjectPath,
+            description=description,
+            status=statusValue,
+        )
+
+        sizePath = sourcePath if not copyProject else targetPath
+
+        try:
+            sizeGB = self.getProjectSize(str(sizePath)) / (1024 ** 3)
+        except Exception:
+            sizeGB = 0.0
+
+        try:
+            protCount = self.countProtocols(os.path.join(str(targetPath), "Runs"))
+        except Exception:
+            protCount = 0
+
+        return {
+            "id": dbProjectId,
+            "name": sanitizedName,
+            "description": description,
+            "createdAt": datetime.utcnow(),
+            "status": statusValue,
+            "protocolsCount": protCount,
+            "diskUsage": f"{sizeGB:.2f} GB",
+            "isOwner": True,
+            "isShared": False,
+            "permission": "full",
+            "projectOwnerId": currentUser["id"],
+            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProjectId),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProjectId),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProjectId),
+        }
+
+    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        currentPath = self._normalizeProjectPath(dbProj["name"])
+
+        if not os.path.lexists(currentPath):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project path not found on disk",
+            )
+
+        if not self._isManagedProjectPath(currentPath):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Renaming external imported projects is not supported",
+            )
+
+        newName = self.sanitizeProjectName(projectData.name)
+        newPath = self._normalizeProjectPath(self.manager.getProjectPath(newName))
+
+        if currentPath != newPath and os.path.lexists(newPath):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A project with this name already exists: '{newName}'",
+            )
+
+        try:
+            if self._isLinkedProjectPath(currentPath):
+                os.rename(currentPath, newPath)
+            else:
+                self.manager.renameProject(currentPath, newName)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to rename project: {e}",
+            )
+
+        description = projectData.description
+        if description is None:
+            description = dbProj.get("description")
+
+        project = mapper.updateProject(
+            projectId,
+            currentUser["id"],
+            newPath,
+            description,
+        )
+
+        return project
+
+    def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        projectPath = self._normalizeProjectPath(dbProj["name"])
+        isManagedEntry = self._isManagedProjectPath(projectPath)
+        isLinkedEntry = self._isLinkedProjectPath(projectPath)
+
+        deleted = mapper.deleteProject(projectId, currentUser["id"])
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        if isLinkedEntry:
+            try:
+                if os.path.lexists(projectPath):
+                    os.unlink(projectPath)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Project was unregistered but the symbolic link could not be removed: {e}",
+                )
+
+            return {"message": "Linked project unregistered successfully"}
+
+        if not isManagedEntry:
+            return {"message": "Project unregistered successfully"}
+
+        if not os.path.exists(projectPath):
+            return {"message": "Project deleted successfully"}
+
+        try:
+            cwd = self.manager.PROJECTS
+            self.manager.deleteProject(projectPath)
+            os.chdir(cwd)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Project was unregistered but the managed project folder could not be removed: {e}",
+            )
+
+        return {"message": "Project deleted successfully"}
+
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
         """
         List all projects visible for the current user:
         - owned projects
         - shared projects (from project_shares)
+
+        Notes:
+        - If a project is imported as a symlink, size/protocol count/mtime are
+          computed from the real target path.
+        - The displayed project name remains the managed entry name stored in DB
+          (usually the symlink name under the Scipion projects folder).
         """
         dbProjects = mapper.listProjects(ownerId=currentUser["id"])
         result = []
 
         for dbProj in dbProjects:
-            projectPath = dbProj.get("name")
-            if not projectPath:
+            storedProjectPath = dbProj.get("name")
+            if not storedProjectPath:
                 continue
 
-            if not os.path.isabs(projectPath):
-                projectPath = self.manager.getProjectPath(projectPath)
+            storedPathObj = Path(storedProjectPath).expanduser()
+            if not storedPathObj.is_absolute():
+                storedPathObj = Path(self.manager.getProjectPath(str(storedPathObj)))
+
+            displayName = storedPathObj.name
 
             try:
-                sizeGB = self.getProjectSize(projectPath) / (1024 ** 3)
+                realProjectPathObj = storedPathObj.resolve(strict=True)
+            except FileNotFoundError:
+                # Broken entry or missing project on disk; keep it visible but degraded
+                realProjectPathObj = storedPathObj
+            except Exception:
+                realProjectPathObj = storedPathObj
+
+            realProjectPath = str(realProjectPathObj)
+            runsPath = os.path.join(realProjectPath, "Runs")
+
+            try:
+                sizeGB = self.getProjectSize(realProjectPath) / (1024 ** 3)
             except Exception:
                 sizeGB = 0.0
 
-            runsPath = os.path.join(projectPath, "Runs")
-            protCount = self.countProtocols(runsPath)
+            try:
+                protCount = self.countProtocols(runsPath)
+            except Exception:
+                protCount = 0
 
             isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUser["id"])
             isShared = dbProj.get("isShared", False)
@@ -316,7 +714,7 @@ class ProjectService:
             updatedAt = dbProj.get("updatedAt")
 
             thumbnailVersion = self._buildProjectThumbnailVersion(
-                projectPath=projectPath,
+                projectPath=realProjectPath,
                 projectId=projectId,
                 updatedAt=updatedAt,
                 protocolsCount=protCount,
@@ -324,7 +722,7 @@ class ProjectService:
 
             result.append({
                 "id": projectId,
-                "name": os.path.basename(projectPath),
+                "name": displayName,
                 "description": dbProj.get("description", ""),
                 "createdAt": dbProj.get("createdAt"),
                 "status": dbProj.get("status", "active"),
@@ -472,36 +870,6 @@ class ProjectService:
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         return self.currentProject
-
-    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
-        project = self.getProjectById(mapper, projectId, currentUser)
-
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        self.manager.renameProject(project['name'], projectData.name)
-        project = mapper.updateProject(projectId, currentUser['id'],
-                             self.manager.getProjectPath(projectData.name),
-                             projectData.description)
-
-        return project
-
-    def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
-        project = self.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-        deleted = mapper.deleteProject(projectId, currentUser["id"])
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found"
-            )
-        path = self.manager.getProjectPath(project['name'])
-        if not os.path.exists(path):
-            return None
-        cwd = self.manager.PROJECTS
-        self.manager.deleteProject(path)
-        os.chdir(cwd)
-
-        return {"message": "Project deleted successfully"}
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
@@ -2048,7 +2416,20 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
+        return str(protocolId).strip() == "-1"
+
+    def _getGlobalFsBrowserRoot(self) -> Path:
+        raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
+        return Path(raw).expanduser().resolve()
+
     def getProtocolPath(self, protocolId):
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return {
+                "rootAbs": str(root),
+                "startPath": "",
+            }
         fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
         if protocolId != fakeProtocolId:
             protocol = self.currentProject.getProtocol(int(protocolId))
@@ -2128,22 +2509,37 @@ class ProjectService:
 
     def listProtocolDir(self, protocolId: str, path: str):
         """Return the directory file list."""
-        listProjDir = FileHandlers(self.currentProject)
-        return listProjDir.listProtocolDir(protocolId, path)
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.listRemoteDirectoryUnderRoot(root, path)
+
+        return fileHandlers.listProtocolDir(protocolId, path)
 
     def previewProtocolTextFile(self, protocolId: str, path: str):
         """
         Return a lightweight preview for a file inside a protocol workspace.
         """
-        previewProtTextFile = FileHandlers(self.currentProject)
-        return previewProtTextFile.previewProtocolTextFile(protocolId, path)
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewTextFileUnderRoot(root, path)
+
+        return fileHandlers.previewProtocolTextFile(protocolId, path)
 
     def previewRemoteEntry(self, protocolId: str, path: str):
         """
         Return a preview.
         """
-        previewProtRemoteEntry = FileHandlers(self.currentProject)
-        return previewProtRemoteEntry.previewProtocolRemoteEntry(protocolId, path)
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewRemoteEntryUnderRoot(root, path)
+
+        return fileHandlers.previewProtocolRemoteEntry(protocolId, path)
 
     def previewProtocolImageFile(self, protocolId, path, inline: bool):
         """
@@ -2155,8 +2551,13 @@ class ProjectService:
               * if normal image -> raw image + X-Preview-* headers
               * else -> raw bytes + minimal headers
         """
-        previewProtImgFile = FileHandlers(self.currentProject)
-        return previewProtImgFile.previewProtocolImageFile(protocolId, path, inline)
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewImageFileUnderRoot(root, path, inline)
+
+        return fileHandlers.previewProtocolImageFile(protocolId, path, inline)
 
     def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
         """

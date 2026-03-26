@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 
@@ -37,6 +37,12 @@ class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
     status: Optional[str] = "active"
+
+
+class ProjectImportIn(BaseModel):
+    projectLocation: str = Field(..., min_length=1)
+    projectName: Optional[str] = Field(None)
+    copyProject: bool = True
 
 
 class ProjectUpdate(BaseModel):
