@@ -43,10 +43,6 @@ def ansi(text: str, color: str, bold: bool = False) -> str:
 
 
 class InstallPluginTask(Task):
-    autoretry_for = (Exception,)
-    retry_backoff = True
-    retry_backoff_max = 600
-    max_retries = 3
     acks_late = True
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
@@ -60,7 +56,10 @@ class InstallPluginTask(Task):
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
     def on_success(self, retval, task_id, args, kwargs):
-        appendPluginTaskLog(str(task_id), ansi("[success] Task completed successfully", ANSI_GREEN, bold=True))
+        appendPluginTaskLog(
+            str(task_id),
+            ansi("[success] Task completed successfully", ANSI_GREEN, bold=True),
+        )
         super().on_success(retval, task_id, args, kwargs)
 
 
@@ -69,14 +68,14 @@ def installPluginTask(self, pip_name: str) -> str:
     taskId = str(self.request.id)
 
     with pluginTaskLogCapture(taskId):
+        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+        writePluginTaskStep(taskId, "Preparing environment...")
+        prepareEnvironment()
+
         self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
         writePluginTaskStep(taskId, "Loading service...")
         from app.backend.api.services.plugin_service import PluginService
         service = PluginService()
-
-        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
-        writePluginTaskStep(taskId, "Preparing environment...")
-        prepareEnvironment()
 
         self.update_state(state="PROGRESS", meta={"step": "Installing plugin..."})
         writePluginTaskStep(taskId, "Installing plugin...")
@@ -106,14 +105,14 @@ def uninstallPluginTask(self, pip_name: str) -> str:
     taskId = str(self.request.id)
 
     with pluginTaskLogCapture(taskId):
+        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+        writePluginTaskStep(taskId, "Preparing environment...")
+        prepareEnvironment()
+
         self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
         writePluginTaskStep(taskId, "Loading service...")
         from app.backend.api.services.plugin_service import PluginService
         service = PluginService()
-
-        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
-        writePluginTaskStep(taskId, "Preparing environment...")
-        prepareEnvironment()
 
         self.update_state(state="PROGRESS", meta={"step": "Uninstalling plugin..."})
         writePluginTaskStep(taskId, "Uninstalling plugin...")

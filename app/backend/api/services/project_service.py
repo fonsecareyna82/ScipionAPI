@@ -70,7 +70,7 @@ from pathlib import Path as FsPath
 import mimetypes
 import pyworkflow
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
-from pyworkflow import Config
+from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)

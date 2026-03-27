@@ -2,13 +2,25 @@ from pathlib import Path
 import os
 import secrets
 from shutil import which
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any, Tuple
 
 from app.utils.scipion_helper import getFreePort
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, writeEnvFile, exportEnvToOs
 from scipionapi_cli.db import ensureDatabaseAndRole, runAlembicUpgrade
 from scipionapi_cli.admin import ensureAdminUser
+
+
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+
+    _HAS_RICH = True
+    _console = Console()
+except Exception:
+    _HAS_RICH = False
+    _console = None
 
 
 def _resolveScipionHome(repoRoot: Path, existing: Dict[str, str]) -> Path:
@@ -44,20 +56,119 @@ def _buildCondaActivationCmd(condaExe: str) -> str:
     return f'eval "$({condaExe} shell.bash hook)"'
 
 
+def _printLine(message: str = "") -> None:
+    # printLine
+    if _HAS_RICH:
+        _console.print(message)
+    else:
+        print(message, flush=True)
+
+
+def _printPanel(title: str, body: str = "") -> None:
+    # printPanel
+    if _HAS_RICH:
+        _console.print(Panel.fit(body or "", title=title, border_style="cyan"))
+    else:
+        print(f"\n== {title} ==", flush=True)
+        if body:
+            print(body, flush=True)
+
+
+def _printInfo(message: str) -> None:
+    # printInfo
+    if _HAS_RICH:
+        _console.print(f"[bold cyan]INFO[/bold cyan] {message}")
+    else:
+        print(f"INFO {message}", flush=True)
+
+
+def _printSuccess(message: str) -> None:
+    # printSuccess
+    if _HAS_RICH:
+        _console.print(f"[bold green]SUCCESS[/bold green] {message}")
+    else:
+        print(f"SUCCESS {message}", flush=True)
+
+
+def _printWarning(message: str) -> None:
+    # printWarning
+    if _HAS_RICH:
+        _console.print(f"[bold yellow]WARNING[/bold yellow] {message}")
+    else:
+        print(f"WARNING {message}", flush=True)
+
+
+def _printStep(step: str, detail: str = "") -> None:
+    # printStep
+    if _HAS_RICH:
+        if detail:
+            _console.print(f"[bold magenta]--> {step}[/bold magenta] [dim]{detail}[/dim]")
+        else:
+            _console.print(f"[bold magenta]--> {step}[/bold magenta]")
+    else:
+        if detail:
+            print(f"\n--> {step} | {detail}", flush=True)
+        else:
+            print(f"\n--> {step}", flush=True)
+
+
+def _printKeyValueTable(title: str, rows: List[Tuple[str, Any]]) -> None:
+    # printKeyValueTable
+    if _HAS_RICH:
+        table = Table(title=title, header_style="bold magenta")
+        table.add_column("Field", style="bold white", no_wrap=True)
+        table.add_column("Value", style="white")
+
+        for key, value in rows:
+            table.add_row(str(key), str(value))
+
+        _console.print(table)
+    else:
+        print(f"\n{title}:", flush=True)
+        for key, value in rows:
+            print(f"  {key}: {value}", flush=True)
+
+
+def _printSummaryTable(rows: List[Tuple[str, Any]]) -> None:
+    # printSummaryTable
+    if _HAS_RICH:
+        table = Table(title="Install summary", header_style="bold magenta")
+        table.add_column("Field", style="bold white", no_wrap=True)
+        table.add_column("Value", style="white")
+
+        for key, value in rows:
+            table.add_row(str(key), str(value))
+
+        _console.print(table)
+    else:
+        print("\nInstall summary:", flush=True)
+        for key, value in rows:
+            print(f"  {key}: {value}", flush=True)
+
+
 def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     # installCommandNonInteractive
     repoRoot = resolveRepoRoot()
+
+    _printPanel("ScipionAPI install")
+    _printStep("Resolving repository root")
+    _printInfo(f"Repo root: {repoRoot}")
 
     # readExistingEnvFromDefaultHomeIfPresent
     defaultScipionHome = (repoRoot / "scipion_home").resolve()
     defaultEnvPath = defaultScipionHome / ".env"
     existing = readEnvFile(defaultEnvPath)
 
+    _printStep("Resolving SCIPION_HOME")
     scipionHome = _resolveScipionHome(repoRoot, existing)
     scipionHome.mkdir(parents=True, exist_ok=True)
+    _printInfo(f"SCIPION_HOME: {scipionHome}")
 
-    (scipionHome / "config").mkdir(parents=True, exist_ok=True)
-    (scipionHome / "web").mkdir(parents=True, exist_ok=True)
+    _printStep("Ensuring base directories")
+    configDir = scipionHome / "config"
+    webDir = scipionHome / "web"
+    configDir.mkdir(parents=True, exist_ok=True)
+    webDir.mkdir(parents=True, exist_ok=True)
 
     envPath = scipionHome / ".env"
     existing = readEnvFile(envPath)
@@ -81,9 +192,32 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     condaActivationCmd = existing.get("CONDA_ACTIVATION_CMD")
     if not condaActivationCmd and condaExe:
         condaActivationCmd = _buildCondaActivationCmd(condaExe)
+
     scipionPort = existing.get("SCIPION_PORT")
     if not scipionPort:
-        scipionPort = getFreePort()
+        scipionPort = str(getFreePort())
+    else:
+        scipionPort = str(scipionPort)
+
+    _printKeyValueTable(
+        "Resolved paths and settings",
+        [
+            ("SCIPION_HOME", scipionHome),
+            ("Env file", envPath),
+            ("Config dir", configDir),
+            ("Web dir", webDir),
+            ("Logs dir", logsDir),
+            ("Projects dir", projectsDir),
+            ("Database name", dbName),
+            ("Database user", dbUser),
+            ("Postgres host", dbHost),
+            ("Postgres port", dbPort),
+            ("API host", existing.get("API_HOST") or "0.0.0.0"),
+            ("API port", existing.get("API_PORT") or "8080"),
+            ("SCIPION_PORT", scipionPort),
+            ("Conda executable", condaExe or "not detected"),
+        ],
+    )
 
     updates: Dict[str, str] = {
         "SCIPION_HOME": str(scipionHome),
@@ -108,6 +242,10 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         "ADMIN_USERNAME": adminUser,
         "ADMIN_EMAIL": adminEmail,
         "ADMIN_PASSWORD": adminPassword,
+        "SCIPION_PORT": scipionPort,
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "prod",
+        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
     }
 
     if condaExe and not existing.get("CONDA_EXE"):
@@ -118,23 +256,44 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         # persistCondaActivationCmdIfDetected
         updates["CONDA_ACTIVATION_CMD"] = condaActivationCmd
 
-    if scipionPort and not existing.get('SCIPION_PORT'):
-        updates['SCIPION_PORT'] = scipionPort
-
-    updates['AUTO_RELOAD_ON_PLUGIN_CHANGE'] = '1'
-    updates['BACKEND_RELOAD_MODE'] = 'prod'
-    updates['BACKEND_RELOAD_TOUCH_PATH'] ='.backend_reload_marker'
-
+    _printStep("Writing environment file", str(envPath))
     writeEnvFile(envPath, updates)
     exportEnvToOs(envPath)
+    _printSuccess("Environment file written and exported")
 
     env: Dict[str, str] = readEnvFile(envPath)
 
+    _printStep("Ensuring PostgreSQL database and role")
     ensureDatabaseAndRole(env)
+    _printSuccess("Database and role are ready")
+
+    _printStep("Running Alembic migrations")
     runAlembicUpgrade(repoRoot)
+    _printSuccess("Alembic upgrade completed")
+
+    _printStep("Ensuring admin user")
     ensureAdminUser(env)
+    _printSuccess(f"Admin user ensured: {adminEmail}")
 
     if not condaExePath:
-        print("Install completed. Note: conda executable not detected; CONDA_ACTIVATION_CMD was not set.")
-    else:
-        print("Install completed. Next: scipionapi start")
+        _printWarning("Conda executable not detected; CONDA_ACTIVATION_CMD was not set")
+
+    _printSummaryTable(
+        [
+            ("Repo root", repoRoot),
+            ("SCIPION_HOME", scipionHome),
+            ("Env file", envPath),
+            ("Logs dir", logsDir),
+            ("Projects dir", projectsDir),
+            ("Database", dbName),
+            ("Database user", dbUser),
+            ("API host", env.get("API_HOST", "0.0.0.0")),
+            ("API port", env.get("API_PORT", "8080")),
+            ("SCIPION_PORT", env.get("SCIPION_PORT", scipionPort)),
+            ("Admin email", adminEmail),
+            ("Conda executable", condaExe or "not detected"),
+            ("Next step", "scipionapi start"),
+        ]
+    )
+
+    _printPanel("Install completed", "Configuration, database, migrations, and admin user are ready.")
