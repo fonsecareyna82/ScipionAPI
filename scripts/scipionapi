@@ -24,6 +24,9 @@ pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
 installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
 scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scipion-em scipion-app}"
 
+# keepExplicitScipionHome
+scipionHomeValue="${SCIPION_HOME:-}"
+
 # ensureConda
 if ! command -v conda >/dev/null 2>&1; then
   echo "ERROR: conda is required but was not found in PATH." >&2
@@ -49,6 +52,7 @@ Typical usage:
 Notes:
   - The conda env is only created/bootstrapped by: bootstrap, provision
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
+  - To force an isolated home: export SCIPION_HOME=<path>
 EOF
 }
 
@@ -63,7 +67,12 @@ envExistsNow() {
 
 scipionapiInstalled() {
   # scipionapiInstalled
-  conda run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1
+  if [[ -n "${scipionHomeValue}" ]]; then
+    env SCIPION_HOME="${scipionHomeValue}" \
+      conda run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1
+  else
+    conda run -n "${condaEnvName}" scipionapi --help >/dev/null 2>&1
+  fi
 }
 
 ensureScipionCoreInstalled() {
@@ -132,12 +141,26 @@ requireEnvOrExplain() {
   fi
 }
 
+runInCondaCli() {
+  # runInCondaCli
+  if [[ -n "${scipionHomeValue}" ]]; then
+    exec env SCIPION_HOME="${scipionHomeValue}" \
+      conda run -n "${condaEnvName}" scipionapi "$@"
+  else
+    exec conda run -n "${condaEnvName}" scipionapi "$@"
+  fi
+}
+
 # routeCommand
 cmd="${1:-}"
 
 # wrapperHelpFastPath (do not create env for help)
 if [[ -z "${cmd}" ]] || [[ "${cmd}" == "--help" ]] || [[ "${cmd}" == "-h" ]] || [[ "${cmd}" == "help" ]]; then
   if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+    if [[ -n "${scipionHomeValue}" ]]; then
+      exec env SCIPION_HOME="${scipionHomeValue}" \
+        conda run -n "${condaEnvName}" scipionapi --help
+    fi
     exec conda run -n "${condaEnvName}" scipionapi --help
   fi
   printWrapperHelp
@@ -154,11 +177,11 @@ if [[ "${cmd}" == "provision" ]]; then
   shift || true
   bootstrapEnv
   cd "${repoRoot}"
-  exec conda run -n "${condaEnvName}" scipionapi provision "$@"
+  runInCondaCli provision "$@"
 fi
 
 # for any other command: require env + cli, do not auto-create
 requireEnvOrExplain
 
 cd "${repoRoot}"
-exec conda run -n "${condaEnvName}" scipionapi "$@"
+runInCondaCli "$@"
