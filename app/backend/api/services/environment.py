@@ -28,14 +28,14 @@ import os
 def prepareEnvironment():
     """Prepare the Scipion environment with all variables"""
     from scipion.__main__ import Vars
-    vars = Vars.init()
-    os.environ.update(vars)
+    variables = Vars.init()
+    os.environ.update(variables)
     # Trigger Config initialization once environment is ready
     import pyworkflow
     pwVARS = pyworkflow.Config.getVars()
-    vars.update(pwVARS)
+    variables.update(pwVARS)
     pyworkflow.Config.setDomain("pwem")
     pyworkflow.Config.getDomain()
     # Update the environment now with pyworkflow values.
-    os.environ.update(vars)
-    os.chdir(vars.get(pyworkflow.SCIPION_HOME_VAR))
+    os.environ.update(variables)
+    os.chdir(variables.get(pyworkflow.SCIPION_HOME_VAR))

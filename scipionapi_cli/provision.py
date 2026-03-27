@@ -32,11 +32,101 @@ import json
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any, Tuple
 
 from scipionapi_cli.envfile import exportEnvToOs, readEnvFile, writeEnvFile
 from scipionapi_cli.install import _resolveScipionHome
 from scipionapi_cli.shell import resolveRepoRoot
+
+
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+
+    _HAS_RICH = True
+    _console = Console()
+except Exception:
+    _HAS_RICH = False
+    _console = None
+
+
+def _printPanel(title: str, body: str = "") -> None:
+    # printPanel
+    if _HAS_RICH:
+        _console.print(Panel.fit(body or "", title=title, border_style="cyan"))
+    else:
+        print(f"\n== {title} ==", flush=True)
+        if body:
+            print(body, flush=True)
+
+
+def _printInfo(message: str) -> None:
+    # printInfo
+    if _HAS_RICH:
+        _console.print(f"[bold cyan]INFO[/bold cyan] {message}")
+    else:
+        print(f"INFO {message}", flush=True)
+
+
+def _printSuccess(message: str) -> None:
+    # printSuccess
+    if _HAS_RICH:
+        _console.print(f"[bold green]SUCCESS[/bold green] {message}")
+    else:
+        print(f"SUCCESS {message}", flush=True)
+
+
+def _printWarning(message: str) -> None:
+    # printWarning
+    if _HAS_RICH:
+        _console.print(f"[bold yellow]WARNING[/bold yellow] {message}")
+    else:
+        print(f"WARNING {message}", flush=True)
+
+
+def _printStep(step: str, detail: str = "") -> None:
+    # printStep
+    if _HAS_RICH:
+        if detail:
+            _console.print(f"[bold magenta]--> {step}[/bold magenta] [dim]{detail}[/dim]")
+        else:
+            _console.print(f"[bold magenta]--> {step}[/bold magenta]")
+    else:
+        if detail:
+            print(f"\n--> {step} | {detail}", flush=True)
+        else:
+            print(f"\n--> {step}", flush=True)
+
+
+def _printKeyValueTable(title: str, rows: List[Tuple[str, Any]]) -> None:
+    # printKeyValueTable
+    if _HAS_RICH:
+        table = Table(title=title, header_style="bold magenta")
+        table.add_column("Field", style="bold white", no_wrap=True)
+        table.add_column("Value", style="white")
+        for key, value in rows:
+            table.add_row(str(key), str(value))
+        _console.print(table)
+    else:
+        print(f"\n{title}:", flush=True)
+        for key, value in rows:
+            print(f"  {key}: {value}", flush=True)
+
+
+def _printSummaryTable(rows: List[Tuple[str, Any]]) -> None:
+    # printSummaryTable
+    if _HAS_RICH:
+        table = Table(title="Provision summary", header_style="bold magenta")
+        table.add_column("Field", style="bold white", no_wrap=True)
+        table.add_column("Value", style="white")
+        for key, value in rows:
+            table.add_row(str(key), str(value))
+        _console.print(table)
+    else:
+        print("\nProvision summary:", flush=True)
+        for key, value in rows:
+            print(f"  {key}: {value}", flush=True)
 
 
 def _safeRemoveTree(path: Path) -> None:
@@ -61,9 +151,6 @@ def _safeExtractZip(zipPath: Path, destDir: Path) -> None:
 
 def _normalizeViteDistLayout(extractedDir: Path) -> Path:
     # normalizeViteDistLayout
-    # Accept either:
-    # - extractedDir/index.html (dist content at root)
-    # - extractedDir/dist/index.html (dist folder inside zip)
     if (extractedDir / "index.html").exists():
         return extractedDir
 
@@ -119,8 +206,6 @@ def _normalizeApiBaseUrl(value: str, fallbackMountPath: str) -> str:
     if not apiBaseUrl:
         apiBaseUrl = fallbackMountPath
     if not apiBaseUrl.startswith("/"):
-        # allow full urls too, but default to mount-like paths
-        # if user passes "http://..." keep it as-is
         if "://" in apiBaseUrl:
             return apiBaseUrl.rstrip("/")
         apiBaseUrl = f"/{apiBaseUrl}"
@@ -136,10 +221,13 @@ def deployWebDist(
     webRoot = scipionHome / "web"
     targetDist = webRoot / "dist"
 
+    _printStep("Preparing web target directory", str(targetDist))
     _safeRemoveTree(targetDist)
     targetDist.mkdir(parents=True, exist_ok=True)
 
     webDist = webDist.expanduser().resolve()
+    _printInfo(f"Resolved webDist input: {webDist}")
+
     if webDist.is_dir():
         # deployFromDirectory
         normalizedSrc = webDist
@@ -149,23 +237,28 @@ def deployWebDist(
         if not (normalizedSrc / "index.html").exists():
             raise RuntimeError(f"Invalid web dist directory: {webDist} (index.html not found)")
 
+        _printStep("Copying web assets from directory", str(normalizedSrc))
         _copyDirContents(normalizedSrc, targetDist)
 
     elif webDist.is_file() and webDist.suffix.lower() == ".zip":
         # deployFromZip
         tempExtract = webRoot / ".dist_extract_tmp"
+        _printStep("Extracting web zip", str(webDist))
         _safeRemoveTree(tempExtract)
         tempExtract.mkdir(parents=True, exist_ok=True)
 
         _safeExtractZip(webDist, tempExtract)
         normalizedSrc = _normalizeViteDistLayout(tempExtract)
+        _printStep("Copying extracted web assets", str(normalizedSrc))
         _copyDirContents(normalizedSrc, targetDist)
         _safeRemoveTree(tempExtract)
 
     else:
         raise RuntimeError(f"Unsupported webDist input: {webDist} (expected directory or .zip file)")
 
+    _printStep("Writing web runtime config", str(targetDist / "config.js"))
     _writeWebConfigJs(targetDist, apiBaseUrl)
+    _printSuccess(f"Web assets deployed to: {targetDist}")
     return targetDist
 
 
@@ -186,8 +279,25 @@ def provisionCommand(
     from scipionapi_cli.install import installCommand
     from scipionapi_cli.runtime import startCommand
 
-    # optionalBootstrapFirst
+    _printPanel("ScipionAPI provision")
+    _printKeyValueTable(
+        "Provision configuration",
+        [
+            ("Admin user", adminUser),
+            ("Admin email", adminEmail),
+            ("webDist", webDist or "not provided"),
+            ("API mount path", apiMountPath),
+            ("API base URL", apiBaseUrl or "auto"),
+            ("Run bootstrap", runBootstrap),
+            ("Env name", envName),
+            ("Python version", pythonVersion),
+            ("Install Scipion core", installScipionCore),
+            ("Scipion core packages", scipionCorePackages),
+        ],
+    )
+
     if runBootstrap:
+        _printStep("Running bootstrap phase")
         from scipionapi_cli.bootstrap import bootstrapCommand
 
         bootstrapCommand(
@@ -196,10 +306,13 @@ def provisionCommand(
             installScipionCore=installScipionCore,
             scipionCorePackages=scipionCorePackages,
         )
+        _printSuccess("Bootstrap phase completed")
+    else:
+        _printWarning("Skipping bootstrap phase")
 
     repoRoot = resolveRepoRoot()
+    _printStep("Resolving repository root", str(repoRoot))
 
-    # resolveScipionHomeFromExistingDefaultEnvIfPresent
     defaultScipionHome = (repoRoot / "scipion_home").resolve()
     defaultEnvPath = defaultScipionHome / ".env"
     existingDefault = readEnvFile(defaultEnvPath)
@@ -207,16 +320,35 @@ def provisionCommand(
     scipionHome = _resolveScipionHome(repoRoot, existingDefault)
     envPath = scipionHome / ".env"
 
-    # runInstallFirst
+    _printKeyValueTable(
+        "Resolved paths",
+        [
+            ("Repo root", repoRoot),
+            ("Default SCIPION_HOME", defaultScipionHome),
+            ("Resolved SCIPION_HOME", scipionHome),
+            ("Env file", envPath),
+        ],
+    )
+
+    _printStep("Running install phase")
     installCommand(adminUser=adminUser, adminEmail=adminEmail, adminPassword=adminPassword)
+    _printSuccess("Install phase completed")
 
     env = readEnvFile(envPath)
 
     resolvedApiMountPath = _normalizeMountPath(apiMountPath)
     resolvedApiBaseUrl = _normalizeApiBaseUrl(apiBaseUrl or "", resolvedApiMountPath)
 
-    # optionalWebDeploy
+    _printKeyValueTable(
+        "Resolved API settings",
+        [
+            ("Resolved API mount path", resolvedApiMountPath),
+            ("Resolved API base URL", resolvedApiBaseUrl),
+        ],
+    )
+
     if webDist:
+        _printStep("Deploying web distribution")
         distPath = deployWebDist(
             scipionHome=scipionHome,
             webDist=Path(webDist),
@@ -229,30 +361,49 @@ def provisionCommand(
             "WEB_DIST_PATH": str(distPath),
             "WEB_API_BASE_URL": resolvedApiBaseUrl,
         }
+        _printStep("Updating environment for integrated web mode", str(envPath))
         writeEnvFile(envPath, updates)
         exportEnvToOs(envPath)
         env = readEnvFile(envPath)
-
+        _printSuccess("Integrated web mode enabled")
     else:
-        # forceApiOnlyModeWhenNoWebDistProvided
-        updates: Dict[str, str] = {
+        updates = {
             "SERVE_WEB": "0",
             "API_MOUNT_PATH": resolvedApiMountPath,
         }
+        _printStep("Updating environment for API-only mode", str(envPath))
         writeEnvFile(envPath, updates)
         exportEnvToOs(envPath)
         env = readEnvFile(envPath)
+        _printSuccess("API-only mode enabled")
 
-    # startServices
+    _printStep("Starting services")
     startCommand()
+    _printSuccess("Runtime services started")
 
     apiHost = env.get("API_HOST", "0.0.0.0")
     apiPort = env.get("API_PORT", "8080")
     serveWeb = (env.get("SERVE_WEB") or "").strip() == "1"
     mountPath = _normalizeMountPath(env.get("API_MOUNT_PATH") or resolvedApiMountPath)
 
+    displayHost = apiHost
+    if displayHost in ("0.0.0.0", "::", ""):
+        displayHost = "127.0.0.1"
+
+    summaryRows: List[Tuple[str, Any]] = [
+        ("Repo root", repoRoot),
+        ("SCIPION_HOME", scipionHome),
+        ("Env file", envPath),
+        ("API host", apiHost),
+        ("API port", apiPort),
+        ("API docs", f"http://{displayHost}:{apiPort}{mountPath}/docs" if serveWeb else f"http://{displayHost}:{apiPort}/docs"),
+        ("Serve web", "yes" if serveWeb else "no"),
+    ]
+
     if serveWeb:
-        print(f"Provision completed. Web: http://{apiHost}:{apiPort}/")
-        print(f"API: http://{apiHost}:{apiPort}{mountPath}/docs")
-    else:
-        print(f"Provision completed. API: http://{apiHost}:{apiPort}/docs")
+        summaryRows.append(("Web URL", f"http://{displayHost}:{apiPort}/"))
+        summaryRows.append(("WEB_DIST_PATH", env.get("WEB_DIST_PATH", "")))
+        summaryRows.append(("WEB_API_BASE_URL", env.get("WEB_API_BASE_URL", "")))
+
+    _printSummaryTable(summaryRows)
+    _printPanel("Provision completed", "Bootstrap, install, optional web deploy, and runtime startup finished.")

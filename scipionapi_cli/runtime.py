@@ -1,13 +1,24 @@
 import os
 import signal
+import socket
 import sys
 import time
 import subprocess
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Tuple, List, Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, exportEnvToOs
+
+
+console = Console()
 
 
 def _pidDir(repoRoot: Path) -> Path:
@@ -33,6 +44,14 @@ def _isProcessAlive(pid: int) -> bool:
 def _readPid(pidPath: Path) -> int:
     # readPidFile
     return int(pidPath.read_text(encoding="utf-8").strip())
+
+
+def _readPidSafe(pidPath: Path) -> Optional[int]:
+    # readPidFileSafe
+    try:
+        return _readPid(pidPath)
+    except Exception:
+        return None
 
 
 def _writePid(pidPath: Path, pid: int) -> None:
@@ -91,7 +110,6 @@ def _terminateProcessGroup(pid: int, timeoutSec: float = 5.0) -> None:
             return
         time.sleep(0.2)
 
-    # forceKillFallback
     try:
         os.killpg(pid, signal.SIGKILL)
     except Exception:
@@ -101,19 +119,24 @@ def _terminateProcessGroup(pid: int, timeoutSec: float = 5.0) -> None:
             return
 
 
-def _stopPid(pidPath: Path) -> None:
+def _stopPid(pidPath: Path) -> Tuple[str, Optional[int]]:
     # stopProcessByPidFile
     if not pidPath.exists():
-        return
+        return "missing", None
 
-    try:
-        pid = _readPid(pidPath)
-    except Exception:
+    pid = _readPidSafe(pidPath)
+    if pid is None:
         _safeUnlink(pidPath)
-        return
+        return "invalid", None
 
+    aliveBefore = _isProcessAlive(pid)
     _terminateProcessGroup(pid)
     _safeUnlink(pidPath)
+
+    if aliveBefore:
+        return "stopped", pid
+
+    return "stale", pid
 
 
 def _ensureLogFile(logPath: Path) -> None:
@@ -124,9 +147,9 @@ def _ensureLogFile(logPath: Path) -> None:
 
 
 def _startDetachedProcess(
-    args: list,
+    args: List[str],
     cwd: Path,
-    env: dict,
+    env: Dict[str, str],
     logPath: Path,
     sanityWaitSec: float = 1.0,
 ) -> int:
@@ -165,18 +188,208 @@ def _resolveScipionHome(repoRoot: Path) -> Path:
     return (repoRoot / "scipion_home").resolve()
 
 
+def _resolveEnvPath(repoRoot: Path) -> Path:
+    # resolveEnvPath
+    return _resolveScipionHome(repoRoot) / ".env"
+
+
 def _loadEnv(repoRoot: Path) -> Dict[str, str]:
     # loadEnvFromScipionHome
-    scipionHome = _resolveScipionHome(repoRoot)
-    envPath = scipionHome / ".env"
+    envPath = _resolveEnvPath(repoRoot)
     exportEnvToOs(envPath)
     return readEnvFile(envPath)
+
+
+def _normalizeDisplayHost(host: str) -> str:
+    # normalizeDisplayHost
+    value = (host or "").strip()
+    if value in ("", "0.0.0.0", "::"):
+        return "127.0.0.1"
+    return value
+
+
+def _tcpReachable(host: str, port: str, timeoutSec: float = 1.0) -> bool:
+    # tcpReachable
+    try:
+        targetHost = _normalizeDisplayHost(host)
+        targetPort = int(str(port).strip())
+        with socket.create_connection((targetHost, targetPort), timeout=timeoutSec):
+            return True
+    except Exception:
+        return False
+
+
+def _httpCheck(url: str, timeoutSec: float = 2.0) -> Tuple[bool, str]:
+    # httpCheck
+    try:
+        req = Request(url, headers={"User-Agent": "scipionapi-cli/1.0"})
+        with urlopen(req, timeout=timeoutSec) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            if 200 <= int(status) < 400:
+                return True, f"HTTP {status}"
+            return False, f"HTTP {status}"
+    except HTTPError as e:
+        return False, f"HTTP {e.code}"
+    except URLError as e:
+        reason = getattr(e, "reason", None)
+        return False, f"{reason}" if reason else "URL error"
+    except Exception as e:
+        return False, str(e)
+
+
+def _getProcessElapsedTime(pid: int) -> Optional[str]:
+    # getProcessElapsedTime
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "etime="],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            return None
+        value = (proc.stdout or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
+def _describePidState(pidPath: Path) -> Tuple[str, Optional[int]]:
+    # describePidState
+    if not pidPath.exists():
+        return "STOPPED", None
+
+    pid = _readPidSafe(pidPath)
+    if pid is None:
+        return "INVALID PID FILE", None
+
+    if _isProcessAlive(pid):
+        return "RUNNING", pid
+
+    return "STALE PID", pid
+
+
+def _normalizeMountPath(value: str) -> str:
+    # normalizeMountPath
+    mountPath = (value or "/api").strip()
+    if not mountPath:
+        mountPath = "/api"
+    if not mountPath.startswith("/"):
+        mountPath = f"/{mountPath}"
+    if mountPath != "/" and mountPath.endswith("/"):
+        mountPath = mountPath.rstrip("/")
+    return mountPath
+
+
+def _docsUrl(env: Dict[str, str]) -> str:
+    # buildDocsUrl
+    apiHost = env.get("API_HOST", "0.0.0.0")
+    apiPort = env.get("API_PORT", "8080")
+    serveWeb = (env.get("SERVE_WEB") or "").strip() == "1"
+    mountPath = _normalizeMountPath(env.get("API_MOUNT_PATH") or "/api")
+
+    host = _normalizeDisplayHost(apiHost)
+    if serveWeb:
+        return f"http://{host}:{apiPort}{mountPath}/docs"
+    return f"http://{host}:{apiPort}/docs"
+
+
+def _webUrl(env: Dict[str, str]) -> Optional[str]:
+    # buildWebUrl
+    serveWeb = (env.get("SERVE_WEB") or "").strip() == "1"
+    if not serveWeb:
+        return None
+
+    apiHost = env.get("API_HOST", "0.0.0.0")
+    apiPort = env.get("API_PORT", "8080")
+    host = _normalizeDisplayHost(apiHost)
+    return f"http://{host}:{apiPort}/"
+
+
+def _statusStyle(state: str) -> str:
+    # statusStyle
+    value = (state or "").upper()
+    if "RUNNING" in value or value == "OK":
+        return "bold green"
+    if "FAILED" in value or "STOPPED" in value or "INVALID" in value:
+        return "bold red"
+    if "STALE" in value:
+        return "bold yellow"
+    return "bold cyan"
+
+
+def _printPanel(title: str, body: str = "") -> None:
+    # printPanel
+    console.print(Panel.fit(body or "", title=title, border_style="cyan"))
+
+
+def _printKeyValueTable(title: str, rows: List[Tuple[str, Any]]) -> None:
+    # printKeyValueTable
+    table = Table(title=title, show_header=True, header_style="bold magenta")
+    table.add_column("Field", style="bold white", no_wrap=True)
+    table.add_column("Value", style="white")
+
+    for key, value in rows:
+        table.add_row(str(key), str(value))
+
+    console.print(table)
+
+
+def _printServiceStatusTable(title: str, rows: List[Tuple[str, Any]]) -> None:
+    # printServiceStatusTable
+    table = Table(title=title, show_header=True, header_style="bold magenta")
+    table.add_column("Field", style="bold white", no_wrap=True)
+    table.add_column("Value", style="white")
+
+    for key, value in rows:
+        valueText = str(value)
+        style = None
+
+        if str(key).lower() in {"state", "tcp check", "http docs check", "http web check"}:
+            style = _statusStyle(valueText)
+
+        if style:
+            table.add_row(str(key), Text(valueText, style=style))
+        else:
+            table.add_row(str(key), valueText)
+
+    console.print(table)
+
+
+def _printSummaryTable(rows: List[Tuple[str, Any]]) -> None:
+    # printSummaryTable
+    table = Table(title="Summary", show_header=True, header_style="bold magenta")
+    table.add_column("Component", style="bold white", no_wrap=True)
+    table.add_column("Status / Location", style="white")
+
+    for key, value in rows:
+        valueText = str(value)
+        style = None
+        if key in {"API", "Worker"}:
+            style = _statusStyle(valueText)
+
+        if style:
+            table.add_row(str(key), Text(valueText, style=style))
+        else:
+            table.add_row(str(key), valueText)
+
+    console.print(table)
+
+
+def _printInfo(message: str) -> None:
+    # printInfo
+    console.print("[bold cyan]INFO[/bold cyan] " + message)
+
+
+def _printSuccess(message: str) -> None:
+    # printSuccess
+    console.print("[bold green]SUCCESS[/bold green] " + message)
 
 
 def startCommand() -> None:
     # startApiAndWorker
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
+    envPath = _resolveEnvPath(repoRoot)
 
     runDir = _pidDir(repoRoot)
     apiPidPath = runDir / "api.pid"
@@ -189,90 +402,252 @@ def startCommand() -> None:
 
     apiHost = env.get("API_HOST", "0.0.0.0")
     apiPort = env.get("API_PORT", "8080")
-
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
 
-    if apiPidPath.exists():
-        pid = _readPid(apiPidPath)
-        if _isProcessAlive(pid):
-            print(f"API already running (pid={pid})")
-        else:
-            _safeUnlink(apiPidPath)
+    _printPanel("Starting Scipion API services")
+    _printKeyValueTable(
+        "Environment",
+        [
+            ("Repo root", repoRoot),
+            ("SCIPION_HOME", _resolveScipionHome(repoRoot)),
+            ("Env file", envPath),
+            ("PID directory", runDir),
+            ("Logs directory", logsDir),
+        ],
+    )
+
+    apiState, apiPid = _describePidState(apiPidPath)
+    if apiState in {"STALE PID", "INVALID PID FILE"}:
+        _safeUnlink(apiPidPath)
+
+    _printServiceStatusTable(
+        "API service",
+        [
+            ("State", apiState),
+            ("PID", apiPid if apiPid is not None else "-"),
+            ("Host", apiHost),
+            ("Port", apiPort),
+            ("PID file", apiPidPath),
+            ("Log file", apiLogPath),
+        ],
+    )
 
     if not apiPidPath.exists():
+        _printInfo("Launching uvicorn")
         apiEnv = os.environ.copy()
         apiEnv["PYTHONPATH"] = str(repoRoot)
         apiEnv["PYTHONUNBUFFERED"] = "1"
 
-        pid = _startDetachedProcess(
+        apiPid = _startDetachedProcess(
             [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)],
             cwd=repoRoot,
             env=apiEnv,
             logPath=apiLogPath,
             sanityWaitSec=1.0,
         )
-        _writePid(apiPidPath, pid)
-        print(f"API started (pid={pid})")
+        _writePid(apiPidPath, apiPid)
+        _printSuccess(f"API started (pid={apiPid})")
 
-    if workerPidPath.exists():
-        pid = _readPid(workerPidPath)
-        if _isProcessAlive(pid):
-            print(f"Worker already running (pid={pid})")
-        else:
-            _safeUnlink(workerPidPath)
+    apiTcpOk = _tcpReachable(apiHost, apiPort)
+    docsUrl = _docsUrl(env)
+    docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
+
+    _printServiceStatusTable(
+        "API checks",
+        [
+            ("TCP check", "OK" if apiTcpOk else "FAILED"),
+            ("Docs URL", docsUrl),
+            ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
+        ],
+    )
+
+    workerState, workerPid = _describePidState(workerPidPath)
+    if workerState in {"STALE PID", "INVALID PID FILE"}:
+        _safeUnlink(workerPidPath)
+
+    _printServiceStatusTable(
+        "Worker service",
+        [
+            ("State", workerState),
+            ("PID", workerPid if workerPid is not None else "-"),
+            ("Celery app", celeryApp),
+            ("Log level", celeryLogLevel),
+            ("PID file", workerPidPath),
+            ("Log file", workerLogPath),
+        ],
+    )
 
     if not workerPidPath.exists():
+        _printInfo("Launching celery worker")
         workerEnv = os.environ.copy()
         workerEnv["PYTHONPATH"] = str(repoRoot)
         workerEnv["PYTHONUNBUFFERED"] = "1"
 
-        pid = _startDetachedProcess(
+        workerPid = _startDetachedProcess(
             [sys.executable, "-m", "celery", "-A", celeryApp, "worker", "--loglevel", celeryLogLevel],
             cwd=repoRoot,
             env=workerEnv,
             logPath=workerLogPath,
             sanityWaitSec=1.0,
         )
-        _writePid(workerPidPath, pid)
-        print(f"Worker started (pid={pid})")
+        _writePid(workerPidPath, workerPid)
+        _printSuccess(f"Worker started (pid={workerPid})")
+
+    finalApiState, finalApiPid = _describePidState(apiPidPath)
+    finalWorkerState, finalWorkerPid = _describePidState(workerPidPath)
+
+    summaryRows = [
+        ("API", finalApiState if finalApiPid is None else f"{finalApiState} (pid={finalApiPid})"),
+        ("Worker", finalWorkerState if finalWorkerPid is None else f"{finalWorkerState} (pid={finalWorkerPid})"),
+        ("Docs", docsUrl),
+    ]
+
+    webUrl = _webUrl(env)
+    if webUrl:
+        webHttpOk, webHttpDetail = _httpCheck(webUrl)
+        summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
+
+    _printSummaryTable(summaryRows)
 
 
 def stopCommand() -> None:
     # stopApiAndWorker
     repoRoot = resolveRepoRoot()
+    env = _loadEnv(repoRoot)
     runDir = _pidDir(repoRoot)
-    _stopPid(runDir / "api.pid")
-    _stopPid(runDir / "worker.pid")
-    print("Stopped.")
+    logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
+
+    _printPanel("Stopping Scipion API services")
+    _printKeyValueTable(
+        "Environment",
+        [
+            ("Repo root", repoRoot),
+            ("PID directory", runDir),
+            ("Logs directory", logsDir),
+        ],
+    )
+
+    apiStatus, apiPid = _stopPid(runDir / "api.pid")
+    workerStatus, workerPid = _stopPid(runDir / "worker.pid")
+
+    _printServiceStatusTable(
+        "Stop results",
+        [
+            (
+                "API",
+                f"Stopped pid={apiPid}" if apiStatus == "stopped"
+                else f"Removed stale pid={apiPid}" if apiStatus == "stale"
+                else "Removed invalid PID file" if apiStatus == "invalid"
+                else "Already stopped",
+            ),
+            (
+                "Worker",
+                f"Stopped pid={workerPid}" if workerStatus == "stopped"
+                else f"Removed stale pid={workerPid}" if workerStatus == "stale"
+                else "Removed invalid PID file" if workerStatus == "invalid"
+                else "Already stopped",
+            ),
+        ],
+    )
+
+    _printSuccess("Stop completed.")
 
 
 def restartCommand() -> None:
     # restartApiAndWorker
+    _printPanel("Restarting Scipion API services")
+    _printInfo("Stopping running processes")
     stopCommand()
     time.sleep(0.5)
+    _printInfo("Starting services again")
     startCommand()
+    _printSuccess("Restart completed.")
 
 
 def statusCommand() -> None:
     # statusApiAndWorker
     repoRoot = resolveRepoRoot()
+    env = _loadEnv(repoRoot)
+    envPath = _resolveEnvPath(repoRoot)
     runDir = _pidDir(repoRoot)
 
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
 
-    if apiPidPath.exists():
-        pid = _readPid(apiPidPath)
-        print(f"API: RUNNING (pid={pid})" if _isProcessAlive(pid) else "API: STALE PID")
-    else:
-        print("API: STOPPED")
+    logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
+    appLogPath = logsDir / "app.log"
+    celeryLogPath = logsDir / "celery.log"
 
-    if workerPidPath.exists():
-        pid = _readPid(workerPidPath)
-        print(f"Worker: RUNNING (pid={pid})" if _isProcessAlive(pid) else "Worker: STALE PID")
-    else:
-        print("Worker: STOPPED")
+    apiHost = env.get("API_HOST", "0.0.0.0")
+    apiPort = env.get("API_PORT", "8080")
+    celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
+    celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
+
+    docsUrl = _docsUrl(env)
+    webUrl = _webUrl(env)
+
+    apiState, apiPid = _describePidState(apiPidPath)
+    workerState, workerPid = _describePidState(workerPidPath)
+
+    apiUptime = _getProcessElapsedTime(apiPid) if apiPid is not None and apiState == "RUNNING" else None
+    workerUptime = _getProcessElapsedTime(workerPid) if workerPid is not None and workerState == "RUNNING" else None
+
+    apiTcpOk = _tcpReachable(apiHost, apiPort)
+    docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
+
+    _printPanel("Scipion API service status")
+    _printKeyValueTable(
+        "Environment",
+        [
+            ("Repo root", repoRoot),
+            ("SCIPION_HOME", _resolveScipionHome(repoRoot)),
+            ("Env file", envPath),
+            ("PID directory", runDir),
+            ("Logs directory", logsDir),
+        ],
+    )
+
+    _printServiceStatusTable(
+        "API service",
+        [
+            ("State", apiState),
+            ("PID", apiPid if apiPid is not None else "-"),
+            ("Uptime", apiUptime or "-"),
+            ("Host", apiHost),
+            ("Port", apiPort),
+            ("PID file", apiPidPath),
+            ("Log file", appLogPath),
+            ("TCP check", "OK" if apiTcpOk else "FAILED"),
+            ("Docs URL", docsUrl),
+            ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
+        ],
+    )
+
+    _printServiceStatusTable(
+        "Worker service",
+        [
+            ("State", workerState),
+            ("PID", workerPid if workerPid is not None else "-"),
+            ("Uptime", workerUptime or "-"),
+            ("Celery app", celeryApp),
+            ("Log level", celeryLogLevel),
+            ("PID file", workerPidPath),
+            ("Log file", celeryLogPath),
+        ],
+    )
+
+    summaryRows = [
+        ("API", apiState if apiPid is None else f"{apiState} (pid={apiPid})"),
+        ("Worker", workerState if workerPid is None else f"{workerState} (pid={workerPid})"),
+        ("Docs", docsUrl),
+    ]
+
+    if webUrl:
+        webHttpOk, webHttpDetail = _httpCheck(webUrl)
+        summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
+
+    _printSummaryTable(summaryRows)
 
 
 def logsCommand() -> None:
@@ -286,5 +661,15 @@ def logsCommand() -> None:
 
     _ensureLogFile(appLog)
     _ensureLogFile(celeryLog)
+
+    _printPanel("Following logs")
+    _printKeyValueTable(
+        "Log files",
+        [
+            ("App log", appLog),
+            ("Celery log", celeryLog),
+        ],
+    )
+    console.print("Press Ctrl+C to stop.\n")
 
     subprocess.run(["tail", "-n", "200", "-f", str(appLog), str(celeryLog)])
