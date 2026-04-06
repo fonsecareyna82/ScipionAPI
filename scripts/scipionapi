@@ -20,6 +20,10 @@ fi
 effectiveEnvName="${SCIPIONAPI_CONDA_ENV:-${SCIPIONAPI_ENV_NAME:-scipion4Web}}"
 pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
 
+# pipRobustnessDefaults
+pipRetries="${SCIPIONAPI_PIP_RETRIES:-10}"
+pipTimeout="${SCIPIONAPI_PIP_TIMEOUT:-120}"
+
 # scipionCoreInstallToggle
 installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
 scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scipion-em scipion-app}"
@@ -52,6 +56,8 @@ Notes:
   - The conda env is created/bootstrapped by: bootstrap, provision
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
+  - To tune pip retries: export SCIPIONAPI_PIP_RETRIES=<n>
+  - To tune pip timeout: export SCIPIONAPI_PIP_TIMEOUT=<seconds>
 EOF
 }
 
@@ -61,6 +67,27 @@ envExistsNow() {
   else
     echo "0"
   fi
+}
+
+runPipInstall() {
+  local pipArgs=("$@")
+  local cmd=(
+    conda run -n "${effectiveEnvName}"
+    python -m pip install
+    --progress-bar on
+    --retries "${pipRetries}"
+    --timeout "${pipTimeout}"
+    "${pipArgs[@]}"
+  )
+
+  echo "------------------------------------------------------------"
+  echo "pip install"
+  printf 'Command:'
+  printf ' %q' "${cmd[@]}"
+  printf '\n'
+  echo "------------------------------------------------------------"
+
+  "${cmd[@]}"
 }
 
 scipionapiInstalled() {
@@ -83,7 +110,8 @@ ensureScipionCoreInstalled() {
   fi
 
   echo "Installing Scipion core packages (pyworkflow/em/app)"
-  conda run -n "${effectiveEnvName}" python -m pip install ${scipionCorePackages}
+  read -r -a scipionCorePackagesArray <<< "${scipionCorePackages}"
+  runPipInstall "${scipionCorePackagesArray[@]}"
 
   conda run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
     echo "ERROR: pyworkflow import still failing after installing Scipion core packages." >&2
@@ -102,18 +130,18 @@ bootstrapEnv() {
     conda create -y -n "${effectiveEnvName}" "python=${pythonVersion}"
   fi
 
-  echo "Upgrading pip"
-  conda run -n "${effectiveEnvName}" python -m pip install --progress-bar on --upgrade pip
+  echo "[bootstrap] Upgrading pip"
+  runPipInstall --upgrade pip
 
   if [[ -f "${repoRoot}/requirements.txt" ]]; then
-    echo "Installing requirements.txt"
-    conda run -n "${effectiveEnvName}" python -m pip install --progress-bar on -r "${repoRoot}/requirements.txt"
+    echo "[bootstrap] Installing requirements.txt"
+    runPipInstall -r "${repoRoot}/requirements.txt"
   fi
 
   ensureScipionCoreInstalled
 
-  echo "Installing package (editable)"
-  conda run -n "${effectiveEnvName}" python -m pip install --progress-bar on -e "${repoRoot}"
+  echo "[bootstrap] Installing package in editable mode"
+  runPipInstall -e "${repoRoot}"
 
   echo "Bootstrap completed."
 }
