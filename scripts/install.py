@@ -62,7 +62,7 @@ def ensureCondaEnv():
 def installRequirements(repoRoot: Path):
     # InstallPythonDependencies
     runCmd(["conda", "run", "-n", ENV_NAME, "python", "-m", "pip", "install", "--upgrade", "pip"])
-    runCmd(["conda", "run", "-n", ENV_NAME, "pip", "install", "-r", str(repoRoot / "requirements.txt")])
+    runCmd(["conda", "run", "-n", ENV_NAME, "pip", "install", "-r", "--progress-bar", "on", str(repoRoot / "requirements.txt")])
 
 
 def readEnvFile(envPath: Path) -> dict:
