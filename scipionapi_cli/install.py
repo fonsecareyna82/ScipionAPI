@@ -25,7 +25,7 @@ except Exception:
 
 def _resolveScipionHome(repoRoot: Path, existing: Dict[str, str]) -> Path:
     # resolveScipionHome
-    configured = existing.get("SCIPION_HOME") or os.getenv("SCIPION_HOME")
+    configured = os.getenv("SCIPION_HOME") or existing.get("SCIPION_HOME")
     if configured:
         return Path(configured).expanduser().resolve()
     return (repoRoot / "scipion_home").resolve()
@@ -54,6 +54,34 @@ def _resolveCondaExe(existing: Dict[str, str]) -> Optional[Path]:
 def _buildCondaActivationCmd(condaExe: str) -> str:
     # buildCondaActivationCmd
     return f'eval "$({condaExe} shell.bash hook)"'
+
+
+def _buildDatabaseUrl(
+    dbUser: str,
+    dbPass: str,
+    dbHost: str,
+    dbPort: str,
+    dbName: str,
+) -> str:
+    # buildDatabaseUrl
+    return f"postgresql://{dbUser}:{dbPass}@{dbHost}:{dbPort}/{dbName}"
+
+
+def _ensureEmptyFile(path: Path) -> None:
+    # ensureEmptyFileExists
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+
+
+def _ensureScipionConfigFiles(configDir: Path) -> Tuple[Path, Path]:
+    # ensureRequiredScipionConfigFiles
+    scipionConf = configDir / "scipion.conf"
+    hostsConf = configDir / "hosts.conf"
+
+    _ensureEmptyFile(scipionConf)
+    _ensureEmptyFile(hostsConf)
+
+    return scipionConf, hostsConf
 
 
 def _printLine(message: str = "") -> None:
@@ -170,6 +198,8 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     configDir.mkdir(parents=True, exist_ok=True)
     webDir.mkdir(parents=True, exist_ok=True)
 
+    scipionConfPath, hostsConfPath = _ensureScipionConfigFiles(configDir)
+
     envPath = scipionHome / ".env"
     existing = readEnvFile(envPath)
 
@@ -185,13 +215,21 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     dbPass = existing.get("DATABASE_PASS") or "scipion_pass"
     dbHost = existing.get("POSTGRES_HOST") or "localhost"
     dbPort = existing.get("POSTGRES_PORT") or "5432"
-    databaseUrl = existing.get("DATABASE_URL") or f"postgresql://{dbUser}:{dbPass}@{dbHost}:{dbPort}/{dbName}"
+    databaseUrl = _buildDatabaseUrl(
+        dbUser=dbUser,
+        dbPass=dbPass,
+        dbHost=dbHost,
+        dbPort=dbPort,
+        dbName=dbName,
+    )
 
     condaExePath = _resolveCondaExe(existing)
     condaExe = str(condaExePath) if condaExePath else ""
     condaActivationCmd = existing.get("CONDA_ACTIVATION_CMD")
     if not condaActivationCmd and condaExe:
         condaActivationCmd = _buildCondaActivationCmd(condaExe)
+
+    apiPort = existing.get("API_PORT") or "8080"
 
     scipionPort = existing.get("SCIPION_PORT")
     if not scipionPort:
@@ -208,12 +246,14 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
             ("Web dir", webDir),
             ("Logs dir", logsDir),
             ("Projects dir", projectsDir),
+            ("scipion.conf", scipionConfPath),
+            ("hosts.conf", hostsConfPath),
             ("Database name", dbName),
             ("Database user", dbUser),
             ("Postgres host", dbHost),
             ("Postgres port", dbPort),
             ("API host", existing.get("API_HOST") or "0.0.0.0"),
-            ("API port", existing.get("API_PORT") or "8080"),
+            ("API port", apiPort),
             ("SCIPION_PORT", scipionPort),
             ("Conda executable", condaExe or "not detected"),
         ],
@@ -232,7 +272,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         "LOGS_PATH": str(logsDir),
         "PROJECTS_PATH": str(projectsDir),
         "API_HOST": existing.get("API_HOST") or "0.0.0.0",
-        "API_PORT": existing.get("API_PORT") or "8080",
+        "API_PORT": apiPort,
         "CELERY_APP": existing.get("CELERY_APP") or "app.workers.task_queue",
         "CELERY_LOGLEVEL": existing.get("CELERY_LOGLEVEL") or "info",
         "SERVE_WEB": existing.get("SERVE_WEB") or "0",
@@ -285,6 +325,8 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
             ("Env file", envPath),
             ("Logs dir", logsDir),
             ("Projects dir", projectsDir),
+            ("scipion.conf", scipionConfPath),
+            ("hosts.conf", hostsConfPath),
             ("Database", dbName),
             ("Database user", dbUser),
             ("API host", env.get("API_HOST", "0.0.0.0")),
