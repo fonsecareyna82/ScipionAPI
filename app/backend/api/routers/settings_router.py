@@ -41,6 +41,9 @@ from app.backend.api.schemas.settings_schema import (
     InstanceSettingsIn,
     InstanceSettingsPatch,
     EnvironmentVariableOut,
+HostSettingsOut,
+    HostSettingsIn,
+    HostSettingsPatch,
 )
 from app.backend.api.services.settings_service import SettingsService
 
@@ -248,4 +251,81 @@ def patchEnvironmentVariables(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to patch environment variables: {e}",
+        )
+
+
+@router.get(
+    "/host",
+    response_model=HostSettingsOut,
+    status_code=status.HTTP_200_OK,
+)
+def getHostSettings(
+        currentUser=Depends(requireAdmin),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: SettingsService = Depends(getSettingsService),
+):
+    """
+    Return host execution settings (admin-only).
+    """
+    try:
+        return service.getHostSettings(mapper, currentUser)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getHostSettings: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load host settings: {e}",
+        )
+
+
+@router.put(
+    "/host",
+    response_model=HostSettingsOut,
+    status_code=status.HTTP_200_OK,
+)
+def putHostSettings(
+        payload: HostSettingsIn,
+        currentUser=Depends(requireAdmin),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: SettingsService = Depends(getSettingsService),
+):
+    """
+    Replace host execution settings (admin-only).
+    """
+    try:
+        return service.putHostSettings(mapper, currentUser, payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in putHostSettings: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update host settings: {e}",
+        )
+
+
+@router.patch(
+    "/host",
+    response_model=HostSettingsOut,
+    status_code=status.HTTP_200_OK,
+)
+def patchHostSettings(
+        patch: HostSettingsPatch,
+        currentUser=Depends(requireAdmin),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: SettingsService = Depends(getSettingsService),
+):
+    """
+    Partially update host execution settings (admin-only).
+    """
+    try:
+        return service.patchHostSettings(mapper, currentUser, patch)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in patchHostSettings: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to patch host settings: {e}",
         )
