@@ -633,3 +633,58 @@ class SettingsService:
 
         triggerBackendReloadIfEnabled()
         return normalized
+
+    def getRuntimeInstanceSettings(
+        self,
+        mapper: PostgresqlFlatMapper,
+        currentUser: Any,
+    ) -> Dict[str, Any]:
+        # getRuntimeInstanceSettings
+        raw = mapper.getInstanceSettings() or {}
+        normalized = _modelValidate(InstanceSettingsOut, raw)
+
+        if hasattr(normalized, "model_dump"):
+            data = normalized.model_dump()
+        else:
+            data = normalized.dict()
+
+        # runtimeSafeSubset
+        return {
+            "enableCelery": data.get("enableCelery"),
+            "defaultQueueName": data.get("defaultQueueName"),
+            "maxConcurrentRunsPerUser": data.get("maxConcurrentRunsPerUser"),
+            "requireConfirmBeforeExecute": data.get("requireConfirmBeforeExecute"),
+            "requireConfirmBeforeDelete": data.get("requireConfirmBeforeDelete"),
+        }
+
+    def getRuntimeHostSettings(
+        self,
+        mapper: PostgresqlFlatMapper,
+        currentUser: Any,
+    ) -> Dict[str, Any]:
+        # getRuntimeHostSettings
+        with _hostLock:
+            cp = _readHostConfigParser()
+            hostName = _selectPrimaryHostSection(cp)
+            parsed = _buildHostSettingsFromParser(cp, hostName)
+            normalized = _normalizeHostSettingsOut(parsed)
+
+        if hasattr(normalized, "model_dump"):
+            data = normalized.model_dump()
+        else:
+            data = normalized.dict()
+
+        # runtimeSafeSubset
+        return {
+            "hostAlias": data.get("hostAlias"),
+            "schedulerName": data.get("schedulerName"),
+            "mandatory": data.get("mandatory"),
+            "queues": data.get("queues") or [],
+            # keepTheseIfFrontendNeedsThemForLaunchPreviewOrAdvancedDialogs
+            "parallelCommand": data.get("parallelCommand"),
+            "submitCommand": data.get("submitCommand"),
+            "cancelCommand": data.get("cancelCommand"),
+            "checkCommand": data.get("checkCommand"),
+            "jobDoneRegex": data.get("jobDoneRegex"),
+            "submitTemplate": data.get("submitTemplate"),
+        }
