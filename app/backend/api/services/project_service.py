@@ -2016,48 +2016,108 @@ class ProjectService:
             logger.error("ERROR with param: " + paramName)
             raise ex
 
-    def _buildProtocolsTreeInSubprocess(self) -> Dict[str, Any]:
-        # buildProtocolsTreeInSubprocess
-        code = textwrap.dedent(
-            """
-            import json
-            import os
+    def _runJsonSubprocess(self, code: str, operationName: str) -> Dict[str, Any]:
+        startMarker = "__SCIPION_JSON_START__"
+        endMarker = "__SCIPION_JSON_END__"
 
-            from pyworkflow import Config
-            from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
-            from app.utils.scipion_helper import serializeToJson
+        code = textwrap.dedent(code).strip()
 
-            Config.setDomain("pwem")
-            domain = Config.getDomain()
+        wrappedCode = "\n".join(
+            [
+                "import json",
+                "import sys",
+                "",
+                code,
+                "",
+                "try:",
+                "    _scipionPayload",
+                "except NameError:",
+                '    raise RuntimeError("Subprocess code did not define _scipionPayload")',
+                "",
+                f'sys.stdout.write("{startMarker}\\n")',
+                "sys.stdout.write(json.dumps(_scipionPayload))",
+                f'sys.stdout.write("\\n{endMarker}\\n")',
+                "sys.stdout.flush()",
+            ]
+        )
 
-            protConf = os.path.join(Config.SCIPION_LOCAL_CONFIG, Config.SCIPION_PROTOCOLS)
-            tree = ProtocolTreeConfig.load(domain, protConf)
-
-            print(json.dumps(serializeToJson(tree)))
-            """
-        ).strip()
-
-        # projectRootResolve: .../app/backend/api/services/project_service.py -> repo root
         projectRoot = Path(__file__).resolve().parents[4]
 
         env = os.environ.copy()
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existing if existing else "")
+        existingPythonPath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existingPythonPath if existingPythonPath else "")
 
         res = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-c", wrappedCode],
             cwd=str(projectRoot),
             env=env,
             capture_output=True,
             text=True,
         )
 
-        if res.returncode != 0:
-            err = (res.stderr or "").strip()
-            out = (res.stdout or "").strip()
-            raise RuntimeError(f"Failed to build protocols tree. rc={res.returncode} stderr={err} stdout={out}")
+        stdout = (res.stdout or "").strip()
+        stderr = (res.stderr or "").strip()
 
-        return json.loads(res.stdout)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"{operationName} failed in subprocess.\n"
+                f"Return code: {res.returncode}\n"
+                f"STDOUT:\n{stdout}\n\n"
+                f"STDERR:\n{stderr}"
+            )
+
+        startIndex = stdout.find(startMarker)
+        endIndex = stdout.find(endMarker)
+
+        if startIndex == -1 or endIndex == -1:
+            raise RuntimeError(
+                f"{operationName} did not return a valid JSON payload block.\n"
+                f"STDOUT:\n{stdout}\n\n"
+                f"STDERR:\n{stderr}"
+            )
+
+        payload = stdout[startIndex + len(startMarker):endIndex].strip()
+
+        if not payload:
+            raise RuntimeError(
+                f"{operationName} returned an empty JSON payload.\n"
+                f"STDOUT:\n{stdout}\n\n"
+                f"STDERR:\n{stderr}"
+            )
+
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as ex:
+            raise RuntimeError(
+                f"{operationName} returned invalid JSON.\n"
+                f"Payload:\n{payload}\n\n"
+                f"STDOUT:\n{stdout}\n\n"
+                f"STDERR:\n{stderr}"
+            ) from ex
+
+    def _buildProtocolsTreeInSubprocess(self) -> Dict[str, Any]:
+        code = """
+    import contextlib
+    import os
+    import sys
+
+    with contextlib.redirect_stdout(sys.stderr):
+        from pyworkflow import Config
+        from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
+        from app.utils.scipion_helper import serializeToJson
+
+        Config.setDomain("pwem")
+        domain = Config.getDomain()
+
+        protConf = os.path.join(Config.SCIPION_LOCAL_CONFIG, Config.SCIPION_PROTOCOLS)
+        tree = ProtocolTreeConfig.load(domain, protConf)
+        _scipionPayload = serializeToJson(tree)
+    """
+
+        return self._runJsonSubprocess(
+            code=code,
+            operationName="Build protocols tree",
+        )
 
     def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
         # getProtocols
@@ -2072,7 +2132,7 @@ class ProjectService:
                 return tree
 
         # computeFreshTreeOncePerRevision
-        protocolsTree = self._buildProtocolsTreeInSubprocess()  # el que ya te funciona
+        protocolsTree = self._buildProtocolsTreeInSubprocess()
 
         with _protocolsTreeLock:
             _protocolsTreeCache[cacheKey] = protocolsTree
