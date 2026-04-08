@@ -156,6 +156,56 @@ def getProject(
     return project
 
 
+@router.get(
+    "/{projectId}/effective-settings",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getProjectEffectiveSettings(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Return runtime-effective settings for a project.
+
+    This endpoint is read-only and aggregates the relevant settings that
+    the frontend may need when opening a project, such as:
+    - user settings
+    - instance settings
+    - host execution settings
+
+    The project must be accessible by the authenticated user.
+    """
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        return service.getProjectEffectiveSettings(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getProjectEffectiveSettings: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load project effective settings: {e}",
+        )
+
 @router.put("/{projectId}", response_model=Any, status_code=status.HTTP_200_OK)
 def updateProject(
     projectId: int,

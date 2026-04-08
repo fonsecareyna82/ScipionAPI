@@ -83,6 +83,7 @@ from contextvars import ContextVar
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.utils.thumbnail_service import ThumbnailService
+from app.backend.api.services.settings_service import SettingsService
 
 # protocolsTreeCacheByRevision
 _protocolsTreeLock = threading.Lock()
@@ -845,6 +846,68 @@ class ProjectService:
             return None
 
         return self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
+
+    def getProjectEffectiveSettings(
+            self,
+            mapper,
+            projectId: int,
+            currentUser: Any,
+    ) -> Dict[str, Any]:
+        # getProjectEffectiveSettings
+        project = self.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        settingsService = SettingsService()
+
+        userSettings = None
+        instanceSettings = None
+        hostSettings = None
+
+        # userSettings
+        try:
+            userSettings = settingsService.getUserSettings(mapper, currentUser)
+            if hasattr(userSettings, "model_dump"):
+                userSettings = userSettings.model_dump()
+            elif hasattr(userSettings, "dict"):
+                userSettings = userSettings.dict()
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Error loading user settings for project %s: %s", projectId, e)
+            userSettings = None
+
+        # runtimeInstanceSettings
+        try:
+            instanceSettings = settingsService.getRuntimeInstanceSettings(mapper, currentUser)
+        except Exception as e:
+            logger.exception("Error loading runtime instance settings for project %s: %s", projectId, e)
+            instanceSettings = None
+
+        # runtimeHostSettings
+        try:
+            hostSettings = settingsService.getRuntimeHostSettings(mapper, currentUser)
+        except Exception as e:
+            logger.exception("Error loading runtime host settings for project %s: %s", projectId, e)
+            hostSettings = None
+
+        return {
+            "projectId": projectId,
+            "settings": {
+                "user": userSettings,
+                "instance": instanceSettings,
+                "host": hostSettings,
+            },
+        }
 
     def getProjectDbRow(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict) -> Optional[dict]:
         dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
@@ -1833,6 +1896,9 @@ class ProjectService:
             setToSave=False,
         )
 
+        if protocol.useQueue():
+            queueParams = [params['_queueName'], params['_queueParams']]
+            protocol.setQueueParams(queueParams)
         try:
             validationErrors = protocol._validate()
             if validationErrors:
