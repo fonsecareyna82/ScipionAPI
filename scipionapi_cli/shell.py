@@ -18,11 +18,42 @@ def runCmd(
     cwd: Optional[Path] = None,
     env: Optional[Dict[str, str]] = None,
     capture: bool = False,
+    live: bool = False,
 ) -> subprocess.CompletedProcess:
     # runCommandHelper
+    if capture and live:
+        raise ValueError("runCmd does not support capture=True and live=True at the same time.")
+
     mergedEnv = os.environ.copy()
     if env:
         mergedEnv.update(env)
+
+    if live:
+        proc = subprocess.Popen(
+            args,
+            cwd=str(cwd) if cwd else None,
+            env=mergedEnv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+
+        lines: List[str] = []
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+
+        proc.wait()
+
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=proc.returncode,
+            stdout="".join(lines),
+            stderr="",
+        )
 
     return subprocess.run(
         args,

@@ -76,10 +76,7 @@ app = typer.Typer(
 
 @app.command(
     "bootstrap",
-    help=(
-        "Create or update the conda environment, install requirements, "
-        "optionally install Scipion core packages, and install this package in editable mode."
-    ),
+    help="Create/update the conda env, install requirements, install Scipion core packages if needed, and install this package editable."
 )
 def bootstrap(
     envName: str = typer.Option(
@@ -122,10 +119,7 @@ def bootstrap(
 
 @app.command(
     "install",
-    help=(
-        "Create or update SCIPION_HOME/.env, ensure required folders, "
-        "prepare the local database and role if needed, run migrations, and ensure the admin user."
-    ),
+    help="Configure SCIPION_HOME/.env, create required directories and config files, ensure local DB/user, run migrations, and ensure admin user. Does not install Python packages."
 )
 def install(
     user: str = typer.Option(

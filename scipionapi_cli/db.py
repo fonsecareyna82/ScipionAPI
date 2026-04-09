@@ -6,6 +6,11 @@ from typing import Dict, Optional
 from scipionapi_cli.shell import runCmd
 
 
+def _printInfo(message: str) -> None:
+    # printDbInfo
+    print(f"[db] {message}", flush=True)
+
+
 def _validateIdentifier(identifier: str, label: str) -> None:
     # validateSqlIdentifier
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", identifier or ""):
@@ -59,22 +64,26 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         if proc.returncode != 0:
             raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stdout}\n{proc.stderr}")
 
-    # ensureRoleExists
+    _printInfo(f"Checking PostgreSQL role '{dbUser}'")
     roleExists = psqlScalar(f"SELECT 1 FROM pg_roles WHERE rolname='{safeDbUser}'")
     if roleExists != "1":
+        _printInfo(f"Creating PostgreSQL role '{dbUser}'")
         psqlExec(f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}';")
+    else:
+        _printInfo(f"Role '{dbUser}' already exists")
 
-    # ensureDatabaseExists
+    _printInfo(f"Checking PostgreSQL database '{dbName}'")
     dbExists = psqlScalar(f"SELECT 1 FROM pg_database WHERE datname='{safeDbName}'")
     if dbExists != "1":
-        # createDatabaseMustNotRunInsideDoOrTransaction
+        _printInfo(f"Creating PostgreSQL database '{dbName}'")
         psqlExec(f"CREATE DATABASE {dbName} OWNER {dbUser};")
+    else:
+        _printInfo(f"Database '{dbName}' already exists")
 
-    # ensureDbOwnerAndPrivilegesEvenIfDbAlreadyExisted
+    _printInfo(f"Ensuring owner and database privileges for '{dbName}'")
     psqlExec(f"ALTER DATABASE {dbName} OWNER TO {dbUser};")
     psqlExec(f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};")
 
-    # ensureSchemaPrivilegesAndOwnership
     psqlDbBase = psqlBase + ["-d", dbName]
 
     def psqlDbExec(sql: str) -> None:
@@ -83,6 +92,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         if proc.returncode != 0:
             raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stdout}\n{proc.stderr}")
 
+    _printInfo("Ensuring schema ownership and privileges")
     ensureSchemaSql = (
         f"ALTER SCHEMA public OWNER TO {dbUser};"
         f" GRANT USAGE, CREATE ON SCHEMA public TO {dbUser};"
@@ -92,7 +102,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
     )
     psqlDbExec(ensureSchemaSql)
 
-    # fixOwnershipForExistingObjects
+    _printInfo("Fixing ownership for existing schema objects")
     fixOwnershipSql = f"""
 DO $$
 DECLARE r RECORD;
@@ -112,7 +122,7 @@ END $$;
 """.strip()
     psqlDbExec(fixOwnershipSql)
 
-    # ensureDefaultPrivilegesForFutureMigrations
+    _printInfo("Ensuring default privileges for future migrations")
     defaultPrivsSql = (
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO {dbUser};"
         f" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO {dbUser};"
@@ -131,13 +141,14 @@ def _parseUpgradeTargetRevision(output: str) -> Optional[str]:
 
 def runAlembicUpgrade(repoRoot: Path) -> None:
     # runAlembicUpgradeHead
-    proc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, capture=True)
+    _printInfo("Running Alembic upgrade to head")
+    proc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True)
     if proc.returncode == 0:
+        _printInfo("Alembic upgrade finished successfully")
         return
 
     combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
 
-    # detectPermissionDeniedEarly
     if ("InsufficientPrivilege" in combined) or ("permission denied" in combined):
         raise RuntimeError(
             "Alembic upgrade failed due to insufficient privileges.\n"
@@ -158,16 +169,18 @@ def runAlembicUpgrade(repoRoot: Path) -> None:
             f"{combined}"
         )
 
-    # stampOnlyTheFailedRevisionSoLaterMigrationsCanRun
-    stampProc = runCmd(["alembic", "stamp", targetRevision], cwd=repoRoot, capture=True)
+    _printInfo(f"Stamping duplicate-table revision '{targetRevision}'")
+    stampProc = runCmd(["alembic", "stamp", targetRevision], cwd=repoRoot, live=True)
     if stampProc.returncode != 0:
         raise RuntimeError(
             "Alembic stamp failed.\n"
             f"{stampProc.stdout}\n{stampProc.stderr}"
         )
 
-    # retryUpgradeAfterStamp
-    retryProc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, capture=True)
+    _printInfo("Retrying Alembic upgrade after stamp")
+    retryProc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True)
     if retryProc.returncode != 0:
         combinedRetry = (retryProc.stdout or "") + "\n" + (retryProc.stderr or "")
         raise RuntimeError(f"Alembic upgrade failed after stamping.\n{combinedRetry}")
+
+    _printInfo("Alembic upgrade finished successfully after stamp")

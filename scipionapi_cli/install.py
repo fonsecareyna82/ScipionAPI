@@ -90,6 +90,7 @@ def _writeDefaultScipionConf(configDir: Path, condaActivationCmd: str) -> Path:
         "SCIPION_DOMAIN = pwem\n"
         f"CONDA_ACTIVATION_CMD = {condaActivationCmd}\n"
     )
+    _printStep("Ensuring Scipion config files")
     return _writeFileIfMissingOrEmpty(configDir / "scipion.conf", content)
 
 
@@ -249,7 +250,11 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     # installCommandNonInteractive
     repoRoot = resolveRepoRoot()
 
-    _printPanel("ScipionAPI install")
+    _printPanel(
+        "ScipionAPI install",
+        "This command configures ScipionAPI, the database, migrations, and the admin user.\n"
+        "Python package installation happens in: scipionapi bootstrap",
+    )
     _printStep("Resolving repository root")
     _printInfo(f"Repo root: {repoRoot}")
 
@@ -302,7 +307,8 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         configDir=configDir,
         condaActivationCmd=condaActivationCmd or "",
     )
-
+    _printSuccess(f"Scipion config ready: {scipionConfPath}")
+    _printSuccess(f"Hosts config ready: {hostsConfPath}")
     apiPort = existing.get("API_PORT") or "8080"
 
     scipionPort = existing.get("SCIPION_PORT")
@@ -377,6 +383,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
 
     env: Dict[str, str] = readEnvFile(envPath)
 
+    _printInfo("Install will now configure PostgreSQL, run Alembic, and ensure the admin user.")
     _printStep("Ensuring PostgreSQL database and role")
     ensureDatabaseAndRole(env)
     _printSuccess("Database and role are ready")
