@@ -53,11 +53,11 @@ Typical usage:
   ./scripts/scipionapi start|stop|restart|status|logs
 
 Notes:
-  - The conda env is created/bootstrapped by: bootstrap, provision
+  - bootstrap installs Python packages in the conda environment
+  - install configures SCIPION_HOME, database, migrations, and admin user
+  - provision combines bootstrap/install/start in one flow
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
-  - To tune pip retries: export SCIPIONAPI_PIP_RETRIES=<n>
-  - To tune pip timeout: export SCIPIONAPI_PIP_TIMEOUT=<seconds>
 EOF
 }
 
