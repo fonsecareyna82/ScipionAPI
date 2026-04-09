@@ -23,7 +23,7 @@ except Exception:
 
 def _run(cmd: List[str], cwd: Optional[Path] = None) -> None:
     # runCommandOrFail
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
+    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
 
@@ -71,6 +71,25 @@ def _condaEnvExists(condaExe: str, envName: str) -> bool:
             return True
 
     return False
+
+
+def _condaEnvHealthy(condaExe: str, envName: str) -> bool:
+    # condaEnvHealthy
+    pythonCheck = _runCapture(
+        [condaExe, "run", "-n", envName, "python", "--version"]
+    )
+    if pythonCheck.returncode != 0:
+        return False
+
+    pipCheck = _runCapture(
+        [condaExe, "run", "-n", envName, "python", "-m", "pip", "--version"]
+    )
+    return pipCheck.returncode == 0
+
+
+def _removeCondaEnv(condaExe: str, envName: str) -> None:
+    # removeCondaEnv
+    _run([condaExe, "env", "remove", "-n", envName, "-y"])
 
 
 def _pip(condaExe: str, envName: str, args: List[str], cwd: Path) -> None:
@@ -159,6 +178,7 @@ def _printSummaryTable(
     pythonVersion: str,
     installScipionCore: bool,
     scipionCorePackages: str,
+    recreateEnv: bool,
 ) -> None:
     # printSummaryTable
     if _HAS_RICH:
@@ -170,6 +190,7 @@ def _printSummaryTable(
         table.add_row("Conda executable", condaExe)
         table.add_row("Target env", envName)
         table.add_row("Python version", pythonVersion)
+        table.add_row("Recreate env", "yes" if recreateEnv else "no")
         table.add_row("Install Scipion core", "yes" if installScipionCore else "no")
         table.add_row("Scipion core packages", scipionCorePackages)
 
@@ -180,6 +201,7 @@ def _printSummaryTable(
         print(f"  Conda executable: {condaExe}", flush=True)
         print(f"  Target env: {envName}", flush=True)
         print(f"  Python version: {pythonVersion}", flush=True)
+        print(f"  Recreate env: {'yes' if recreateEnv else 'no'}", flush=True)
         print(f"  Install Scipion core: {'yes' if installScipionCore else 'no'}", flush=True)
         print(f"  Scipion core packages: {scipionCorePackages}", flush=True)
 
@@ -193,8 +215,12 @@ def bootstrapCommand(
     # bootstrapCommand
     repoRoot = resolveRepoRoot()
     condaExe = _resolveCondaExe()
+    recreateEnv = (os.getenv("SCIPIONAPI_BOOTSTRAP_RECREATE") or "").strip() == "1"
 
-    _printPanel("ScipionAPI bootstrap")
+    _printPanel(
+        "ScipionAPI bootstrap",
+        "This command prepares the Python/Conda environment and installs package dependencies.",
+    )
     _printSummaryTable(
         repoRoot=repoRoot,
         condaExe=condaExe,
@@ -202,15 +228,30 @@ def bootstrapCommand(
         pythonVersion=pythonVersion,
         installScipionCore=installScipionCore,
         scipionCorePackages=scipionCorePackages,
+        recreateEnv=recreateEnv,
     )
 
     _printStep("Checking conda environment", envName)
-    if not _condaEnvExists(condaExe, envName):
+    envExists = _condaEnvExists(condaExe, envName)
+
+    if envExists and recreateEnv:
+        _printWarning(f"Recreate requested, removing conda env '{envName}'")
+        _removeCondaEnv(condaExe, envName)
+        envExists = False
+        _printSuccess(f"Conda env removed: {envName}")
+
+    if envExists:
+        _printInfo(f"Validating existing conda env '{envName}'")
+        if not _condaEnvHealthy(condaExe, envName):
+            raise RuntimeError(
+                f"Conda env '{envName}' exists but looks unhealthy.\n"
+                f"Re-run with SCIPIONAPI_BOOTSTRAP_RECREATE=1 to recreate it."
+            )
+        _printSuccess(f"Conda env already exists and looks healthy: {envName}")
+    else:
         _printInfo(f"Creating conda env '{envName}' with python={pythonVersion}")
         _run([condaExe, "create", "-y", "-n", envName, f"python={pythonVersion}"])
         _printSuccess(f"Conda env created: {envName}")
-    else:
-        _printSuccess(f"Conda env already exists: {envName}")
 
     _printStep("Upgrading pip", envName)
     _pip(
