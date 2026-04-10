@@ -36,6 +36,8 @@ import sys
 import threading
 import textwrap
 import shutil
+import inspect
+from numbers import Number
 
 import numpy as np
 
@@ -47,6 +49,10 @@ from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.api.services.protocol_wizard_service import (
+    ProtocolWizardService,
+    findProtocolWizardsWeb,
+)
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
@@ -1338,7 +1344,7 @@ class ProjectService:
         }
 
         # Detect available wizards and viewers
-        wizards = self.findWizardsWeb(protocol)
+        wizards = findProtocolWizardsWeb(self.currentProject, protocol)
         viewers = self.findViewersWeb(protocol)
 
         # Inputs
@@ -1990,149 +1996,6 @@ class ProjectService:
         runMode = modeToRunMode[executeMode]
         protocol.runMode.set(runMode)
         self.currentProject.launchProtocol(protocol)
-
-    def findWizardsWeb(self, protocol):
-        """Discover protocol-targeted wizards and serialize web metadata."""
-        domain = self.currentProject.getDomain() if self.currentProject else pyworkflow.Config.getDomain()
-        protocolClass = protocol.getClass() if hasattr(protocol, "getClass") else protocol.__class__
-
-        wizardMap: Dict[str, List[Dict[str, Any]]] = {}
-
-        for wizardClass in domain.getWizards().values():
-            targets = getattr(wizardClass, "_targets", []) or []
-            if not targets:
-                continue
-
-            for target in targets:
-                if not isinstance(target, (list, tuple)) or len(target) != 2:
-                    continue
-
-                targetClass, targetParams = target
-
-                if not isinstance(targetClass, type):
-                    continue
-
-                try:
-                    if not issubclass(protocolClass, targetClass):
-                        continue
-                except TypeError:
-                    continue
-
-                targetParamsList = list(targetParams or [])
-                if not targetParamsList:
-                    continue
-
-                descriptor = self._serializeWizardDescriptor(
-                    wizardClass=wizardClass,
-                    protocol=protocol,
-                    targetParams=targetParamsList,
-                )
-
-                for paramName in targetParamsList:
-                    wizardMap.setdefault(paramName, [])
-                    if not any(existing.get("id") == descriptor.get("id") for existing in wizardMap[paramName]):
-                        wizardMap[paramName].append(copy.deepcopy(descriptor))
-
-        return wizardMap
-
-    def _serializeWizardDescriptor(self, wizardClass, protocol, targetParams: List[str]) -> Dict[str, Any]:
-        wizardId = f"{wizardClass.__module__}.{wizardClass.__name__}"
-        webView = self._safeGetWizardView(wizardClass)
-        kind = self._classifyWizardKind(wizardClass, webView)
-
-        computeKinds = {
-            "compute",
-            "box_size",
-            "consensus_radius",
-            "number_of_classes",
-        }
-
-        webSupported = kind in computeKinds
-        interactive = kind not in computeKinds
-
-        return {
-            "id": wizardId,
-            "className": wizardClass.__name__,
-            "module": wizardClass.__module__,
-            "targetParams": list(targetParams or []),
-            "displayParam": targetParams[0] if targetParams else None,
-            "kind": kind,
-            "interactive": interactive,
-            "webSupported": webSupported,
-            "webView": webView,
-        }
-
-    def _safeGetWizardView(self, wizardClass) -> Optional[str]:
-        try:
-            getViewFn = getattr(wizardClass, "getView", None)
-            if callable(getViewFn):
-                value = getViewFn()
-                if value is None:
-                    return None
-                return str(value)
-        except Exception:
-            return None
-
-        return None
-
-    def _classifyWizardKind(self, wizardClass, webView: Optional[str]) -> str:
-        className = getattr(wizardClass, "__name__", "") or ""
-        classNameLower = className.lower()
-        webViewLower = (webView or "").lower()
-
-        # Simple compute-only wizards that can be supported without UI
-        explicitComputeKinds = {
-            "XmippBoxSizeWizard": "box_size",
-            "XmippParticleConsensusRadiusWizard": "consensus_radius",
-            "XmippCL2DNumberOfClassesWizard": "number_of_classes",
-        }
-        if className in explicitComputeKinds:
-            return explicitComputeKinds[className]
-
-        # View-only / viewer-side wizard families
-        if "colorscale" in classNameLower:
-            return "viewer_color_scale"
-
-        # Interactive wizard families
-        if "selectpointinvolwizard" in classNameLower or "pointinvol" in classNameLower:
-            return "point_in_volume"
-
-        if "ctf" in classNameLower and "wizard" in classNameLower:
-            return "ctf_preview"
-
-        if "downsample" in classNameLower and "wizard" in classNameLower:
-            return "downsample_preview"
-
-        if "maskradii" in classNameLower and "wizard" in classNameLower:
-            return "mask_radii"
-
-        if "maskradius" in classNameLower and "wizard" in classNameLower:
-            return "mask_radius"
-
-        if "gaussian" in classNameLower and "wizard" in classNameLower:
-            return "gaussian_preview"
-
-        if "filter" in classNameLower and "wizard" in classNameLower:
-            return "filter_preview"
-
-        # Generic fallback if a legacy web view exists
-        if webViewLower:
-            if "ctf" in webViewLower:
-                return "ctf_preview"
-            if "down" in webViewLower:
-                return "downsample_preview"
-            if "mask" in webViewLower and "radii" in webViewLower:
-                return "mask_radii"
-            if "mask" in webViewLower and "radius" in webViewLower:
-                return "mask_radius"
-            return "legacy_web_view"
-
-        # Generic compute fallback for very simple naming patterns
-        if classNameLower.endswith("wizard") and any(
-                token in classNameLower for token in ("boxsize", "radius", "classes")):
-            return "compute"
-
-        return "unknown"
 
     def findViewersWeb(self, protocol):
         # TODO: Find viewers...
@@ -6211,3 +6074,25 @@ class ProjectService:
                "upload":  True,
                "nextSteps":  True,
         }
+
+    # -------------------------------
+    # Wizards methods
+    # -------------------------------
+    def executeProtocolWizard(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload,
+    ) -> Dict[str, Any]:
+        wizardService = ProtocolWizardService(
+            currentProject=self.currentProject,
+            projectService=self,
+        )
+        return wizardService.executeProtocolWizard(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+

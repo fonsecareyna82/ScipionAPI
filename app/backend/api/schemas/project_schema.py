@@ -95,3 +95,39 @@ class ShareProjectPayload(BaseModel):
 
 class ApplyWorkflowToProjectRequest(BaseModel):
     workflowId: str
+
+
+from typing import Any, Dict, List, Optional, Literal
+from pydantic import BaseModel, Field
+
+
+class ProtocolWizardInputOption(BaseModel):
+    value: str
+    label: str
+
+
+class ProtocolWizardInputSchema(BaseModel):
+    type: Literal["select"]
+    paramName: str
+    options: List[ProtocolWizardInputOption] = Field(default_factory=list)
+
+
+class ProtocolWizardExecuteRequest(BaseModel):
+    protocolId: Optional[int] = None
+    protocolClassName: str
+    paramName: str
+    wizardId: str
+    formValues: Dict[str, Any] = Field(default_factory=dict)
+    wizardInputs: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProtocolWizardExecuteResponse(BaseModel):
+    success: bool
+    wizardId: str
+    kind: str
+    paramUpdates: Dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+
+    availableValues: List[str] = Field(default_factory=list)
+    requiresUserInput: bool = False
+    inputSchema: Optional[ProtocolWizardInputSchema] = None
