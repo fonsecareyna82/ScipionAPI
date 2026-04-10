@@ -121,6 +121,29 @@ class ProtocolWizardExecuteRequest(BaseModel):
     wizardInputs: Dict[str, Any] = Field(default_factory=dict)
 
 
+class WizardInputFieldResponse(BaseModel):
+    name: str
+    label: str
+    kind: str
+    value: Optional[Any] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+
+
+class WizardInputSchemaResponse(BaseModel):
+    type: str
+    paramName: str
+    title: Optional[str] = None
+    fields: List[WizardInputFieldResponse] = Field(default_factory=list)
+
+
+class WizardPreviewResponse(BaseModel):
+    imageUrl: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
 class ProtocolWizardExecuteResponse(BaseModel):
     success: bool
     wizardId: str
@@ -128,6 +151,8 @@ class ProtocolWizardExecuteResponse(BaseModel):
     paramUpdates: Dict[str, Any] = Field(default_factory=dict)
     message: Optional[str] = None
 
-    availableValues: List[str] = Field(default_factory=list)
+    availableValues: Optional[List[str]] = None
+
     requiresUserInput: bool = False
-    inputSchema: Optional[ProtocolWizardInputSchema] = None
+    inputSchema: Optional[WizardInputSchemaResponse] = None
+    preview: Optional[WizardPreviewResponse] = None
