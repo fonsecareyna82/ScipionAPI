@@ -4,25 +4,8 @@
 # *
 # * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
 # *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
 # ******************************************************************************
+
 from __future__ import annotations
 
 import copy
@@ -114,6 +97,7 @@ class ProtocolWizardService:
             "consensus_radius",
             "number_of_classes",
             "compute_lane_selector",
+            "mask_radius",
         }
 
         webSupported = kind in computeKinds
@@ -321,11 +305,7 @@ class ProtocolWizardService:
 
         return None
 
-    def _normalizeExecutionResult(
-        self,
-        paramName: str,
-        rawResult: Any,
-    ):
+    def _normalizeExecutionResult(self, paramName: str, rawResult: Any):
         if not isinstance(rawResult, dict):
             return rawResult, None, {}
 
@@ -400,7 +380,6 @@ class ProtocolWizardService:
             "ctf_preview",
             "downsample_preview",
             "mask_radii",
-            "mask_radius",
             "gaussian_preview",
             "filter_preview",
             "legacy_web_view",
@@ -425,7 +404,11 @@ class ProtocolWizardService:
                 protocol=protocol,
                 paramName=paramName,
                 descriptor=descriptor,
+                wizardInputs=getattr(payload, "wizardInputs", {}) or {},
+                currentProject=self.currentProject,
+                projectId=projectId,
             )
+
             paramUpdates, message, extra = self._normalizeExecutionResult(paramName, rawResult)
         except HTTPException:
             raise

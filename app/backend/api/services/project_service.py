@@ -1842,8 +1842,25 @@ class ProjectService:
                             logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
                     else:
                         # Pointer without parentId, fallback
-                        if not param.allowsNull.get() and protocol.evalCondition(param.condition.get()):
+                        conditionValue = None
+                        try:
+                            if hasattr(param, "condition") and param.condition is not None:
+                                conditionValue = param.condition.get()
+                        except Exception:
+                            conditionValue = None
+
+                        shouldValidate = True
+                        if isinstance(conditionValue, str):
+                            conditionText = conditionValue.strip()
+                            if conditionText:
+                                try:
+                                    shouldValidate = bool(protocol.evalCondition(conditionText))
+                                except Exception:
+                                    shouldValidate = True
+
+                        if not param.allowsNull.get() and shouldValidate:
                             errorList.append('**' + param.label.get() + '** it must not be empty.')
+
                         param.set(None)
         return errorList
 
