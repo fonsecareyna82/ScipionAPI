@@ -24,9 +24,10 @@
 # *
 # ******************************************************************************
 
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional, Union
+
+from pydantic import BaseModel, Field
 
 
 thumbnailUrl: Optional[str] = None
@@ -82,6 +83,7 @@ class TiltSeriesNewSetRequest(BaseModel):
     """
     Request payload for creating a new SetOfTiltSeries based on exclusions.
     """
+
     exclusions: Dict[str, Any]
     restack: bool = False
 
@@ -90,15 +92,12 @@ class ShareProjectPayload(BaseModel):
     """
     Request payload for sharing a project with one or more users.
     """
+
     userIds: List[int]
 
 
 class ApplyWorkflowToProjectRequest(BaseModel):
     workflowId: str
-
-
-from typing import Any, Dict, List, Optional, Literal
-from pydantic import BaseModel, Field
 
 
 class ProtocolWizardInputOption(BaseModel):
@@ -135,13 +134,37 @@ class WizardInputSchemaResponse(BaseModel):
     type: str
     paramName: str
     title: Optional[str] = None
-    fields: List[WizardInputFieldResponse] = Field(default_factory=list)
+    fields: Optional[List[WizardInputFieldResponse]] = None
 
 
 class WizardPreviewResponse(BaseModel):
     imageUrl: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
+
+
+class WizardViewerItemResponse(BaseModel):
+    id: str
+    label: str
+    index: int
+
+
+class WizardViewerPreviewResponse(BaseModel):
+    imageUrl: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    caption: Optional[str] = None
+
+
+class WizardViewerStateResponse(BaseModel):
+    items: List[WizardViewerItemResponse] = Field(default_factory=list)
+    selectedIndex: int = 1
+    radius: Optional[int] = None
+    radiusMin: Optional[int] = None
+    radiusStep: Optional[int] = None
+    radiusAngstrom: Optional[float] = None
+    samplingRate: Optional[float] = None
+    preview: Optional[WizardViewerPreviewResponse] = None
 
 
 class ProtocolWizardExecuteResponse(BaseModel):
@@ -151,8 +174,9 @@ class ProtocolWizardExecuteResponse(BaseModel):
     paramUpdates: Dict[str, Any] = Field(default_factory=dict)
     message: Optional[str] = None
 
-    availableValues: Optional[List[str]] = None
+    availableValues: Optional[List[Union[str, Dict[str, Any]]]] = None
 
     requiresUserInput: bool = False
     inputSchema: Optional[WizardInputSchemaResponse] = None
     preview: Optional[WizardPreviewResponse] = None
+    viewerState: Optional[WizardViewerStateResponse] = None

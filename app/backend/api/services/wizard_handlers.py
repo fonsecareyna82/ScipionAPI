@@ -12,6 +12,11 @@ from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 
+_MASK_RADIUS_HELP_MESSAGE = (
+    "The values of the mask radius can be controlled via both the slider or the "
+    "mousewheel (when the mouse cursor is over the image)."
+)
+
 
 def executeMaskRadiusWizard(
     *,
@@ -23,58 +28,41 @@ def executeMaskRadiusWizard(
     currentProject=None,
     projectId: Optional[int] = None,
 ) -> Dict[str, Any]:
-    currentValue = _readProtocolNumericValue(protocol, paramName, default=0)
+    currentValue = max(1, _readProtocolNumericValue(protocol, paramName, default=1))
+    wizardInputs = wizardInputs or {}
 
-    if not wizardInputs:
-        previewUrl = _buildMaskRadiusPreviewUrl(
-            projectId=projectId,
-            protocol=protocol,
-            paramName=paramName,
-            currentProject=currentProject,
-            radius=currentValue,
-        )
+    action = _normalizeMaskRadiusAction(wizardInputs)
+    radius = _coercePositiveInt(wizardInputs.get("radius"), default=currentValue)
+    selectedIndex = _coercePositiveInt(wizardInputs.get("selectedIndex"), default=1)
 
+    if action == "apply":
         return {
-            "paramUpdates": {},
-            "message": "Wizard requires user input",
-            "requiresUserInput": True,
+            "paramUpdates": {
+                paramName: radius,
+            },
+            "message": f"Mask radius set to {radius}",
             "availableValues": [],
-            "inputSchema": {
-                "type": "mask_radius",
-                "paramName": paramName,
-                "title": "Mask radius",
-                "fields": [
-                    {
-                        "name": "radius",
-                        "label": "Radius",
-                        "kind": "number",
-                        "value": currentValue,
-                        "min": 1,
-                        "step": 1,
-                    }
-                ],
-            },
-            "preview": {
-                "imageUrl": previewUrl,
-                "width": 512 if previewUrl else None,
-                "height": 512 if previewUrl else None,
-            },
         }
 
-    radiusRaw = wizardInputs.get("radius")
-    if radiusRaw is None:
-        raise RuntimeError("Wizard input 'radius' is required")
-
-    radius = int(round(float(radiusRaw)))
-    if radius < 1:
-        radius = 1
+    viewerState = _buildMaskRadiusViewerState(
+        protocol=protocol,
+        currentProject=currentProject,
+        radius=radius,
+        selectedIndex=selectedIndex,
+        canvasSize=512,
+    )
 
     return {
-        "paramUpdates": {
-            paramName: radius,
-        },
-        "message": f"Mask radius set to {radius}",
+        "paramUpdates": {},
+        "message": _MASK_RADIUS_HELP_MESSAGE,
+        "requiresUserInput": True,
         "availableValues": [],
+        "inputSchema": {
+            "type": "mask_radius",
+            "paramName": paramName,
+            "title": "Wizard",
+        },
+        "viewerState": viewerState,
     }
 
 
@@ -478,32 +466,268 @@ def _readProtocolNumericValue(protocol, paramName: str, default: int = 0) -> int
         return default
 
 
-def _buildMaskRadiusPreviewUrl(
-    *,
-    projectId: Optional[int],
-    protocol,
-    paramName: str,
-    currentProject=None,
-    radius: Optional[int] = None,
-) -> Optional[str]:
+def _normalizeMaskRadiusAction(wizardInputs: Dict[str, Any]) -> str:
+    if not wizardInputs:
+        return "open"
+
+    actionRaw = wizardInputs.get("action")
+    if actionRaw is None:
+        if "radius" in wizardInputs:
+            return "apply"
+        return "open"
+
+    action = str(actionRaw).strip().lower()
+    if action in {"preview", "apply", "open"}:
+        return action
+    return "open"
+
+
+def _coercePositiveInt(value: Any, default: int) -> int:
+    if value in (None, ""):
+        return max(1, int(default))
+
     try:
-        radiusValue = radius if radius is not None else _readProtocolNumericValue(protocol, paramName, default=0)
-        if radiusValue is None or int(radiusValue) <= 0:
-            radiusValue = 1
-        radiusValue = int(radiusValue)
+        parsed = int(round(float(value)))
+        return max(1, parsed)
+    except Exception:
+        return max(1, int(default))
 
-        image, scale = _buildMaskRadiusPreviewImage(
-            protocol=protocol,
-            currentProject=currentProject,
-            radius=radiusValue,
-            canvasSize=512,
+
+def _buildMaskRadiusViewerState(
+    *,
+    protocol,
+    currentProject=None,
+    radius: int,
+    selectedIndex: int,
+    canvasSize: int = 512,
+) -> Dict[str, Any]:
+    items = _listMaskRadiusItems(protocol)
+    selectedItem = _resolveMaskRadiusSelection(items, selectedIndex)
+
+    previewImage, _, origW, origH = _buildMaskRadiusPreviewImage(
+        protocol=protocol,
+        currentProject=currentProject,
+        radius=radius,
+        selectedItem=selectedItem,
+        canvasSize=canvasSize,
+    )
+
+    samplingRate = _getMaskRadiusSamplingRate(protocol)
+    radiusAngstrom = None
+    if samplingRate is not None and samplingRate > 0:
+        radiusAngstrom = round(float(radius) * float(samplingRate), 1)
+
+    return {
+        "items": [_serializeMaskRadiusItem(item) for item in items],
+        "selectedIndex": int(selectedItem["index"]) if selectedItem else 1,
+        "radius": int(radius),
+        "radiusMin": 1,
+        "radiusStep": 1,
+        "radiusAngstrom": radiusAngstrom,
+        "samplingRate": samplingRate,
+        "preview": {
+            "imageUrl": _pilImageToDataUrl(previewImage),
+            "width": previewImage.width,
+            "height": previewImage.height,
+            "caption": "Central slice",
+        },
+    }
+
+
+def _listMaskRadiusItems(protocol, maxItems: int = 200) -> List[Dict[str, Any]]:
+    collection = _findPreviewCollection(protocol)
+    if collection is None:
+        source = _findPreviewImageSource(protocol)
+        if source is None:
+            return []
+        filePath, index = source
+        return [
+            {
+                "id": _buildMaskRadiusItemId(filePath, index, 1),
+                "label": _formatMaskRadiusItemLabel(filePath, index, 1),
+                "index": int(index) if index is not None else 1,
+                "filePath": str(filePath),
+            }
+        ]
+
+    items: List[Dict[str, Any]] = []
+    for position, item in enumerate(_iterCollectionItems(collection), start=1):
+        if len(items) >= maxItems:
+            break
+
+        source = _extractDirectImageSource(item)
+        if source is None:
+            continue
+
+        filePath, index = source
+        safeIndex = int(index) if index is not None else position
+        items.append(
+            {
+                "id": _buildMaskRadiusItemId(filePath, safeIndex, position),
+                "label": _formatMaskRadiusItemLabel(filePath, safeIndex, position),
+                "index": safeIndex,
+                "filePath": str(filePath),
+            }
         )
-        _ = scale  # reserved for future use
 
-        return _pilImageToDataUrl(image)
-    except Exception as e:
-        logger.warning("Could not build mask radius preview: %s", e, exc_info=True)
+    if items:
+        return items
+
+    source = _extractImageSourceFromObject(collection)
+    if source is not None:
+        filePath, index = source
+        return [
+            {
+                "id": _buildMaskRadiusItemId(filePath, index, 1),
+                "label": _formatMaskRadiusItemLabel(filePath, index, 1),
+                "index": int(index) if index is not None else 1,
+                "filePath": str(filePath),
+            }
+        ]
+
+    return []
+
+
+def _findPreviewCollection(protocol):
+    candidateAttrs = [
+        "inputParticles",
+        "inputImages",
+        "inputImage",
+        "inputMicrographs",
+        "inputMicrograph",
+        "inputAverages",
+        "inputAverage",
+        "inputClasses",
+        "inputClass",
+        "inputVolumes",
+        "inputVolume",
+        "inputVol",
+        "source",
+        "images",
+        "particles",
+        "volume",
+    ]
+
+    for attrName in candidateAttrs:
+        holder = getattr(protocol, attrName, None)
+        obj = _dereferencePointerLike(holder)
+        if obj is None:
+            continue
+
+        if callable(getattr(obj, "iterItems", None)):
+            return obj
+
+        source = _extractImageSourceFromObject(obj)
+        if source is not None:
+            return obj
+
+    return None
+
+
+def _iterCollectionItems(collection):
+    iterItems = getattr(collection, "iterItems", None)
+    if not callable(iterItems):
+        return []
+
+    try:
+        return iterItems(iterate=False)
+    except TypeError:
+        try:
+            return iterItems()
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+
+def _serializeMaskRadiusItem(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(item.get("id") or ""),
+        "label": str(item.get("label") or ""),
+        "index": int(item.get("index") or 1),
+    }
+
+
+def _resolveMaskRadiusSelection(
+    items: List[Dict[str, Any]],
+    selectedIndex: int,
+) -> Optional[Dict[str, Any]]:
+    if not items:
         return None
+
+    for item in items:
+        if int(item.get("index") or 0) == int(selectedIndex):
+            return item
+
+    return items[0]
+
+
+def _buildMaskRadiusItemId(filePath: str, index: Optional[int], position: int) -> str:
+    baseName = os.path.basename(str(filePath or "")).strip() or "item"
+    token = int(index) if index is not None else int(position)
+    return f"{baseName}:{token}"
+
+
+def _formatMaskRadiusItemLabel(filePath: str, index: Optional[int], position: int) -> str:
+    baseName = os.path.basename(str(filePath or "")).strip() or "image"
+    token = int(index) if index is not None else int(position)
+    return f"{token:03d}@{baseName}"
+
+
+def _getMaskRadiusSamplingRate(protocol) -> Optional[float]:
+    collection = _findPreviewCollection(protocol)
+    if collection is None:
+        return None
+    return _readSamplingRateFromObject(collection)
+
+
+def _readSamplingRateFromObject(obj) -> Optional[float]:
+    if obj is None:
+        return None
+
+    methodNames = [
+        "getSamplingRate",
+        "getSampling",
+        "getPixelSize",
+        "getTsSampling",
+        "getRate",
+    ]
+
+    for methodName in methodNames:
+        method = getattr(obj, methodName, None)
+        if not callable(method):
+            continue
+
+        try:
+            value = method()
+            if value in (None, ""):
+                continue
+            parsed = float(value)
+            if parsed > 0:
+                return parsed
+        except Exception:
+            continue
+
+    attrNames = [
+        "samplingRate",
+        "sampling",
+        "pixelSize",
+    ]
+
+    for attrName in attrNames:
+        try:
+            value = getattr(obj, attrName, None)
+            if callable(getattr(value, "get", None)):
+                value = value.get()
+            if value in (None, ""):
+                continue
+            parsed = float(value)
+            if parsed > 0:
+                return parsed
+        except Exception:
+            continue
+
+    return None
 
 
 def _buildMaskRadiusPreviewImage(
@@ -511,9 +735,13 @@ def _buildMaskRadiusPreviewImage(
     protocol,
     currentProject=None,
     radius: int,
+    selectedItem: Optional[Dict[str, Any]] = None,
     canvasSize: int = 512,
-) -> Tuple[Image.Image, float]:
-    baseImage = _loadPreviewBaseImage(protocol, canvasSize=canvasSize)
+) -> Tuple[Image.Image, float, float, float]:
+    baseImage = _loadPreviewBaseImageFromSelection(selectedItem)
+
+    if baseImage is None:
+        baseImage = _loadPreviewBaseImage(protocol, canvasSize=canvasSize)
 
     if baseImage is None:
         baseImage = _buildFallbackPreviewBase(canvasSize=canvasSize)
@@ -531,47 +759,35 @@ def _buildMaskRadiusPreviewImage(
 
     resized = baseImage.resize((previewW, previewH), Image.Resampling.BILINEAR)
 
-    canvas = Image.new("RGBA", (canvasSize, canvasSize), (22, 27, 34, 255))
+    canvas = Image.new("RGBA", (canvasSize, canvasSize), (205, 205, 205, 255))
     offsetX = (canvasSize - previewW) // 2
     offsetY = (canvasSize - previewH) // 2
     canvas.paste(resized, (offsetX, offsetY))
 
-    overlay = Image.new("RGBA", (canvasSize, canvasSize), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    return canvas.convert("RGB"), fitScale, origW, origH
 
-    centerX = offsetX + previewW / 2.0
-    centerY = offsetY + previewH / 2.0
 
-    scaledRadius = max(4, int(round(radius * fitScale)))
-    maxAllowed = max(4, min(previewW, previewH) // 2 - 4)
-    scaledRadius = min(scaledRadius, maxAllowed)
+def _loadPreviewBaseImageFromSelection(
+    selectedItem: Optional[Dict[str, Any]],
+) -> Optional[Image.Image]:
+    if not selectedItem:
+        return None
 
-    bbox = (
-        int(round(centerX - scaledRadius)),
-        int(round(centerY - scaledRadius)),
-        int(round(centerX + scaledRadius)),
-        int(round(centerY + scaledRadius)),
-    )
+    filePath = str(selectedItem.get("filePath") or "").strip()
+    if not filePath or not os.path.exists(filePath):
+        return None
 
-    draw.ellipse(
-        bbox,
-        outline=(255, 90, 90, 255),
-        width=3,
-        fill=(255, 90, 90, 40),
-    )
+    index = selectedItem.get("index")
+    try:
+        safeIndex = int(index) if index is not None else None
+    except Exception:
+        safeIndex = None
 
-    draw.ellipse(
-        (
-            int(round(centerX - 2)),
-            int(round(centerY - 2)),
-            int(round(centerX + 2)),
-            int(round(centerY + 2)),
-        ),
-        fill=(255, 255, 255, 220),
-    )
+    pilImg = _openImageSource(filePath, index=safeIndex)
+    if pilImg is None:
+        return None
 
-    result = Image.alpha_composite(canvas, overlay).convert("RGB")
-    return result, fitScale
+    return _normalizePreviewImage(pilImg)
 
 
 def _loadPreviewBaseImage(protocol, canvasSize: int = 512) -> Optional[Image.Image]:
@@ -587,6 +803,10 @@ def _loadPreviewBaseImage(protocol, canvasSize: int = 512) -> Optional[Image.Ima
     if pilImg is None:
         return None
 
+    return _normalizePreviewImage(pilImg)
+
+
+def _normalizePreviewImage(pilImg: Image.Image) -> Optional[Image.Image]:
     arr = np.asarray(pilImg)
     if arr.ndim == 3 and arr.shape[-1] >= 3:
         arr = arr[..., :3].mean(axis=-1)
@@ -787,20 +1007,20 @@ def _openImageSource(filePath: str, index: Optional[int] = None) -> Optional[Ima
 
 
 def _buildFallbackPreviewBase(canvasSize: int = 512) -> Image.Image:
-    bg = Image.new("RGB", (canvasSize, canvasSize), (28, 34, 44))
+    bg = Image.new("RGB", (canvasSize, canvasSize), (196, 196, 196))
     draw = ImageDraw.Draw(bg)
 
-    pad = 36
+    pad = 18
     draw.rectangle(
         (pad, pad, canvasSize - pad, canvasSize - pad),
-        outline=(90, 100, 116),
-        width=2,
+        outline=(150, 150, 150),
+        width=1,
     )
 
     cx = canvasSize // 2
     cy = canvasSize // 2
-    draw.line((cx, pad + 20, cx, canvasSize - pad - 20), fill=(70, 78, 92), width=1)
-    draw.line((pad + 20, cy, canvasSize - pad - 20, cy), fill=(70, 78, 92), width=1)
+    draw.line((cx, pad + 12, cx, canvasSize - pad - 12), fill=(165, 165, 165), width=1)
+    draw.line((pad + 12, cy, canvasSize - pad - 12, cy), fill=(165, 165, 165), width=1)
 
     return bg
 
