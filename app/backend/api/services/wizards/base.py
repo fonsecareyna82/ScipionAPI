@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -127,31 +127,80 @@ def uniqueStrings(items: Sequence[str]) -> List[str]:
     return result
 
 
+def _coerceWizardValue(rawValue: Any) -> Any:
+    if rawValue is None:
+        return None
+
+    if isinstance(rawValue, (str, int, float, bool)):
+        return rawValue
+
+    if isinstance(rawValue, dict):
+        return {
+            str(key): _coerceWizardValue(value)
+            for key, value in rawValue.items()
+        }
+
+    if isinstance(rawValue, list):
+        return [_coerceWizardValue(item) for item in rawValue]
+
+    if isinstance(rawValue, tuple):
+        return tuple(_coerceWizardValue(item) for item in rawValue)
+
+    for getterName in ("get", "getObjValue", "getValue"):
+        getter = getattr(rawValue, getterName, None)
+        if not callable(getter):
+            continue
+
+        try:
+            value = getter()
+            if value is rawValue:
+                continue
+            return _coerceWizardValue(value)
+        except Exception:
+            continue
+
+    try:
+        return int(rawValue)
+    except Exception:
+        pass
+
+    try:
+        return float(rawValue)
+    except Exception:
+        pass
+
+    return rawValue
+
+
 def normalizeHandlerResult(paramName: str, rawResult: Any) -> Dict[str, Any]:
     if rawResult is None:
         raise RuntimeError("Wizard returned no result")
 
+    rawResult = _coerceWizardValue(rawResult)
+
     if isinstance(rawResult, dict):
         if isinstance(rawResult.get("paramUpdates"), dict):
-            return rawResult
+            normalized = dict(rawResult)
+            normalized["paramUpdates"] = _coerceWizardValue(rawResult["paramUpdates"])
+            return normalized
 
         if paramName in rawResult:
-            return {"paramUpdates": {paramName: rawResult[paramName]}}
+            return {"paramUpdates": {paramName: _coerceWizardValue(rawResult[paramName])}}
 
         if len(rawResult) == 1:
             onlyKey = next(iter(rawResult.keys()))
-            return {"paramUpdates": {str(onlyKey): rawResult[onlyKey]}}
+            return {"paramUpdates": {str(onlyKey): _coerceWizardValue(rawResult[onlyKey])}}
 
-        return {"paramUpdates": rawResult}
+        return {"paramUpdates": _coerceWizardValue(rawResult)}
 
     if isinstance(rawResult, (list, tuple)):
         if len(rawResult) == 1:
-            return {"paramUpdates": {paramName: rawResult[0]}}
+            return {"paramUpdates": {paramName: _coerceWizardValue(rawResult[0])}}
 
         if len(rawResult) == 2 and isinstance(rawResult[0], str):
-            return {"paramUpdates": {rawResult[0]: rawResult[1]}}
+            return {"paramUpdates": {rawResult[0]: _coerceWizardValue(rawResult[1])}}
 
-    return {"paramUpdates": {paramName: rawResult}}
+    return {"paramUpdates": {paramName: _coerceWizardValue(rawResult)}}
 
 
 def loadSchedulerLanesFromWizardModule(wizardClass) -> List[str]:

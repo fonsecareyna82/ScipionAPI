@@ -82,6 +82,18 @@ class FakeProtocol:
         )
 
 
+class FakeProtocolWithBoxSize:
+    def __init__(self, box_size: int):
+        self._box_size = box_size
+
+    def getBoxSize(self):
+        return self._box_size
+
+
+class EmptyBoxSizeWizard:
+    pass
+
+
 class ScalarRadiusWizard:
     def getRadius(self, protocol, param_name):
         return 42
@@ -213,3 +225,41 @@ def test_mask_radius_wizard_apply_returns_param_update(tmp_path):
     assert result["paramUpdates"] == {"radius": 12}
     assert result["availableValues"] == []
     assert "Mask radius set to 12" in result["message"]
+
+
+def test_box_size_wizard_reads_value_from_protocol_method():
+    protocol = FakeProtocolWithBoxSize(192)
+
+    result = executeWizardHandler(
+        kind="box_size",
+        wizardClass=EmptyBoxSizeWizard,
+        protocol=protocol,
+        paramName="boxSize",
+        descriptor={},
+        wizardInputs={},
+        currentProject=None,
+        projectId=None,
+    )
+
+    assert result["paramUpdates"] == {"boxSize": 192}
+
+
+def test_box_size_wizard_falls_back_to_generic_wizard_method():
+    class WizardWithGetBoxSize:
+        def getBoxSize(self, protocol, param_name):
+            return 256
+
+    protocol = object()
+
+    result = executeWizardHandler(
+        kind="box_size",
+        wizardClass=WizardWithGetBoxSize,
+        protocol=protocol,
+        paramName="boxSize",
+        descriptor={},
+        wizardInputs={},
+        currentProject=None,
+        projectId=None,
+    )
+
+    assert result["paramUpdates"] == {"boxSize": 256}
