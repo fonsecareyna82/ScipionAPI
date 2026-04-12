@@ -50,6 +50,16 @@ MASK_RADII_HELP_MESSAGE = (
 )
 
 
+def _normalizeWizardSelectionIndex(rawIndex: Any, fallbackPosition: int) -> int:
+    try:
+        parsed = int(rawIndex)
+        if parsed > 0:
+            return parsed
+    except Exception:
+        pass
+
+    return int(fallbackPosition)
+
 def executeMaskRadiusWizard(
     *,
     wizardClass,
@@ -349,12 +359,14 @@ def listMaskRadiusItems(protocol, maxItems: int = 200) -> List[Dict[str, Any]]:
         source = findPreviewImageSource(protocol)
         if source is None:
             return []
-        filePath, index = source
+        filePath, sourceIndexRaw = source
+        sourceIndex = _normalizeWizardSelectionIndex(sourceIndexRaw, 1)
         return [
             {
-                "id": buildMaskRadiusItemId(filePath, index, 1),
-                "label": formatMaskRadiusItemLabel(filePath, index, 1),
-                "index": int(index) if index is not None else 1,
+                "id": buildMaskRadiusItemId(filePath, sourceIndex, 1),
+                "label": formatMaskRadiusItemLabel(filePath, sourceIndex, 1),
+                "index": 1,
+                "sourceIndex": sourceIndex,
                 "filePath": str(filePath),
             }
         ]
@@ -368,13 +380,15 @@ def listMaskRadiusItems(protocol, maxItems: int = 200) -> List[Dict[str, Any]]:
         if source is None:
             continue
 
-        filePath, index = source
-        safeIndex = int(index) if index is not None else position
+        filePath, sourceIndexRaw = source
+        sourceIndex = _normalizeWizardSelectionIndex(sourceIndexRaw, position)
+
         items.append(
             {
-                "id": buildMaskRadiusItemId(filePath, safeIndex, position),
-                "label": formatMaskRadiusItemLabel(filePath, safeIndex, position),
-                "index": safeIndex,
+                "id": buildMaskRadiusItemId(filePath, sourceIndex, position),
+                "label": formatMaskRadiusItemLabel(filePath, sourceIndex, position),
+                "index": position,
+                "sourceIndex": sourceIndex,
                 "filePath": str(filePath),
             }
         )
@@ -384,12 +398,14 @@ def listMaskRadiusItems(protocol, maxItems: int = 200) -> List[Dict[str, Any]]:
 
     source = extractImageSourceFromObject(collection)
     if source is not None:
-        filePath, index = source
+        filePath, sourceIndexRaw = source
+        sourceIndex = _normalizeWizardSelectionIndex(sourceIndexRaw, 1)
         return [
             {
-                "id": buildMaskRadiusItemId(filePath, index, 1),
-                "label": formatMaskRadiusItemLabel(filePath, index, 1),
-                "index": int(index) if index is not None else 1,
+                "id": buildMaskRadiusItemId(filePath, sourceIndex, 1),
+                "label": formatMaskRadiusItemLabel(filePath, sourceIndex, 1),
+                "index": 1,
+                "sourceIndex": sourceIndex,
                 "filePath": str(filePath),
             }
         ]
@@ -474,7 +490,7 @@ def resolveMaskRadiusSelection(
 def buildMaskRadiusItemId(filePath: str, index: Optional[int], position: int) -> str:
     baseName = os.path.basename(str(filePath or "")).strip() or "item"
     token = int(index) if index is not None else int(position)
-    return f"{baseName}:{token}"
+    return f"{baseName}:{token}:{int(position)}"
 
 
 def formatMaskRadiusItemLabel(filePath: str, index: Optional[int], position: int) -> str:
@@ -586,9 +602,9 @@ def loadPreviewBaseImageFromSelection(
     if not filePath or not os.path.exists(filePath):
         return None
 
-    index = selectedItem.get("index")
+    indexRaw = selectedItem.get("sourceIndex", selectedItem.get("index"))
     try:
-        safeIndex = int(index) if index is not None else None
+        safeIndex = int(indexRaw) if indexRaw is not None else None
     except Exception:
         safeIndex = None
 

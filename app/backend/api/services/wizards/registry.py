@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
+from .ctf import executeCtfPreviewWizard
 from .generic import (
     executeBoxSizeWizard,
     executeComputeLaneSelectorWizard,
@@ -22,6 +23,7 @@ HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "compute_lane_selector": executeComputeLaneSelectorWizard,
     "mask_radius": executeMaskRadiusWizard,
     "mask_radii": executeMaskRadiiWizard,
+    "ctf_preview": executeCtfPreviewWizard,
 }
 
 
