@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+
 from __future__ import annotations
 
 import base64
@@ -41,6 +42,11 @@ logger = logging.getLogger(__name__)
 MASK_RADIUS_HELP_MESSAGE = (
     "The values of the mask radius can be controlled via both the slider or the "
     "mousewheel (when the mouse cursor is over the image)."
+)
+
+MASK_RADII_HELP_MESSAGE = (
+    "The values of the inner and outer radii can be controlled via the sliders "
+    "or the mousewheel (when the mouse cursor is over the image)."
 )
 
 
@@ -92,13 +98,128 @@ def executeMaskRadiusWizard(
     }
 
 
+def executeMaskRadiiWizard(
+    *,
+    wizardClass,
+    protocol,
+    paramName: str,
+    descriptor: Optional[Dict[str, Any]] = None,
+    wizardInputs: Optional[Dict[str, Any]] = None,
+    currentProject=None,
+    projectId: Optional[int] = None,
+) -> Dict[str, Any]:
+    descriptor = descriptor or {}
+    targetParams = list(descriptor.get("targetParams") or [])
+    wizardInputs = wizardInputs or {}
+
+    primaryParam = str(paramName or "").strip()
+    secondaryParam = _resolveSecondaryMaskRadiiParam(primaryParam, targetParams)
+
+    innerDefault, outerDefault = _readMaskRadiiDefaults(
+        protocol=protocol,
+        primaryParam=primaryParam,
+        secondaryParam=secondaryParam,
+    )
+
+    action = normalizeMaskRadiusAction(wizardInputs)
+    innerRadius = coercePositiveInt(
+        wizardInputs.get("innerRadius"),
+        default=innerDefault,
+    )
+    outerRadius = coercePositiveInt(
+        wizardInputs.get("outerRadius"),
+        default=outerDefault,
+    )
+    if outerRadius < innerRadius:
+        outerRadius = innerRadius
+
+    selectedIndex = coercePositiveInt(wizardInputs.get("selectedIndex"), default=1)
+
+    if action == "apply":
+        return {
+            "paramUpdates": {
+                primaryParam: innerRadius,
+                secondaryParam: outerRadius,
+            },
+            "message": f"Mask radii set to {innerRadius} / {outerRadius}",
+            "availableValues": [],
+        }
+
+    viewerState = buildMaskRadiiViewerState(
+        protocol=protocol,
+        currentProject=currentProject,
+        innerRadius=innerRadius,
+        outerRadius=outerRadius,
+        selectedIndex=selectedIndex,
+        primaryParam=primaryParam,
+        secondaryParam=secondaryParam,
+        canvasSize=512,
+    )
+
+    return {
+        "paramUpdates": {},
+        "message": MASK_RADII_HELP_MESSAGE,
+        "requiresUserInput": True,
+        "availableValues": [],
+        "inputSchema": {
+            "type": "mask_radii",
+            "paramName": primaryParam,
+            "title": "Wizard",
+            "fields": [
+                {
+                    "name": "innerRadius",
+                    "label": primaryParam,
+                    "kind": "number",
+                    "value": int(innerRadius),
+                },
+                {
+                    "name": "outerRadius",
+                    "label": secondaryParam,
+                    "kind": "number",
+                    "value": int(outerRadius),
+                },
+            ],
+        },
+        "viewerState": viewerState,
+    }
+
+
+def _resolveSecondaryMaskRadiiParam(
+    primaryParam: str,
+    targetParams: List[str],
+) -> str:
+    normalized = [str(item).strip() for item in targetParams if str(item).strip()]
+    fallbackMap = {
+        "innerRadius": "outerRadius",
+        "particleRadius": "noiseRadius",
+    }
+
+    for candidate in normalized:
+        if candidate != primaryParam:
+            return candidate
+
+    return fallbackMap.get(primaryParam, "outerRadius")
+
+
+def _readMaskRadiiDefaults(
+    *,
+    protocol,
+    primaryParam: str,
+    secondaryParam: str,
+) -> Tuple[int, int]:
+    innerDefault = max(1, readProtocolNumericValue(protocol, primaryParam, default=1))
+    outerDefault = max(innerDefault, readProtocolNumericValue(protocol, secondaryParam, default=max(innerDefault, 2 * innerDefault)))
+
+    return innerDefault, outerDefault
+
+
 def normalizeMaskRadiusAction(wizardInputs: Dict[str, Any]) -> str:
     if not wizardInputs:
         return "open"
 
     actionRaw = wizardInputs.get("action")
     if actionRaw is None:
-        if "radius" in wizardInputs:
+        if "radius" in wizardInputs or "innerRadius" in wizardInputs or "outerRadius" in wizardInputs:
             return "apply"
         return "open"
 
@@ -154,6 +275,63 @@ def buildMaskRadiusViewerState(
         "radiusStep": 1,
         "radiusAngstrom": radiusAngstrom,
         "samplingRate": samplingRate,
+        "preview": {
+            "imageUrl": pilImageToDataUrl(previewImage),
+            "width": previewImage.width,
+            "height": previewImage.height,
+            "caption": "Central slice",
+            "sourceWidth": int(origW),
+            "sourceHeight": int(origH),
+        },
+    }
+
+
+def buildMaskRadiiViewerState(
+    *,
+    protocol,
+    currentProject=None,
+    innerRadius: int,
+    outerRadius: int,
+    selectedIndex: int,
+    primaryParam: str,
+    secondaryParam: str,
+    canvasSize: int = 512,
+) -> Dict[str, Any]:
+    items = listMaskRadiusItems(protocol)
+    selectedItem = resolveMaskRadiusSelection(items, selectedIndex)
+
+    previewImage, _, origW, origH = buildMaskRadiusPreviewImage(
+        protocol=protocol,
+        currentProject=currentProject,
+        radius=outerRadius,
+        selectedItem=selectedItem,
+        canvasSize=canvasSize,
+    )
+
+    samplingRate = getMaskRadiusSamplingRate(protocol)
+
+    innerRadiusAngstrom = None
+    outerRadiusAngstrom = None
+    if samplingRate is not None and samplingRate > 0:
+        innerRadiusAngstrom = round(float(innerRadius) * float(samplingRate), 1)
+        outerRadiusAngstrom = round(float(outerRadius) * float(samplingRate), 1)
+
+    radiusMax = max(1, int(min(origW, origH) // 2))
+
+    return {
+        "items": [serializeMaskRadiusItem(item) for item in items],
+        "selectedIndex": int(selectedItem["index"]) if selectedItem else 1,
+        "innerRadius": int(innerRadius),
+        "outerRadius": int(outerRadius),
+        "innerRadiusMin": 1,
+        "outerRadiusMin": 1,
+        "radiusMax": radiusMax,
+        "radiusStep": 1,
+        "innerRadiusAngstrom": innerRadiusAngstrom,
+        "outerRadiusAngstrom": outerRadiusAngstrom,
+        "samplingRate": samplingRate,
+        "primaryParam": primaryParam,
+        "secondaryParam": secondaryParam,
         "preview": {
             "imageUrl": pilImageToDataUrl(previewImage),
             "width": previewImage.width,
