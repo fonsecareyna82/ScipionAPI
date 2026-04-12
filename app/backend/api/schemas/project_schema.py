@@ -154,17 +154,57 @@ class WizardViewerPreviewResponse(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     caption: Optional[str] = None
+    sourceWidth: Optional[int] = None
+    sourceHeight: Optional[int] = None
 
 
 class WizardViewerStateResponse(BaseModel):
     items: List[WizardViewerItemResponse] = Field(default_factory=list)
     selectedIndex: int = 1
+
     radius: Optional[int] = None
     radiusMin: Optional[int] = None
+    radiusMax: Optional[int] = None
     radiusStep: Optional[int] = None
     radiusAngstrom: Optional[float] = None
+
+    innerRadius: Optional[int] = None
+    outerRadius: Optional[int] = None
+    innerRadiusMin: Optional[int] = None
+    outerRadiusMin: Optional[int] = None
+    innerRadiusAngstrom: Optional[float] = None
+    outerRadiusAngstrom: Optional[float] = None
+    primaryParam: Optional[str] = None
+    secondaryParam: Optional[str] = None
+
+    downsample: Optional[float] = None
+    downsampleMin: Optional[float] = None
+    downsampleMax: Optional[float] = None
+    downsampleStep: Optional[float] = None
+
+    lowFreq: Optional[float] = None
+    lowFreqMin: Optional[float] = None
+    lowFreqMax: Optional[float] = None
+
+    highFreq: Optional[float] = None
+    highFreqMin: Optional[float] = None
+    highFreqMax: Optional[float] = None
+
+    freqStep: Optional[float] = None
+    showInAngstroms: Optional[bool] = None
+
+    downsampleParam: Optional[str] = None
+    lowFreqParam: Optional[str] = None
+    highFreqParam: Optional[str] = None
+
+    autoDownsampling: Optional[bool] = None
+    autoDownsampleValue: Optional[float] = None
+
     samplingRate: Optional[float] = None
     preview: Optional[WizardViewerPreviewResponse] = None
+
+    micrographPreview: Optional[WizardViewerPreviewResponse] = None
+    psdPreview: Optional[WizardViewerPreviewResponse] = None
 
 
 class ProtocolWizardExecuteResponse(BaseModel):

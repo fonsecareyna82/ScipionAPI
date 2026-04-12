@@ -99,6 +99,7 @@ class ProtocolWizardService:
             "compute_lane_selector",
             "mask_radius",
             "mask_radii",
+            "ctf_preview",
         }
 
         webSupported = kind in computeKinds
@@ -378,7 +379,6 @@ class ProtocolWizardService:
         if kind in {
             "viewer_color_scale",
             "point_in_volume",
-            "ctf_preview",
             "downsample_preview",
             "gaussian_preview",
             "filter_preview",
