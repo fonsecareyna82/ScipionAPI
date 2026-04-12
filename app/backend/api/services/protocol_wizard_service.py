@@ -98,6 +98,7 @@ class ProtocolWizardService:
             "number_of_classes",
             "compute_lane_selector",
             "mask_radius",
+            "mask_radii",
         }
 
         webSupported = kind in computeKinds
@@ -379,7 +380,6 @@ class ProtocolWizardService:
             "point_in_volume",
             "ctf_preview",
             "downsample_preview",
-            "mask_radii",
             "gaussian_preview",
             "filter_preview",
             "legacy_web_view",

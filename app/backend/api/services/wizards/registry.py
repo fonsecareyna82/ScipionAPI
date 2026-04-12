@@ -9,7 +9,10 @@ from .generic import (
     executeGenericComputeWizard,
     executeNumberOfClassesWizard,
 )
-from .mask_radius import executeMaskRadiusWizard
+from .mask_radius import (
+    executeMaskRadiusWizard,
+    executeMaskRadiiWizard,
+)
 
 HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "compute": executeGenericComputeWizard,
@@ -18,6 +21,7 @@ HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "number_of_classes": executeNumberOfClassesWizard,
     "compute_lane_selector": executeComputeLaneSelectorWizard,
     "mask_radius": executeMaskRadiusWizard,
+    "mask_radii": executeMaskRadiiWizard,
 }
 
 
