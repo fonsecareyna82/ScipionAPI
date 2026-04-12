@@ -31,6 +31,7 @@ from .base import (
     buildGenericMethodNames,
     executeByCandidates,
     loadSchedulerLanesFromWizardModule,
+    normalizeHandlerResult,
     readProtocolParamValue,
 )
 
@@ -63,6 +64,22 @@ def executeBoxSizeWizard(
     currentProject=None,
     projectId: Optional[int] = None,
 ) -> Dict[str, Any]:
+    protocolMethodNames = [
+        "getBoxSize",
+        "_getBoxSize",
+    ]
+
+    for methodName in protocolMethodNames:
+        method = getattr(protocol, methodName, None)
+        if not callable(method):
+            continue
+
+        try:
+            result = method()
+            return normalizeHandlerResult(paramName, result)
+        except Exception:
+            continue
+
     preferred = [
         "_getBoxSize",
         "getBoxSize",
@@ -70,6 +87,7 @@ def executeBoxSizeWizard(
         "calculateBoxSize",
     ]
     preferred.extend(buildGenericMethodNames(paramName))
+
     return executeByCandidates(
         wizardClass=wizardClass,
         protocol=protocol,
