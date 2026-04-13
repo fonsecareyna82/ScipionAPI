@@ -1425,7 +1425,7 @@ class ProjectService:
                                             group['params'].append(paramChild)
                                             paramsValue[paramGroupName] = paramValue
 
-                                attachContainerWizardMetadata(group)
+                                # attachContainerWizardMetadata(group)
 
                                 if group:
                                     sectionData["params"].append(group)
@@ -1446,7 +1446,7 @@ class ProjectService:
                                             line['params'].append(paramChild)
                                             paramsValue[paramLineName] = paramValue
 
-                                attachContainerWizardMetadata(line)
+                                # attachContainerWizardMetadata(line)
 
                                 if line:
                                     sectionData["params"].append(line)
