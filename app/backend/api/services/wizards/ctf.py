@@ -57,18 +57,21 @@ CTF_HELP_MESSAGE = (
 PSD_PRE_DOWNSAMPLE_MIN_SIZE = 192
 PSD_MAX_WORK_SIZE = 768
 
-PSD_POST_BLUR_RADIUS = 0.55
-PSD_AUTOCONTRAST_CUTOFF = 0.7
-PSD_CONTRAST_GAIN = 1.18
+PSD_POST_BLUR_RADIUS = 0.35
+PSD_AUTOCONTRAST_CUTOFF = 1.2
+PSD_CONTRAST_GAIN = 1.08
 
-PSD_GAMMA = 0.92
-PSD_DISPLAY_AUTOCONTRAST_CUTOFF = 0.6
-PSD_DISPLAY_CONTRAST_GAIN = 1.22
-PSD_DISPLAY_GAMMA = 1.42
-PSD_DISPLAY_DETAIL_GAIN = 0.18
+PSD_GAMMA = 1.00
+PSD_DISPLAY_AUTOCONTRAST_CUTOFF = 1.0
+PSD_DISPLAY_CONTRAST_GAIN = 1.30
+PSD_DISPLAY_GAMMA = 1.18
+PSD_DISPLAY_DETAIL_GAIN = 0.08
+PSD_DISPLAY_EDGE_DARKEN = 0.18
+PSD_DISPLAY_CENTER_GAIN = 0.05
+
 PSD_UNSHARP_RADIUS = 1
-PSD_UNSHARP_PERCENT = 150
-PSD_UNSHARP_THRESHOLD = 2
+PSD_UNSHARP_PERCENT = 110
+PSD_UNSHARP_THRESHOLD = 3
 
 
 def executeCtfPreviewWizard(
@@ -555,19 +558,39 @@ def _polish_psd_image(image: PILImage.Image) -> PILImage.Image:
     )
     return image
 
+
 def _apply_psd_presentation(image: PILImage.Image) -> PILImage.Image:
     image = ImageOps.autocontrast(
         image,
         cutoff=PSD_DISPLAY_AUTOCONTRAST_CUTOFF,
     )
 
+    image = image.filter(ImageFilter.GaussianBlur(radius=PSD_POST_BLUR_RADIUS))
+
     baseArr = np.asarray(image, dtype=np.float32)
     blurredArr = np.asarray(
-        image.filter(ImageFilter.GaussianBlur(radius=1.1)),
+        image.filter(ImageFilter.GaussianBlur(radius=1.2)),
         dtype=np.float32,
     )
 
-    enhancedArr = baseArr * (1.0 + PSD_DISPLAY_DETAIL_GAIN) - blurredArr * PSD_DISPLAY_DETAIL_GAIN
+    detailArr = baseArr - blurredArr
+    enhancedArr = baseArr + PSD_DISPLAY_DETAIL_GAIN * detailArr
+
+    height, width = enhancedArr.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    cy = (height - 1) / 2.0
+    cx = (width - 1) / 2.0
+
+    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    rrNorm = rr / max(1.0, float(np.max(rr)))
+
+    radialGain = (
+        1.0
+        + PSD_DISPLAY_CENTER_GAIN * (1.0 - rrNorm)
+        - PSD_DISPLAY_EDGE_DARKEN * np.power(rrNorm, 1.35)
+    )
+
+    enhancedArr *= radialGain.astype(np.float32, copy=False)
     enhancedArr = np.clip(enhancedArr, 0.0, 255.0).astype(np.uint8)
 
     image = PILImage.fromarray(enhancedArr, mode="L")
@@ -588,6 +611,7 @@ def _apply_psd_presentation(image: PILImage.Image) -> PILImage.Image:
     )
 
     return image
+
 
 @lru_cache(maxsize=256)
 def _build_cached_psd_preview(
@@ -625,8 +649,8 @@ def _build_cached_psd_preview(
 
     norm = _normalize_to_uint8(
         power,
-        lowPercentile=1.2,
-        highPercentile=99.6,
+        lowPercentile=1.8,
+        highPercentile=99.35,
         gamma=PSD_GAMMA,
     )
 
