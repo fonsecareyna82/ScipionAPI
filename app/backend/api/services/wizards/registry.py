@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from .ctf import executeCtfPreviewWizard
+from .filter import (
+    executeFilterPreviewWizard,
+    executeGaussianPreviewWizard,
+)
 from .generic import (
     executeBoxSizeWizard,
     executeComputeLaneSelectorWizard,
@@ -24,6 +28,8 @@ HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "mask_radius": executeMaskRadiusWizard,
     "mask_radii": executeMaskRadiiWizard,
     "ctf_preview": executeCtfPreviewWizard,
+    "filter_preview": executeFilterPreviewWizard,
+    "gaussian_preview": executeGaussianPreviewWizard,
 }
 
 
