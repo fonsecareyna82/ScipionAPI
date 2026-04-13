@@ -35,7 +35,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from PIL import Image as PILImage, ImageFilter
+from PIL import Image as PILImage, ImageEnhance, ImageFilter, ImageOps
 
 from .base import instantiateWizard
 from .mask_radius import (
@@ -53,6 +53,22 @@ CTF_HELP_MESSAGE = (
     "The values of the CTF downsampling and the low/high frequency limits can be "
     "controlled interactively in the web wizard."
 )
+
+PSD_PRE_DOWNSAMPLE_MIN_SIZE = 192
+PSD_MAX_WORK_SIZE = 768
+
+PSD_POST_BLUR_RADIUS = 0.55
+PSD_AUTOCONTRAST_CUTOFF = 0.7
+PSD_CONTRAST_GAIN = 1.18
+
+PSD_GAMMA = 0.92
+PSD_DISPLAY_AUTOCONTRAST_CUTOFF = 0.6
+PSD_DISPLAY_CONTRAST_GAIN = 1.22
+PSD_DISPLAY_GAMMA = 1.42
+PSD_DISPLAY_DETAIL_GAIN = 0.18
+PSD_UNSHARP_RADIUS = 1
+PSD_UNSHARP_PERCENT = 150
+PSD_UNSHARP_THRESHOLD = 2
 
 
 def executeCtfPreviewWizard(
@@ -526,6 +542,53 @@ def _build_cached_micrograph_preview(filePath: str, sourceIndex: int, canvasSize
     return _pilImageToPngBytes(image)
 
 
+def _polish_psd_image(image: PILImage.Image) -> PILImage.Image:
+    image = image.filter(ImageFilter.GaussianBlur(radius=PSD_POST_BLUR_RADIUS))
+    image = ImageOps.autocontrast(image, cutoff=PSD_AUTOCONTRAST_CUTOFF)
+    image = ImageEnhance.Contrast(image).enhance(PSD_CONTRAST_GAIN)
+    image = image.filter(
+        ImageFilter.UnsharpMask(
+            radius=PSD_UNSHARP_RADIUS,
+            percent=PSD_UNSHARP_PERCENT,
+            threshold=PSD_UNSHARP_THRESHOLD,
+        )
+    )
+    return image
+
+def _apply_psd_presentation(image: PILImage.Image) -> PILImage.Image:
+    image = ImageOps.autocontrast(
+        image,
+        cutoff=PSD_DISPLAY_AUTOCONTRAST_CUTOFF,
+    )
+
+    baseArr = np.asarray(image, dtype=np.float32)
+    blurredArr = np.asarray(
+        image.filter(ImageFilter.GaussianBlur(radius=1.1)),
+        dtype=np.float32,
+    )
+
+    enhancedArr = baseArr * (1.0 + PSD_DISPLAY_DETAIL_GAIN) - blurredArr * PSD_DISPLAY_DETAIL_GAIN
+    enhancedArr = np.clip(enhancedArr, 0.0, 255.0).astype(np.uint8)
+
+    image = PILImage.fromarray(enhancedArr, mode="L")
+    image = ImageEnhance.Contrast(image).enhance(PSD_DISPLAY_CONTRAST_GAIN)
+
+    lut = [
+        int(round(255.0 * ((i / 255.0) ** PSD_DISPLAY_GAMMA)))
+        for i in range(256)
+    ]
+    image = image.point(lut)
+
+    image = image.filter(
+        ImageFilter.UnsharpMask(
+            radius=PSD_UNSHARP_RADIUS,
+            percent=PSD_UNSHARP_PERCENT,
+            threshold=PSD_UNSHARP_THRESHOLD,
+        )
+    )
+
+    return image
+
 @lru_cache(maxsize=256)
 def _build_cached_psd_preview(
     filePath: str,
@@ -539,67 +602,148 @@ def _build_cached_psd_preview(
         return _pilImageToPngBytes(image)
 
     arr = _centerCropSquare(arr)
-
     effectiveDownsample = max(1.0, float(downsampleKey) / 100.0)
-    if effectiveDownsample > 1.0:
-        targetSize = max(256, int(round(arr.shape[0] / effectiveDownsample)))
-        arr = _resizeArrayToGray(arr, targetSize, targetSize)
+    arr = _prepare_psd_input(arr, effectiveDownsample)
+
+    if arr.ndim != 2 or arr.size == 0:
+        image = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
+        return _pilImageToPngBytes(image)
 
     arr = arr.astype(np.float32, copy=False)
     arr -= float(np.mean(arr))
 
-    window = np.outer(np.hanning(arr.shape[0]), np.hanning(arr.shape[1]))
+    std = float(np.std(arr))
+    if std > 1e-6:
+        arr /= std
+
+    window = np.outer(np.hanning(arr.shape[0]), np.hanning(arr.shape[1])).astype(np.float32)
     arr *= window
 
     fft = np.fft.fftshift(np.fft.fft2(arr))
-    power = np.log1p(np.abs(fft) ** 2)
+    power = np.log1p(np.abs(fft)).astype(np.float32, copy=False)
+    power = _suppress_psd_center(power)
 
-    validPower = power[np.isfinite(power)]
-    if validPower.size == 0:
-        image = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-        return _pilImageToPngBytes(image)
-
-    low0 = float(np.percentile(validPower, 0.5))
-    high0 = float(np.percentile(validPower, 99.8))
-
-    if high0 <= low0:
-        low0 = float(validPower.min())
-        high0 = float(validPower.max())
-
-    if high0 <= low0:
-        power8 = np.zeros_like(power, dtype=np.uint8)
-    else:
-        clipped0 = np.clip(power, low0, high0)
-        power8 = ((clipped0 - low0) / (high0 - low0 + 1e-12) * 255.0).astype(np.uint8)
-
-    blurred = np.asarray(
-        PILImage.fromarray(power8, mode="L").filter(ImageFilter.GaussianBlur(radius=10)),
-        dtype=np.float32,
+    norm = _normalize_to_uint8(
+        power,
+        lowPercentile=1.2,
+        highPercentile=99.6,
+        gamma=PSD_GAMMA,
     )
-    enhanced = power8.astype(np.float32) - 0.85 * blurred
 
-    validEnhanced = enhanced[np.isfinite(enhanced)]
-    if validEnhanced.size == 0:
-        image = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-        return _pilImageToPngBytes(image)
-
-    low1 = float(np.percentile(validEnhanced, 1.0))
-    high1 = float(np.percentile(validEnhanced, 99.7))
-
-    if high1 <= low1:
-        low1 = float(validEnhanced.min())
-        high1 = float(validEnhanced.max())
-
-    if high1 <= low1:
-        norm = np.zeros_like(enhanced, dtype=np.uint8)
-    else:
-        clipped1 = np.clip(enhanced, low1, high1)
-        norm = ((clipped1 - low1) / (high1 - low1 + 1e-12) * 255.0).astype(np.uint8)
-
-    image = PILImage.fromarray(norm, mode="L").convert("RGB")
+    image = PILImage.fromarray(norm, mode="L")
+    image = _apply_psd_presentation(image)
+    image = _apply_psd_downsample_zoom(image, effectiveDownsample)
+    image = image.convert("RGB")
     image = _fitImageToCanvas(image, canvasSize)
     image = _applyCircularMask(image)
     return _pilImageToPngBytes(image)
+
+
+def _prepare_psd_input(arr: np.ndarray, effectiveDownsample: float) -> np.ndarray:
+    side = int(arr.shape[0])
+
+    if effectiveDownsample > 1.0:
+        reducedSide = max(
+            PSD_PRE_DOWNSAMPLE_MIN_SIZE,
+            int(round(float(side) / effectiveDownsample)),
+        )
+
+        if reducedSide < side:
+            arr = _resizeArrayToGray(
+                arr,
+                reducedSide,
+                reducedSide,
+                resample=PILImage.Resampling.BOX,
+            )
+
+    if arr.shape[0] > PSD_MAX_WORK_SIZE:
+        arr = _resizeArrayToGray(
+            arr,
+            PSD_MAX_WORK_SIZE,
+            PSD_MAX_WORK_SIZE,
+            resample=PILImage.Resampling.BILINEAR,
+        )
+
+    return arr.astype(np.float32, copy=False)
+
+
+def _apply_psd_downsample_zoom(
+    image: PILImage.Image,
+    effectiveDownsample: float,
+) -> PILImage.Image:
+    if effectiveDownsample <= 1.01:
+        return image
+
+    width, height = image.size
+    scaledWidth = max(width, int(round(width * effectiveDownsample)))
+    scaledHeight = max(height, int(round(height * effectiveDownsample)))
+
+    resized = image.resize(
+        (scaledWidth, scaledHeight),
+        PILImage.Resampling.BILINEAR,
+    )
+
+    left = max(0, (scaledWidth - width) // 2)
+    top = max(0, (scaledHeight - height) // 2)
+    right = left + width
+    bottom = top + height
+
+    return resized.crop((left, top, right, bottom))
+
+
+def _normalize_to_uint8(
+    arr: np.ndarray,
+    lowPercentile: float,
+    highPercentile: float,
+    gamma: float = 1.0,
+) -> np.ndarray:
+    valid = arr[np.isfinite(arr)]
+    if valid.size == 0:
+        return np.zeros(arr.shape, dtype=np.uint8)
+
+    low = float(np.percentile(valid, lowPercentile))
+    high = float(np.percentile(valid, highPercentile))
+
+    if high <= low:
+        low = float(valid.min())
+        high = float(valid.max())
+
+    if high <= low:
+        return np.zeros(arr.shape, dtype=np.uint8)
+
+    norm = np.clip((arr - low) / (high - low + 1e-12), 0.0, 1.0)
+
+    if gamma > 0 and abs(gamma - 1.0) > 1e-6:
+        norm = np.power(norm, gamma)
+
+    return (norm * 255.0).astype(np.uint8)
+
+
+def _suppress_psd_center(power: np.ndarray) -> np.ndarray:
+    height, width = power.shape[:2]
+    cy = (height - 1) / 2.0
+    cx = (width - 1) / 2.0
+
+    yy, xx = np.ogrid[:height, :width]
+    dist2 = (xx - cx) ** 2 + (yy - cy) ** 2
+
+    innerRadius = max(3, int(round(min(width, height) * 0.010)))
+    outerRadius = max(innerRadius + 2, int(round(innerRadius * 2.0)))
+
+    innerMask = dist2 <= innerRadius ** 2
+    ringMask = (dist2 > innerRadius ** 2) & (dist2 <= outerRadius ** 2)
+
+    result = power.copy()
+    validRing = ringMask & np.isfinite(power)
+
+    if np.any(validRing):
+        fillValue = float(np.median(power[validRing]))
+    else:
+        valid = np.isfinite(power)
+        fillValue = float(np.median(power[valid])) if np.any(valid) else 0.0
+
+    result[innerMask] = fillValue
+    return result
 
 
 def _centerCropSquare(arr: np.ndarray) -> np.ndarray:
@@ -644,7 +788,12 @@ def _fitImageToCanvas(image: PILImage.Image, canvasSize: int) -> PILImage.Image:
     return canvas
 
 
-def _resizeArrayToGray(arr: np.ndarray, width: int, height: int) -> np.ndarray:
+def _resizeArrayToGray(
+    arr: np.ndarray,
+    width: int,
+    height: int,
+    resample=PILImage.Resampling.BILINEAR,
+) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float32)
     amin = float(np.min(arr))
     amax = float(np.max(arr))
@@ -657,7 +806,7 @@ def _resizeArrayToGray(arr: np.ndarray, width: int, height: int) -> np.ndarray:
     image = PILImage.fromarray(arr8, mode="L")
     image = image.resize(
         (max(1, int(width)), max(1, int(height))),
-        PILImage.Resampling.BILINEAR,
+        resample,
     )
     return np.asarray(image, dtype=np.float32)
 
