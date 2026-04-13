@@ -57,20 +57,23 @@ CTF_HELP_MESSAGE = (
 PSD_PRE_DOWNSAMPLE_MIN_SIZE = 192
 PSD_MAX_WORK_SIZE = 768
 
-PSD_POST_BLUR_RADIUS = 0.35
-PSD_AUTOCONTRAST_CUTOFF = 1.2
-PSD_CONTRAST_GAIN = 1.08
+PSD_PATCH_MIN_SIZE = 192
+PSD_PATCH_MAX_SIZE = 384
+PSD_PATCH_FRACTION = 0.42
+PSD_PATCH_STEP_FRACTION = 0.5
 
-PSD_GAMMA = 1.00
-PSD_DISPLAY_AUTOCONTRAST_CUTOFF = 1.0
-PSD_DISPLAY_CONTRAST_GAIN = 1.30
-PSD_DISPLAY_GAMMA = 1.18
-PSD_DISPLAY_DETAIL_GAIN = 0.08
-PSD_DISPLAY_EDGE_DARKEN = 0.18
-PSD_DISPLAY_CENTER_GAIN = 0.05
+PSD_POST_BLUR_RADIUS = 0.30
+PSD_GAMMA = 0.96
+
+PSD_DISPLAY_AUTOCONTRAST_CUTOFF = 0.8
+PSD_DISPLAY_CONTRAST_GAIN = 1.12
+PSD_DISPLAY_GAMMA = 1.08
+PSD_DISPLAY_DETAIL_GAIN = 0.10
+PSD_DISPLAY_EDGE_DARKEN = 0.10
+PSD_DISPLAY_CENTER_GAIN = 0.02
 
 PSD_UNSHARP_RADIUS = 1
-PSD_UNSHARP_PERCENT = 110
+PSD_UNSHARP_PERCENT = 105
 PSD_UNSHARP_THRESHOLD = 3
 
 
@@ -545,20 +548,6 @@ def _build_cached_micrograph_preview(filePath: str, sourceIndex: int, canvasSize
     return _pilImageToPngBytes(image)
 
 
-def _polish_psd_image(image: PILImage.Image) -> PILImage.Image:
-    image = image.filter(ImageFilter.GaussianBlur(radius=PSD_POST_BLUR_RADIUS))
-    image = ImageOps.autocontrast(image, cutoff=PSD_AUTOCONTRAST_CUTOFF)
-    image = ImageEnhance.Contrast(image).enhance(PSD_CONTRAST_GAIN)
-    image = image.filter(
-        ImageFilter.UnsharpMask(
-            radius=PSD_UNSHARP_RADIUS,
-            percent=PSD_UNSHARP_PERCENT,
-            threshold=PSD_UNSHARP_THRESHOLD,
-        )
-    )
-    return image
-
-
 def _apply_psd_presentation(image: PILImage.Image) -> PILImage.Image:
     image = ImageOps.autocontrast(
         image,
@@ -633,29 +622,20 @@ def _build_cached_psd_preview(
         image = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
         return _pilImageToPngBytes(image)
 
-    arr = arr.astype(np.float32, copy=False)
-    arr -= float(np.mean(arr))
-
-    std = float(np.std(arr))
-    if std > 1e-6:
-        arr /= std
-
-    window = np.outer(np.hanning(arr.shape[0]), np.hanning(arr.shape[1])).astype(np.float32)
-    arr *= window
-
-    fft = np.fft.fftshift(np.fft.fft2(arr))
-    power = np.log1p(np.abs(fft)).astype(np.float32, copy=False)
+    power = _compute_average_patch_psd(arr)
     power = _suppress_psd_center(power)
 
     norm = _normalize_to_uint8(
         power,
-        lowPercentile=1.8,
-        highPercentile=99.35,
+        lowPercentile=1.6,
+        highPercentile=99.4,
         gamma=PSD_GAMMA,
     )
 
     image = PILImage.fromarray(norm, mode="L")
     image = _apply_psd_presentation(image)
+    image = ImageOps.invert(image)
+    image = ImageEnhance.Contrast(image).enhance(1.08)
     image = _apply_psd_downsample_zoom(image, effectiveDownsample)
     image = image.convert("RGB")
     image = _fitImageToCanvas(image, canvasSize)
@@ -689,6 +669,68 @@ def _prepare_psd_input(arr: np.ndarray, effectiveDownsample: float) -> np.ndarra
         )
 
     return arr.astype(np.float32, copy=False)
+
+
+def _resolve_patch_size(side: int) -> int:
+    patchSize = int(round(float(side) * PSD_PATCH_FRACTION))
+    patchSize = max(PSD_PATCH_MIN_SIZE, min(PSD_PATCH_MAX_SIZE, patchSize))
+    patchSize = min(patchSize, side)
+
+    if patchSize % 2 != 0:
+        patchSize -= 1
+
+    return max(32, patchSize)
+
+
+def _extract_patch_view(arr: np.ndarray, patchSize: int, step: int) -> np.ndarray:
+    height, width = arr.shape[:2]
+    if patchSize > height or patchSize > width:
+        raise ValueError("Patch size larger than input array.")
+
+    nRows = 1 + max(0, (height - patchSize) // step)
+    nCols = 1 + max(0, (width - patchSize) // step)
+
+    shape = (nRows, nCols, patchSize, patchSize)
+    strides = (
+        arr.strides[0] * step,
+        arr.strides[1] * step,
+        arr.strides[0],
+        arr.strides[1],
+    )
+
+    return np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides, writeable=False)
+
+
+def _compute_average_patch_psd(arr: np.ndarray) -> np.ndarray:
+    side = int(arr.shape[0])
+    patchSize = _resolve_patch_size(side)
+    step = max(24, int(round(float(patchSize) * PSD_PATCH_STEP_FRACTION)))
+
+    if side <= patchSize:
+        patches = arr[np.newaxis, np.newaxis, :, :]
+    else:
+        patches = _extract_patch_view(arr, patchSize, step)
+
+    patches = np.asarray(patches, dtype=np.float32)
+    patchMean = np.mean(patches, axis=(-2, -1), keepdims=True)
+    patches = patches - patchMean
+
+    patchStd = np.std(patches, axis=(-2, -1), keepdims=True)
+    patches = np.where(patchStd > 1e-6, patches / patchStd, patches)
+
+    hann1d = np.hanning(patchSize).astype(np.float32)
+    window = np.outer(hann1d, hann1d).astype(np.float32)
+    patches = patches * window[np.newaxis, np.newaxis, :, :]
+
+    spectra = np.fft.fft2(patches, axes=(-2, -1))
+    spectra = np.fft.fftshift(spectra, axes=(-2, -1))
+    power = np.abs(spectra) ** 2
+
+    avgPower = np.mean(power, axis=(0, 1))
+    avgPower = np.sqrt(avgPower, out=avgPower)
+    avgPower = np.log1p(avgPower).astype(np.float32, copy=False)
+
+    return avgPower
 
 
 def _apply_psd_downsample_zoom(
@@ -751,8 +793,8 @@ def _suppress_psd_center(power: np.ndarray) -> np.ndarray:
     yy, xx = np.ogrid[:height, :width]
     dist2 = (xx - cx) ** 2 + (yy - cy) ** 2
 
-    innerRadius = max(3, int(round(min(width, height) * 0.010)))
-    outerRadius = max(innerRadius + 2, int(round(innerRadius * 2.0)))
+    innerRadius = max(3, int(round(min(width, height) * 0.012)))
+    outerRadius = max(innerRadius + 2, int(round(innerRadius * 2.1)))
 
     innerMask = dist2 <= innerRadius ** 2
     ringMask = (dist2 > innerRadius ** 2) & (dist2 <= outerRadius ** 2)
