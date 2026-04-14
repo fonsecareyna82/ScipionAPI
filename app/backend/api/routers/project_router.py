@@ -1190,6 +1190,7 @@ def exportProtocols(
             detail=f"Failed to export protocols: {e}",
         )
 
+
 @router.post(
     "/{projectId}/protocols/{protocolId}/fs/write",
     response_model=Any,
@@ -1226,6 +1227,7 @@ async def writeRemoteFile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to write remote file: {e}",
         )
+
 
 @router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
 async def previewOutput(

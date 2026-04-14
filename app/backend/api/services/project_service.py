@@ -2690,6 +2690,28 @@ class ProjectService:
 
         return out
 
+    def _sanitizeExportFilename(self, rawFilename: str) -> str:
+        filename = str(rawFilename or "").strip()
+        filename = filename.replace("\\", "/").split("/")[-1].strip()
+
+        if not filename or filename in (".", ".."):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid filename",
+            )
+
+        filename = filename.rstrip(". ").strip()
+        if not filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid filename",
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        return filename
+
     def _resolveFsRootForWrite(self, protocolId: Union[int, str]) -> Path:
         pathInfo = self.getProtocolPath(protocolId)
         rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
@@ -2929,6 +2951,17 @@ class ProjectService:
                 detail="Missing protocolIds",
             )
 
+        directoryPath = str(getattr(payload, "directoryPath", "") or "").strip()
+        if not directoryPath:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing directoryPath",
+            )
+
+        filename = self._sanitizeExportFilename(
+            getattr(payload, "filename", ""),
+        )
+
         try:
             protocolIdInts = [int(pid) for pid in protocolIds]
         except Exception:
@@ -2955,6 +2988,45 @@ class ProjectService:
                 )
 
             rawExport = self.currentProject.getProtocolsJson(protocolList)
+            content = self._normalizeExportJsonContent(rawExport)
+
+            rootPath = self._resolveFsRootForWrite("-1")
+            targetDir = self._guardFsPathWithinRootForWrite(rootPath, directoryPath)
+
+            if targetDir.exists() and not targetDir.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Destination path is not a directory",
+                )
+
+            targetDir.mkdir(parents=True, exist_ok=True)
+
+            targetPath = (targetDir / filename).resolve()
+            try:
+                targetPath.relative_to(rootPath)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Path escapes browser root",
+                )
+
+            if targetPath.exists() and targetPath.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Destination path points to a directory",
+                )
+
+            targetPath.write_text(content, encoding="utf-8")
+
+            return {
+                "success": True,
+                "path": str(targetPath),
+                "filename": filename,
+                "size": targetPath.stat().st_size if targetPath.exists() else 0,
+                "mimeType": "application/json",
+                "protocolIds": protocolIds,
+            }
+
         except HTTPException:
             raise
         except Exception as e:
@@ -2962,18 +3034,6 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Scipion export failed: {e}",
             )
-
-        content = self._normalizeExportJsonContent(rawExport)
-
-        stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        filename = f"protocols_export_{projectId}_{stamp}.json"
-
-        return {
-            "filename": filename,
-            "mimeType": "application/json",
-            "protocolIds": protocolIds,
-            "content": content,
-        }
 
     def writeRemoteFileService(
             self,
