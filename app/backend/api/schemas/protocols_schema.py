@@ -78,6 +78,8 @@ class ProtocolRequestOut(BaseModel):
 
 class ExportProtocolsRequest(BaseModel):
     protocolIds: List[Union[int, str]] = Field(default_factory=list)
+    directoryPath: str = Field(..., min_length=1)
+    filename: str = Field(..., min_length=1)
 
 
 class RemoteFileWriteRequest(BaseModel):
