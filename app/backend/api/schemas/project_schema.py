@@ -190,12 +190,20 @@ class WizardViewerStateResponse(BaseModel):
     highFreqMin: Optional[float] = None
     highFreqMax: Optional[float] = None
 
+    decay: Optional[float] = None
+    decayMin: Optional[float] = None
+    decayMax: Optional[float] = None
+
     freqStep: Optional[float] = None
     showInAngstroms: Optional[bool] = None
+    freqInAngstrom: Optional[bool] = None
+    unitLabel: Optional[str] = None
+    filterMode: Optional[str] = None
 
     downsampleParam: Optional[str] = None
     lowFreqParam: Optional[str] = None
     highFreqParam: Optional[str] = None
+    decayParam: Optional[str] = None
 
     autoDownsampling: Optional[bool] = None
     autoDownsampleValue: Optional[float] = None
@@ -205,6 +213,8 @@ class WizardViewerStateResponse(BaseModel):
 
     micrographPreview: Optional[WizardViewerPreviewResponse] = None
     psdPreview: Optional[WizardViewerPreviewResponse] = None
+    originalPreview: Optional[WizardViewerPreviewResponse] = None
+    filteredPreview: Optional[WizardViewerPreviewResponse] = None
 
 
 class ProtocolWizardExecuteResponse(BaseModel):
