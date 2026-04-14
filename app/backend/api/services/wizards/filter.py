@@ -28,11 +28,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import base64
 import io
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-import base64
 import numpy as np
 from PIL import Image as PILImage
 
@@ -54,7 +54,7 @@ GAUSSIAN_HELP_MESSAGE = (
 )
 
 FILTER_PREVIEW_CANVAS_SIZE = 512
-FILTER_WORK_SIZE = 512
+FILTER_WORK_SIZE = 384
 
 
 def executeFilterPreviewWizard(
@@ -70,28 +70,49 @@ def executeFilterPreviewWizard(
     descriptor = descriptor or {}
     wizardInputs = wizardInputs or {}
 
+    targetParams = list(descriptor.get("targetParams") or [])
+    primaryParam = str(paramName or "").strip()
+
     action = _normalizeWizardAction(wizardInputs)
     selectedIndex = _coercePositiveInt(wizardInputs.get("selectedIndex"), default=1)
 
-    lowParam, highParam, decayParam = _resolveFilterParamNames(
+    freqInAngstrom = _resolveFreqInAngstrom(
         protocol=protocol,
-        primaryParam=str(paramName or "").strip(),
-        targetParams=list(descriptor.get("targetParams") or []),
+        primaryParam=primaryParam,
+        targetParams=targetParams,
+    )
+
+    lowParam, highParam, decayParam = _resolveFilterParamNames(
+        primaryParam=primaryParam,
+        targetParams=targetParams,
+        freqInAngstrom=freqInAngstrom,
     )
 
     lowValue = _coerceFloat(
         wizardInputs.get("lowFreq", wizardInputs.get(lowParam)),
-        default=_readProtocolFloatValue(protocol, lowParam, default=0.0),
+        default=_readProtocolFloatValue(
+            protocol,
+            lowParam,
+            default=60.0 if freqInAngstrom else 0.02,
+        ),
         minimum=0.0,
     )
     highValue = _coerceFloat(
         wizardInputs.get("highFreq", wizardInputs.get(highParam)),
-        default=_readProtocolFloatValue(protocol, highParam, default=0.0),
+        default=_readProtocolFloatValue(
+            protocol,
+            highParam,
+            default=10.0 if freqInAngstrom else 0.35,
+        ),
         minimum=0.0,
     )
     decayValue = _coerceFloat(
         wizardInputs.get("decay", wizardInputs.get(decayParam)),
-        default=_readProtocolFloatValue(protocol, decayParam, default=0.0),
+        default=_readProtocolFloatValue(
+            protocol,
+            decayParam,
+            default=100.0 if freqInAngstrom else 0.02,
+        ),
         minimum=0.0,
     )
 
@@ -115,6 +136,7 @@ def executeFilterPreviewWizard(
         lowParam=lowParam,
         highParam=highParam,
         decayParam=decayParam,
+        freqInAngstrom=freqInAngstrom,
         canvasSize=FILTER_PREVIEW_CANVAS_SIZE,
     )
 
@@ -231,16 +253,25 @@ def _buildFilterViewerState(
     lowParam: str,
     highParam: str,
     decayParam: str,
+    freqInAngstrom: bool,
     canvasSize: int = FILTER_PREVIEW_CANVAS_SIZE,
 ) -> Dict[str, Any]:
     items = listMaskRadiusItems(protocol)
     selectedItem = resolveMaskRadiusSelection(items, selectedIndex)
 
     samplingRate = getMaskRadiusSamplingRate(protocol)
-    freqInAngstrom = _readProtocolBoolValue(protocol, "freqInAngstrom", default=False)
     filterMode = _readProtocolRawValue(protocol, "filterModeFourier")
 
-    originalImage, sourceWidth, sourceHeight = _buildOriginalPreviewImage(
+    sourceWidth, sourceHeight = _getSelectedSourceDimensions(selectedItem)
+    itemDim = int(min(sourceWidth, sourceHeight)) if sourceWidth > 0 and sourceHeight > 0 else FILTER_WORK_SIZE
+
+    freqMin, freqMax, freqStep = _resolveFrequencyBounds(
+        freqInAngstrom=freqInAngstrom,
+        samplingRate=samplingRate,
+        itemDim=itemDim,
+    )
+
+    originalImage = _buildOriginalPreviewImage(
         selectedItem=selectedItem,
         canvasSize=canvasSize,
     )
@@ -255,27 +286,19 @@ def _buildFilterViewerState(
         canvasSize=canvasSize,
     )
 
-    freqMax = _resolveFrequencyMax(
-        freqInAngstrom=freqInAngstrom,
-        lowValue=lowValue,
-        highValue=highValue,
-        decayValue=decayValue,
-    )
-    freqStep = 0.1 if freqInAngstrom else 0.01
-
     resolvedIndex = int(selectedItem["index"]) if selectedItem else 1
 
     return {
         "items": [serializeMaskRadiusItem(item) for item in items],
         "selectedIndex": resolvedIndex,
         "lowFreq": float(lowValue),
-        "lowFreqMin": 0.0,
+        "lowFreqMin": float(freqMin),
         "lowFreqMax": float(freqMax),
         "highFreq": float(highValue),
-        "highFreqMin": 0.0,
+        "highFreqMin": float(freqMin),
         "highFreqMax": float(freqMax),
         "decay": float(decayValue),
-        "decayMin": 0.0,
+        "decayMin": float(freqMin),
         "decayMax": float(freqMax),
         "freqStep": float(freqStep),
         "samplingRate": samplingRate,
@@ -312,19 +335,40 @@ def _buildFilterViewerState(
     }
 
 
-def _resolveFilterParamNames(
+def _resolveFreqInAngstrom(
     *,
     protocol,
     primaryParam: str,
     targetParams: List[str],
+) -> bool:
+    if primaryParam.endswith("A"):
+        return True
+    if primaryParam.endswith("Dig"):
+        return False
+
+    normalized = [str(item).strip() for item in targetParams if str(item).strip()]
+
+    if any(item.endswith("A") for item in normalized):
+        return True
+    if any(item.endswith("Dig") for item in normalized):
+        return False
+
+    return _readProtocolBoolValue(protocol, "freqInAngstrom", default=True)
+
+
+def _resolveFilterParamNames(
+    *,
+    primaryParam: str,
+    targetParams: List[str],
+    freqInAngstrom: bool,
 ) -> Tuple[str, str, str]:
     normalized = [str(item).strip() for item in targetParams if str(item).strip()]
-    freqInAngstrom = _readProtocolBoolValue(protocol, "freqInAngstrom", default=False)
 
-    if freqInAngstrom:
-        defaults = ("lowFreqA", "highFreqA", "freqDecayA")
-    else:
-        defaults = ("lowFreqDig", "highFreqDig", "freqDecayDig")
+    defaults = (
+        ("lowFreqA", "highFreqA", "freqDecayA")
+        if freqInAngstrom
+        else ("lowFreqDig", "highFreqDig", "freqDecayDig")
+    )
 
     lowParam = next((item for item in normalized if item == defaults[0]), defaults[0])
     highParam = next((item for item in normalized if item == defaults[1]), defaults[1])
@@ -370,27 +414,19 @@ def _normalizeWizardAction(wizardInputs: Dict[str, Any]) -> str:
     return "open"
 
 
-def _resolveFrequencyMax(
+def _resolveFrequencyBounds(
     *,
     freqInAngstrom: bool,
-    lowValue: float,
-    highValue: float,
-    decayValue: float,
-) -> float:
-    if freqInAngstrom:
-        return max(
-            20.0,
-            float(lowValue) * 1.5,
-            float(highValue) * 1.5,
-            float(decayValue) * 1.5,
-        )
+    samplingRate: Optional[float],
+    itemDim: int,
+) -> Tuple[float, float, float]:
+    if freqInAngstrom and samplingRate and samplingRate > 0:
+        freqMin = 2.0 * float(samplingRate)
+        freqMax = 2.0 * float(itemDim) * float(samplingRate)
+        freqStep = max(freqMax / 1000.0, 0.001)
+        return freqMin, freqMax, freqStep
 
-    return max(
-        0.5,
-        float(lowValue) * 1.25,
-        float(highValue) * 1.25,
-        float(decayValue) * 1.25,
-    )
+    return 0.01, 0.5, 0.5 / 1000.0
 
 
 def _readProtocolRawValue(protocol, paramName: str):
@@ -462,63 +498,6 @@ def _coercePositiveInt(value: Any, default: int) -> int:
         return max(1, int(default))
 
 
-def _buildOriginalPreviewImage(
-    *,
-    selectedItem: Optional[Dict[str, Any]],
-    canvasSize: int = FILTER_PREVIEW_CANVAS_SIZE,
-) -> Tuple[PILImage.Image, int, int]:
-    source = _extractSelectedSource(selectedItem)
-    if source is None:
-        fallback = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-        return fallback, fallback.width, fallback.height
-
-    filePath, sourceIndex = source
-    cachedPng = _build_cached_original_preview(filePath, sourceIndex, canvasSize)
-    image = _pngBytesToPilImage(cachedPng)
-
-    arr = _load_cached_array(filePath, sourceIndex)
-    if arr is None:
-        return image, image.width, image.height
-
-    return image, int(arr.shape[1]), int(arr.shape[0])
-
-
-def _buildFilteredPreviewImage(
-    *,
-    selectedItem: Optional[Dict[str, Any]],
-    lowValue: float,
-    highValue: float,
-    decayValue: float,
-    samplingRate: Optional[float],
-    freqInAngstrom: bool,
-    filterMode: Any,
-    canvasSize: int = FILTER_PREVIEW_CANVAS_SIZE,
-) -> PILImage.Image:
-    source = _extractSelectedSource(selectedItem)
-    if source is None:
-        return buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-
-    filePath, sourceIndex = source
-    lowKey = int(round(float(lowValue) * 1000.0))
-    highKey = int(round(float(highValue) * 1000.0))
-    decayKey = int(round(float(decayValue) * 1000.0))
-    samplingKey = int(round(float(samplingRate or 0.0) * 1000.0))
-    modeKey = str(filterMode or "")
-
-    cachedPng = _build_cached_filtered_preview(
-        filePath=filePath,
-        sourceIndex=sourceIndex,
-        canvasSize=canvasSize,
-        lowKey=lowKey,
-        highKey=highKey,
-        decayKey=decayKey,
-        samplingKey=samplingKey,
-        freqInAngstrom=freqInAngstrom,
-        modeKey=modeKey,
-    )
-    return _pngBytesToPilImage(cachedPng)
-
-
 def _extractSelectedSource(
     selectedItem: Optional[Dict[str, Any]],
 ) -> Optional[Tuple[str, int]]:
@@ -538,8 +517,23 @@ def _extractSelectedSource(
     return filePath, sourceIndex
 
 
+def _getSelectedSourceDimensions(
+    selectedItem: Optional[Dict[str, Any]],
+) -> Tuple[int, int]:
+    source = _extractSelectedSource(selectedItem)
+    if source is None:
+        return FILTER_WORK_SIZE, FILTER_WORK_SIZE
+
+    filePath, sourceIndex = source
+    arr = _loadCachedArray(filePath, sourceIndex)
+    if arr is None:
+        return FILTER_WORK_SIZE, FILTER_WORK_SIZE
+
+    return int(arr.shape[1]), int(arr.shape[0])
+
+
 @lru_cache(maxsize=128)
-def _load_cached_array(filePath: str, sourceIndex: int) -> Optional[np.ndarray]:
+def _loadCachedArray(filePath: str, sourceIndex: int) -> Optional[np.ndarray]:
     pilImg = openImageSource(filePath, index=sourceIndex)
     if pilImg is None:
         return None
@@ -560,8 +554,8 @@ def _load_cached_array(filePath: str, sourceIndex: int) -> Optional[np.ndarray]:
 
 
 @lru_cache(maxsize=128)
-def _load_cached_preview_base_array(filePath: str, sourceIndex: int) -> Optional[np.ndarray]:
-    arr = _load_cached_array(filePath, sourceIndex)
+def _loadCachedPreviewBaseArray(filePath: str, sourceIndex: int) -> Optional[np.ndarray]:
+    arr = _loadCachedArray(filePath, sourceIndex)
     if arr is None:
         return None
 
@@ -589,25 +583,58 @@ def _buildOriginalPreviewImage(
     *,
     selectedItem: Optional[Dict[str, Any]],
     canvasSize: int = FILTER_PREVIEW_CANVAS_SIZE,
-) -> Tuple[PILImage.Image, int, int]:
+) -> PILImage.Image:
     source = _extractSelectedSource(selectedItem)
     if source is None:
-        fallback = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-        return fallback, fallback.width, fallback.height
+        return buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
 
     filePath, sourceIndex = source
-    baseArr = _load_cached_preview_base_array(filePath, sourceIndex)
+    baseArr = _loadCachedPreviewBaseArray(filePath, sourceIndex)
     if baseArr is None:
-        fallback = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-        return fallback, fallback.width, fallback.height
+        return buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
 
     image = PILImage.fromarray(baseArr.astype(np.uint8), mode="L").convert("RGB")
-    image = _fit_image_to_canvas(image, canvasSize)
-    return image, int(baseArr.shape[1]), int(baseArr.shape[0])
+    return _fitImageToCanvas(image, canvasSize)
+
+
+def _buildFilteredPreviewImage(
+    *,
+    selectedItem: Optional[Dict[str, Any]],
+    lowValue: float,
+    highValue: float,
+    decayValue: float,
+    samplingRate: Optional[float],
+    freqInAngstrom: bool,
+    filterMode: Any,
+    canvasSize: int = FILTER_PREVIEW_CANVAS_SIZE,
+) -> PILImage.Image:
+    source = _extractSelectedSource(selectedItem)
+    if source is None:
+        return buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
+
+    filePath, sourceIndex = source
+    lowKey = int(round(float(lowValue) * 1000.0))
+    highKey = int(round(float(highValue) * 1000.0))
+    decayKey = int(round(float(decayValue) * 1000.0))
+    samplingKey = int(round(float(samplingRate or 0.0) * 1000.0))
+    modeKey = str(filterMode or "")
+
+    cachedPng = _buildCachedFilteredPreview(
+        filePath=filePath,
+        sourceIndex=sourceIndex,
+        canvasSize=canvasSize,
+        lowKey=lowKey,
+        highKey=highKey,
+        decayKey=decayKey,
+        samplingKey=samplingKey,
+        freqInAngstrom=freqInAngstrom,
+        modeKey=modeKey,
+    )
+    return _pngBytesToPilImage(cachedPng)
 
 
 @lru_cache(maxsize=512)
-def _build_cached_filtered_preview(
+def _buildCachedFilteredPreview(
     *,
     filePath: str,
     sourceIndex: int,
@@ -619,7 +646,7 @@ def _build_cached_filtered_preview(
     freqInAngstrom: bool,
     modeKey: str,
 ) -> bytes:
-    baseArr = _load_cached_preview_base_array(filePath, sourceIndex)
+    baseArr = _loadCachedPreviewBaseArray(filePath, sourceIndex)
     if baseArr is None:
         image = buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
         return _pilImageToPngBytes(image)
@@ -629,7 +656,7 @@ def _build_cached_filtered_preview(
     decayValue = float(decayKey) / 1000.0
     samplingRate = float(samplingKey) / 1000.0 if samplingKey > 0 else None
 
-    filtered = _apply_fourier_filter(
+    filtered = _applyPreviewFilter(
         arr=baseArr,
         lowValue=lowValue,
         highValue=highValue,
@@ -639,16 +666,16 @@ def _build_cached_filtered_preview(
         modeKey=modeKey,
     )
 
-    image = _arrayToPreviewImage(
-        filtered,
-        canvasSize=canvasSize,
-        lowPercentile=0.2,
-        highPercentile=99.8,
-    )
+    filtered8 = np.clip(filtered, 0.0, 255.0).astype(np.uint8)
+    image = PILImage.fromarray(filtered8, mode="L").convert("RGB")
+    image = _fitImageToCanvas(image, canvasSize)
+
+    preparedBase = _prepareFilterInput(baseArr, targetSize=FILTER_WORK_SIZE).astype(np.float32, copy=False)
+    delta = float(np.mean(np.abs(filtered - preparedBase)))
     return _pilImageToPngBytes(image)
 
 
-def _apply_fourier_filter(
+def _applyPreviewFilter(
     *,
     arr: np.ndarray,
     lowValue: float,
@@ -658,110 +685,79 @@ def _apply_fourier_filter(
     freqInAngstrom: bool,
     modeKey: str,
 ) -> np.ndarray:
-    work = _prepare_filter_input(arr, targetSize=FILTER_WORK_SIZE)
-    work = work.astype(np.float32, copy=False)
-    work -= float(np.mean(work))
+    base = _prepareFilterInput(arr, targetSize=FILTER_WORK_SIZE).astype(np.float32, copy=False)
 
-    std = float(np.std(work))
-    if std > 1e-6:
-        work /= std
+    baseMean = float(np.mean(base))
+    baseStd = float(np.std(base))
+    if baseStd <= 1e-6:
+        baseStd = 1.0
 
-    radialFreq = _build_shifted_radial_frequency_grid(work.shape[0], work.shape[1])
+    work = (base - baseMean) / baseStd
+    radialFreq = _buildShiftedRadialFrequencyGrid(work.shape[0], work.shape[1])
 
-    lowDigital = _to_digital_frequency(
+    lowFreq, highFreq, freqDecay = _resolveBandpassValues(
+        modeKey=modeKey,
+        lowValue=lowValue,
+        highValue=highValue,
+        decayValue=decayValue,
+        samplingRate=samplingRate,
+        freqInAngstrom=freqInAngstrom,
+    )
+
+    mask = _buildFrequencyMask(
+        radialFreq=radialFreq,
+        lowFreq=lowFreq,
+        highFreq=highFreq,
+        freqDecay=freqDecay,
+        modeKey=modeKey,
+    )
+
+    fft = np.fft.fftshift(np.fft.fft2(work))
+    filteredFft = fft * mask.astype(np.complex64)
+    filteredStd = np.real(np.fft.ifft2(np.fft.ifftshift(filteredFft))).astype(np.float32)
+
+    filtered = filteredStd * baseStd + baseMean
+    return filtered
+
+
+def _resolveBandpassValues(
+    *,
+    modeKey: str,
+    lowValue: float,
+    highValue: float,
+    decayValue: float,
+    samplingRate: Optional[float],
+    freqInAngstrom: bool,
+) -> Tuple[float, float, float]:
+    mode = _normalizeFilterMode(modeKey)
+
+    lowFreq = _toWizardFrequency(
         value=lowValue,
         samplingRate=samplingRate,
         freqInAngstrom=freqInAngstrom,
     )
-    highDigital = _to_digital_frequency(
+    highFreq = _toWizardFrequency(
         value=highValue,
         samplingRate=samplingRate,
         freqInAngstrom=freqInAngstrom,
     )
-
-    lowCut = min(lowDigital, highDigital)
-    highCut = max(lowDigital, highDigital)
-
-    if freqInAngstrom:
-        sigma = _resolution_decay_to_digital_sigma(
-            cutoffValue=max(lowValue, highValue),
-            decayValue=decayValue,
-            samplingRate=samplingRate,
-        )
-    else:
-        sigma = max(0.001, min(0.10, decayValue))
-
-    mode = _normalize_filter_mode(modeKey)
+    freqDecay = _toWizardFrequency(
+        value=decayValue,
+        samplingRate=samplingRate,
+        freqInAngstrom=freqInAngstrom,
+    )
 
     if mode == "low_pass":
-        mask = 1.0 / (1.0 + np.exp((radialFreq - highCut) / sigma))
-    elif mode == "high_pass":
-        mask = 1.0 / (1.0 + np.exp((lowCut - radialFreq) / sigma))
-    else:
-        lowMask = 1.0 / (1.0 + np.exp((lowCut - radialFreq) / sigma))
-        highMask = 1.0 / (1.0 + np.exp((radialFreq - highCut) / sigma))
-        mask = lowMask * highMask
+        return 0.01, highFreq, freqDecay
 
-    fft = np.fft.fftshift(np.fft.fft2(work))
-    filteredFft = fft * mask.astype(np.complex64)
-    filtered = np.real(np.fft.ifft2(np.fft.ifftshift(filteredFft))).astype(np.float32)
+    if mode == "high_pass":
+        return lowFreq, 0.5, freqDecay
 
-    return filtered
+    lowFreq, highFreq = min(lowFreq, highFreq), max(lowFreq, highFreq)
+    return lowFreq, highFreq, freqDecay
 
 
-def _prepare_filter_input(arr: np.ndarray, targetSize: int) -> np.ndarray:
-    arr = np.asarray(arr, dtype=np.float32)
-    arr = _center_crop_square(arr)
-
-    if arr.shape[0] > targetSize:
-        arr = _resize_array_to_gray(arr, targetSize, targetSize)
-    elif arr.shape[0] < targetSize:
-        arr = _resize_array_to_gray(arr, targetSize, targetSize)
-
-    return arr
-
-def _build_shifted_radial_frequency_grid(height: int, width: int) -> np.ndarray:
-    fy = np.fft.fftfreq(height)
-    fx = np.fft.fftfreq(width)
-    gridX, gridY = np.meshgrid(fx, fy)
-    radial = np.sqrt(gridX ** 2 + gridY ** 2)
-    return np.fft.fftshift(radial).astype(np.float32, copy=False)
-
-
-def _resolution_decay_to_digital_sigma(
-    *,
-    cutoffValue: float,
-    decayValue: float,
-    samplingRate: Optional[float],
-) -> float:
-    if cutoffValue <= 0 or decayValue <= 0 or not samplingRate or samplingRate <= 0:
-        return 0.01
-
-    baseFreq = float(np.clip(float(samplingRate) / float(cutoffValue), 0.0, 0.5))
-    shiftedCutoff = float(cutoffValue) + float(decayValue)
-    shiftedFreq = float(np.clip(float(samplingRate) / float(shiftedCutoff), 0.0, 0.5))
-
-    sigma = abs(baseFreq - shiftedFreq)
-    return float(np.clip(sigma, 0.001, 0.10))
-
-def _to_digital_frequency(
-    *,
-    value: float,
-    samplingRate: Optional[float],
-    freqInAngstrom: bool,
-) -> float:
-    if value <= 0:
-        return 0.0
-
-    if freqInAngstrom:
-        if not samplingRate or samplingRate <= 0:
-            return 0.0
-        return float(np.clip(float(samplingRate) / float(value), 0.0, 0.5))
-
-    return float(np.clip(value, 0.0, 0.5))
-
-
-def _to_decay_frequency(
+def _toWizardFrequency(
     *,
     value: float,
     samplingRate: Optional[float],
@@ -773,12 +769,100 @@ def _to_decay_frequency(
     if freqInAngstrom:
         if not samplingRate or samplingRate <= 0:
             return 0.01
-        return float(np.clip(float(samplingRate) / float(value), 0.002, 0.25))
+        return float(np.clip(float(samplingRate) / float(value), 0.0001, 0.5))
 
-    return float(np.clip(value, 0.002, 0.25))
+    return float(np.clip(float(value), 0.0001, 0.5))
 
 
-def _normalize_filter_mode(modeKey: str) -> str:
+def _buildFrequencyMask(
+    *,
+    radialFreq: np.ndarray,
+    lowFreq: float,
+    highFreq: float,
+    freqDecay: float,
+    modeKey: str,
+) -> np.ndarray:
+    mode = _normalizeFilterMode(modeKey)
+    transition = max(float(freqDecay), 1e-5)
+
+    if mode == "low_pass":
+        return _raisedCosineLowPass(radialFreq, highFreq, transition)
+
+    if mode == "high_pass":
+        return _raisedCosineHighPass(radialFreq, lowFreq, transition)
+
+    lowMask = _raisedCosineHighPass(radialFreq, lowFreq, transition)
+    highMask = _raisedCosineLowPass(radialFreq, highFreq, transition)
+    return lowMask * highMask
+
+
+def _raisedCosineLowPass(
+    radialFreq: np.ndarray,
+    cutoff: float,
+    transition: float,
+) -> np.ndarray:
+    cutoff = max(float(cutoff), 0.0)
+    transition = max(float(transition), 1e-5)
+
+    start = max(0.0, cutoff)
+    end = min(0.5, cutoff + transition)
+
+    mask = np.ones_like(radialFreq, dtype=np.float32)
+
+    if end <= start:
+        mask[radialFreq > cutoff] = 0.0
+        return mask
+
+    rampMask = (radialFreq >= start) & (radialFreq <= end)
+    x = (radialFreq[rampMask] - start) / (end - start)
+    mask[rampMask] = 0.5 * (1.0 + np.cos(np.pi * x))
+    mask[radialFreq > end] = 0.0
+    return mask
+
+
+def _raisedCosineHighPass(
+    radialFreq: np.ndarray,
+    cutoff: float,
+    transition: float,
+) -> np.ndarray:
+    cutoff = max(float(cutoff), 0.0)
+    transition = max(float(transition), 1e-5)
+
+    start = max(0.0, cutoff)
+    end = min(0.5, cutoff + transition)
+
+    mask = np.zeros_like(radialFreq, dtype=np.float32)
+
+    if end <= start:
+        mask[radialFreq >= cutoff] = 1.0
+        return mask
+
+    rampMask = (radialFreq >= start) & (radialFreq <= end)
+    x = (radialFreq[rampMask] - start) / (end - start)
+    mask[rampMask] = 0.5 * (1.0 - np.cos(np.pi * x))
+    mask[radialFreq > end] = 1.0
+    return mask
+
+
+def _prepareFilterInput(arr: np.ndarray, targetSize: int) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float32)
+    arr = _centerCropSquare(arr)
+
+    if arr.shape[0] != targetSize:
+        arr = _resizeArrayToGray(arr, targetSize, targetSize)
+
+    return arr
+
+
+def _buildShiftedRadialFrequencyGrid(height: int, width: int) -> np.ndarray:
+    fy = np.fft.fftfreq(height)
+    fx = np.fft.fftfreq(width)
+    gridX, gridY = np.meshgrid(fx, fy)
+    radial = np.sqrt(gridX ** 2 + gridY ** 2)
+    return np.fft.fftshift(radial).astype(np.float32, copy=False)
+
+
+def _normalizeFilterMode(modeKey: str) -> str:
     raw = str(modeKey or "").strip().lower()
 
     if raw in {"0", "low", "lowpass", "low_pass"}:
@@ -799,37 +883,7 @@ def _normalize_filter_mode(modeKey: str) -> str:
     return "band_pass"
 
 
-def _arrayToPreviewImage(
-    arr: np.ndarray,
-    canvasSize: int,
-    lowPercentile: float = 1.0,
-    highPercentile: float = 99.0,
-) -> PILImage.Image:
-    arr = np.asarray(arr, dtype=np.float32)
-    finiteMask = np.isfinite(arr)
-
-    if not finiteMask.any():
-        return buildFallbackPreviewBase(canvasSize=canvasSize).convert("RGB")
-
-    valid = arr[finiteMask]
-    low = float(np.percentile(valid, lowPercentile))
-    high = float(np.percentile(valid, highPercentile))
-
-    if high <= low:
-        low = float(valid.min())
-        high = float(valid.max())
-
-    if high <= low:
-        norm = np.zeros_like(arr, dtype=np.uint8)
-    else:
-        clipped = np.clip(arr, low, high)
-        norm = ((clipped - low) / (high - low + 1e-12) * 255.0).astype(np.uint8)
-
-    image = PILImage.fromarray(norm, mode="L").convert("RGB")
-    return _fit_image_to_canvas(image, canvasSize)
-
-
-def _center_crop_square(arr: np.ndarray) -> np.ndarray:
+def _centerCropSquare(arr: np.ndarray) -> np.ndarray:
     height, width = arr.shape[:2]
     size = min(height, width)
 
@@ -839,7 +893,7 @@ def _center_crop_square(arr: np.ndarray) -> np.ndarray:
     return arr[offsetY:offsetY + size, offsetX:offsetX + size]
 
 
-def _resize_array_to_gray(arr: np.ndarray, width: int, height: int) -> np.ndarray:
+def _resizeArrayToGray(arr: np.ndarray, width: int, height: int) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float32)
     amin = float(np.min(arr))
     amax = float(np.max(arr))
@@ -857,7 +911,7 @@ def _resize_array_to_gray(arr: np.ndarray, width: int, height: int) -> np.ndarra
     return np.asarray(image, dtype=np.float32)
 
 
-def _fit_image_to_canvas(image: PILImage.Image, canvasSize: int) -> PILImage.Image:
+def _fitImageToCanvas(image: PILImage.Image, canvasSize: int) -> PILImage.Image:
     fitScale = min(canvasSize / float(image.width), canvasSize / float(image.height))
     previewW = max(1, int(round(image.width * fitScale)))
     previewH = max(1, int(round(image.height * fitScale)))
