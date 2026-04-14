@@ -2639,6 +2639,95 @@ class ProjectService:
         raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
         return Path(raw).expanduser().resolve()
 
+    def _normalizeExportJsonContent(self, rawExport: Any) -> str:
+        if isinstance(rawExport, str):
+            text = rawExport.strip()
+            if not text:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Scipion export returned empty content",
+                )
+
+            try:
+                json.loads(text)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scipion export returned invalid JSON text: {e}",
+                )
+
+            return text
+
+        if isinstance(rawExport, (list, dict)):
+            try:
+                return json.dumps(rawExport, indent=2, ensure_ascii=False)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to serialize export payload: {e}",
+                )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unsupported export payload returned by Scipion",
+        )
+
+    def _normalizeProtocolIdsForExport(
+            self,
+            protocolIds: Optional[List[Union[int, str]]],
+    ) -> List[str]:
+        out: List[str] = []
+        seen: Set[str] = set()
+
+        for raw in protocolIds or []:
+            value = str(raw).strip()
+            if not value or value.upper() == "PROJECT":
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append(value)
+
+        return out
+
+    def _resolveFsRootForWrite(self, protocolId: Union[int, str]) -> Path:
+        pathInfo = self.getProtocolPath(protocolId)
+        rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
+        if not rootAbs:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not resolve browser root",
+            )
+        return Path(rootAbs).expanduser().resolve()
+
+    def _guardFsPathWithinRootForWrite(
+            self,
+            rootPath: Path,
+            requestedPath: str,
+    ) -> Path:
+        rawPath = str(requestedPath or "").strip()
+        if not rawPath:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing path",
+            )
+
+        candidate = Path(rawPath).expanduser()
+        if not candidate.is_absolute():
+            candidate = rootPath / candidate
+
+        candidate = candidate.resolve()
+
+        try:
+            candidate.relative_to(rootPath)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Path escapes browser root",
+            )
+
+        return candidate
+
     def getProtocolPath(self, protocolId):
         if self._isGlobalFsBrowserMode(protocolId):
             root = self._getGlobalFsBrowserRoot()
@@ -2823,6 +2912,99 @@ class ProjectService:
             size=size,
             maxProtocols=maxProtocols,
         )
+
+    def exportProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        protocolIds = self._normalizeProtocolIdsForExport(
+            getattr(payload, "protocolIds", None),
+        )
+        if not protocolIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing protocolIds",
+            )
+
+        try:
+            protocolIdInts = [int(pid) for pid in protocolIds]
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="protocolIds must be numeric",
+            )
+
+        try:
+            protocolList = []
+            missing: List[str] = []
+
+            for protId in protocolIdInts:
+                protocol = self.currentProject.getProtocol(protId)
+                if protocol is None:
+                    missing.append(str(protId))
+                    continue
+                protocolList.append(protocol)
+
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol(s) not found: {', '.join(missing)}",
+                )
+
+            rawExport = self.currentProject.getProtocolsJson(protocolList)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Scipion export failed: {e}",
+            )
+
+        content = self._normalizeExportJsonContent(rawExport)
+
+        stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"protocols_export_{projectId}_{stamp}.json"
+
+        return {
+            "filename": filename,
+            "mimeType": "application/json",
+            "protocolIds": protocolIds,
+            "content": content,
+        }
+
+    def writeRemoteFileService(
+            self,
+            protocolId: Union[int, str],
+            payload: Any,
+    ) -> Dict[str, Any]:
+        rootPath = self._resolveFsRootForWrite(protocolId)
+        targetPath = self._guardFsPathWithinRootForWrite(
+            rootPath,
+            getattr(payload, "path", ""),
+        )
+
+        if targetPath.exists() and targetPath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Destination path points to a directory",
+            )
+
+        rawContent = getattr(payload, "content", "")
+        content = "" if rawContent is None else str(rawContent)
+        mimeType = getattr(payload, "mimeType", None) or "application/json"
+
+        targetPath.parent.mkdir(parents=True, exist_ok=True)
+        targetPath.write_text(content, encoding="utf-8")
+
+        return {
+            "success": True,
+            "path": str(targetPath),
+            "size": targetPath.stat().st_size if targetPath.exists() else 0,
+            "mimeType": mimeType,
+        }
 
     # ----------------------------------------------------------------------
     # Internal helpers for TiltSeries (SetOfTiltSeries)
