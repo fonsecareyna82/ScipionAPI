@@ -22,7 +22,8 @@ from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTag
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
-                                                    ProjectImportIn)
+                                                    ProjectImportIn, ProtocolWizardExecuteResponse,
+                                                    ProtocolWizardExecuteRequest)
 from app.backend.api.services.project_service import ProjectService
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -3031,3 +3032,30 @@ def getProtocolOutputThumbnail(
             status_code=500,
             detail=f"Failed to load protocol output thumbnail: {e}",
         )
+
+
+
+# *****************************************
+# Wizards routers
+# *****************************************
+@router.post(
+    "/{projectId}/wizards/execute",
+    response_model=ProtocolWizardExecuteResponse,
+)
+def executeProtocolWizardRoute(
+    projectId: int,
+    payload: ProtocolWizardExecuteRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.executeProtocolWizard(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        payload=payload,
+    )
