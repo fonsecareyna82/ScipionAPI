@@ -36,6 +36,8 @@ import sys
 import threading
 import textwrap
 import shutil
+import inspect
+from numbers import Number
 
 import numpy as np
 
@@ -47,6 +49,10 @@ from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.api.services.protocol_wizard_service import (
+    ProtocolWizardService,
+    findProtocolWizardsWeb,
+)
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
@@ -1278,6 +1284,21 @@ class ProjectService:
         """
         from pyworkflow.protocol import Line, Group
 
+        def attachContainerWizardMetadata(container: Optional[Dict[str, Any]]) -> None:
+            if not container:
+                return
+
+            wizardItems: List[Dict[str, Any]] = []
+            for child in container.get("params", []) or []:
+                childWizards = child.get("wizards") or []
+                for wiz in childWizards:
+                    if not any(existing.get("id") == wiz.get("id") for existing in wizardItems):
+                        wizardItems.append(copy.deepcopy(wiz))
+
+            container["hasWizard"] = bool(wizardItems)
+            container["wizards"] = wizardItems
+            container["wizard"] = wizardItems[0] if wizardItems else None
+
         headerParams = ['runName', '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
         package = protocol.getClassPackage()
         hasExpert = protocol.hasExpert()
@@ -1291,9 +1312,9 @@ class ProjectService:
 
         protName = str(protocol)
         status = protocol.getStatus()
-        label = protocol._label if hasattr(protocol, '_label') else protName
         protocolClassName = protocol.getClassName()
         hosts = self.currentProject.getHostNames()
+
         context = {}
         info = {
             "protocolId": protocol.getObjId(),
@@ -1305,8 +1326,10 @@ class ProjectService:
             "hosts": hosts,
             "projectId": projectId,
             "protocolClassName": protocolClassName,
-            "thumbnailUrl": self.buildProtocolThumbnailUrl(projectId, int(protocol.getObjId())) if protocol.hasObjId() else None,
-            "thumbnailRebuildUrl": self.buildProtocolThumbnailRebuildUrl(projectId, int(protocol.getObjId())) if protocol.hasObjId() else None,
+            "thumbnailUrl": self.buildProtocolThumbnailUrl(projectId,
+                                                           int(protocol.getObjId())) if protocol.hasObjId() else None,
+            "thumbnailRebuildUrl": self.buildProtocolThumbnailRebuildUrl(projectId,
+                                                                         int(protocol.getObjId())) if protocol.hasObjId() else None,
         }
 
         references = protocol.citations()
@@ -1314,14 +1337,15 @@ class ProjectService:
         if references != ['No references provided']:
             for reference in references:
                 protHelp += reference + '\n'
+
         form = {
             "references": references,
             "help": protHelp,
         }
 
         # Detect available wizards and viewers
-        wizards = self.findWizardsWeb(protocol)
-        # viewers = findViewersWeb(protocol)
+        wizards = findProtocolWizardsWeb(self.currentProject, protocol)
+        viewers = self.findViewersWeb(protocol)
 
         # Inputs
         inputs = []
@@ -1358,169 +1382,223 @@ class ProjectService:
         # Definition (params, sections, Line/Group)
         paramsData = []
         paramsValue = {}
+
         for section in protocol._definition.iterSections():
-            if section.getLabel() != 'Parallelization':
-                sectionData = {"label": section.getLabel(), "params": []}
-                if section.getLabel() != 'General':
-                    for paramName, param in section.iterParams():
-                        if paramName not in headerParams:
-                            protVar = getattr(protocol, paramName, None)
-                            if protVar is None:
-                                # Handle Group
-                                if isinstance(param, Group):
-                                    group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                                    group['collapsed'] = False
-                                    group['params'] = []
-                                    for paramGroupName, paramGroup in param.iterParams():
-                                        protVar = getattr(protocol, paramGroupName, None)
+            if section.getLabel() == 'Parallelization':
+                continue
 
-                                        # Line param
-                                        if isinstance(paramGroup, Line):
-                                            for paramLineName, paramLine in paramGroup.iterParams():
-                                                protVar = getattr(protocol, paramLineName, None)
-                                                if protVar:
-                                                    paramChild, paramValue = self.PreprocessParamForm(
-                                                        paramLine, paramLineName, wizards, None, 0, protVar
-                                                    )
-                                                    if paramChild:
-                                                        group['params'].append(paramChild)
-                                                        paramsValue[paramLineName] = paramValue
-                                        elif protVar:
-                                            paramChild, paramValue = self.PreprocessParamForm(
-                                                paramGroup, paramGroupName, wizards, None, 0, protVar
-                                            )
-                                            if paramChild:
-                                                group['params'].append(paramChild)
-                                                paramsValue[paramGroupName] = paramValue
-                                    if group:
-                                        sectionData["params"].append(group)
+            sectionData = {"label": section.getLabel(), "params": []}
 
-                                # Handle Line
-                                if isinstance(param, Line):
-                                    line, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                                    line['params'] = []
-                                    for paramLineName, paramLine in param.iterParams():
-                                        protVar = getattr(protocol, paramLineName, None)
-                                        if protVar:
-                                            paramChild, paramValue = self.PreprocessParamForm(
-                                                paramLine, paramLineName, wizards, None, 0, protVar
-                                            )
-                                            if paramChild:
-                                                line['params'].append(paramChild)
-                                                paramsValue[paramLineName] = paramValue
-                                    if line:
-                                        sectionData["params"].append(line)
+            if section.getLabel() != 'General':
+                for paramName, param in section.iterParams():
+                    if paramName in headerParams:
+                        continue
 
-                            else:
-                                paramProcessed, paramValue = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                                if paramProcessed:
-                                    sectionData["params"].append(paramProcessed)
-                                    paramsValue[paramName] = paramValue
+                    protVar = getattr(protocol, paramName, None)
 
-                if section.getLabel() == 'General':
-                    # Special params
-                    for paramName in headerParams:
-                        paramProcessed = {'name': paramName}
-                        paramValue = getattr(protocol, paramName, None)
+                    if protVar is None:
+                        # Handle Group
+                        if isinstance(param, Group):
+                            group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                            if group is not None:
+                                group['collapsed'] = False
+                                group['params'] = []
 
-                        if paramName == '_objComment':
-                            paramProcessed.setdefault(paramName, {})
-                            paramProcessed['label'] = 'Comment'
-                            paramProcessed['expertLevel'] = 0
-                            paramProcessed['condition'] = None
-                            paramProcessed['_isImportant'] = True
-                            paramProcessed['help'] = 'Protocol comments'
-                            paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['default'] = ''
-                            paramProcessed['readOnly'] = False
+                                for paramGroupName, paramGroup in param.iterParams():
+                                    protVar = getattr(protocol, paramGroupName, None)
+
+                                    if isinstance(paramGroup, Line):
+                                        for paramLineName, paramLine in paramGroup.iterParams():
+                                            protVar = getattr(protocol, paramLineName, None)
+                                            if protVar:
+                                                paramChild, paramValue = self.PreprocessParamForm(
+                                                    paramLine, paramLineName, wizards, None, 0, protVar
+                                                )
+                                                if paramChild:
+                                                    group['params'].append(paramChild)
+                                                    paramsValue[paramLineName] = paramValue
+                                    elif protVar:
+                                        paramChild, paramValue = self.PreprocessParamForm(
+                                            paramGroup, paramGroupName, wizards, None, 0, protVar
+                                        )
+                                        if paramChild:
+                                            group['params'].append(paramChild)
+                                            paramsValue[paramGroupName] = paramValue
+
+                                # attachContainerWizardMetadata(group)
+
+                                if group:
+                                    sectionData["params"].append(group)
+
+                        # Handle Line
+                        elif isinstance(param, Line):
+                            line, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                            if line is not None:
+                                line['params'] = []
+
+                                for paramLineName, paramLine in param.iterParams():
+                                    protVar = getattr(protocol, paramLineName, None)
+                                    if protVar:
+                                        paramChild, paramValue = self.PreprocessParamForm(
+                                            paramLine, paramLineName, wizards, None, 0, protVar
+                                        )
+                                        if paramChild:
+                                            line['params'].append(paramChild)
+                                            paramsValue[paramLineName] = paramValue
+
+                                # attachContainerWizardMetadata(line)
+
+                                if line:
+                                    sectionData["params"].append(line)
+
+                    else:
+                        paramProcessed, paramValue = self.PreprocessParamForm(
+                            param, paramName, wizards, None, 0, protVar
+                        )
+                        if paramProcessed:
                             sectionData["params"].append(paramProcessed)
                             paramsValue[paramName] = paramValue
-                        elif paramName == '_useQueue':
-                            paramProcessed['label'] = 'Use a queue engine?'
-                            paramProcessed['expertLevel'] = 0
-                            paramProcessed['condition'] = None
-                            paramProcessed['_isImportant'] = True
-                            paramProcessed['help'] = pwutils.Message.HELP_USEQUEUE % (
-                                pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
+
+            if section.getLabel() == 'General':
+                # Special params
+                for paramName in headerParams:
+                    paramProcessed = {'name': paramName}
+                    paramValue = getattr(protocol, paramName, None)
+
+                    if paramName == '_objComment':
+                        paramProcessed.setdefault(paramName, {})
+                        paramProcessed['label'] = 'Comment'
+                        paramProcessed['expertLevel'] = 0
+                        paramProcessed['condition'] = None
+                        paramProcessed['_isImportant'] = True
+                        paramProcessed['help'] = 'Protocol comments'
+                        paramProcessed['paramClass'] = 'StringParam'
+                        paramProcessed['default'] = ''
+                        paramProcessed['readOnly'] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+                        sectionData["params"].append(paramProcessed)
+                        paramsValue[paramName] = paramValue
+
+                    elif paramName == '_useQueue':
+                        paramProcessed['label'] = 'Use a queue engine?'
+                        paramProcessed['expertLevel'] = 0
+                        paramProcessed['condition'] = None
+                        paramProcessed['_isImportant'] = True
+                        paramProcessed['help'] = pwutils.Message.HELP_USEQUEUE % (
+                            pyworkflow.Config.SCIPION_HOSTS, pyworkflow.DOCSITEURLS.HOST_CONFIG
+                        )
+                        paramProcessed['paramClass'] = 'BooleanParam'
+                        paramProcessed['default'] = False
+                        paramProcessed['readOnly'] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+                        sectionData["params"].append(paramProcessed)
+                        paramsValue[paramName] = paramValue.get()
+
+                    elif paramName == '_prerequisites':
+                        paramProcessed.setdefault(paramName, {})
+                        paramProcessed['label'] = 'Wait for'
+                        paramProcessed['expertLevel'] = 0
+                        paramProcessed['condition'] = None
+                        paramProcessed['_isImportant'] = True
+                        paramProcessed['help'] = pwutils.Message.HELP_WAIT_FOR % (
+                            pyworkflow.DOCSITEURLS.WAIT_FOR
+                        )
+                        paramProcessed['paramClass'] = 'StringParam'
+                        paramProcessed['default'] = []
+                        paramProcessed['readOnly'] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+                        sectionData["params"].append(paramProcessed)
+                        paramsValue[paramName] = paramValue
+
+                    elif paramName == 'expertLevel':
+                        paramProcessed['label'] = 'Expert Level'
+                        paramProcessed['display'] = 0
+                        paramProcessed['choices'] = ['Normal', 'Advanced']
+                        paramProcessed['condition'] = None
+                        paramProcessed['_isImportant'] = True
+                        paramProcessed['paramClass'] = 'EnumParam'
+                        paramProcessed['default'] = 0
+                        paramProcessed['readOnly'] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+                        sectionData["params"].append(paramProcessed)
+                        paramsValue[paramName] = 0
+
+                    elif paramName == 'runMode':
+                        paramProcessed['label'] = 'Run Mode'
+                        paramProcessed['display'] = 0
+                        paramProcessed['choices'] = ['Continue', 'Restart']
+                        paramProcessed['condition'] = None
+                        paramProcessed['_isImportant'] = True
+                        paramProcessed['paramClass'] = 'EnumParam'
+                        paramProcessed['default'] = 0
+                        paramProcessed['readOnly'] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+                        sectionData["params"].append(paramProcessed)
+                        paramsValue[paramName] = 0
+
+                    else:
+                        param = protocol.getParam(paramName)
+                        if param is not None:
+                            if paramName == 'gpuList':
+                                param.label.set('GPU IDs')
+                                param.condition.set(None)
+
+                            paramProcessed, paramValue = self.PreprocessParamForm(
+                                param, paramName, wizards, None, 0, None
                             )
-                            paramProcessed['paramClass'] = 'BooleanParam'
-                            paramProcessed['default'] = False
-                            paramProcessed['readOnly'] = False
-                            sectionData["params"].append(paramProcessed)
-                            paramsValue[paramName] = paramValue.get()
-                        elif paramName == '_prerequisites':
-                            paramProcessed.setdefault(paramName, {})
-                            paramProcessed['label'] = 'Wait for'
-                            paramProcessed['expertLevel'] = 0
-                            paramProcessed['condition'] = None
-                            paramProcessed['_isImportant'] = True
-                            paramProcessed['help'] = pwutils.Message.HELP_WAIT_FOR % (
-                                pyworkflow.DOCSITEURLS.WAIT_FOR
-                            )
-                            paramProcessed['paramClass'] = 'StringParam'
-                            paramProcessed['default'] = []
-                            paramProcessed['readOnly'] = False
-                            sectionData["params"].append(paramProcessed)
+
+                            if paramProcessed:
+                                if paramName == 'runName':
+                                    paramProcessed['default'] = ''
+                                    paramValue = protName
+                                elif paramName == 'numberOfThreads':
+                                    paramValue = protocol.getScipionThreads()
+                                elif paramName == 'gpuList':
+                                    paramValue = protocol.gpuList.get()
+
+                                sectionData["params"].append(paramProcessed)
+
                             paramsValue[paramName] = paramValue
-                        elif paramName == 'expertLevel':
-                            paramProcessed['label'] = 'Expert Level'
-                            paramProcessed['display'] = 0
-                            paramProcessed['choices'] = ['Normal', 'Advanced']
-                            paramProcessed['condition'] = None
-                            paramProcessed['_isImportant'] = True
-                            paramProcessed['paramClass'] = 'EnumParam'
-                            paramProcessed['default'] = 0
-                            paramProcessed['readOnly'] = False
-                            sectionData["params"].append(paramProcessed)
-                            paramsValue[paramName] = 0
-                        elif paramName == 'runMode':
-                            paramProcessed['label'] = 'Run Mode'
-                            paramProcessed['display'] = 0
-                            paramProcessed['choices'] = ['Continue', 'Restart']
-                            paramProcessed['condition'] = None
-                            paramProcessed['_isImportant'] = True
-                            paramProcessed['paramClass'] = 'EnumParam'
-                            paramProcessed['default'] = 0
-                            paramProcessed['readOnly'] = False
-                            sectionData["params"].append(paramProcessed)
-                            paramsValue[paramName] = 0
-                        else:
-                            param = protocol.getParam(paramName)
-                            if param is not None:
-                                if paramName == 'gpuList':
-                                    param.label.set('GPU IDs')
-                                    param.condition.set(None)
-                                paramProcessed, paramValue = self.PreprocessParamForm(param, paramName, wizards, None, 0, None)
-                                if paramProcessed:
-                                    if paramName == 'runName':
-                                        paramProcessed['default'] = ''
-                                        paramValue = protName
-                                    elif paramName == 'numberOfThreads':
-                                        paramValue = protocol.getScipionThreads()
-                                    elif paramName == 'gpuList':
-                                        paramValue = protocol.gpuList.get()
-                                    sectionData["params"].append(paramProcessed)
 
-                                paramsValue[paramName] = paramValue
+            paramsData.append(sectionData)
 
-                paramsData.append(sectionData)
+        info['executeMode'] = {
+            'launch': {
+                'label': 'Launch',
+                'help': 'Start the protocol from its current configuration'
+            },
+            'restart': {
+                'label': 'Restart',
+                'help': 'Restart the protocol execution from scratch (keeps current params).'
+            },
+        }
 
-        info['executeMode'] = {'launch': {'label': 'Launch',
-                                          'help': 'Start the protocol from its current configuration'},
-                               'restart': {'label': 'Restart',
-                                           'help': 'Restart the protocol execution from scratch (keeps current params).'},
-
-                               }
         emptyInput, openSetPointer, emptyPointers = protocol.getInputStatus()
         if openSetPointer or emptyPointers:
-            info['executeMode'] = {'schedule': {'label': 'Schedule',
-                                                'help': 'Schedule the protocol from its current configuration'}
-                                   }
+            info['executeMode'] = {
+                'schedule': {
+                    'label': 'Schedule',
+                    'help': 'Schedule the protocol from its current configuration'
+                }
+            }
 
         if protocol.getStatus() in [STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED]:
-            info['executeMode'] = {'stop': {'label': 'Stop',
-                                            'help': 'Stop the protocol'}
-                                   }
+            info['executeMode'] = {
+                'stop': {
+                    'label': 'Stop',
+                    'help': 'Stop the protocol'
+                }
+            }
 
         form["sections"] = paramsData
         context['info'] = info
@@ -1541,35 +1619,35 @@ class ProjectService:
         if not projectPath:
             raise RuntimeError("Cannot resolve currentProject path for subprocess protocol build")
 
-        code = textwrap.dedent(
-            """
-            import json
-            import os
-            from pyworkflow.project import Manager
+        code = """
+    import contextlib
+    import os
+    import sys
 
-            from app.backend.api.services.project_service import ProjectService
+    with contextlib.redirect_stdout(sys.stderr):
+        from pyworkflow.project import Manager
+        from app.backend.api.services.project_service import ProjectService
 
-            projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
-            projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
-            protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
+        projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
+        projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
+        protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
 
-            mgr = Manager()
-            project = mgr.loadProject(projectPath)
+        mgr = Manager()
+        project = mgr.loadProject(projectPath)
 
-            domain = project.getDomain()
-            protClass = domain.getProtocols().get(protocolClassName)
-            if protClass is None:
-                raise RuntimeError(f"Protocol class not found: {protocolClassName}")
+        domain = project.getDomain()
+        protClass = domain.getProtocols().get(protocolClassName)
+        if protClass is None:
+            raise RuntimeError(f"Protocol class not found: {protocolClassName}")
 
-            protocol = project.newProtocol(protClass)
+        protocol = project.newProtocol(protClass)
+        project._fixProtParamsConfiguration(protocol)
 
-            svc = ProjectService()
-            svc.currentProject = project
+        svc = ProjectService()
+        svc.currentProject = project
 
-            ctx = svc._buildProtocolContext(projectId, protocol)
-            print(json.dumps(ctx))
-            """
-        ).strip()
+        _scipionPayload = svc._buildProtocolContext(projectId, protocol)
+    """
 
         projectRoot = Path(__file__).resolve().parents[4]
         env = os.environ.copy()
@@ -1581,20 +1659,10 @@ class ProjectService:
         existingPythonPath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existingPythonPath if existingPythonPath else "")
 
-        res = subprocess.run(
-            [sys.executable, "-c", code],
-            cwd=str(projectRoot),
-            env=env,
-            capture_output=True,
-            text=True,
+        return self._runJsonSubprocess(
+            code=code,
+            operationName="Build new protocol context",
         )
-
-        if res.returncode != 0:
-            err = (res.stderr or "").strip()
-            out = (res.stdout or "").strip()
-            raise RuntimeError(f"Failed to build new protocol context. rc={res.returncode} stderr={err} stdout={out}")
-
-        return json.loads(res.stdout)
 
     def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
         # getNewProtocolParams
@@ -1611,6 +1679,7 @@ class ProjectService:
         protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
         if protClass:
             protocol = self.currentProject.newProtocol(protClass)
+            self.currentProject._fixProtParamsConfiguration(protocol)
             ctx = self._buildProtocolContext(projectId, protocol)
 
             with _newProtocolLock:
@@ -1773,8 +1842,25 @@ class ProjectService:
                             logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
                     else:
                         # Pointer without parentId, fallback
-                        if not param.allowsNull.get() and protocol.evalCondition(param.condition.get()):
+                        conditionValue = None
+                        try:
+                            if hasattr(param, "condition") and param.condition is not None:
+                                conditionValue = param.condition.get()
+                        except Exception:
+                            conditionValue = None
+
+                        shouldValidate = True
+                        if isinstance(conditionValue, str):
+                            conditionText = conditionValue.strip()
+                            if conditionText:
+                                try:
+                                    shouldValidate = bool(protocol.evalCondition(conditionText))
+                                except Exception:
+                                    shouldValidate = True
+
+                        if not param.allowsNull.get() and shouldValidate:
                             errorList.append('**' + param.label.get() + '** it must not be empty.')
+
                         param.set(None)
         return errorList
 
@@ -1928,9 +2014,9 @@ class ProjectService:
         protocol.runMode.set(runMode)
         self.currentProject.launchProtocol(protocol)
 
-    def findWizardsWeb(self, protocol):
-        # TODO: Find wizards...
-        """Stub for finding web-based wizards (to be implemented)."""
+    def findViewersWeb(self, protocol):
+        # TODO: Find viewers...
+        """Stub for finding web-based viewers (to be implemented)."""
         return {}
 
     def getResourceIcon(self, icon):
@@ -1953,9 +2039,13 @@ class ProjectService:
 
             # relationParam: keep current behavior (empty dict)
             if isinstance(param, RelationParam):
-                return paramDict
+                return {}, None
 
             paramDict["name"] = paramName
+            wizardItems = wizards.get(paramName, []) if wizards else []
+            paramDict["hasWizard"] = bool(wizardItems)
+            paramDict["wizards"] = wizardItems
+            paramDict["wizard"] = wizardItems[0] if wizardItems else None
 
             # publicAttributes
             for name, value in param.getAttributes():
@@ -6001,3 +6091,25 @@ class ProjectService:
                "upload":  True,
                "nextSteps":  True,
         }
+
+    # -------------------------------
+    # Wizards methods
+    # -------------------------------
+    def executeProtocolWizard(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload,
+    ) -> Dict[str, Any]:
+        wizardService = ProtocolWizardService(
+            currentProject=self.currentProject,
+            projectService=self,
+        )
+        return wizardService.executeProtocolWizard(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+
