@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.schemas.protocols_schema import ExportProtocolsRequest, RemoteFileWriteRequest
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
@@ -1147,6 +1148,84 @@ async def previewProtocolImageFile(
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
     return service.previewProtocolImageFile(protocolId, path, inline)
 
+
+@router.post(
+    "/{projectId}/protocols/export",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def exportProtocols(
+    projectId: int,
+    payload: ExportProtocolsRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        return service.exportProtocolsService(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in exportProtocols: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to export protocols: {e}",
+        )
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/fs/write",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+async def writeRemoteFile(
+    projectId: int,
+    protocolId: Union[int, str],
+    payload: RemoteFileWriteRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    _ensureProjectForFsRequest(
+        projectId,
+        protocolId,
+        currentUser,
+        mapper,
+        service,
+        refresh=False,
+        checkPid=False,
+    )
+
+    try:
+        return service.writeRemoteFileService(
+            protocolId=protocolId,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in writeRemoteFile: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to write remote file: {e}",
+        )
 
 @router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
 async def previewOutput(
