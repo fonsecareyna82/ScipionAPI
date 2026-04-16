@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 # schemas/protocol.py
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List, Union
 from pydantic import BaseModel, Field, validator
 from datetime import datetime
 
@@ -74,4 +74,16 @@ class ProtocolRequestOut(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
+
+class ExportProtocolsRequest(BaseModel):
+    protocolIds: List[Union[int, str]] = Field(default_factory=list)
+    directoryPath: str = Field(..., min_length=1)
+    filename: str = Field(..., min_length=1)
+
+
+class RemoteFileWriteRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    content: str = ""
+    mimeType: Optional[str] = "application/json"
 
