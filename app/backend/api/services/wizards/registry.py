@@ -18,6 +18,7 @@ from .mask_radius import (
     executeMaskRadiusWizard,
     executeMaskRadiiWizard,
 )
+from .downsample import executeDownsamplePreviewWizard
 
 HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "compute": executeGenericComputeWizard,
@@ -30,6 +31,7 @@ HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "ctf_preview": executeCtfPreviewWizard,
     "filter_preview": executeFilterPreviewWizard,
     "gaussian_preview": executeGaussianPreviewWizard,
+    "downsample_preview": executeDownsamplePreviewWizard,
 }
 
 

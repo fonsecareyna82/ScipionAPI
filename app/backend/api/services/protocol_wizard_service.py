@@ -100,6 +100,7 @@ class ProtocolWizardService:
             "mask_radius",
             "mask_radii",
             "ctf_preview",
+            "downsample_preview",
             "filter_preview",
             "gaussian_preview",
         }
@@ -381,7 +382,6 @@ class ProtocolWizardService:
         if kind in {
             "viewer_color_scale",
             "point_in_volume",
-            "downsample_preview",
             "legacy_web_view",
             "unknown",
         }:
