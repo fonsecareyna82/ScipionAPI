@@ -229,4 +229,4 @@ class ProtocolWizardExecuteResponse(BaseModel):
     requiresUserInput: bool = False
     inputSchema: Optional[WizardInputSchemaResponse] = None
     preview: Optional[WizardPreviewResponse] = None
-    viewerState: Optional[WizardViewerStateResponse] = None
+    viewerState: Optional[Dict[str, Any]] = None
