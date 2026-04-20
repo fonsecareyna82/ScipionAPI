@@ -4,6 +4,24 @@
 # *
 # * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
 # *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
 # ******************************************************************************
 
 from __future__ import annotations
@@ -81,15 +99,36 @@ class ProtocolWizardService:
 
         return wizardMap
 
+    def _sanitizeWizardFormValues(
+            self,
+            params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+
+        for key, value in (params or {}).items():
+            if value is None:
+                continue
+
+            if isinstance(value, str) and value.strip() == "":
+                continue
+
+            cleaned[key] = value
+
+        return cleaned
+
     def _serializeWizardDescriptor(
-        self,
-        wizardClass,
-        protocol,
-        targetParams: List[str],
+            self,
+            wizardClass,
+            protocol,
+            targetParams: List[str],
     ) -> Dict[str, Any]:
         wizardId = f"{wizardClass.__module__}.{wizardClass.__name__}"
         webView = self._safeGetWizardView(wizardClass)
-        kind = self._classifyWizardKind(wizardClass, webView)
+        kind = self._classifyWizardKind(
+            wizardClass=wizardClass,
+            webView=webView,
+            targetParams=targetParams,
+        )
 
         computeKinds = {
             "compute",
@@ -103,6 +142,7 @@ class ProtocolWizardService:
             "downsample_preview",
             "filter_preview",
             "gaussian_preview",
+            "point_in_volume"
         }
 
         webSupported = kind in computeKinds
@@ -120,6 +160,22 @@ class ProtocolWizardService:
             "webView": webView,
         }
 
+    def _getWizardBaseClassNames(self, wizardClass) -> List[str]:
+        names: List[str] = []
+
+        try:
+            for cls in getattr(wizardClass, "__mro__", ()) or ():
+                name = getattr(cls, "__name__", None)
+                if not name:
+                    continue
+                token = str(name).strip()
+                if token and token not in names:
+                    names.append(token)
+        except Exception:
+            pass
+
+        return names
+
     def _safeGetWizardView(self, wizardClass) -> Optional[str]:
         try:
             getViewFn = getattr(wizardClass, "getView", None)
@@ -133,10 +189,28 @@ class ProtocolWizardService:
 
         return None
 
-    def _classifyWizardKind(self, wizardClass, webView: Optional[str]) -> str:
+    def _classifyWizardKind(
+            self,
+            wizardClass,
+            webView: Optional[str],
+            targetParams: Optional[List[str]] = None,
+    ) -> str:
         className = getattr(wizardClass, "__name__", "") or ""
         classNameLower = className.lower()
         webViewLower = (webView or "").lower()
+
+        normalizedTargetParams = [
+            str(item).strip()
+            for item in (targetParams or [])
+            if str(item).strip()
+        ]
+        targetParamsLower = [item.lower() for item in normalizedTargetParams]
+        targetParamsSet = set(targetParamsLower)
+
+        baseClassNamesLower = {
+            name.lower()
+            for name in self._getWizardBaseClassNames(wizardClass)
+        }
 
         explicitKinds = {
             "XmippBoxSizeWizard": "box_size",
@@ -147,6 +221,73 @@ class ProtocolWizardService:
         }
         if className in explicitKinds:
             return explicitKinds[className]
+
+        baseKindMap = {
+            "downsamplewizard": "downsample_preview",
+            "ctfwizard": "ctf_preview",
+            "particlemaskradiuswizard": "mask_radius",
+            "volumemaskradiuswizard": "mask_radius",
+            "particlesmaskradiiwizard": "mask_radii",
+            "volumemaskradiiwizard": "mask_radii",
+            "filterparticleswizard": "filter_preview",
+            "filtervolumeswizard": "filter_preview",
+            "gaussianparticleswizard": "gaussian_preview",
+            "gaussianvolumeswizard": "gaussian_preview",
+            "colorscalewizardbase": "viewer_color_scale",
+        }
+
+        for baseName, kind in baseKindMap.items():
+            if baseName in baseClassNamesLower:
+                return kind
+
+        if {"xin", "yin", "zin"}.issubset(targetParamsSet):
+            return "point_in_volume"
+
+        if targetParamsSet in (
+                {"innerradius", "outerradius"},
+                {"particleradius", "noiseradius"},
+        ):
+            return "mask_radii"
+
+        if len(targetParamsLower) == 1:
+            onlyParam = targetParamsLower[0]
+            if onlyParam in {
+                "radius",
+                "maskradius",
+                "volumeradius",
+                "volumeradiushalf",
+                "cylinderouterradius",
+                "cylinderinnerradius",
+                "consensusradius",
+                "cirmaskrad",
+                "rmax",
+            }:
+                return "mask_radius"
+
+        if (
+                len(targetParamsLower) >= 2
+                and all("radius" in item for item in targetParamsLower)
+        ):
+            return "mask_radii"
+
+        if (
+                len(targetParamsLower) == 1
+                and any(token in targetParamsLower[0] for token in ("down", "factor"))
+        ):
+            return "downsample_preview"
+
+        if {"ctfdownfactor", "lowres", "highres"}.issubset(targetParamsSet):
+            return "ctf_preview"
+
+        if any(item in targetParamsSet for item in {"freqsigma"}):
+            return "gaussian_preview"
+
+        if (
+                any(item in targetParamsSet for item in {"lowfreqa", "lowfreqdig"})
+                and any(item in targetParamsSet for item in {"highfreqa", "highfreqdig"})
+                and any(item in targetParamsSet for item in {"freqdecaya", "freqdecaydig"})
+        ):
+            return "filter_preview"
 
         if "lane" in classNameLower and "wizard" in classNameLower:
             return "compute_lane_selector"
@@ -187,7 +328,7 @@ class ProtocolWizardService:
             return "legacy_web_view"
 
         if classNameLower.endswith("wizard") and any(
-            token in classNameLower for token in ("boxsize", "radius", "classes")
+                token in classNameLower for token in ("boxsize", "radius", "classes")
         ):
             return "compute"
 
@@ -276,7 +417,8 @@ class ProtocolWizardService:
 
         self.currentProject._fixProtParamsConfiguration(protocol)
 
-        errors = self._applyFormValuesToProtocolInstance(protocol, formValues or {})
+        sanitizedFormValues = self._sanitizeWizardFormValues(formValues or {})
+        errors = self._applyFormValuesToProtocolInstance(protocol, sanitizedFormValues)
         if errors:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -381,7 +523,6 @@ class ProtocolWizardService:
 
         if kind in {
             "viewer_color_scale",
-            "point_in_volume",
             "legacy_web_view",
             "unknown",
         }:
