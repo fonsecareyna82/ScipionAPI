@@ -27,9 +27,13 @@ import os
 from pathlib import Path
 
 from app.backend.bootstrap import bootstrapEnv
+from app.backend.api.services.environment import prepareEnvironment
 
 # bootstrapEnvFirst
 bootstrapEnv()
+
+# prepareScipionEnvironmentBeforeImportingRouters
+prepareEnvironment()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,7 +44,6 @@ from app.backend.api.routers.plugin_router import router as plugins
 from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
 from app.backend.api.routers.settings_router import router as settingsRouter
-from app.backend.api.services.environment import prepareEnvironment
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHttpException
@@ -63,18 +66,24 @@ class SpaStaticFiles(StaticFiles):
 
 def _buildApiApp() -> FastAPI:
     # buildApiApp
-    apiApp = FastAPI(title="Scipion API",
-                     debug=True,
-                     docs_url="/docs",
-                     redoc_url="/redoc",
-                     openapi_url="/openapi.json",)
+    apiApp = FastAPI(
+        title="Scipion API",
+        debug=True,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
 
     # registerCustomErrorHandlers
     registerAllErrorHandlers(apiApp)
 
     apiApp.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173",],
+        allow_origins=[
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5173",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=[
@@ -88,7 +97,7 @@ def _buildApiApp() -> FastAPI:
             "Scipion-Colormap",
             "Colormap",
             "X-Preview-Schema",
-            "X-Preview-Name"
+            "X-Preview-Name",
         ],
         expose_headers=[
             "Content-Disposition",
@@ -108,9 +117,6 @@ def _buildApiApp() -> FastAPI:
             "X-Preview-Name",
         ],
     )
-
-    # prepareScipionEnvironment
-    prepareEnvironment()
 
     # includeRouters
     apiApp.include_router(projects)
@@ -158,16 +164,25 @@ webDistPath = _resolveWebDistPath()
 apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
 
 # alwaysMountApiUnderApiMountPath
-app = FastAPI(title="Scipion Web", debug=True, docs_url=None,
-              redoc_url=None,
-              openapi_url=None,)
+app = FastAPI(
+    title="Scipion Web",
+    debug=True,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 app.mount(apiMountPath, apiApp)
+
 
 @app.get("/health", include_in_schema=False)
 def health_check():
     # healthCheckRoot
-    return {"status": "ok", "mode": "api-only" if not serveWeb else "combined", "apiMountPath": apiMountPath}
+    return {
+        "status": "ok",
+        "mode": "api-only" if not serveWeb else "combined",
+        "apiMountPath": apiMountPath,
+    }
 
 
 # optional: keepConvenienceRedirects
@@ -188,4 +203,3 @@ def openapi_redirect():
 if serveWeb and webDistPath and (webDistPath / "index.html").exists():
     # mountSpaStaticRootLast
     app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")
-
