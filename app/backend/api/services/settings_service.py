@@ -524,28 +524,94 @@ class SettingsService:
         stored = mapper.upsertInstanceSettings(_modelDump(normalized))
         return _modelValidate(InstanceSettingsOut, stored or {})
 
+    def _registryCount(self) -> int:
+        # registryCount
+        try:
+            return len(list(VariablesRegistry.__iter__()))
+        except Exception:
+            return -1
+
+    def _warmupEnvironmentRegistry(self) -> None:
+        # warmupEnvironmentRegistry
+        from scipion.__main__ import Vars
+        from pyworkflow.project import Manager
+        from pyworkflow.template import TemplateList
+
+        logger.warning("registry count [start]: %s", self._registryCount())
+
+        Vars.init()
+        logger.warning("registry count [after Vars.init]: %s", self._registryCount())
+
+        pyworkflow.Config.getVars()
+        logger.warning("registry count [after Config.getVars]: %s", self._registryCount())
+
+        pyworkflow.Config.setDomain("pwem")
+        domain = pyworkflow.Config.getDomain()
+        logger.warning("registry count [after Config.getDomain]: %s", self._registryCount())
+
+        try:
+            domain.getProtocols()
+        except Exception:
+            logger.exception("Error warming domain.getProtocols()")
+        logger.warning("registry count [after domain.getProtocols]: %s", self._registryCount())
+
+        try:
+            Manager()
+        except Exception:
+            logger.exception("Error warming Manager()")
+        logger.warning("registry count [after Manager()]: %s", self._registryCount())
+
+        try:
+            tempList = TemplateList()
+            tempList.addScipionTemplates(None)
+            tempList.addPluginTemplates(None)
+        except Exception:
+            logger.exception("Error warming TemplateList plugins")
+        logger.warning("registry count [after TemplateList warmup]: %s", self._registryCount())
+
     def getEnvironmentVariables(self, currentUser: Any) -> list[dict[str, str]]:
         # getEnvironmentVariables
         self._requireAdmin(currentUser)
+
         with _envLock:
+            self._warmupEnvironmentRegistry()
+
             rows = []
-            for v in VariablesRegistry.__iter__():
+
+            for variable in VariablesRegistry.__iter__():
                 try:
+                    variableName = _toStr(getattr(variable, "name", "")).strip()
+                    if not variableName:
+                        continue
+
+                    currentValue = getattr(variable, "value", None)
+                    if variableName in os.environ:
+                        currentValue = os.environ.get(variableName, "")
+                        variable.value = currentValue
+
+                        defaultValue = getattr(variable, "default", None)
+                        if defaultValue is not None:
+                            variable.isDefault = str(defaultValue) == str(currentValue)
+
                     rows.append(
                         {
-                            "name": str(v.name),
-                            "value": "" if v is None else str(v.value),
-                            "default": "" if v.default is None else str(v.default),
-                            "description": "" if v.description is None else str(v.description),
-                            "source": "" if v.source is None else str(v.source),
-                            "isDefault": "" if v.isDefault is None else v.isDefault,
-                            "type": "STRING" if v.var_type is None else str(v.var_type.name),
+                            "name": variableName,
+                            "value": "" if currentValue is None else str(currentValue),
+                            "default": "" if getattr(variable, "default", None) is None else str(variable.default),
+                            "description": "" if getattr(variable, "description", None) is None else str(
+                                variable.description),
+                            "source": "" if getattr(variable, "source", None) is None else str(variable.source),
+                            "isDefault": False if getattr(variable, "isDefault", None) is None else bool(
+                                variable.isDefault),
+                            "type": "STRING"
+                            if getattr(variable, "var_type", None) is None
+                            else str(variable.var_type.name),
                         }
                     )
                 except Exception:
-                    print(v.name)
+                    continue
 
-            rows.sort(key=lambda x: (x.get("name") or "").upper())
+            rows.sort(key=lambda item: (item.get("name") or "").upper())
             return rows
 
     def patchEnvironmentVariables(self, currentUser: Any, patch: Dict[str, Any]) -> list[dict[str, str]]:
@@ -558,13 +624,46 @@ class SettingsService:
                 detail="Invalid payload: expected an object mapping variable names to values.",
             )
 
-        for v in VariablesRegistry.__iter__():
-            if v.name in patch:
-                v.value = patch[v.name]
-                v.isDefault = False
+        changed = False
 
-        VariablesRegistry.save(pyworkflow.Config.SCIPION_CONFIG)
-        if patch:
+        with _envLock:
+            patchItems: dict[str, str] = {}
+            for rawName, rawValue in patch.items():
+                name = _toStr(rawName).strip()
+                if not name:
+                    continue
+                patchItems[name] = "" if rawValue is None else str(rawValue)
+
+            if patchItems:
+                for variable in VariablesRegistry.__iter__():
+                    try:
+                        variableName = _toStr(getattr(variable, "name", "")).strip()
+                        if not variableName or variableName not in patchItems:
+                            continue
+
+                        nextValue = patchItems[variableName]
+                        currentValue = "" if getattr(variable, "value", None) is None else str(variable.value)
+
+                        if currentValue == nextValue and os.environ.get(variableName) == nextValue:
+                            continue
+
+                        os.environ[variableName] = nextValue
+                        variable.value = nextValue
+
+                        defaultValue = getattr(variable, "default", None)
+                        if defaultValue is not None:
+                            variable.isDefault = str(defaultValue) == str(nextValue)
+                        else:
+                            variable.isDefault = False
+
+                        changed = True
+                    except Exception:
+                        continue
+
+                if changed:
+                    VariablesRegistry.save(pyworkflow.Config.SCIPION_CONFIG)
+
+        if changed:
             triggerBackendReloadIfEnabled()
 
         return self.getEnvironmentVariables(currentUser)

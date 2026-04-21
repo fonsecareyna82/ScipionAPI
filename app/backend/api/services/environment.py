@@ -25,17 +25,30 @@
 # ******************************************************************************
 import os
 
+
 def prepareEnvironment():
     """Prepare the Scipion environment with all variables"""
     from scipion.__main__ import Vars
+
     variables = Vars.init()
     os.environ.update(variables)
-    # Trigger Config initialization once environment is ready
+
     import pyworkflow
-    pwVARS = pyworkflow.Config.getVars()
-    variables.update(pwVARS)
+
     pyworkflow.Config.setDomain("pwem")
-    pyworkflow.Config.getDomain()
-    # Update the environment now with pyworkflow values.
+    domain = pyworkflow.Config.getDomain()
+
+    # Force protocol registry loading so VariablesRegistry is complete
+    domain.getProtocols()
+
+    pwVars = pyworkflow.Config.getVars()
+
+    # Load config-derived values first
+    os.environ.update(pwVars)
+
+    # Keep backend bootstrap values as priority
     os.environ.update(variables)
-    os.chdir(variables.get(pyworkflow.SCIPION_HOME_VAR))
+
+    scipionHome = variables.get(pyworkflow.SCIPION_HOME_VAR) or os.environ.get(pyworkflow.SCIPION_HOME_VAR)
+    if scipionHome:
+        os.chdir(scipionHome)
