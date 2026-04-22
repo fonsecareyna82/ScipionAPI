@@ -1011,6 +1011,48 @@ class PostgresqlFlatMapper(Mapper):
             (projectId,),
         )
 
+    def getProjectProtocolAdjacencyMap(self, projectId: int) -> Dict[str, Dict[str, List[str]]]:
+        rows = self.db.fetchAll(
+            """
+            SELECT
+                parent."protocolId" AS "parentProtocolId",
+                child."protocolId" AS "childProtocolId"
+            FROM protocol_dependencies d
+            JOIN protocols parent
+              ON parent.id = d."parentProtocolDbId"
+             AND parent."projectId" = d."projectId"
+            JOIN protocols child
+              ON child.id = d."childProtocolDbId"
+             AND child."projectId" = d."projectId"
+            WHERE d."projectId" = %s
+            ORDER BY child.id, parent.id
+            """,
+            (projectId,),
+        )
+
+        adjacency: Dict[str, Dict[str, List[str]]] = {}
+
+        for row in rows:
+            parentProtocolId = row.get("parentProtocolId")
+            childProtocolId = row.get("childProtocolId")
+
+            if parentProtocolId is None or childProtocolId is None:
+                continue
+
+            parentProtocolId = str(parentProtocolId)
+            childProtocolId = str(childProtocolId)
+
+            adjacency.setdefault(parentProtocolId, {"parents": [], "children": []})
+            adjacency.setdefault(childProtocolId, {"parents": [], "children": []})
+
+            if childProtocolId not in adjacency[parentProtocolId]["children"]:
+                adjacency[parentProtocolId]["children"].append(childProtocolId)
+
+            if parentProtocolId not in adjacency[childProtocolId]["parents"]:
+                adjacency[childProtocolId]["parents"].append(parentProtocolId)
+
+        return adjacency
+
     def getProtocolByProtocolId(self, protocolId: int, projectId: int) -> Optional[Dict]:
         """Retrieve a protocol by id."""
         return self.db.fetchOne(
