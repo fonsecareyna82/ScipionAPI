@@ -515,7 +515,6 @@ def renameProtocol(
         )
 
     try:
-        # Basic payload validation for semantic HTTP
         newName = getattr(payload, "name", None)
         if not newName or not str(newName).strip():
             return JSONResponse(
@@ -526,6 +525,14 @@ def renameProtocol(
             )
 
         service.renameProtocol(protocolId, str(newName).strip())
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="rename protocol",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0,
                 "errors": [],
                 "workflow": []}
@@ -667,6 +674,14 @@ def restartProtocolAll(
                     "errors": errors,
                     "workflow": []}
 
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="restart protocol subtree",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0,
                 "errors": [],
                 "workflow": []}
@@ -743,6 +758,14 @@ def resetProtocolFrom(
 
     try:
         service.resetProtocolFrom(protocolId)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="reset protocol from node",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0, "errors": [], "workflow": []}
 
     except HTTPException as e:
@@ -785,6 +808,14 @@ def stopProtocol(
             )
 
         service.stopProtocol(protocolIds)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="stop protocol",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0,
                 "errors": [],
                 "workflow": []}
