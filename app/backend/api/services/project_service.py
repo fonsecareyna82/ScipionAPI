@@ -385,6 +385,69 @@ class ProjectService:
             "status": statusValue or "active",
         }
 
+    def syncProjectProtocolsAndDependencies(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            refresh: bool = False,
+            checkPid: bool = False,
+    ) -> Dict[str, int]:
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+        nodesDict = getattr(runs, "_nodesDict", {}) or {}
+
+        protocolDbIdByScipionId: Dict[str, int] = {}
+
+        # 1) Save all protocol nodes
+        for nodeId, nodeObj in nodesDict.items():
+            if str(nodeId) == "PROJECT":
+                continue
+
+            protocol = getattr(nodeObj, "run", None)
+            if protocol is None:
+                try:
+                    protocol = self.currentProject.getProtocol(int(nodeId))
+                except Exception:
+                    protocol = None
+
+            if protocol is None:
+                continue
+
+            protocolContext = self._buildProtocolContext(projectId, protocol)
+            protocolDbId = mapper.saveProtocol(protocolContext)
+            protocolDbIdByScipionId[str(nodeId)] = int(protocolDbId)
+
+        # 2) Build edges parent -> child using DB ids
+        edges: List[tuple[int, int]] = []
+
+        for nodeId, nodeObj in nodesDict.items():
+            childDbId = protocolDbIdByScipionId.get(str(nodeId))
+            if not childDbId:
+                continue
+
+            for parent in getattr(nodeObj, "_parents", []) or []:
+                parentNodeId = str(parent.getName())
+                if parentNodeId == "PROJECT":
+                    continue
+
+                parentDbId = protocolDbIdByScipionId.get(parentNodeId)
+                if not parentDbId:
+                    continue
+
+                edges.append((parentDbId, childDbId))
+
+        savedEdges = mapper.replaceProjectProtocolDependencies(projectId, edges)
+
+        return {
+            "protocols": len(protocolDbIdByScipionId),
+            "dependencies": int(savedEdges),
+        }
+
     def importProject(
             self,
             mapper: PostgresqlFlatMapper,
@@ -532,6 +595,20 @@ class ProjectService:
             description=description,
             status=statusValue,
         )
+
+        try:
+            self.loadProjectForThumbnails({"name": storedProjectPath})
+            self.syncProjectProtocolsAndDependencies(mapper, dbProjectId)
+        except Exception as e:
+            logger.exception(
+                "Failed to sync imported project protocols. projectId=%s path=%s",
+                dbProjectId,
+                storedProjectPath,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Project was imported but protocols could not be synced to the database: {e}",
+            )
 
         sizePath = sourcePath if not copyProject else targetPath
 
