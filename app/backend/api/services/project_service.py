@@ -1048,14 +1048,27 @@ class ProjectService:
 
         return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
-    def buildProtocolsGraph(self, projectId: int, runs, tags) -> dict:
+    def buildProtocolsGraph(
+        self,
+        projectId,
+        runs,
+        tags,
+        dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
+    ) -> dict:
         """Assemble dependency graph of protocols and their status."""
         nodesDict = runs._nodesDict
         graphData = {}
+        usePostgresDependencies = dependencyMap is not None
 
         for nodeId, nodeObj in nodesDict.items():
-            childrenIds = [child.getName() for child in nodeObj._children]
-            parentIds = [parent.getName() for parent in nodeObj._parents]
+            if nodeId != 'PROJECT' and usePostgresDependencies:
+                nodeDeps = dependencyMap.get(str(nodeId), {"parents": [], "children": []})
+                childrenIds = list(nodeDeps.get("children") or [])
+                parentIds = list(nodeDeps.get("parents") or [])
+            else:
+                childrenIds = [child.getName() for child in nodeObj._children]
+                parentIds = [parent.getName() for parent in nodeObj._parents]
+
             status = nodeObj.run.getStatus() if nodeObj.run else ''
             inputs = []
             outputs = []
@@ -1135,7 +1148,24 @@ class ProjectService:
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
         runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
         tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
-        graphData = self.buildProtocolsGraph(dbProj['id'], runs, tags)
+
+        dependencyMap = None
+        if mapper is not None:
+            try:
+                dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol dependencies from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                dependencyMap = None
+
+        graphData = self.buildProtocolsGraph(
+            dbProj['id'],
+            runs,
+            tags,
+            dependencyMap=dependencyMap,
+        )
 
         stats = projPath.stat()
         updatedAt = datetime.fromtimestamp(stats.st_mtime)
