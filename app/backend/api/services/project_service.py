@@ -1054,10 +1054,12 @@ class ProjectService:
             protocolRows: List[Dict[str, Any]],
             tags: Dict[str, List[str]],
             dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
+            runMap: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
         graphData: Dict[str, Any] = {}
         adjacency = dependencyMap or {}
+        liveRuns = runMap or {}
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -1134,11 +1136,14 @@ class ProjectService:
             thumbnailUrl = None
             thumbnailRebuildUrl = None
 
-            protocol = None
-            try:
-                protocol = self.currentProject.getProtocol(int(nodeId))
-            except Exception:
-                protocol = None
+            # Prefer the live protocol object coming from runs graph
+            protocol = liveRuns.get(nodeId)
+
+            if protocol is None:
+                try:
+                    protocol = self.currentProject.getProtocol(int(nodeId))
+                except Exception:
+                    protocol = None
 
             if protocol is not None:
                 try:
@@ -1272,15 +1277,23 @@ class ProjectService:
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
 
-        # Keep Scipion refreshed because we still use protocol objects
-        # to enrich the nodes (inputs, outputs, timings, thumbnails, etc.)
+        # Refresh Scipion graph and keep a live map of protocol objects
+        runs = None
+        runMap: Dict[str, Any] = {}
+
         try:
-            self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+            runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+            nodesDict = getattr(runs, "_nodesDict", {}) or {}
+            for nodeId, nodeObj in nodesDict.items():
+                if str(nodeId) == "PROJECT":
+                    continue
+                runMap[str(nodeId)] = getattr(nodeObj, "run", None)
         except Exception:
             logger.exception(
                 "Failed to refresh Scipion runs graph for project %s",
                 dbProj['id'],
             )
+            runMap = {}
 
         tags = {}
         dependencyMap = {}
@@ -1319,6 +1332,7 @@ class ProjectService:
             protocolRows,
             tags,
             dependencyMap=dependencyMap,
+            runMap=runMap,
         )
 
         stats = projPath.stat()
@@ -2147,6 +2161,7 @@ class ProjectService:
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
+
         if not protocolId:  # new protocol
             protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
             protocol = self.currentProject.newProtocol(protClass)
@@ -2182,6 +2197,7 @@ class ProjectService:
                 if errors:
                     errorListAux = ['**' + param.label.get() + '** ' + error for error in errors]
                     errorList += errorListAux
+
                 param.set(castedValue)
                 protocol.setAttributeValue(key, castedValue)
 
@@ -2191,31 +2207,40 @@ class ProjectService:
                 logger.info(f"[INFO] Set param {key} = {castedValue}")
             except Exception as e:
                 import re
-                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>\!&|^%()\[\]{}_,.;:]', '', str(e))
+                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>!&|^%()\[\]{}_,.;:]', '', str(e))
                 errorList += ['**' + param.label.get() + '** ' + cleaned]
 
         # Apply pointer parameters
         errorList += self.applyParamsToProtocol(protocol, params)
 
-        # if setToSave:
-        #     protocol.setSaved()
-
+        # Persist protocol in Scipion
         if protocol.hasObjId():
             self.currentProject._storeProtocol(protocol)
         else:
             self.currentProject._setupProtocol(protocol)
 
-        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=projectId)
-        if not dbProtocol:
-            protocolContex = self._buildProtocolContext(projectId, protocol)
-            mapper.saveProtocol(protocolContex)
-            pass
-        else:
-            # Update parameters and status if exists
-            pass
-        # Save dependencies
-        # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
-        # self.saveProtocolDependencies(mapper, graphData._nodesDict)
+        # Persist protocol in PostgreSQL and resync graph
+        try:
+            protocolContext = self._buildProtocolContext(projectId, protocol)
+            mapper.saveProtocol(protocolContext)
+
+            self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to sync protocol graph after save. projectId=%s protocolId=%s protocolClassName=%s",
+                projectId,
+                getattr(protocol, "getObjId", lambda: protocolId)(),
+                protocolClassName,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Protocol was saved in Scipion but graph sync to PostgreSQL failed: {e}",
+            )
 
         return protocol, errorList
 
@@ -2234,6 +2259,13 @@ class ProjectService:
         if executeMode == "stop":
             try:
                 self.stopProtocol([protocolId])
+
+                self.syncProjectProtocolsAndDependencies(
+                    mapper,
+                    projectId,
+                    refresh=True,
+                    checkPid=True,
+                )
                 return
             except HTTPException:
                 raise
@@ -2255,6 +2287,7 @@ class ProjectService:
         if protocol.useQueue():
             queueParams = [params['_queueName'], params['_queueParams']]
             protocol.setQueueParams(queueParams)
+
         try:
             validationErrors = protocol._validate()
             if validationErrors:
@@ -2271,18 +2304,37 @@ class ProjectService:
                 detail=errors,
             )
 
-        if executeMode == "schedule":
-            self.currentProject.scheduleProtocol(protocol)
-            return
+        try:
+            if executeMode == "schedule":
+                self.currentProject.scheduleProtocol(protocol)
+            else:
+                modeToRunMode = {
+                    "launch": MODE_RESUME,
+                    "restart": MODE_RESTART,
+                }
+                runMode = modeToRunMode[executeMode]
+                protocol.runMode.set(runMode)
+                self.currentProject.launchProtocol(protocol)
 
-        modeToRunMode = {
-            "launch": MODE_RESUME,
-            "restart": MODE_RESTART,
-        }
-
-        runMode = modeToRunMode[executeMode]
-        protocol.runMode.set(runMode)
-        self.currentProject.launchProtocol(protocol)
+            self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to sync protocol graph after execute. projectId=%s protocolId=%s executeMode=%s",
+                projectId,
+                getattr(protocol, "getObjId", lambda: protocolId)(),
+                executeMode,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Protocol execution finished but graph sync to PostgreSQL failed: {e}",
+            )
 
     def findViewersWeb(self, protocol):
         # TODO: Find viewers...
