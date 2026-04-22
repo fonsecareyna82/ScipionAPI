@@ -2945,12 +2945,19 @@ def getProtocolThumbnail(
 
         service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolThumbnail(
-            protocolId=protocolId,
-            force=False,
-            size=size,
-            outputName=outputName,
-        )
+        if outputName:
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=False,
+                size=size,
+            )
+        else:
+            result = service.buildProtocolThumbnail(
+                protocolId=protocolId,
+                force=False,
+                size=size,
+            )
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
@@ -2995,12 +3002,19 @@ def rebuildProtocolThumbnail(
 
         service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolThumbnail(
-            protocolId=protocolId,
-            force=True,
-            size=size,
-            outputName=outputName,
-        )
+        if outputName:
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=True,
+                size=size,
+            )
+        else:
+            result = service.buildProtocolThumbnail(
+                protocolId=protocolId,
+                force=True,
+                size=size,
+            )
 
         response = JSONResponse(
             {
