@@ -133,6 +133,36 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
+        # CreateProtocolDependenciesTable
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_dependencies (
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                "parentProtocolDbId" INTEGER NOT NULL,
+                "childProtocolDbId" INTEGER NOT NULL,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                PRIMARY KEY ("projectId", "parentProtocolDbId", "childProtocolDbId"),
+
+                FOREIGN KEY ("projectId", "parentProtocolDbId")
+                  REFERENCES protocols("projectId", id)
+                  ON DELETE CASCADE,
+
+                FOREIGN KEY ("projectId", "childProtocolDbId")
+                  REFERENCES protocols("projectId", id)
+                  ON DELETE CASCADE,
+
+                CHECK ("parentProtocolDbId" <> "childProtocolDbId")
+            );
+
+            CREATE INDEX IF NOT EXISTS protocol_dependencies_by_parent
+              ON protocol_dependencies("projectId", "parentProtocolDbId");
+
+            CREATE INDEX IF NOT EXISTS protocol_dependencies_by_child
+              ON protocol_dependencies("projectId", "childProtocolDbId");
+            """
+        )
+
         # CreateProjectSharesTable (requires users and projects)
         self.db.execute(
             """
@@ -890,6 +920,95 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
         return cur.fetchone()["id"]
+
+    def getProjectProtocolDbIdMap(self, projectId: int) -> Dict[str, int]:
+        rows = self.db.fetchAll(
+            """
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE "projectId" = %s
+            """,
+            (projectId,),
+        )
+
+        return {
+            str(row["protocolId"]): int(row["id"])
+            for row in rows
+            if row.get("protocolId") is not None and row.get("id") is not None
+        }
+
+    def replaceProjectProtocolDependencies(
+        self,
+        projectId: int,
+        edges: List[tuple[int, int]],
+    ) -> int:
+        self.db.execute(
+            """
+            DELETE FROM protocol_dependencies
+             WHERE "projectId" = %s
+            """,
+            (projectId,),
+        )
+
+        cleanEdges: List[tuple[int, int]] = []
+        seen = set()
+
+        for parentDbId, childDbId in edges or []:
+            try:
+                parentDbId = int(parentDbId)
+                childDbId = int(childDbId)
+            except Exception:
+                continue
+
+            if parentDbId <= 0 or childDbId <= 0:
+                continue
+            if parentDbId == childDbId:
+                continue
+
+            key = (parentDbId, childDbId)
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleanEdges.append(key)
+
+        if not cleanEdges:
+            return 0
+
+        valuesSql = ",".join(["(%s, %s, %s)"] * len(cleanEdges))
+        params: List[Any] = []
+
+        for parentDbId, childDbId in cleanEdges:
+            params.extend([projectId, parentDbId, childDbId])
+
+        self.db.execute(
+            f"""
+            INSERT INTO protocol_dependencies (
+                "projectId",
+                "parentProtocolDbId",
+                "childProtocolDbId"
+            )
+            VALUES {valuesSql}
+            """,
+            tuple(params),
+        )
+
+        return len(cleanEdges)
+
+    def listProjectProtocolDependencies(self, projectId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT
+                "projectId",
+                "parentProtocolDbId",
+                "childProtocolDbId",
+                "createdAt"
+              FROM protocol_dependencies
+             WHERE "projectId" = %s
+             ORDER BY "parentProtocolDbId", "childProtocolDbId"
+            """,
+            (projectId,),
+        )
 
     def getProtocolByProtocolId(self, protocolId: int, projectId: int) -> Optional[Dict]:
         """Retrieve a protocol by id."""
