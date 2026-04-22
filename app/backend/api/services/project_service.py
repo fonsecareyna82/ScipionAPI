@@ -1278,22 +1278,34 @@ class ProjectService:
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
 
         # Refresh Scipion graph and keep a live map of protocol objects
-        runs = None
         runMap: Dict[str, Any] = {}
+        scipionProtocolCount = 0
+        scipionEdgeCount = 0
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
             nodesDict = getattr(runs, "_nodesDict", {}) or {}
+
             for nodeId, nodeObj in nodesDict.items():
                 if str(nodeId) == "PROJECT":
                     continue
+
+                scipionProtocolCount += 1
                 runMap[str(nodeId)] = getattr(nodeObj, "run", None)
+
+                for parent in getattr(nodeObj, "_parents", []) or []:
+                    parentNodeId = str(parent.getName())
+                    if parentNodeId != "PROJECT":
+                        scipionEdgeCount += 1
+
         except Exception:
             logger.exception(
                 "Failed to refresh Scipion runs graph for project %s",
                 dbProj['id'],
             )
             runMap = {}
+            scipionProtocolCount = 0
+            scipionEdgeCount = 0
 
         tags = {}
         dependencyMap = {}
@@ -1326,6 +1338,41 @@ class ProjectService:
                     dbProj['id'],
                 )
                 protocolRows = []
+
+            dbProtocolCount = len(protocolRows)
+            dbEdgeCount = sum(len(v.get("parents") or []) for v in dependencyMap.values())
+
+            shouldResyncGraph = (
+                    scipionProtocolCount != dbProtocolCount or
+                    scipionEdgeCount != dbEdgeCount
+            )
+
+            if shouldResyncGraph:
+                try:
+                    logger.info(
+                        "Resyncing protocol graph from Scipion to PostgreSQL. "
+                        "projectId=%s scipionProtocols=%s dbProtocols=%s scipionEdges=%s dbEdges=%s",
+                        dbProj['id'],
+                        scipionProtocolCount,
+                        dbProtocolCount,
+                        scipionEdgeCount,
+                        dbEdgeCount,
+                    )
+
+                    self.syncProjectProtocolsAndDependencies(
+                        mapper,
+                        dbProj['id'],
+                        refresh=False,
+                        checkPid=False,
+                    )
+
+                    dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
+                    protocolRows = mapper.getProtocols(dbProj['id'])
+                except Exception:
+                    logger.exception(
+                        "Failed to resync protocol graph during project load for project %s",
+                        dbProj['id'],
+                    )
 
         graphData = self.buildProtocolsGraph(
             dbProj['id'],
@@ -1473,16 +1520,6 @@ class ProjectService:
             "dependenciesCount": syncInfo.get("dependencies"),
             "loadResult": str(loadResult) if loadResult is not None else None,
         }
-
-    def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
-        for nodeId, nodeInfo in graphData.items():
-            parentIds = [int(pid) for pid in nodeInfo['parents'] if pid != 'PROJECT']
-            childIds = [int(cid) for cid in nodeInfo['children']]
-            mapper.updateProtocolDependencies(
-                protocolId=nodeId,
-                parentIds=parentIds,
-                childIds=childIds
-            )
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
