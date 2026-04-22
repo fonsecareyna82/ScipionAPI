@@ -1170,11 +1170,11 @@ class ProjectService:
         return tempList.sortListByPluginName().templates
 
     def applyWorkflowToProject(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        workflowId: Union[int, str],
-        currentUser: dict,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            workflowId: Union[int, str],
+            currentUser: dict,
     ) -> dict:
         """
         Apply a predefined workflow template to an existing project.
@@ -1205,7 +1205,7 @@ class ProjectService:
             templateName = getattr(t, "name", None)
 
             if (templateId is not None and str(templateId) == workflowIdStr) or (
-                templateName and str(templateName) == workflowIdStr
+                    templateName and str(templateName) == workflowIdStr
             ):
                 selectedTemplate = t
                 break
@@ -1245,16 +1245,24 @@ class ProjectService:
                 detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
             )
 
-        # 7) Optionally compute how many protocols are present after applying
-        protocolsCount = None
+        # 7) Sync protocols + dependencies to PostgreSQL
         try:
-            if hasattr(self.currentProject, "getProtocols"):
-                protocols = self.currentProject.getProtocols()
-                if protocols is not None:
-                    protocolsCount = len(protocols)
-        except Exception:
-            # Ignore errors when computing protocol count
-            protocolsCount = None
+            syncInfo = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to sync workflow-applied project graph. projectId=%s workflowId=%s",
+                projectId,
+                workflowIdStr,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Workflow was applied but graph sync to PostgreSQL failed: {e}",
+            )
 
         # 8) Return a compact, useful payload for the frontend
         return {
@@ -1263,7 +1271,8 @@ class ProjectService:
             "workflowId": workflowIdStr,
             "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
             "workflowFile": str(workflowFile),
-            "protocolsCount": protocolsCount,
+            "protocolsCount": syncInfo.get("protocols"),
+            "dependenciesCount": syncInfo.get("dependencies"),
             "loadResult": str(loadResult) if loadResult is not None else None,
         }
 
@@ -2658,13 +2667,22 @@ class ProjectService:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol.id)))
-            resultProtList = self.currentProject.copyProtocol(protList)
 
-            for prot in resultProtList:
-                protocolContex = self._buildProtocolContext(projectId, prot)
-                mapper.saveProtocol(protocolContex)
+            self.currentProject.copyProtocol(protList)
 
-            return {"status": "ok", "message": "Protocol was duplicated successfully"}
+            syncInfo = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+
+            return {
+                "status": "ok",
+                "message": "Protocol was duplicated successfully",
+                "protocolsCount": syncInfo.get("protocols"),
+                "dependenciesCount": syncInfo.get("dependencies"),
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -2673,8 +2691,23 @@ class ProjectService:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol)))
+
             self.currentProject.deleteProtocol(*protList)
             mapper.deleteProtocol(projectId, protList)
+
+            syncInfo = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+
+            return {
+                "status": "ok",
+                "message": "Protocol deleted successfully",
+                "protocolsCount": syncInfo.get("protocols"),
+                "dependenciesCount": syncInfo.get("dependencies"),
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
