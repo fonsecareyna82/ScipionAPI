@@ -158,9 +158,22 @@ class ThumbnailService:
             size: int = 360,
             outputName: Optional[str] = None,
     ) -> Dict[str, Any]:
-        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            protocol = None
+
         if protocol is None:
-            raise ValueError(f"Protocol {protocolId} not found")
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": f"Protocol {int(protocolId)}",
+                "status": "unknown",
+                "outputName": outputName,
+                "outputClassName": None,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
 
         cachePath = self._getProtocolCachePath(
             protocolId,
@@ -431,12 +444,34 @@ class ThumbnailService:
             force: bool = False,
             size: int = 320,
     ) -> Dict[str, Any]:
-        protocol = self.currentProject.getProtocol(int(protocolId))
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            protocol = None
+
         if protocol is None:
-            raise ValueError(f"Protocol {protocolId} not found")
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": f"Protocol {int(protocolId)}",
+                "status": "unknown",
+                "outputName": outputName,
+                "outputClassName": None,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
 
         if not hasattr(protocol, outputName):
-            raise ValueError(f"Output '{outputName}' not found in protocol {protocolId}")
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": None,
+                "absolutePath": None,
+                "cached": False,
+                "exists": False,
+            }
 
         output = getattr(protocol, outputName, None)
         if output is None:
@@ -744,11 +779,11 @@ class ThumbnailService:
                     continue
 
                 try:
-                    built = self.buildProtocolThumbnail(
+                    built = self.buildProtocolOutputThumbnail(
                         protocolId=protocolId,
+                        outputName=outputName,
                         force=force,
                         size=size,
-                        outputName=outputName,
                     )
                 except Exception:
                     logger.debug(
@@ -768,13 +803,9 @@ class ThumbnailService:
                         "outputClassName": outputClassName,
                         "exists": True,
                         "thumbnailUrl": (
-                            f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail"
-                            f"?outputName={quote(str(outputName))}"
+                            f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName))}/thumbnail"
                         ),
-                        "thumbnailRebuildUrl": (
-                            f"/projects/{int(projectId)}/protocols/{protocolId}/thumbnail/rebuild"
-                            f"?outputName={quote(str(outputName))}"
-                        ),
+                        "thumbnailRebuildUrl": None,
                     }
                 )
 

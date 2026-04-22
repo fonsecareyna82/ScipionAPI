@@ -1049,83 +1049,208 @@ class ProjectService:
         return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
     def buildProtocolsGraph(
-        self,
-        projectId,
-        runs,
-        tags,
-        dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
+            self,
+            projectId: int,
+            protocolRows: List[Dict[str, Any]],
+            tags: Dict[str, List[str]],
+            dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
     ) -> dict:
-        """Assemble dependency graph of protocols and their status."""
-        nodesDict = runs._nodesDict
-        graphData = {}
-        usePostgresDependencies = dependencyMap is not None
+        """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
+        graphData: Dict[str, Any] = {}
+        adjacency = dependencyMap or {}
 
-        for nodeId, nodeObj in nodesDict.items():
-            if nodeId != 'PROJECT' and usePostgresDependencies:
-                nodeDeps = dependencyMap.get(str(nodeId), {"parents": [], "children": []})
-                childrenIds = list(nodeDeps.get("children") or [])
-                parentIds = list(nodeDeps.get("parents") or [])
-            else:
-                childrenIds = [child.getName() for child in nodeObj._children]
-                parentIds = [parent.getName() for parent in nodeObj._parents]
+        def sortKey(row: Dict[str, Any]):
+            raw = str(row.get("protocolId") or "")
+            try:
+                return (0, int(raw))
+            except Exception:
+                return (1, raw)
 
-            status = nodeObj.run.getStatus() if nodeObj.run else ''
+        orderedRows = sorted(protocolRows or [], key=sortKey)
+
+        protocolIds: List[str] = []
+        for row in orderedRows:
+            rawId = row.get("protocolId")
+            if rawId is None:
+                continue
+            protocolIds.append(str(rawId))
+
+        # Root node synthesized from DB graph:
+        # protocols without parents hang directly from PROJECT
+        rootChildren = [
+            pid for pid in protocolIds
+            if not (adjacency.get(pid, {}).get("parents") or [])
+        ]
+
+        projectLabel = "PROJECT"
+        try:
+            if self.currentProject is not None:
+                projectLabel = os.path.basename(self.currentProject.getPath()) or "PROJECT"
+        except Exception:
+            projectLabel = "PROJECT"
+
+        graphData["PROJECT"] = {
+            "protocolId": "PROJECT",
+            "children": rootChildren,
+            "parents": [],
+            "label": projectLabel,
+            "status": "",
+            "parameter": [],
+            "inputs": [],
+            "outputs": [],
+            "cpuTime": "",
+            "elapsedTime": "",
+            "isInteractive": False,
+            "numberOfSteps": 0,
+            "stepsDone": 0,
+            "tags": [],
+            "thumbnailUrl": None,
+            "thumbnailRebuildUrl": None,
+        }
+
+        for row in orderedRows:
+            rawNodeId = row.get("protocolId")
+            if rawNodeId is None:
+                continue
+
+            nodeId = str(rawNodeId)
+            nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
+            childrenIds = list(nodeDeps.get("children") or [])
+            parentIds = list(nodeDeps.get("parents") or [])
+
+            statusValue = row.get("status")
+            status = str(statusValue) if statusValue is not None else ""
+
+            protocolClassName = str(row.get("protocolClassName") or "")
+            label = protocolClassName or nodeId
+
             inputs = []
             outputs = []
-            cpuTime = ''
-            elapsedTime = ''
+            cpuTime = ""
+            elapsedTime = ""
             isinteractive = False
             numberOfSteps = 0
             stepsDone = 0
             thumbnailUrl = None
             thumbnailRebuildUrl = None
 
-            if nodeId != 'PROJECT':
+            protocol = None
+            try:
                 protocol = self.currentProject.getProtocol(int(nodeId))
-                cpuTime = str(protocol.cpuTime)
-                elapsedTime = str(protocol.getElapsedTime().total_seconds()).split('.')[0]
-                isinteractive = protocol.isInteractive()
-                numberOfSteps = protocol.numberOfSteps
-                stepsDone = protocol.stepsDone
-                self.currentProject._fixProtParamsConfiguration(protocol)
+            except Exception:
+                protocol = None
 
-                thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, int(nodeId))
-                thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, int(nodeId))
+            if protocol is not None:
+                try:
+                    label = str(protocol) or label
+                except Exception:
+                    pass
 
-                for key, attr in protocol.iterInputAttributes():
-                    input = {}
-                    try:
-                        input['name'] = key
-                        input['paramClass'] = 'PointerParam'
-                        input['pointerClass'] = attr.get().getClassName() if attr and attr.get() else ""
-                        input['info'] = str(attr.get())
-                    except Exception:
-                        input['pointerClass'] = ""
-                        input['info'] = ""
-                    parentId = attr.getObjValue().getObjId()
-                    input['value'] = "%s.%s" % (str(parentId), attr.getExtended())
-                    input['parentId'] = parentId
-                    inputs.append(input)
+                try:
+                    protStatus = protocol.getStatus()
+                    if protStatus:
+                        status = str(protStatus)
+                except Exception:
+                    pass
 
-                for key, attr in protocol.iterOutputAttributes():
-                    output = {}
-                    output['name'] = key
-                    output['paramClass'] = 'PointerParam'
-                    output['pointerClass'] = attr.__class__.__name__
-                    try:
-                        output['info'] = attr.__str__()
-                    except Exception:
-                        output['info'] = ""
-                    parentId = protocol.getObjId()
-                    output['value'] = "%s.%s" % (str(parentId), key)
-                    output['parentId'] = parentId
-                    outputs.append(output)
+                try:
+                    cpuTime = str(protocol.cpuTime)
+                except Exception:
+                    cpuTime = ""
+
+                try:
+                    elapsedTime = str(protocol.getElapsedTime().total_seconds()).split(".")[0]
+                except Exception:
+                    elapsedTime = ""
+
+                try:
+                    isinteractive = bool(protocol.isInteractive())
+                except Exception:
+                    isinteractive = False
+
+                try:
+                    numberOfSteps = protocol.numberOfSteps
+                except Exception:
+                    numberOfSteps = 0
+
+                try:
+                    stepsDone = protocol.stepsDone
+                except Exception:
+                    stepsDone = 0
+
+                try:
+                    self.currentProject._fixProtParamsConfiguration(protocol)
+                except Exception:
+                    pass
+
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
+
+                try:
+                    for key, attr in protocol.iterInputAttributes():
+                        inputItem = {}
+                        try:
+                            inputItem["name"] = key
+                            inputItem["paramClass"] = "PointerParam"
+                            inputItem["pointerClass"] = attr.get().getClassName() if attr and attr.get() else ""
+                            inputItem["info"] = str(attr.get())
+                        except Exception:
+                            inputItem["pointerClass"] = ""
+                            inputItem["info"] = ""
+
+                        try:
+                            parentId = attr.getObjValue().getObjId()
+                            inputItem["value"] = "%s.%s" % (str(parentId), attr.getExtended())
+                            inputItem["parentId"] = parentId
+                        except Exception:
+                            inputItem["value"] = ""
+                            inputItem["parentId"] = None
+
+                        inputs.append(inputItem)
+                except Exception:
+                    inputs = []
+
+                try:
+                    for key, attr in protocol.iterOutputAttributes():
+                        outputItem = {}
+                        outputItem["name"] = key
+                        outputItem["paramClass"] = "PointerParam"
+                        outputItem["pointerClass"] = attr.__class__.__name__
+                        try:
+                            outputItem["info"] = attr.__str__()
+                        except Exception:
+                            outputItem["info"] = ""
+
+                        try:
+                            parentId = protocol.getObjId()
+                            outputItem["value"] = "%s.%s" % (str(parentId), key)
+                            outputItem["parentId"] = parentId
+                        except Exception:
+                            outputItem["value"] = ""
+                            outputItem["parentId"] = None
+
+                        outputs.append(outputItem)
+                except Exception:
+                    outputs = []
+            else:
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
 
             graphData[nodeId] = {
                 "protocolId": nodeId,
                 "children": childrenIds,
                 "parents": parentIds,
-                "label": nodeObj.getLabel(),
+                "label": label,
                 "status": status,
                 "parameter": [],
                 "inputs": inputs,
@@ -1135,7 +1260,7 @@ class ProjectService:
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
-                "tags": tags[nodeId] if nodeId in tags else [],
+                "tags": tags.get(nodeId, []),
                 "thumbnailUrl": thumbnailUrl,
                 "thumbnailRebuildUrl": thumbnailRebuildUrl,
             }
@@ -1146,11 +1271,31 @@ class ProjectService:
         projPath = Path(dbProj['name'])
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
-        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
-        tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
 
-        dependencyMap = None
+        # Keep Scipion refreshed because we still use protocol objects
+        # to enrich the nodes (inputs, outputs, timings, thumbnails, etc.)
+        try:
+            self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+        except Exception:
+            logger.exception(
+                "Failed to refresh Scipion runs graph for project %s",
+                dbProj['id'],
+            )
+
+        tags = {}
+        dependencyMap = {}
+        protocolRows: List[Dict[str, Any]] = []
+
         if mapper is not None:
+            try:
+                tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol tags from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                tags = {}
+
             try:
                 dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
             except Exception:
@@ -1158,11 +1303,20 @@ class ProjectService:
                     "Failed to load protocol dependencies from PostgreSQL for project %s",
                     dbProj['id'],
                 )
-                dependencyMap = None
+                dependencyMap = {}
+
+            try:
+                protocolRows = mapper.getProtocols(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol rows from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                protocolRows = []
 
         graphData = self.buildProtocolsGraph(
             dbProj['id'],
-            runs,
+            protocolRows,
             tags,
             dependencyMap=dependencyMap,
         )
