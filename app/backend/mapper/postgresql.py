@@ -6,7 +6,7 @@ from datetime import datetime
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Iterator
+from typing import Optional, List, Dict, Any, Iterator, Tuple
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
 
@@ -110,26 +110,27 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
-        # CreateProtocolsTableLegacy (kept as-is for now)
+        # CreateProtocolsTableLegacy
         self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS protocols (
                 id SERIAL PRIMARY KEY,
-               CREATE TABLE IF NOT EXISTS protocols (
-               id SERIAL PRIMARY KEY,
-               "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-               "protocolId" TEXT NOT NULL,
-               "protocolClassName" TEXT NOT NULL,
-               status TEXT NOT NULL DEFAULT 'pending',
-               params JSONB,
-               "parentIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
-               "childIds" JSONB NOT NULL DEFAULT '[]'::jsonb,
-               "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-               "updatedAt" TIMESTAMPTZ
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                "protocolId" TEXT NOT NULL,
+                "protocolClassName" TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                params JSONB,
+                "parentIds" INTEGER[] NOT NULL DEFAULT ARRAY[]::INTEGER[],
+                "childIds" INTEGER[] NOT NULL DEFAULT ARRAY[]::INTEGER[],
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ
             );
-            
+
             CREATE UNIQUE INDEX IF NOT EXISTS protocols_project_protocol_ux
               ON protocols("projectId", "protocolId");
+
+            CREATE UNIQUE INDEX IF NOT EXISTS protocols_project_dbid_ux
+              ON protocols("projectId", id);
             """
         )
 
@@ -938,9 +939,9 @@ class PostgresqlFlatMapper(Mapper):
         }
 
     def replaceProjectProtocolDependencies(
-        self,
-        projectId: int,
-        edges: List[tuple[int, int]],
+            self,
+            projectId: int,
+            edges: List[Tuple[int, int]],
     ) -> int:
         self.db.execute(
             """
@@ -950,7 +951,7 @@ class PostgresqlFlatMapper(Mapper):
             (projectId,),
         )
 
-        cleanEdges: List[tuple[int, int]] = []
+        cleanEdges: List[Tuple[int, int]] = []
         seen = set()
 
         for parentDbId, childDbId in edges or []:
