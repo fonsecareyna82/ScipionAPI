@@ -534,6 +534,20 @@ def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
         },
     )
 
+    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
+        for protocolObj in service.currentProject.copiedProtocolOutputs:
+            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
+        return {
+            "protocols": len(service.currentProject.copiedProtocolOutputs),
+            "dependencies": 0,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        fakeSyncProjectProtocolsAndDependencies,
+    )
+
     class DuplicateItem:
         def __init__(self, itemId):
             self.id = itemId
@@ -544,22 +558,17 @@ def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
         protocols=[DuplicateItem("10"), DuplicateItem("11")],
     )
 
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.copiedProtocolOutputs:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {"protocols": len(service.currentProject.copiedProtocolOutputs), "dependencies": 0}
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
-    )
-
-    assert result["status"] == "ok"
-    assert result["message"] == "Protocol was duplicated successfully"
-    assert "protocolsCount" in result
-    assert "dependenciesCount" in result
+    assert result == {
+        "status": "ok",
+        "message": "Protocol was duplicated successfully",
+        "protocolsCount": 2,
+        "dependenciesCount": 0,
+    }
     assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
+    assert mapper.savedProtocolContexts == [
+        {"projectId": 1, "protocolId": 110},
+        {"projectId": 1, "protocolId": 111},
+    ]
 
 
 def test_DeleteProtocolDelegatesToCurrentProjectAndMapper(service, mapper):

@@ -2993,29 +2993,67 @@ class ProjectService:
         self.currentProject._storeProtocol(protocol)
         return {"status": "ok", "message": "Protocol renamed successfully"}
 
-    def duplicateProtocol(self, mapper, projectId, protocols: Any):
+    def duplicateProtocol(self, mapper, projectId, protocols):
+        protocolList = []
+
+        for item in protocols or []:
+            protocolId = getattr(item, "id", None)
+            if protocolId is None:
+                continue
+
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            if protocol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol not found: {protocolId}",
+                )
+
+            protocolList.append(protocol)
+
+        if not protocolList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to duplicate",
+            )
+
         try:
-            protList = []
-            for protocol in protocols:
-                protList.append(self.currentProject.getProtocol(int(protocol.id)))
+            copiedProtocols = self.currentProject.copyProtocol(protocolList) or []
+        except Exception as e:
+            logger.exception(
+                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
+                projectId,
+                [getattr(p, "getObjId", lambda: None)() for p in protocolList],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to duplicate protocols: {e}",
+            )
 
-            self.currentProject.copyProtocol(protList)
-
-            syncInfo = self.syncProjectProtocolsAndDependencies(
+        try:
+            syncResult = self.syncProjectProtocolsAndDependencies(
                 mapper,
                 projectId,
                 refresh=True,
                 checkPid=True,
             )
-
-            return {
-                "status": "ok",
-                "message": "Protocol was duplicated successfully",
-                "protocolsCount": syncInfo.get("protocols"),
-                "dependenciesCount": syncInfo.get("dependencies"),
-            }
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(
+                "Failed to sync protocol graph after duplication. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Protocols were duplicated in Scipion but graph sync to PostgreSQL failed: {e}",
+            )
+
+        return {
+            "status": "ok",
+            "message": "Protocol was duplicated successfully",
+            "protocolsCount": int(syncResult.get("protocols", 0)),
+            "dependenciesCount": int(syncResult.get("dependencies", 0)),
+        }
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
