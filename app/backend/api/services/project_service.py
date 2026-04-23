@@ -3052,8 +3052,75 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
-        raise NotImplementedError
+    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        try:
+            workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to resolve subworkflow for continue-all. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        protocolsToResume = activeProtocolList or workflowProtocolList or []
+        if not protocolsToResume:
+            return {"status": "ok", "message": "No protocols to continue"}
+
+        for item in protocolsToResume:
+            protocolToLaunch = item
+
+            if not hasattr(protocolToLaunch, "runMode"):
+                try:
+                    protocolToLaunch = self.currentProject.getProtocol(int(item))
+                except Exception:
+                    logger.exception(
+                        "Failed to resolve protocol to continue. projectId=%s protocolId=%s item=%s",
+                        projectId,
+                        protocolId,
+                        item,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to resolve protocol to continue: {item}",
+                    )
+
+            try:
+                protocolToLaunch.runMode.set(MODE_RESUME)
+            except Exception:
+                logger.debug(
+                    "Could not set MODE_RESUME before continue-all. projectId=%s protocolId=%s item=%s",
+                    projectId,
+                    protocolId,
+                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
+                    exc_info=True,
+                )
+
+            try:
+                self.currentProject.launchProtocol(protocolToLaunch)
+            except Exception as e:
+                logger.exception(
+                    "Failed to continue protocol. projectId=%s protocolId=%s item=%s",
+                    projectId,
+                    protocolId,
+                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to continue protocol: {e}",
+                )
+
+        return {"status": "ok", "message": "Protocol subtree continued successfully"}
 
     def resetProtocolFrom(self, protocolId: int):
         protocol = self.currentProject.getProtocol(int(protocolId))

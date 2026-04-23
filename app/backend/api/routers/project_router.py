@@ -723,6 +723,14 @@ def continueProtocolAll(
 
     try:
         service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="continue protocol subtree",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0, "errors": [], "workflow": []}
 
     except HTTPException as e:
