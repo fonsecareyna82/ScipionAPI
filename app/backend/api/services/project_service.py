@@ -2987,11 +2987,38 @@ class ProjectService:
             "scheduleOffset": newOffsetSchedule,
         }
 
-    def renameProtocol(self, protocolId: int, newName: str):
+    @staticmethod
+    def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
+        result = {
+            "status": "ok",
+            "message": message,
+        }
+        result.update(extra or {})
+        return result
+
+    def renameProtocol(self, protocolId, newName):
         protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.setObjLabel(newName)
-        self.currentProject._storeProtocol(protocol)
-        return {"status": "ok", "message": "Protocol renamed successfully"}
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        try:
+            protocol.setObjLabel(newName)
+            self.currentProject._storeProtocol(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to rename protocol. protocolId=%s newName=%s",
+                protocolId,
+                newName,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to rename protocol: {e}",
+            )
+
+        return self._buildProtocolMutationResult("Protocol renamed successfully")
 
     def duplicateProtocol(self, mapper, projectId, protocols):
         protocolList = []
@@ -3017,7 +3044,7 @@ class ProjectService:
             )
 
         try:
-            copiedProtocols = self.currentProject.copyProtocol(protocolList) or []
+            self.currentProject.copyProtocol(protocolList)
         except Exception as e:
             logger.exception(
                 "Failed to duplicate protocols. projectId=%s protocolIds=%s",
@@ -3048,12 +3075,11 @@ class ProjectService:
                 detail=f"Protocols were duplicated in Scipion but graph sync to PostgreSQL failed: {e}",
             )
 
-        return {
-            "status": "ok",
-            "message": "Protocol was duplicated successfully",
-            "protocolsCount": int(syncResult.get("protocols", 0)),
-            "dependenciesCount": int(syncResult.get("dependencies", 0)),
-        }
+        return self._buildProtocolMutationResult(
+            "Protocol was duplicated successfully",
+            protocolsCount=int(syncResult.get("protocols", 0)),
+            dependenciesCount=int(syncResult.get("dependencies", 0)),
+        )
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
@@ -3080,15 +3106,46 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def restartProtocolAll(self, protocolId: int):
+    def restartProtocolAll(self, protocolId):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
         try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
-            errorList = []
-            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
-            return errorList
+            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(
+                "Failed to resolve subworkflow for restart-all. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        errorList = []
+        try:
+            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
+        except Exception as e:
+            logger.exception(
+                "Failed to restart workflow subtree. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to restart protocol subtree: {e}",
+            )
+
+        if errorList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=[str(e) for e in errorList],
+            )
+
+        return self._buildProtocolMutationResult("Protocol subtree restarted successfully")
 
     def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
         protocol = self.currentProject.getProtocol(int(protocolId))
@@ -3113,7 +3170,7 @@ class ProjectService:
 
         protocolsToResume = activeProtocolList or workflowProtocolList or []
         if not protocolsToResume:
-            return {"status": "ok", "message": "No protocols to continue"}
+            return self._buildProtocolMutationResult("No protocols to continue")
 
         for item in protocolsToResume:
             protocolToLaunch = item
@@ -3158,25 +3215,80 @@ class ProjectService:
                     detail=f"Failed to continue protocol: {e}",
                 )
 
-        return {"status": "ok", "message": "Protocol subtree continued successfully"}
+        return self._buildProtocolMutationResult("Protocol subtree continued successfully")
 
-    def resetProtocolFrom(self, protocolId: int):
+    def resetProtocolFrom(self, protocolId):
         protocol = self.currentProject.getProtocol(int(protocolId))
-        try:
-            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
-            errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
-            if errorProtList:
-                raise HTTPException(status_code=500, detail=errorProtList)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
 
-    def stopProtocol(self, protocols: Any):
         try:
-            for protocolId in protocols:
-                protocol = self.currentProject.getProtocol(int(protocolId))
+            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to resolve subworkflow for reset-from. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        try:
+            resetErrors = self.currentProject.resetWorkFlow(workflowProtocolList) or []
+        except Exception as e:
+            logger.exception(
+                "Failed to reset workflow subtree. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to reset protocol subtree: {e}",
+            )
+
+        if resetErrors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=[str(e) for e in resetErrors],
+            )
+
+        return self._buildProtocolMutationResult("Protocol subtree reset successfully")
+
+    def stopProtocol(self, protocolIds):
+        resolvedProtocols = []
+
+        for protocolId in protocolIds or []:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            if protocol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol not found: {protocolId}",
+                )
+            resolvedProtocols.append(protocol)
+
+        if not resolvedProtocols:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to stop",
+            )
+
+        try:
+            for protocol in resolvedProtocols:
                 self.currentProject.stopProtocol(protocol)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(
+                "Failed to stop protocols. protocolIds=%s",
+                protocolIds,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to stop protocols: {e}",
+            )
+
+        return self._buildProtocolMutationResult("Protocol stopped successfully")
 
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
         return str(protocolId).strip() == "-1"
