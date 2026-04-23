@@ -36,8 +36,6 @@ import sys
 import threading
 import textwrap
 import shutil
-import inspect
-from numbers import Number
 
 import numpy as np
 
@@ -85,7 +83,6 @@ from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 
 from app.utils.scipion_helper import serializeToJson
-from contextvars import ContextVar
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.utils.thumbnail_service import ThumbnailService
@@ -100,15 +97,6 @@ _lastProtocolsTreeRevision = -1
 _newProtocolLock = threading.Lock()
 _newProtocolCache: Dict[str, Dict[str, Any]] = {}
 _lastNewProtocolRevision = -1
-
-
-# Per-request context for current project and tomoList
-_currentProjectVar: ContextVar[Optional[ScipionProject]] = ContextVar(
-    "_currentProjectVar", default=None
-)
-_tomoListVar: ContextVar[Optional[Dict[Any, Any]]] = ContextVar(
-    "_tomoListVar", default=None
-)
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
@@ -142,40 +130,23 @@ def _invalidateNewProtocolCacheIfNeeded() -> int:
 
 class ProjectService:
     def __init__(self):
-        self.manager = Manager()
-        # Keep objectManager attribute for backward compatibility,
-        # but new HTTP endpoints use a fresh ObjectManager per request.
-        self.objectManager = None
+        def __init__(self):
+            self.manager = Manager()
+            # Keep objectManager attribute for backward compatibility,
+            # but new HTTP endpoints use a fresh ObjectManager per request.
+            self.objectManager = None
+
+            # Real per-instance state
+            self.currentProject: Optional[ScipionProject] = None
+            self.tomoList: Dict[Any, Any] = {}
 
     # ------------------------------------------------------------------
     # Per-request project / tomogram context
     # ------------------------------------------------------------------
-    @property
-    def currentProject(self) -> Optional[ScipionProject]:
-        """Return the current ScipionProject bound to this request context."""
-        return _currentProjectVar.get()
-
-    @currentProject.setter
-    def currentProject(self, value: Optional[ScipionProject]):
-        _currentProjectVar.set(value)
-
-    @property
-    def tomoList(self) -> Dict[Any, Any]:
-        """Return the per-request tomogram cache dictionary."""
-        value = _tomoListVar.get()
-        if value is None:
-            value = {}
-            _tomoListVar.set(value)
-        return value
-
-    @tomoList.setter
-    def tomoList(self, value: Dict[Any, Any]):
-        _tomoListVar.set(value)
-
     def clearCurrentProject(self):
         """Clear per-request project and tomogram cache."""
-        _currentProjectVar.set(None)
-        _tomoListVar.set({})
+        self.currentProject = None
+        self.tomoList = {}
 
     def _createObjectManager(self) -> ObjectManager:
         """Create and configure a fresh ObjectManager instance.
@@ -402,10 +373,12 @@ class ProjectService:
         nodesDict = getattr(runs, "_nodesDict", {}) or {}
 
         protocolDbIdByScipionId: Dict[str, int] = {}
+        currentProtocolIds: Set[str] = set()
 
-        # 1) Save all protocol nodes
+        # 1) Save all protocol nodes that are currently present in the real Scipion graph
         for nodeId, nodeObj in nodesDict.items():
-            if str(nodeId) == "PROJECT":
+            nodeIdText = str(nodeId)
+            if nodeIdText == "PROJECT":
                 continue
 
             protocol = getattr(nodeObj, "run", None)
@@ -420,10 +393,18 @@ class ProjectService:
 
             protocolContext = self._buildProtocolContext(projectId, protocol)
             protocolDbId = mapper.saveProtocol(protocolContext)
-            protocolDbIdByScipionId[str(nodeId)] = int(protocolDbId)
 
-        # 2) Build edges parent -> child using DB ids
-        edges: List[tuple[int, int]] = []
+            currentProtocolIds.add(nodeIdText)
+            protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
+
+        # 2) Purge stale protocol rows that are no longer present in the real graph
+        mapper.deleteProjectProtocolsNotInProtocolIds(
+            projectId,
+            sorted(currentProtocolIds),
+        )
+
+        # 3) Build edges parent -> child using DB ids
+        edges: List[Tuple[int, int]] = []
 
         for nodeId, nodeObj in nodesDict.items():
             childDbId = protocolDbIdByScipionId.get(str(nodeId))
