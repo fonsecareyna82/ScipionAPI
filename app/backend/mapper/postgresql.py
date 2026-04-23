@@ -1112,6 +1112,46 @@ class PostgresqlFlatMapper(Mapper):
         query = 'UPDATE protocols SET "parentIds" = %s, "childIds" = %s, "updatedAt" = NOW() WHERE "protocolId" = %s'
         self.db.execute(query, (parentIds, childIds, protocolId))
 
+    def deleteProjectProtocolsNotInProtocolIds(
+        self,
+        projectId: int,
+        protocolIdsToKeep: List[str],
+    ) -> int:
+        keepSet = {
+            str(protocolId).strip()
+            for protocolId in (protocolIdsToKeep or [])
+            if str(protocolId).strip()
+        }
+
+        rows = self.db.fetchAll(
+            """
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE "projectId" = %s
+            """,
+            (projectId,),
+        )
+
+        staleDbIds = [
+            int(row["id"])
+            for row in rows
+            if str(row.get("protocolId", "")).strip() not in keepSet
+        ]
+
+        if not staleDbIds:
+            return 0
+
+        self.db.execute(
+            """
+            DELETE FROM protocols
+             WHERE "projectId" = %s
+               AND id = ANY(%s)
+            """,
+            (projectId, staleDbIds),
+        )
+
+        return len(staleDbIds)
+
     # -----------------------------
     # Settings Methods
     # -----------------------------
