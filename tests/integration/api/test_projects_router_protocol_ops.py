@@ -241,6 +241,14 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "newName": "Renamed protocol",
     }
 
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "rename protocol",
+        "refresh": True,
+        "checkPid": True,
+    }
+
 
 def test_DuplicateProtocolRejectsMissingItems(projectClient):
     response = projectClient.post(
@@ -353,6 +361,25 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
         "status": 0,
         "errors": [],
         "workflow": [],
+    }
+
+    assert fakeProjectService.lastContinueProtocolAllCall == {
+        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "continue protocol subtree",
+        "refresh": True,
+        "checkPid": True,
     }
 
     assert fakeProjectService.lastContinueProtocolAllCall == {
