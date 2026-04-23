@@ -325,12 +325,15 @@ def test_DeleteProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
-def test_RestartProtocolAllReturnsErrorsWhenServiceReturnsErrors(projectClient, fakeProjectService):
-    fakeProjectService.restartProtocolAllResult = ["cannot restart", "blocked"]
+def test_RestartProtocolAllReturnsErrorsWhenServiceRaisesHttpException(projectClient, fakeProjectService):
+    fakeProjectService.restartProtocolAllError = HTTPException(
+        status_code=422,
+        detail=["cannot restart", "blocked"],
+    )
 
     response = projectClient.post("/projects/1/protocols/10/restart-all")
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert response.json() == {
         "status": 1,
         "errors": ["cannot restart", "blocked"],

@@ -666,14 +666,7 @@ def restartProtocolAll(
         )
 
     try:
-        errorList = service.restartProtocolAll(protocolId)
-        errors = [str(e) for e in (errorList or [])]
-
-        if errors:
-            return {"status": 1,
-                    "errors": errors,
-                    "workflow": []}
-
+        service.restartProtocolAll(protocolId)
         service.syncProjectGraphAfterMutation(
             mapper,
             projectId,

@@ -613,9 +613,11 @@ def test_RestartProtocolAllReturnsCollectedErrors(service):
     service.currentProject.protocols[10] = protocol
     service.currentProject.restartWorkflowInjectedErrors = ["cannot restart", "blocked"]
 
-    result = service.restartProtocolAll(10)
+    with pytest.raises(HTTPException) as exc:
+        service.restartProtocolAll(10)
 
-    assert result == ["cannot restart", "blocked"]
+    assert exc.value.status_code == 422
+    assert exc.value.detail == ["cannot restart", "blocked"]
 
 
 def test_ContinueProtocolAllLaunchesActiveProtocolsInResumeMode(projectServiceModule, service, mapper, monkeypatch):
@@ -646,7 +648,7 @@ def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
 
     result = service.resetProtocolFrom(10)
 
-    assert result is None
+    assert result == {"status": "ok", "message": "Protocol subtree reset successfully"}
 
 
 def test_StopProtocolStopsEachProtocol(service):
@@ -657,5 +659,5 @@ def test_StopProtocolStopsEachProtocol(service):
 
     result = service.stopProtocol(["10", "11"])
 
-    assert result is None
+    assert result == {"status": "ok", "message": "Protocol stopped successfully"}
     assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
