@@ -130,15 +130,14 @@ def _invalidateNewProtocolCacheIfNeeded() -> int:
 
 class ProjectService:
     def __init__(self):
-        def __init__(self):
-            self.manager = Manager()
-            # Keep objectManager attribute for backward compatibility,
-            # but new HTTP endpoints use a fresh ObjectManager per request.
-            self.objectManager = None
+        self.manager = Manager()
+        # Keep objectManager attribute for backward compatibility,
+        # but new HTTP endpoints use a fresh ObjectManager per request.
+        self.objectManager = None
 
-            # Real per-instance state
-            self.currentProject: Optional[ScipionProject] = None
-            self.tomoList: Dict[Any, Any] = {}
+        # Real per-instance state
+        self.currentProject: Optional[ScipionProject] = None
+        self.tomoList: Dict[Any, Any] = {}
 
     # ------------------------------------------------------------------
     # Per-request project / tomogram context
@@ -2971,8 +2970,10 @@ class ProjectService:
     @staticmethod
     def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
         result = {
-            "status": "ok",
+            "status": 1 if extra['errors'] else 0,
+            "errors": extra['errors'],
             "message": message,
+            "duplicated": extra['duplicated']
         }
         result.update(extra or {})
         return result
@@ -3003,12 +3004,14 @@ class ProjectService:
 
     def duplicateProtocol(self, mapper, projectId, protocols):
         protocolList = []
-
+        sourceIds = []
+        duplicated = []
+        errors = []
         for item in protocols or []:
             protocolId = getattr(item, "id", None)
             if protocolId is None:
                 continue
-
+            sourceIds.append(protocolId)
             protocol = self.currentProject.getProtocol(int(protocolId))
             if protocol is None:
                 raise HTTPException(
@@ -3025,8 +3028,15 @@ class ProjectService:
             )
 
         try:
-            self.currentProject.copyProtocol(protocolList)
+            protListResult = self.currentProject.copyProtocol(protocolList)
+            for index, prot in enumerate(protListResult):
+                protId = str(prot.getObjId())
+                duplicated.append({"sourceId": sourceIds[index], "newId": protId})
+
         except Exception as e:
+            errors.append("Failed to duplicate protocols. projectId=%s protocolIds=%s" %projectId,
+                [getattr(p, "getObjId", lambda: None)() for p in protocolList])
+
             logger.exception(
                 "Failed to duplicate protocols. projectId=%s protocolIds=%s",
                 projectId,
@@ -3047,6 +3057,7 @@ class ProjectService:
         except HTTPException:
             raise
         except Exception as e:
+            errors.append("Failed to sync protocol graph after duplication. projectId=%s" %projectId)
             logger.exception(
                 "Failed to sync protocol graph after duplication. projectId=%s",
                 projectId,
@@ -3060,6 +3071,8 @@ class ProjectService:
             "Protocol was duplicated successfully",
             protocolsCount=int(syncResult.get("protocols", 0)),
             dependenciesCount=int(syncResult.get("dependencies", 0)),
+            duplicated=duplicated,
+            errors=errors,
         )
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
