@@ -580,11 +580,12 @@ def duplicateProtocol(
                          "workflow": []},
             )
 
-        service.duplicateProtocol(mapper, projectId, items)
+        result = service.duplicateProtocol(mapper, projectId, items)
         # Keep 201 on success, but still return unified schema
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        return {"status": result['status'],
+                "errors": result['errors'],
+                "workflow": [],
+                "duplicated": result['duplicated']}
 
     except HTTPException as e:
         return JSONResponse(
