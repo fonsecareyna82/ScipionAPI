@@ -36,8 +36,6 @@ import sys
 import threading
 import textwrap
 import shutil
-import inspect
-from numbers import Number
 
 import numpy as np
 
@@ -85,7 +83,6 @@ from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 
 from app.utils.scipion_helper import serializeToJson
-from contextvars import ContextVar
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.utils.thumbnail_service import ThumbnailService
@@ -100,15 +97,6 @@ _lastProtocolsTreeRevision = -1
 _newProtocolLock = threading.Lock()
 _newProtocolCache: Dict[str, Dict[str, Any]] = {}
 _lastNewProtocolRevision = -1
-
-
-# Per-request context for current project and tomoList
-_currentProjectVar: ContextVar[Optional[ScipionProject]] = ContextVar(
-    "_currentProjectVar", default=None
-)
-_tomoListVar: ContextVar[Optional[Dict[Any, Any]]] = ContextVar(
-    "_tomoListVar", default=None
-)
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
@@ -147,35 +135,17 @@ class ProjectService:
         # but new HTTP endpoints use a fresh ObjectManager per request.
         self.objectManager = None
 
+        # Real per-instance state
+        self.currentProject: Optional[ScipionProject] = None
+        self.tomoList: Dict[Any, Any] = {}
+
     # ------------------------------------------------------------------
     # Per-request project / tomogram context
     # ------------------------------------------------------------------
-    @property
-    def currentProject(self) -> Optional[ScipionProject]:
-        """Return the current ScipionProject bound to this request context."""
-        return _currentProjectVar.get()
-
-    @currentProject.setter
-    def currentProject(self, value: Optional[ScipionProject]):
-        _currentProjectVar.set(value)
-
-    @property
-    def tomoList(self) -> Dict[Any, Any]:
-        """Return the per-request tomogram cache dictionary."""
-        value = _tomoListVar.get()
-        if value is None:
-            value = {}
-            _tomoListVar.set(value)
-        return value
-
-    @tomoList.setter
-    def tomoList(self, value: Dict[Any, Any]):
-        _tomoListVar.set(value)
-
     def clearCurrentProject(self):
         """Clear per-request project and tomogram cache."""
-        _currentProjectVar.set(None)
-        _tomoListVar.set({})
+        self.currentProject = None
+        self.tomoList = {}
 
     def _createObjectManager(self) -> ObjectManager:
         """Create and configure a fresh ObjectManager instance.
@@ -385,6 +355,107 @@ class ProjectService:
             "status": statusValue or "active",
         }
 
+    def syncProjectProtocolsAndDependencies(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            refresh: bool = False,
+            checkPid: bool = False,
+    ) -> Dict[str, int]:
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+        nodesDict = getattr(runs, "_nodesDict", {}) or {}
+
+        protocolDbIdByScipionId: Dict[str, int] = {}
+        currentProtocolIds: Set[str] = set()
+
+        # 1) Save all protocol nodes that are currently present in the real Scipion graph
+        for nodeId, nodeObj in nodesDict.items():
+            nodeIdText = str(nodeId)
+            if nodeIdText == "PROJECT":
+                continue
+
+            protocol = getattr(nodeObj, "run", None)
+            if protocol is None:
+                try:
+                    protocol = self.currentProject.getProtocol(int(nodeId))
+                except Exception:
+                    protocol = None
+
+            if protocol is None:
+                continue
+
+            protocolContext = self._buildProtocolContext(projectId, protocol)
+            protocolDbId = mapper.saveProtocol(protocolContext)
+
+            currentProtocolIds.add(nodeIdText)
+            protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
+
+        # 2) Purge stale protocol rows that are no longer present in the real graph
+        mapper.deleteProjectProtocolsNotInProtocolIds(
+            projectId,
+            sorted(currentProtocolIds),
+        )
+
+        # 3) Build edges parent -> child using DB ids
+        edges: List[Tuple[int, int]] = []
+
+        for nodeId, nodeObj in nodesDict.items():
+            childDbId = protocolDbIdByScipionId.get(str(nodeId))
+            if not childDbId:
+                continue
+
+            for parent in getattr(nodeObj, "_parents", []) or []:
+                parentNodeId = str(parent.getName())
+                if parentNodeId == "PROJECT":
+                    continue
+
+                parentDbId = protocolDbIdByScipionId.get(parentNodeId)
+                if not parentDbId:
+                    continue
+
+                edges.append((parentDbId, childDbId))
+
+        savedEdges = mapper.replaceProjectProtocolDependencies(projectId, edges)
+
+        return {
+            "protocols": len(protocolDbIdByScipionId),
+            "dependencies": int(savedEdges),
+        }
+
+    def syncProjectGraphAfterMutation(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            actionLabel: str,
+            refresh: bool = True,
+            checkPid: bool = True,
+    ) -> Dict[str, int]:
+        try:
+            return self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=refresh,
+                checkPid=checkPid,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to sync protocol graph after %s. projectId=%s",
+                actionLabel,
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"{actionLabel} succeeded but graph sync to PostgreSQL failed: {e}",
+            )
+
     def importProject(
             self,
             mapper: PostgresqlFlatMapper,
@@ -532,6 +603,20 @@ class ProjectService:
             description=description,
             status=statusValue,
         )
+
+        try:
+            self.loadProjectForThumbnails({"name": storedProjectPath})
+            self.syncProjectProtocolsAndDependencies(mapper, dbProjectId)
+        except Exception as e:
+            logger.exception(
+                "Failed to sync imported project protocols. projectId=%s path=%s",
+                dbProjectId,
+                storedProjectPath,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Project was imported but protocols could not be synced to the database: {e}",
+            )
 
         sizePath = sourcePath if not copyProject else targetPath
 
@@ -971,71 +1056,214 @@ class ProjectService:
 
         return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
-    def buildProtocolsGraph(self, projectId: int, runs, tags) -> dict:
-        """Assemble dependency graph of protocols and their status."""
-        nodesDict = runs._nodesDict
-        graphData = {}
+    def buildProtocolsGraph(
+            self,
+            projectId: int,
+            protocolRows: List[Dict[str, Any]],
+            tags: Dict[str, List[str]],
+            dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
+            runMap: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
+        graphData: Dict[str, Any] = {}
+        adjacency = dependencyMap or {}
+        liveRuns = runMap or {}
 
-        for nodeId, nodeObj in nodesDict.items():
-            childrenIds = [child.getName() for child in nodeObj._children]
-            parentIds = [parent.getName() for parent in nodeObj._parents]
-            status = nodeObj.run.getStatus() if nodeObj.run else ''
+        def sortKey(row: Dict[str, Any]):
+            raw = str(row.get("protocolId") or "")
+            try:
+                return (0, int(raw))
+            except Exception:
+                return (1, raw)
+
+        orderedRows = sorted(protocolRows or [], key=sortKey)
+
+        protocolIds: List[str] = []
+        for row in orderedRows:
+            rawId = row.get("protocolId")
+            if rawId is None:
+                continue
+            protocolIds.append(str(rawId))
+
+        # Root node synthesized from DB graph:
+        # protocols without parents hang directly from PROJECT
+        rootChildren = [
+            pid for pid in protocolIds
+            if not (adjacency.get(pid, {}).get("parents") or [])
+        ]
+
+        projectLabel = "PROJECT"
+        try:
+            if self.currentProject is not None:
+                projectLabel = os.path.basename(self.currentProject.getPath()) or "PROJECT"
+        except Exception:
+            projectLabel = "PROJECT"
+
+        graphData["PROJECT"] = {
+            "protocolId": "PROJECT",
+            "children": rootChildren,
+            "parents": [],
+            "label": projectLabel,
+            "status": "",
+            "parameter": [],
+            "inputs": [],
+            "outputs": [],
+            "cpuTime": "",
+            "elapsedTime": "",
+            "isInteractive": False,
+            "numberOfSteps": 0,
+            "stepsDone": 0,
+            "tags": [],
+            "thumbnailUrl": None,
+            "thumbnailRebuildUrl": None,
+        }
+
+        for row in orderedRows:
+            rawNodeId = row.get("protocolId")
+            if rawNodeId is None:
+                continue
+
+            nodeId = str(rawNodeId)
+            nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
+            childrenIds = list(nodeDeps.get("children") or [])
+            parentIds = list(nodeDeps.get("parents") or [])
+
+            statusValue = row.get("status")
+            status = str(statusValue) if statusValue is not None else ""
+
+            protocolClassName = str(row.get("protocolClassName") or "")
+            label = protocolClassName or nodeId
+
             inputs = []
             outputs = []
-            cpuTime = ''
-            elapsedTime = ''
+            cpuTime = ""
+            elapsedTime = ""
             isinteractive = False
             numberOfSteps = 0
             stepsDone = 0
             thumbnailUrl = None
             thumbnailRebuildUrl = None
 
-            if nodeId != 'PROJECT':
-                protocol = self.currentProject.getProtocol(int(nodeId))
-                cpuTime = str(protocol.cpuTime)
-                elapsedTime = str(protocol.getElapsedTime().total_seconds()).split('.')[0]
-                isinteractive = protocol.isInteractive()
-                numberOfSteps = protocol.numberOfSteps
-                stepsDone = protocol.stepsDone
-                self.currentProject._fixProtParamsConfiguration(protocol)
+            # Prefer the live protocol object coming from runs graph
+            protocol = liveRuns.get(nodeId)
 
-                thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, int(nodeId))
-                thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, int(nodeId))
+            if protocol is None:
+                try:
+                    protocol = self.currentProject.getProtocol(int(nodeId))
+                except Exception:
+                    protocol = None
 
-                for key, attr in protocol.iterInputAttributes():
-                    input = {}
-                    try:
-                        input['name'] = key
-                        input['paramClass'] = 'PointerParam'
-                        input['pointerClass'] = attr.get().getClassName() if attr and attr.get() else ""
-                        input['info'] = str(attr.get())
-                    except Exception:
-                        input['pointerClass'] = ""
-                        input['info'] = ""
-                    parentId = attr.getObjValue().getObjId()
-                    input['value'] = "%s.%s" % (str(parentId), attr.getExtended())
-                    input['parentId'] = parentId
-                    inputs.append(input)
+            if protocol is not None:
+                try:
+                    label = str(protocol) or label
+                except Exception:
+                    pass
 
-                for key, attr in protocol.iterOutputAttributes():
-                    output = {}
-                    output['name'] = key
-                    output['paramClass'] = 'PointerParam'
-                    output['pointerClass'] = attr.__class__.__name__
-                    try:
-                        output['info'] = attr.__str__()
-                    except Exception:
-                        output['info'] = ""
-                    parentId = protocol.getObjId()
-                    output['value'] = "%s.%s" % (str(parentId), key)
-                    output['parentId'] = parentId
-                    outputs.append(output)
+                try:
+                    protStatus = protocol.getStatus()
+                    if protStatus:
+                        status = str(protStatus)
+                except Exception:
+                    pass
+
+                try:
+                    cpuTime = str(protocol.cpuTime)
+                except Exception:
+                    cpuTime = ""
+
+                try:
+                    elapsedTime = str(protocol.getElapsedTime().total_seconds()).split(".")[0]
+                except Exception:
+                    elapsedTime = ""
+
+                try:
+                    isinteractive = bool(protocol.isInteractive())
+                except Exception:
+                    isinteractive = False
+
+                try:
+                    numberOfSteps = protocol.numberOfSteps
+                except Exception:
+                    numberOfSteps = 0
+
+                try:
+                    stepsDone = protocol.stepsDone
+                except Exception:
+                    stepsDone = 0
+
+                try:
+                    self.currentProject._fixProtParamsConfiguration(protocol)
+                except Exception:
+                    pass
+
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
+
+                try:
+                    for key, attr in protocol.iterInputAttributes():
+                        inputItem = {}
+                        try:
+                            inputItem["name"] = key
+                            inputItem["paramClass"] = "PointerParam"
+                            inputItem["pointerClass"] = attr.get().getClassName() if attr and attr.get() else ""
+                            inputItem["info"] = str(attr.get())
+                        except Exception:
+                            inputItem["pointerClass"] = ""
+                            inputItem["info"] = ""
+
+                        try:
+                            parentId = attr.getObjValue().getObjId()
+                            inputItem["value"] = "%s.%s" % (str(parentId), attr.getExtended())
+                            inputItem["parentId"] = parentId
+                        except Exception:
+                            inputItem["value"] = ""
+                            inputItem["parentId"] = None
+
+                        inputs.append(inputItem)
+                except Exception:
+                    inputs = []
+
+                try:
+                    for key, attr in protocol.iterOutputAttributes():
+                        outputItem = {}
+                        outputItem["name"] = key
+                        outputItem["paramClass"] = "PointerParam"
+                        outputItem["pointerClass"] = attr.__class__.__name__
+                        try:
+                            outputItem["info"] = attr.__str__()
+                        except Exception:
+                            outputItem["info"] = ""
+
+                        try:
+                            parentId = protocol.getObjId()
+                            outputItem["value"] = "%s.%s" % (str(parentId), key)
+                            outputItem["parentId"] = parentId
+                        except Exception:
+                            outputItem["value"] = ""
+                            outputItem["parentId"] = None
+
+                        outputs.append(outputItem)
+                except Exception:
+                    outputs = []
+            else:
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
 
             graphData[nodeId] = {
                 "protocolId": nodeId,
                 "children": childrenIds,
                 "parents": parentIds,
-                "label": nodeObj.getLabel(),
+                "label": label,
                 "status": status,
                 "parameter": [],
                 "inputs": inputs,
@@ -1045,7 +1273,7 @@ class ProjectService:
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
-                "tags": tags[nodeId] if nodeId in tags else [],
+                "tags": tags.get(nodeId, []),
                 "thumbnailUrl": thumbnailUrl,
                 "thumbnailRebuildUrl": thumbnailRebuildUrl,
             }
@@ -1056,9 +1284,111 @@ class ProjectService:
         projPath = Path(dbProj['name'])
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
-        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
-        tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
-        graphData = self.buildProtocolsGraph(dbProj['id'], runs, tags)
+
+        # Refresh Scipion graph and keep a live map of protocol objects
+        runMap: Dict[str, Any] = {}
+        scipionProtocolCount = 0
+        scipionEdgeCount = 0
+
+        try:
+            runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+            nodesDict = getattr(runs, "_nodesDict", {}) or {}
+
+            for nodeId, nodeObj in nodesDict.items():
+                if str(nodeId) == "PROJECT":
+                    continue
+
+                scipionProtocolCount += 1
+                runMap[str(nodeId)] = getattr(nodeObj, "run", None)
+
+                for parent in getattr(nodeObj, "_parents", []) or []:
+                    parentNodeId = str(parent.getName())
+                    if parentNodeId != "PROJECT":
+                        scipionEdgeCount += 1
+
+        except Exception:
+            logger.exception(
+                "Failed to refresh Scipion runs graph for project %s",
+                dbProj['id'],
+            )
+            runMap = {}
+            scipionProtocolCount = 0
+            scipionEdgeCount = 0
+
+        tags = {}
+        dependencyMap = {}
+        protocolRows: List[Dict[str, Any]] = []
+
+        if mapper is not None:
+            try:
+                tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol tags from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                tags = {}
+
+            try:
+                dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol dependencies from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                dependencyMap = {}
+
+            try:
+                protocolRows = mapper.getProtocols(dbProj['id'])
+            except Exception:
+                logger.exception(
+                    "Failed to load protocol rows from PostgreSQL for project %s",
+                    dbProj['id'],
+                )
+                protocolRows = []
+
+            dbProtocolCount = len(protocolRows)
+            dbEdgeCount = sum(len(v.get("parents") or []) for v in dependencyMap.values())
+
+            shouldResyncGraph = (
+                    scipionProtocolCount != dbProtocolCount or
+                    scipionEdgeCount != dbEdgeCount
+            )
+
+            if shouldResyncGraph:
+                try:
+                    logger.info(
+                        "Resyncing protocol graph from Scipion to PostgreSQL. "
+                        "projectId=%s scipionProtocols=%s dbProtocols=%s scipionEdges=%s dbEdges=%s",
+                        dbProj['id'],
+                        scipionProtocolCount,
+                        dbProtocolCount,
+                        scipionEdgeCount,
+                        dbEdgeCount,
+                    )
+
+                    self.syncProjectProtocolsAndDependencies(
+                        mapper,
+                        dbProj['id'],
+                        refresh=False,
+                        checkPid=False,
+                    )
+
+                    dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
+                    protocolRows = mapper.getProtocols(dbProj['id'])
+                except Exception:
+                    logger.exception(
+                        "Failed to resync protocol graph during project load for project %s",
+                        dbProj['id'],
+                    )
+
+        graphData = self.buildProtocolsGraph(
+            dbProj['id'],
+            protocolRows,
+            tags,
+            dependencyMap=dependencyMap,
+            runMap=runMap,
+        )
 
         stats = projPath.stat()
         updatedAt = datetime.fromtimestamp(stats.st_mtime)
@@ -1093,11 +1423,11 @@ class ProjectService:
         return tempList.sortListByPluginName().templates
 
     def applyWorkflowToProject(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        workflowId: Union[int, str],
-        currentUser: dict,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            workflowId: Union[int, str],
+            currentUser: dict,
     ) -> dict:
         """
         Apply a predefined workflow template to an existing project.
@@ -1128,7 +1458,7 @@ class ProjectService:
             templateName = getattr(t, "name", None)
 
             if (templateId is not None and str(templateId) == workflowIdStr) or (
-                templateName and str(templateName) == workflowIdStr
+                    templateName and str(templateName) == workflowIdStr
             ):
                 selectedTemplate = t
                 break
@@ -1168,16 +1498,24 @@ class ProjectService:
                 detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
             )
 
-        # 7) Optionally compute how many protocols are present after applying
-        protocolsCount = None
+        # 7) Sync protocols + dependencies to PostgreSQL
         try:
-            if hasattr(self.currentProject, "getProtocols"):
-                protocols = self.currentProject.getProtocols()
-                if protocols is not None:
-                    protocolsCount = len(protocols)
-        except Exception:
-            # Ignore errors when computing protocol count
-            protocolsCount = None
+            syncInfo = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to sync workflow-applied project graph. projectId=%s workflowId=%s",
+                projectId,
+                workflowIdStr,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Workflow was applied but graph sync to PostgreSQL failed: {e}",
+            )
 
         # 8) Return a compact, useful payload for the frontend
         return {
@@ -1186,19 +1524,10 @@ class ProjectService:
             "workflowId": workflowIdStr,
             "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
             "workflowFile": str(workflowFile),
-            "protocolsCount": protocolsCount,
+            "protocolsCount": syncInfo.get("protocols"),
+            "dependenciesCount": syncInfo.get("dependencies"),
             "loadResult": str(loadResult) if loadResult is not None else None,
         }
-
-    def saveProtocolDependencies(self, mapper: PostgresqlFlatMapper, graphData: dict):
-        for nodeId, nodeInfo in graphData.items():
-            parentIds = [int(pid) for pid in nodeInfo['parents'] if pid != 'PROJECT']
-            childIds = [int(cid) for cid in nodeInfo['children']]
-            mapper.updateProtocolDependencies(
-                protocolId=nodeId,
-                parentIds=parentIds,
-                childIds=childIds
-            )
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
@@ -1877,75 +2206,101 @@ class ProjectService:
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
-        if not protocolId:  # new protocol
-            protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
-            protocol = self.currentProject.newProtocol(protClass)
-        else:  # retrieve a protocol by id
-            protocol = self.currentProject.getProtocol(int(protocolId))
 
-        # Set protected parameters
+        if not protocolId:
+            protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
+            if protClass is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol class not found: {protocolClassName}",
+                )
+            protocol = self.currentProject.newProtocol(protClass)
+        else:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            if protocol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol not found: {protocolId}",
+                )
+
         protectedParams = ['_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
         for paramName in protectedParams:
             protVar = getattr(protocol, paramName, None)
-            if protVar is not None:
-                try:
-                    if paramName in params:
-                        value = params[paramName]
-                        protVar.set(value)
-                except Exception:
-                    setattr(protocol, paramName, value)
+            if protVar is None or paramName not in params:
+                continue
 
-        # Set non-pointer parameters
+            value = params[paramName]
+            try:
+                protVar.set(value)
+            except Exception:
+                setattr(protocol, paramName, value)
+
         for key, value in params.items():
             param = protocol.getParam(key)
             if param is None:
-                logger.warning(f"[WARN] Param not found: {key}")
+                logger.warning("[WARN] Param not found: %s", key)
                 continue
 
             if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
                 continue
 
-            rawValue = value
             try:
-                castedValue = self.castParamValue(param, rawValue)
-                errors = param.validate(castedValue) if hasattr(param, 'validate') else []
+                castedValue = self.castParamValue(param, value)
+                errors = param.validate(castedValue) if hasattr(param, "validate") else []
                 if errors:
-                    errorListAux = ['**' + param.label.get() + '** ' + error for error in errors]
-                    errorList += errorListAux
+                    errorList += ['**' + param.label.get() + '** ' + error for error in errors]
+
                 param.set(castedValue)
                 protocol.setAttributeValue(key, castedValue)
 
-                if key == 'runName':
+                if key == "runName":
                     protocol.setObjLabel(castedValue)
 
-                logger.info(f"[INFO] Set param {key} = {castedValue}")
+                logger.info("[INFO] Set param %s = %s", key, castedValue)
             except Exception as e:
-                import re
-                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>\!&|^%()\[\]{}_,.;:]', '', str(e))
-                errorList += ['**' + param.label.get() + '** ' + cleaned]
+                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>!&|^%()\[\]{}_,.;:]', '', str(e))
+                errorList.append('**' + param.label.get() + '** ' + cleaned)
 
-        # Apply pointer parameters
         errorList += self.applyParamsToProtocol(protocol, params)
 
-        # if setToSave:
-        #     protocol.setSaved()
+        # Persist protocol in Scipion always.
+        # The setToSave flag only controls whether we also sync the graph to PostgreSQL now.
+        try:
+            if protocol.hasObjId():
+                self.currentProject._storeProtocol(protocol)
+            else:
+                self.currentProject._setupProtocol(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to persist protocol in Scipion. projectId=%s protocolId=%s protocolClassName=%s",
+                projectId,
+                protocolId,
+                protocolClassName,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist protocol in Scipion: {e}",
+            )
 
-        if protocol.hasObjId():
-            self.currentProject._storeProtocol(protocol)
-        else:
-            self.currentProject._setupProtocol(protocol)
-
-        dbProtocol = mapper.getProtocolByProtocolId(protocolId=protocol.getObjId(),   projectId=projectId)
-        if not dbProtocol:
-            protocolContex = self._buildProtocolContext(projectId, protocol)
-            mapper.saveProtocol(protocolContex)
-            pass
-        else:
-            # Update parameters and status if exists
-            pass
-        # Save dependencies
-        # graphData = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
-        # self.saveProtocolDependencies(mapper, graphData._nodesDict)
+        if setToSave:
+            try:
+                self.syncProjectProtocolsAndDependencies(
+                    mapper,
+                    projectId,
+                    refresh=True,
+                    checkPid=True,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Failed to sync protocol graph after save. projectId=%s protocolId=%s protocolClassName=%s",
+                    projectId,
+                    getattr(protocol, "getObjId", lambda: protocolId)(),
+                    protocolClassName,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Protocol was saved in Scipion but graph sync to PostgreSQL failed: {e}",
+                )
 
         return protocol, errorList
 
@@ -1964,6 +2319,13 @@ class ProjectService:
         if executeMode == "stop":
             try:
                 self.stopProtocol([protocolId])
+
+                self.syncProjectProtocolsAndDependencies(
+                    mapper,
+                    projectId,
+                    refresh=True,
+                    checkPid=True,
+                )
                 return
             except HTTPException:
                 raise
@@ -1983,8 +2345,10 @@ class ProjectService:
         )
 
         if protocol.useQueue():
-            queueParams = [params['_queueName'], params['_queueParams']]
-            protocol.setQueueParams(queueParams)
+            queueName = params.get("_queueName")
+            queueParams = params.get("_queueParams")
+            protocol.setQueueParams([queueName, queueParams])
+
         try:
             validationErrors = protocol._validate()
             if validationErrors:
@@ -1996,23 +2360,56 @@ class ProjectService:
             ]
 
         if errors:
+            try:
+                self.syncProjectProtocolsAndDependencies(
+                    mapper,
+                    projectId,
+                    refresh=True,
+                    checkPid=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to sync protocol graph after validation errors. projectId=%s protocolId=%s",
+                    projectId,
+                    getattr(protocol, "getObjId", lambda: protocolId)(),
+                )
+
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=errors,
             )
 
-        if executeMode == "schedule":
-            self.currentProject.scheduleProtocol(protocol)
-            return
+        try:
+            if executeMode == "schedule":
+                self.currentProject.scheduleProtocol(protocol)
+            else:
+                modeToRunMode = {
+                    "launch": MODE_RESUME,
+                    "restart": MODE_RESTART,
+                }
+                runMode = modeToRunMode[executeMode]
+                protocol.runMode.set(runMode)
+                self.currentProject.launchProtocol(protocol)
 
-        modeToRunMode = {
-            "launch": MODE_RESUME,
-            "restart": MODE_RESTART,
-        }
-
-        runMode = modeToRunMode[executeMode]
-        protocol.runMode.set(runMode)
-        self.currentProject.launchProtocol(protocol)
+            self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to sync protocol graph after execute. projectId=%s protocolId=%s executeMode=%s",
+                projectId,
+                getattr(protocol, "getObjId", lambda: protocolId)(),
+                executeMode,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Protocol execution finished but graph sync to PostgreSQL failed: {e}",
+            )
 
     def findViewersWeb(self, protocol):
         # TODO: Find viewers...
@@ -2570,67 +2967,322 @@ class ProjectService:
             "scheduleOffset": newOffsetSchedule,
         }
 
-    def renameProtocol(self, protocolId: int, newName: str):
+    @staticmethod
+    def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
+        result = {
+            "status": 1 if extra['errors'] else 0,
+            "errors": extra['errors'],
+            "message": message,
+            "duplicated": extra['duplicated']
+        }
+        result.update(extra or {})
+        return result
+
+    def renameProtocol(self, protocolId, newName):
         protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.setObjLabel(newName)
-        self.currentProject._storeProtocol(protocol)
-        return {"status": "ok", "message": "Protocol renamed successfully"}
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
 
-    def duplicateProtocol(self, mapper, projectId, protocols: Any):
         try:
-            protList = []
-            for protocol in protocols:
-                protList.append(self.currentProject.getProtocol(int(protocol.id)))
-            resultProtList = self.currentProject.copyProtocol(protList)
-
-            for prot in resultProtList:
-                protocolContex = self._buildProtocolContext(projectId, prot)
-                mapper.saveProtocol(protocolContex)
-
-            return {"status": "ok", "message": "Protocol was duplicated successfully"}
+            protocol.setObjLabel(newName)
+            self.currentProject._storeProtocol(protocol)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(
+                "Failed to rename protocol. protocolId=%s newName=%s",
+                protocolId,
+                newName,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to rename protocol: {e}",
+            )
+
+        return self._buildProtocolMutationResult("Protocol renamed successfully")
+
+    def duplicateProtocol(self, mapper, projectId, protocols):
+        protocolList = []
+        sourceIds = []
+        duplicated = []
+        errors = []
+        for item in protocols or []:
+            protocolId = getattr(item, "id", None)
+            if protocolId is None:
+                continue
+            sourceIds.append(protocolId)
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            if protocol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol not found: {protocolId}",
+                )
+
+            protocolList.append(protocol)
+
+        if not protocolList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to duplicate",
+            )
+
+        try:
+            protListResult = self.currentProject.copyProtocol(protocolList)
+            for index, prot in enumerate(protListResult):
+                protId = str(prot.getObjId())
+                duplicated.append({"sourceId": sourceIds[index], "newId": protId})
+
+        except Exception as e:
+            errors.append("Failed to duplicate protocols. projectId=%s protocolIds=%s" %projectId,
+                [getattr(p, "getObjId", lambda: None)() for p in protocolList])
+
+            logger.exception(
+                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
+                projectId,
+                [getattr(p, "getObjId", lambda: None)() for p in protocolList],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to duplicate protocols: {e}",
+            )
+
+        try:
+            syncResult = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            errors.append("Failed to sync protocol graph after duplication. projectId=%s" %projectId)
+            logger.exception(
+                "Failed to sync protocol graph after duplication. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Protocols were duplicated in Scipion but graph sync to PostgreSQL failed: {e}",
+            )
+
+        return self._buildProtocolMutationResult(
+            "Protocol was duplicated successfully",
+            protocolsCount=int(syncResult.get("protocols", 0)),
+            dependenciesCount=int(syncResult.get("dependencies", 0)),
+            duplicated=duplicated,
+            errors=errors,
+        )
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
             for protocol in protocols:
                 protList.append(self.currentProject.getProtocol(int(protocol)))
+
             self.currentProject.deleteProtocol(*protList)
             mapper.deleteProtocol(projectId, protList)
+
+            syncInfo = self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+
+            return {
+                "status": "ok",
+                "message": "Protocol deleted successfully",
+                "protocolsCount": syncInfo.get("protocols"),
+                "dependenciesCount": syncInfo.get("dependencies"),
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def restartProtocolAll(self, protocolId: int):
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
-            errorList = []
-            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
-            return errorList
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    def continueProtocolAll(self, mapper, projectId: int, protocolId: int, currentUser: dict):
-        raise NotImplementedError
-
-    def resetProtocolFrom(self, protocolId: int):
+    def restartProtocolAll(self, protocolId):
         protocol = self.currentProject.getProtocol(int(protocolId))
-        try:
-            workflowProtocolList, activeProtList = self.currentProject._getSubworkflow(protocol)
-            errorProtList = self.currentProject.resetWorkFlow(workflowProtocolList)
-            if errorProtList:
-                raise HTTPException(status_code=500, detail=errorProtList)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
 
-    def stopProtocol(self, protocols: Any):
         try:
-            for protocolId in protocols:
-                protocol = self.currentProject.getProtocol(int(protocolId))
+            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to resolve subworkflow for restart-all. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        errorList = []
+        try:
+            self.currentProject._restartWorkflow(errorList, workflowProtocolList)
+        except Exception as e:
+            logger.exception(
+                "Failed to restart workflow subtree. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to restart protocol subtree: {e}",
+            )
+
+        if errorList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=[str(e) for e in errorList],
+            )
+
+        return self._buildProtocolMutationResult("Protocol subtree restarted successfully")
+
+    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        try:
+            workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to resolve subworkflow for continue-all. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        protocolsToResume = activeProtocolList or workflowProtocolList or []
+        if not protocolsToResume:
+            return self._buildProtocolMutationResult("No protocols to continue")
+
+        for item in protocolsToResume:
+            protocolToLaunch = item
+
+            if not hasattr(protocolToLaunch, "runMode"):
+                try:
+                    protocolToLaunch = self.currentProject.getProtocol(int(item))
+                except Exception:
+                    logger.exception(
+                        "Failed to resolve protocol to continue. projectId=%s protocolId=%s item=%s",
+                        projectId,
+                        protocolId,
+                        item,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to resolve protocol to continue: {item}",
+                    )
+
+            try:
+                protocolToLaunch.runMode.set(MODE_RESUME)
+            except Exception:
+                logger.debug(
+                    "Could not set MODE_RESUME before continue-all. projectId=%s protocolId=%s item=%s",
+                    projectId,
+                    protocolId,
+                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
+                    exc_info=True,
+                )
+
+            try:
+                self.currentProject.launchProtocol(protocolToLaunch)
+            except Exception as e:
+                logger.exception(
+                    "Failed to continue protocol. projectId=%s protocolId=%s item=%s",
+                    projectId,
+                    protocolId,
+                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to continue protocol: {e}",
+                )
+
+        return self._buildProtocolMutationResult("Protocol subtree continued successfully")
+
+    def resetProtocolFrom(self, protocolId):
+        protocol = self.currentProject.getProtocol(int(protocolId))
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        try:
+            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+        except Exception as e:
+            logger.exception(
+                "Failed to resolve subworkflow for reset-from. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to resolve protocol subworkflow: {e}",
+            )
+
+        try:
+            resetErrors = self.currentProject.resetWorkFlow(workflowProtocolList) or []
+        except Exception as e:
+            logger.exception(
+                "Failed to reset workflow subtree. protocolId=%s",
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to reset protocol subtree: {e}",
+            )
+
+        if resetErrors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=[str(e) for e in resetErrors],
+            )
+
+        return self._buildProtocolMutationResult("Protocol subtree reset successfully")
+
+    def stopProtocol(self, protocolIds):
+        resolvedProtocols = []
+
+        for protocolId in protocolIds or []:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            if protocol is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Protocol not found: {protocolId}",
+                )
+            resolvedProtocols.append(protocol)
+
+        if not resolvedProtocols:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to stop",
+            )
+
+        try:
+            for protocol in resolvedProtocols:
                 self.currentProject.stopProtocol(protocol)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(
+                "Failed to stop protocols. protocolIds=%s",
+                protocolIds,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to stop protocols: {e}",
+            )
+
+        return self._buildProtocolMutationResult("Protocol stopped successfully")
 
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
         return str(protocolId).strip() == "-1"

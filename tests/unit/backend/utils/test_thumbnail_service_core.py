@@ -248,6 +248,7 @@ def test_BuildProtocolThumbnailReturnsCachedEntry(service, monkeypatch, tmp_path
     cachePath.write_text("cached", encoding="utf-8")
 
     monkeypatch.setattr(service, "_getProtocolCachePath", lambda protocolId, size, outputName=None: cachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: True)
 
     result = service.buildProtocolThumbnail(protocolId=10, force=False, size=320)
 
@@ -293,6 +294,7 @@ def test_BuildProjectThumbnailReturnsCachedStrip(service, monkeypatch, tmp_path)
     cachePath.write_text("cached", encoding="utf-8")
 
     monkeypatch.setattr(service, "_getProjectCachePath", lambda size, maxProtocols: cachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: True)
 
     result = service.buildProjectThumbnail(force=False, size=720, maxProtocols=6)
 
@@ -327,8 +329,8 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
     )
     monkeypatch.setattr(
         service,
-        "buildProtocolThumbnail",
-        lambda protocolId, force, size, outputName=None: {
+        "buildProtocolOutputThumbnail",
+        lambda protocolId, outputName, force, size: {
             "exists": True,
             "absolutePath": f"/tmp/{protocolId}_{outputName}.png",
         },
@@ -352,15 +354,15 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
                     "outputName": "outputVol",
                     "outputClassName": "SetOfVolumes",
                     "exists": True,
-                    "thumbnailUrl": "/projects/7/protocols/11/thumbnail?outputName=outputVol",
-                    "thumbnailRebuildUrl": "/projects/7/protocols/11/thumbnail/rebuild?outputName=outputVol",
+                    "thumbnailUrl": "/projects/7/protocols/11/outputs/outputVol/thumbnail",
+                    "thumbnailRebuildUrl": None,
                 },
                 {
                     "outputName": "outputParticles",
                     "outputClassName": "SetOfParticles",
                     "exists": True,
-                    "thumbnailUrl": "/projects/7/protocols/11/thumbnail?outputName=outputParticles",
-                    "thumbnailRebuildUrl": "/projects/7/protocols/11/thumbnail/rebuild?outputName=outputParticles",
+                    "thumbnailUrl": "/projects/7/protocols/11/outputs/outputParticles/thumbnail",
+                    "thumbnailRebuildUrl": None,
                 },
             ],
         }
