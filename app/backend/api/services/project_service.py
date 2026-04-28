@@ -1628,7 +1628,7 @@ class ProjectService:
             container["wizards"] = wizardItems
             container["wizard"] = wizardItems[0] if wizardItems else None
 
-        headerParams = ['runName', '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
+        headerParams = ['runName', '_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads', 'numberOfMpi']
         package = protocol.getClassPackage()
         hasExpert = protocol.hasExpert()
         if hasExpert:
@@ -1894,6 +1894,8 @@ class ProjectService:
                                     paramValue = protocol.getScipionThreads()
                                 elif paramName == 'gpuList':
                                     paramValue = protocol.gpuList.get()
+                                elif paramName == 'numberOfMpi':
+                                    paramValue = protocol.getMPIs()
 
                                 sectionData["params"].append(paramProcessed)
 
@@ -2969,13 +2971,17 @@ class ProjectService:
 
     @staticmethod
     def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
-        result = {
-            "status": 1 if extra['errors'] else 0,
-            "errors": extra['errors'],
+        errors = extra.get("errors", [])
+        duplicated = extra.get("duplicated", {})
+        result = dict(extra or {})
+
+        result.update({
+            "status": 1 if errors else 0,
+            "errors": errors,
             "message": message,
-            "duplicated": extra['duplicated']
-        }
-        result.update(extra or {})
+            "duplicated": duplicated,
+        })
+
         return result
 
     def renameProtocol(self, protocolId, newName):
