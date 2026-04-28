@@ -44,6 +44,7 @@ from app.backend.api.routers.plugin_router import router as plugins
 from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
 from app.backend.api.routers.settings_router import router as settingsRouter
+from app.backend.api.routers.coords2d_router import router as coords2dRouter
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHttpException
@@ -115,6 +116,8 @@ def _buildApiApp() -> FastAPI:
             "X-Preview-VoxelSize",
             "X-Preview-Schema",
             "X-Preview-Name",
+            "X-Preview-MicrographId",
+            "X-Preview-Format",
         ],
     )
 
@@ -125,6 +128,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(auth)
     apiApp.include_router(users)
     apiApp.include_router(settingsRouter)
+    apiApp.include_router(coords2dRouter)
 
     @apiApp.get("/health")
     def health_check():
