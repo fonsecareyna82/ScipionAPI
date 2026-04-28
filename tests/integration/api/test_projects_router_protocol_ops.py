@@ -241,6 +241,14 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "newName": "Renamed protocol",
     }
 
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "rename protocol",
+        "refresh": True,
+        "checkPid": True,
+    }
+
 
 def test_DuplicateProtocolRejectsMissingItems(projectClient):
     response = projectClient.post(
@@ -317,12 +325,15 @@ def test_DeleteProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
-def test_RestartProtocolAllReturnsErrorsWhenServiceReturnsErrors(projectClient, fakeProjectService):
-    fakeProjectService.restartProtocolAllResult = ["cannot restart", "blocked"]
+def test_RestartProtocolAllReturnsErrorsWhenServiceRaisesHttpException(projectClient, fakeProjectService):
+    fakeProjectService.restartProtocolAllError = HTTPException(
+        status_code=422,
+        detail=["cannot restart", "blocked"],
+    )
 
     response = projectClient.post("/projects/1/protocols/10/restart-all")
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert response.json() == {
         "status": 1,
         "errors": ["cannot restart", "blocked"],
@@ -343,6 +354,13 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
     }
 
     assert fakeProjectService.lastRestartProtocolAllCall == {"protocolId": 10}
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "restart protocol subtree",
+        "refresh": True,
+        "checkPid": True,
+    }
 
 
 def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService):
@@ -353,6 +371,14 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
         "status": 0,
         "errors": [],
         "workflow": [],
+    }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "continue protocol subtree",
+        "refresh": True,
+        "checkPid": True,
     }
 
     assert fakeProjectService.lastContinueProtocolAllCall == {
@@ -378,6 +404,123 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
     }
 
     assert fakeProjectService.lastResetProtocolFromCall == {"protocolId": 10}
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "reset protocol from node",
+        "refresh": True,
+        "checkPid": True,
+    }
+
+def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
+        status_code=500,
+        detail="rename protocol succeeded but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.put(
+        "/projects/1/protocols/10/rename",
+        json={"name": "Renamed protocol"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["rename protocol succeeded but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastRenameProtocolCall == {
+        "protocolId": 10,
+        "newName": "Renamed protocol",
+    }
+
+
+def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    fakeProjectService.restartProtocolAllResult = []
+    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
+        status_code=500,
+        detail="restart protocol subtree succeeded but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/restart-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["restart protocol subtree succeeded but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastRestartProtocolAllCall == {"protocolId": 10}
+
+
+def test_ContinueProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
+        status_code=500,
+        detail="continue protocol subtree succeeded but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/continue-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["continue protocol subtree succeeded but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastContinueProtocolAllCall == {
+        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
+def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
+        status_code=500,
+        detail="reset protocol from node succeeded but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/reset-from")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["reset protocol from node succeeded but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastResetProtocolFromCall == {"protocolId": 10}
+
+
+def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
+        status_code=500,
+        detail="stop protocol succeeded but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/stop",
+        json={"protocolIds": ["10", "11"]},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["stop protocol succeeded but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastStopProtocolCall == {
+        "protocolIds": ["10", "11"],
+    }
 
 
 def test_StopProtocolRejectsMissingProtocolIds(projectClient):
@@ -409,4 +552,11 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
 
     assert fakeProjectService.lastStopProtocolCall == {
         "protocolIds": ["10", "11"],
+    }
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
+        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
+        "projectId": 1,
+        "actionLabel": "stop protocol",
+        "refresh": True,
+        "checkPid": True,
     }

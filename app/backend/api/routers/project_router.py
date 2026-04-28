@@ -515,7 +515,6 @@ def renameProtocol(
         )
 
     try:
-        # Basic payload validation for semantic HTTP
         newName = getattr(payload, "name", None)
         if not newName or not str(newName).strip():
             return JSONResponse(
@@ -526,6 +525,14 @@ def renameProtocol(
             )
 
         service.renameProtocol(protocolId, str(newName).strip())
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="rename protocol",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0,
                 "errors": [],
                 "workflow": []}
@@ -573,11 +580,12 @@ def duplicateProtocol(
                          "workflow": []},
             )
 
-        service.duplicateProtocol(mapper, projectId, items)
+        result = service.duplicateProtocol(mapper, projectId, items)
         # Keep 201 on success, but still return unified schema
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        return {"status": result['status'],
+                "errors": result['errors'],
+                "workflow": [],
+                "duplicated": result['duplicated']}
 
     except HTTPException as e:
         return JSONResponse(
@@ -659,13 +667,14 @@ def restartProtocolAll(
         )
 
     try:
-        errorList = service.restartProtocolAll(protocolId)
-        errors = [str(e) for e in (errorList or [])]
-
-        if errors:
-            return {"status": 1,
-                    "errors": errors,
-                    "workflow": []}
+        service.restartProtocolAll(protocolId)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="restart protocol subtree",
+            refresh=True,
+            checkPid=True,
+        )
 
         return {"status": 0,
                 "errors": [],
@@ -708,6 +717,14 @@ def continueProtocolAll(
 
     try:
         service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="continue protocol subtree",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0, "errors": [], "workflow": []}
 
     except HTTPException as e:
@@ -743,6 +760,14 @@ def resetProtocolFrom(
 
     try:
         service.resetProtocolFrom(protocolId)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="reset protocol from node",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0, "errors": [], "workflow": []}
 
     except HTTPException as e:
@@ -785,6 +810,14 @@ def stopProtocol(
             )
 
         service.stopProtocol(protocolIds)
+        service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="stop protocol",
+            refresh=True,
+            checkPid=True,
+        )
+
         return {"status": 0,
                 "errors": [],
                 "workflow": []}
@@ -2945,12 +2978,19 @@ def getProtocolThumbnail(
 
         service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolThumbnail(
-            protocolId=protocolId,
-            force=False,
-            size=size,
-            outputName=outputName,
-        )
+        if outputName:
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=False,
+                size=size,
+            )
+        else:
+            result = service.buildProtocolThumbnail(
+                protocolId=protocolId,
+                force=False,
+                size=size,
+            )
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
@@ -2995,12 +3035,19 @@ def rebuildProtocolThumbnail(
 
         service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolThumbnail(
-            protocolId=protocolId,
-            force=True,
-            size=size,
-            outputName=outputName,
-        )
+        if outputName:
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=True,
+                size=size,
+            )
+        else:
+            result = service.buildProtocolThumbnail(
+                protocolId=protocolId,
+                force=True,
+                size=size,
+            )
 
         response = JSONResponse(
             {
@@ -3050,7 +3097,7 @@ def listProjectThumbnailItems(
         )
 
         response = JSONResponse(items)
-        response.headers["Cache-Control"] = "private, max-age=20, stale-while-revalidate=60"
+        response.headers["Cache-Control"] = "private, no-store"
         response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
         return _attachDebugHeaders(response, currentUser)
 

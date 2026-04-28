@@ -245,6 +245,18 @@ def service(projectServiceModule):
     instance = object.__new__(projectServiceModule.ProjectService)
     instance.currentProject = FakeCurrentProject()
     instance.tomoList = {}
+    instance._buildProtocolContext = lambda projectId, protocol: {
+        "projectId": projectId,
+        "protocolId": protocol.getObjId(),
+        "protocolClassName": getattr(protocol, "_className", "ProtClass"),
+        "params": {},
+    }
+    instance.syncProjectProtocolsAndDependencies = (
+        lambda mapper, projectId, refresh=False, checkPid=False: {
+            "protocols": 0,
+            "dependencies": 0,
+        }
+    )
     return instance
 
 
@@ -298,6 +310,17 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
         },
     )
 
+    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
+        for protocolObj in service.currentProject.setupProtocols:
+            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
+        return {"protocols": len(service.currentProject.setupProtocols), "dependencies": 0}
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        fakeSyncProjectProtocolsAndDependencies,
+    )
+
     def buildProtocol():
         protocol = FakeProtocol(objId=None, className="ProtClass")
         protocol.addParam("runName", FakeStringParam(label="Run name"))
@@ -349,6 +372,17 @@ def test_SaveProtocolAggregatesValidationAndPointerErrors(projectServiceModule, 
     mapper.dbProtocolsByProtocolId[(10, 1)] = {"id": 500, "protocolId": 10}
 
     monkeypatch.setattr(service, "applyParamsToProtocol", lambda protocolObj, params: ["pointer error"])
+
+    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
+        for protocolObj in service.currentProject.storedProtocols:
+            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
+        return {"protocols": len(service.currentProject.storedProtocols), "dependencies": 0}
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        fakeSyncProjectProtocolsAndDependencies,
+    )
 
     _, errors = service.saveProtocol(
         mapper=mapper,
@@ -500,6 +534,20 @@ def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
         },
     )
 
+    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
+        for protocolObj in service.currentProject.copiedProtocolOutputs:
+            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
+        return {
+            "protocols": len(service.currentProject.copiedProtocolOutputs),
+            "dependencies": 0,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        fakeSyncProjectProtocolsAndDependencies,
+    )
+
     class DuplicateItem:
         def __init__(self, itemId):
             self.id = itemId
@@ -510,7 +558,12 @@ def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
         protocols=[DuplicateItem("10"), DuplicateItem("11")],
     )
 
-    assert result == {"status": "ok", "message": "Protocol was duplicated successfully"}
+    assert result == {
+        "status": "ok",
+        "message": "Protocol was duplicated successfully",
+        "protocolsCount": 2,
+        "dependenciesCount": 0,
+    }
     assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
     assert mapper.savedProtocolContexts == [
         {"projectId": 1, "protocolId": 110},
@@ -560,19 +613,32 @@ def test_RestartProtocolAllReturnsCollectedErrors(service):
     service.currentProject.protocols[10] = protocol
     service.currentProject.restartWorkflowInjectedErrors = ["cannot restart", "blocked"]
 
-    result = service.restartProtocolAll(10)
+    with pytest.raises(HTTPException) as exc:
+        service.restartProtocolAll(10)
 
-    assert result == ["cannot restart", "blocked"]
+    assert exc.value.status_code == 422
+    assert exc.value.detail == ["cannot restart", "blocked"]
 
 
-def test_ContinueProtocolAllIsNotImplemented(service, mapper):
-    with pytest.raises(NotImplementedError):
-        service.continueProtocolAll(
-            mapper=mapper,
-            projectId=1,
-            protocolId=10,
-            currentUser={"id": 1},
-        )
+def test_ContinueProtocolAllLaunchesActiveProtocolsInResumeMode(projectServiceModule, service, mapper, monkeypatch):
+    monkeypatch.setattr(projectServiceModule, "MODE_RESUME", "resume-mode")
+
+    protocol = FakeProtocol(objId=10)
+    activeProtocol = FakeProtocol(objId=20)
+
+    service.currentProject.protocols[10] = protocol
+    service.currentProject._getSubworkflow = lambda protocolObj: (["wf-a", "wf-b"], [activeProtocol])
+
+    result = service.continueProtocolAll(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        currentUser={"id": 1},
+    )
+
+    assert result == {"status": "ok", "message": "Protocol subtree continued successfully"}
+    assert activeProtocol.runMode.get() == "resume-mode"
+    assert service.currentProject.launchedProtocols == [activeProtocol]
 
 
 def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
@@ -582,7 +648,7 @@ def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
 
     result = service.resetProtocolFrom(10)
 
-    assert result is None
+    assert result == {"status": "ok", "message": "Protocol subtree reset successfully"}
 
 
 def test_StopProtocolStopsEachProtocol(service):
@@ -593,5 +659,5 @@ def test_StopProtocolStopsEachProtocol(service):
 
     result = service.stopProtocol(["10", "11"])
 
-    assert result is None
+    assert result == {"status": "ok", "message": "Protocol stopped successfully"}
     assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
