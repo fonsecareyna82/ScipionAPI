@@ -1519,7 +1519,7 @@ class ProjectService:
 
         # 8) Return a compact, useful payload for the frontend
         return {
-            "status": "ok",
+            "status": 0,
             "projectId": projectId,
             "workflowId": workflowIdStr,
             "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
@@ -3098,7 +3098,7 @@ class ProjectService:
             )
 
             return {
-                "status": "ok",
+                "status": 0,
                 "message": "Protocol deleted successfully",
                 "protocolsCount": syncInfo.get("protocols"),
                 "dependenciesCount": syncInfo.get("dependencies"),
@@ -4629,7 +4629,7 @@ class ProjectService:
             "The new Ctftomo set (%s) has been created successfully with %d series", newOutputName, createdCount,)
 
         return {
-            "status": "ok",
+            "status": 0,
             "outputName": newOutputName,
             "createdSeries": createdCount,
             "restack": bool(restack),
@@ -4880,7 +4880,7 @@ class ProjectService:
         logger.info("The new set (%s) has been created successfully", newOutputName)
 
         return {
-            "status": "ok",
+            "status": 0,
             "outputName": newOutputName,
             "createdTiltSeries": createdCount,
             "hasOddEven": bool(hasOddEven),
