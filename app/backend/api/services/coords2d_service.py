@@ -127,9 +127,70 @@ class Coords2dService:
             return default
 
     @staticmethod
+    def _tryInt(value: Any) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
     def _micrographId(micrograph: Any) -> str:
         value = Coords2dService._safeCall(micrograph, "getObjId", None)
         return str(value) if value is not None else ""
+
+    @staticmethod
+    def _splitLocationValue(location: Any) -> Tuple[Optional[int], str]:
+        if location is None:
+            return None, ""
+
+        if isinstance(location, (tuple, list)) and len(location) >= 2:
+            first = location[0]
+            second = location[1]
+
+            firstIndex = Coords2dService._tryInt(first)
+            secondIndex = Coords2dService._tryInt(second)
+
+            if firstIndex is not None:
+                return firstIndex, str(second or "")
+
+            if secondIndex is not None:
+                return secondIndex, str(first or "")
+
+            return None, str(second or first or "")
+
+        locationText = str(location or "").strip()
+        if not locationText:
+            return None, ""
+
+        if "@" in locationText:
+            rawIndex, rawFileName = locationText.split("@", 1)
+            imageIndex = Coords2dService._tryInt(rawIndex)
+            return imageIndex, rawFileName
+
+        return None, locationText
+
+    @staticmethod
+    def _micrographLocation(micrograph: Any) -> Tuple[Optional[int], str]:
+        location = Coords2dService._safeCall(micrograph, "getLocation", None)
+        imageIndex, fileName = Coords2dService._splitLocationValue(location)
+
+        if fileName:
+            return imageIndex, fileName
+
+        fileName = str(Coords2dService._safeCall(micrograph, "getFileName", "") or "")
+        parsedIndex, parsedFileName = Coords2dService._splitLocationValue(fileName)
+
+        if parsedFileName:
+            return parsedIndex if parsedIndex is not None else imageIndex, parsedFileName
+
+        return imageIndex, fileName
+
+    @staticmethod
+    def _micrographFileName(micrograph: Any) -> str:
+        _, fileName = Coords2dService._micrographLocation(micrograph)
+        return fileName
 
     @staticmethod
     def _micrographName(micrograph: Any) -> str:
@@ -141,12 +202,8 @@ class Coords2dService:
         if label:
             return str(label)
 
-        fileName = Coords2dService._safeCall(micrograph, "getFileName", "") or ""
+        _, fileName = Coords2dService._micrographLocation(micrograph)
         return os.path.basename(str(fileName)) or "Untitled"
-
-    @staticmethod
-    def _micrographFileName(micrograph: Any) -> str:
-        return str(Coords2dService._safeCall(micrograph, "getFileName", "") or "")
 
     @staticmethod
     def _micrographDims(micrograph: Any) -> Tuple[Optional[int], Optional[int]]:
@@ -183,6 +240,13 @@ class Coords2dService:
                 return str(value)
         return None
 
+    @staticmethod
+    def _micrographSortKey(micId: str):
+        try:
+            return 0, int(micId)
+        except Exception:
+            return 1, str(micId).lower()
+
     def _buildMicrographMap(self, coordinatesSet: Any) -> Dict[str, Any]:
         try:
             micrographsSet = coordinatesSet.getMicrographs()
@@ -204,7 +268,7 @@ class Coords2dService:
         for micrograph in iterator:
             micId = self._micrographId(micrograph)
             if micId:
-                micrographs[micId] = micrograph
+                micrographs[micId] = micrograph.clone()
 
         return micrographs
 
@@ -251,18 +315,23 @@ class Coords2dService:
         totalPicks = self._safeCall(coordinatesSet, "getSize", None)
 
         micrographs: List[Dict[str, Any]] = []
-        for index, micId in enumerate(sorted(micrographMap.keys(), key=lambda value: (str(value).lower())), start=1):
+        sortedMicIds = sorted(micrographMap.keys(), key=self._micrographSortKey)
+
+        for index, micId in enumerate(sortedMicIds, start=1):
             micrograph = micrographMap[micId]
+            imageIndex, fileName = self._micrographLocation(micrograph)
             width, height = self._micrographDims(micrograph)
+
             micrographs.append({
                 "id": micId,
                 "index": index,
-                "fileName": self._micrographFileName(micrograph),
+                "fileName": fileName,
                 "label": self._micrographName(micrograph),
                 "particles": int(counts.get(micId, 0)),
                 "updated": False,
                 "width": width,
                 "height": height,
+                "locationIndex": imageIndex,
                 "thumbnailUrl": None,
             })
 
@@ -364,6 +433,38 @@ class Coords2dService:
 
         return image
 
+    @staticmethod
+    def _readMicrographImage(imagePath: str, imageIndex: Optional[int]) -> Image.Image:
+        imageStack = ImageReadersRegistry.open(imagePath)
+
+        if imageIndex is None:
+            return imageStack.getImage(pilImage=True)
+
+        try:
+            return imageStack.getImage(index=imageIndex, pilImage=True)
+        except Exception:
+            pass
+
+        try:
+            return imageStack.getImage(imageIndex, pilImage=True)
+        except Exception:
+            pass
+
+        if imageIndex > 0:
+            zeroBasedIndex = imageIndex - 1
+
+            try:
+                return imageStack.getImage(index=zeroBasedIndex, pilImage=True)
+            except Exception:
+                pass
+
+            try:
+                return imageStack.getImage(zeroBasedIndex, pilImage=True)
+            except Exception:
+                pass
+
+        return imageStack.getImage(pilImage=True)
+
     def renderMicrographImage(
         self,
         mapper: PostgresqlFlatMapper,
@@ -384,7 +485,8 @@ class Coords2dService:
         )
 
         micrograph = self._findMicrograph(coordinatesSet, micId)
-        imagePath = self._micrographFileName(micrograph)
+        imageIndex, imagePath = self._micrographLocation(micrograph)
+
         if not imagePath:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -399,8 +501,8 @@ class Coords2dService:
             )
 
         try:
-            imageStack = ImageReadersRegistry.open(imagePath)
-            image = imageStack.getImage(pilImage=True)
+            image = self._readMicrographImage(imagePath, imageIndex)
+            originalWidth, originalHeight = image.size
             image = self._prepareImage(image, size)
         except Exception as e:
             logger.exception("Failed to render coords2d micrograph image: %s", e)
@@ -412,6 +514,7 @@ class Coords2dService:
         imageFormat, mediaType = self._normalizeImageFormat(fmt)
         buffer = io.BytesIO()
         saveOptions: Dict[str, Any] = {}
+
         if imageFormat == "JPEG":
             if image.mode != "RGB":
                 image = image.convert("RGB")
@@ -421,10 +524,21 @@ class Coords2dService:
 
         image.save(buffer, format=imageFormat, **saveOptions)
 
+        scaleX = image.width / originalWidth if originalWidth else 1
+        scaleY = image.height / originalHeight if originalHeight else 1
+
         headers = {
             "X-Preview-Width": str(image.width),
             "X-Preview-Height": str(image.height),
+            "X-Preview-Original-Width": str(originalWidth),
+            "X-Preview-Original-Height": str(originalHeight),
+            "X-Preview-Scale-X": f"{scaleX:.8f}",
+            "X-Preview-Scale-Y": f"{scaleY:.8f}",
+            "X-Preview-Origin": "top-left",
+            "X-Preview-Orientation": "scipion-top-left-no-flip",
             "X-Preview-MicrographId": str(micId),
+            "X-Preview-Source-Index": "" if imageIndex is None else str(imageIndex),
+            "X-Preview-Source-File": os.path.basename(imagePath),
             "X-Preview-Format": imageFormat,
             "Cache-Control": "no-store",
         }

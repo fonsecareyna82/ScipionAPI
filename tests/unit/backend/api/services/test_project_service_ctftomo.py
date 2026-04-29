@@ -591,7 +591,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
     )
 
     assert result == {
-        "status": "ok",
+        "status": 0,
         "outputName": "CTFTomoSeries_0",
         "createdSeries": 1,
         "restack": False,
