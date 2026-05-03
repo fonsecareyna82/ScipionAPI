@@ -25,7 +25,8 @@
 # ******************************************************************************
 
 import logging
-from typing import Any
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -37,6 +38,24 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["coordinates2d"])
+
+
+class Coords2dPointPayload(BaseModel):
+    id: Optional[Any] = None
+    micId: Optional[Any] = None
+    x: float
+    y: float
+
+
+class Coords2dMicrographPayload(BaseModel):
+    id: Any
+    coordinates: List[Coords2dPointPayload] = Field(default_factory=list)
+
+
+class CreateCoords2dOutputPayload(BaseModel):
+    boxSize: Optional[int] = None
+    outputName: Optional[str] = None
+    micrographs: List[Coords2dMicrographPayload] = Field(default_factory=list)
 
 
 def getCoords2dService() -> Coords2dService:
@@ -142,4 +161,27 @@ def getCoords2dMicrographThumbnail(
         micId=micId,
         size=size,
         fmt=format,
+    )
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords2d/create-output",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def createCoords2dCoordinatesOutput(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: CreateCoords2dOutputPayload,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: Coords2dService = Depends(getCoords2dService),
+):
+    return service.createCoordinatesOutput(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        protocolId=protocolId,
+        outputName=outputName,
+        payload=payload.dict(),
     )

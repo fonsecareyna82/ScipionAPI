@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, Response, status
 from PIL import Image, ImageEnhance, ImageOps
 from pwem.emlib.image.image_readers import ImageReadersRegistry
+from pwem.objects import Coordinate
 
 from app.backend.api.services.project_service import ProjectService
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -407,6 +408,231 @@ class Coords2dService:
             })
 
         return {"coordinates": coordinates}
+
+    def _resolveMicrographById(self, micrographsSet: Any, micId: str) -> Any:
+        try:
+            return micrographsSet[int(micId)]
+        except Exception:
+            pass
+
+        try:
+            for micrograph in micrographsSet.iterItems():
+                if self._micrographId(micrograph) == str(micId):
+                    return micrograph
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Micrograph '{micId}' not found in source micrographs",
+        )
+
+    def _newCoordinateLike(self, coordinatesSet: Any) -> Any:
+        try:
+            firstItem = coordinatesSet.getFirstItem()
+            if firstItem is not None:
+                return firstItem.clone()
+        except Exception:
+            pass
+
+        return Coordinate()
+
+    def _appendCoordinateToSet(
+        self,
+        coordinatesSet: Any,
+        coordSet: Any,
+        micrographsSet: Any,
+        micId: str,
+        x: float,
+        y: float,
+        objId: int,
+    ) -> None:
+        coordinate = self._newCoordinateLike(coordinatesSet)
+
+        try:
+            coordinate.setObjId(objId)
+        except Exception:
+            pass
+
+        micrograph = self._resolveMicrographById(micrographsSet, micId)
+
+        try:
+            coordinate.setMicrograph(micrograph)
+        except Exception:
+            pass
+
+        try:
+            coordinate.setPosition(float(x), float(y))
+        except Exception:
+            try:
+                coordinate.setX(float(x))
+                coordinate.setY(float(y))
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid coordinate for micrograph '{micId}': {e}",
+                )
+
+        coordSet.append(coordinate)
+
+    def createCoordinatesOutput(
+        self,
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        currentUser: Any,
+        protocolId: int,
+        outputName: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        protocol, coordinatesSet = self._loadCoordinatesOutput(
+            mapper,
+            projectId,
+            currentUser,
+            protocolId,
+            outputName,
+        )
+
+        try:
+            micrographsSet = coordinatesSet.getMicrographs()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not load source micrographs: {e}",
+            )
+
+        replacementMap: Dict[str, List[Dict[str, float]]] = {}
+
+        for item in payload.get("micrographs") or []:
+            if not isinstance(item, dict):
+                continue
+
+            rawMicId = item.get("id", item.get("micId"))
+            if rawMicId is None:
+                continue
+
+            micId = str(rawMicId)
+            coordinates: List[Dict[str, float]] = []
+
+            for point in item.get("coordinates") or []:
+                if not isinstance(point, dict):
+                    continue
+
+                x = self._safeNumber(point.get("x"), None)
+                y = self._safeNumber(point.get("y"), None)
+
+                if x is None or y is None:
+                    continue
+
+                coordinates.append({"x": x, "y": y})
+
+            replacementMap[micId] = coordinates
+
+        try:
+            suffix = str(protocol.getOutputsSize())
+            coordSet = protocol._createSetOfCoordinates(micrographsSet, suffix=suffix)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not create coordinates output: {e}",
+            )
+
+        try:
+            coordSet.copyInfo(coordinatesSet)
+        except Exception:
+            pass
+
+        boxSize = payload.get("boxSize", None)
+        if boxSize is not None:
+            try:
+                coordSet.setBoxSize(int(boxSize))
+            except Exception:
+                pass
+
+        nextObjId = 1
+
+        try:
+            for coordinate in coordinatesSet.iterItems():
+                micId = self._coordinateMicId(coordinate)
+                if not micId:
+                    continue
+
+                if micId in replacementMap:
+                    continue
+
+                x = self._safeNumber(self._safeCall(coordinate, "getX", None), None)
+                y = self._safeNumber(self._safeCall(coordinate, "getY", None), None)
+
+                if x is None or y is None:
+                    continue
+
+                self._appendCoordinateToSet(
+                    coordinatesSet=coordinatesSet,
+                    coordSet=coordSet,
+                    micrographsSet=micrographsSet,
+                    micId=micId,
+                    x=x,
+                    y=y,
+                    objId=nextObjId,
+                )
+                nextObjId += 1
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not copy original coordinates: {e}",
+            )
+
+        for micId, coordinates in replacementMap.items():
+            self._resolveMicrographById(micrographsSet, micId)
+
+            for point in coordinates:
+                self._appendCoordinateToSet(
+                    coordinatesSet=coordinatesSet,
+                    coordSet=coordSet,
+                    micrographsSet=micrographsSet,
+                    micId=micId,
+                    x=point["x"],
+                    y=point["y"],
+                    objId=nextObjId,
+                )
+                nextObjId += 1
+
+        try:
+            coordSet.write()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not write coordinates output: {e}",
+            )
+
+        requestedOutputName = str(payload.get("outputName") or "").strip()
+
+        if requestedOutputName and not hasattr(protocol, requestedOutputName):
+            nextOutputName = requestedOutputName
+        else:
+            try:
+                nextOutputName = protocol.getNextOutputName("coordinates_")
+            except Exception:
+                nextOutputName = f"coordinates_{protocol.getOutputsSize()}"
+
+        try:
+            protocol._defineOutputs(**{nextOutputName: coordSet})
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not define coordinates output: {e}",
+            )
+
+        try:
+            protocol._defineSourceRelation(micrographsSet, coordSet)
+        except Exception:
+            logger.warning("Could not define source relation for coords2d output", exc_info=True)
+
+        return {
+            "success": True,
+            "outputName": nextOutputName,
+            "totalCoordinates": int(nextObjId - 1),
+            "message": f"The new set of coordinates has been created: {nextOutputName}",
+        }
 
     @staticmethod
     def _normalizeImageFormat(fmt: str) -> Tuple[str, str]:
