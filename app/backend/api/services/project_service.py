@@ -2410,7 +2410,7 @@ class ProjectService:
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Protocol execution finished but graph sync to PostgreSQL failed: {e}",
+                detail=f"{e}",
             )
 
     def findViewersWeb(self, protocol):
