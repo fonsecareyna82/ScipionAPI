@@ -280,6 +280,7 @@ def test_DuplicateProtocolDelegatesToService(projectClient, fakeProjectService):
         "status": 0,
         "errors": [],
         "workflow": [],
+        "duplicated": [],
     }
 
     items = fakeProjectService.lastDuplicateProtocolCall["items"]
