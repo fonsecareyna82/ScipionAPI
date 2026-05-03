@@ -207,6 +207,11 @@ class FakeProjectService:
         self.lastRenameProtocolCall = None
 
         self.duplicateProtocolError = None
+        self.duplicateProtocolResult = {
+            "status": 0,
+            "errors": [],
+            "duplicated": [],
+        }
         self.lastDuplicateProtocolCall = None
 
         self.deleteProtocolError = None
@@ -454,6 +459,7 @@ class FakeProjectService:
         }
         if self.duplicateProtocolError is not None:
             raise self.duplicateProtocolError
+        return self.duplicateProtocolResult
 
     def deleteProtocol(self, mapper, projectId, protocolIds):
         self.lastDeleteProtocolCall = {
