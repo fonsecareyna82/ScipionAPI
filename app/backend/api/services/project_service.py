@@ -1136,13 +1136,16 @@ class ProjectService:
 
             inputs = []
             outputs = []
-            cpuTime = ""
-            elapsedTime = ""
+            cpuTime = ''
+            elapsedTime = ''
             isinteractive = False
             numberOfSteps = 0
             stepsDone = 0
             thumbnailUrl = None
             thumbnailRebuildUrl = None
+            runName = ''
+            comment = ''
+            title = ''
 
             # Prefer the live protocol object coming from runs graph
             protocol = liveRuns.get(nodeId)
@@ -1156,6 +1159,18 @@ class ProjectService:
             if protocol is not None:
                 try:
                     label = str(protocol) or label
+                except Exception:
+                    pass
+
+                try:
+                    runName = protocol.runName.get()
+                    if runName is None:
+                        runName = protocol.getRunName()
+                except Exception:
+                    pass
+
+                try:
+                    comment = protocol._objComment
                 except Exception:
                     pass
 
@@ -1264,6 +1279,9 @@ class ProjectService:
                 "children": childrenIds,
                 "parents": parentIds,
                 "label": label,
+                "title": title,
+                "runName": runName,
+                "comment": comment,
                 "status": status,
                 "parameter": [],
                 "inputs": inputs,
@@ -1519,7 +1537,7 @@ class ProjectService:
 
         # 8) Return a compact, useful payload for the frontend
         return {
-            "status": "ok",
+            "status": 0,
             "projectId": projectId,
             "workflowId": workflowIdStr,
             "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
@@ -1640,6 +1658,11 @@ class ProjectService:
             logoPath = self.getResourceLogo(path)
 
         protName = str(protocol)
+
+        if protocol.runName.get() is None:
+            runName = protocol.getRunName()
+        else:
+            runName = protocol.runName.get()
         status = protocol.getStatus()
         protocolClassName = protocol.getClassName()
         hosts = self.currentProject.getHostNames()
@@ -1648,6 +1671,7 @@ class ProjectService:
         info = {
             "protocolId": protocol.getObjId(),
             "label": protName,
+            "runName": runName,
             "status": status,
             "expertLevel": hasExpert,
             "packageLogo": logoPath,
@@ -1889,7 +1913,7 @@ class ProjectService:
                             if paramProcessed:
                                 if paramName == 'runName':
                                     paramProcessed['default'] = ''
-                                    paramValue = protName
+                                    paramValue = runName
                                 elif paramName == 'numberOfThreads':
                                     paramValue = protocol.getScipionThreads()
                                 elif paramName == 'gpuList':
@@ -2256,6 +2280,7 @@ class ProjectService:
                 protocol.setAttributeValue(key, castedValue)
 
                 if key == "runName":
+                    protocol.runName.set(castedValue)
                     protocol.setObjLabel(castedValue)
 
                 logger.info("[INFO] Set param %s = %s", key, castedValue)
@@ -2410,7 +2435,7 @@ class ProjectService:
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Protocol execution finished but graph sync to PostgreSQL failed: {e}",
+                detail=f"{e}",
             )
 
     def findViewersWeb(self, protocol):
@@ -2993,6 +3018,7 @@ class ProjectService:
             )
 
         try:
+            protocol.runName.set(newName)
             protocol.setObjLabel(newName)
             self.currentProject._storeProtocol(protocol)
         except Exception as e:
@@ -3098,7 +3124,7 @@ class ProjectService:
             )
 
             return {
-                "status": "ok",
+                "status": 0,
                 "message": "Protocol deleted successfully",
                 "protocolsCount": syncInfo.get("protocols"),
                 "dependenciesCount": syncInfo.get("dependencies"),
@@ -4629,7 +4655,7 @@ class ProjectService:
             "The new Ctftomo set (%s) has been created successfully with %d series", newOutputName, createdCount,)
 
         return {
-            "status": "ok",
+            "status": 0,
             "outputName": newOutputName,
             "createdSeries": createdCount,
             "restack": bool(restack),
@@ -4880,7 +4906,7 @@ class ProjectService:
         logger.info("The new set (%s) has been created successfully", newOutputName)
 
         return {
-            "status": "ok",
+            "status": 0,
             "outputName": newOutputName,
             "createdTiltSeries": createdCount,
             "hasOddEven": bool(hasOddEven),
