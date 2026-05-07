@@ -266,6 +266,11 @@ def mapper():
     return FakeMapper()
 
 
+def assertSuccessEnvelope(result):
+    assert result["status"] == 0
+    assert result["errors"] == []
+
+
 def test_CastParamValueSupportsEnumLookup(projectServiceModule, service, monkeypatch):
     monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
 
@@ -510,7 +515,7 @@ def test_RenameProtocolStoresNewLabel(service):
 
     result = service.renameProtocol(10, "Renamed protocol")
 
-    assert result == {"status": "ok", "message": "Protocol renamed successfully"}
+    assertSuccessEnvelope(result)
     assert protocol._label == "Renamed protocol"
     assert service.currentProject.storedProtocols == [protocol]
 
@@ -558,12 +563,9 @@ def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
         protocols=[DuplicateItem("10"), DuplicateItem("11")],
     )
 
-    assert result == {
-        "status": "ok",
-        "message": "Protocol was duplicated successfully",
-        "protocolsCount": 2,
-        "dependenciesCount": 0,
-    }
+    assertSuccessEnvelope(result)
+    assert result["protocolsCount"] == 2
+    assert result["dependenciesCount"] == 0
     assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
     assert mapper.savedProtocolContexts == [
         {"projectId": 1, "protocolId": 110},
@@ -636,7 +638,7 @@ def test_ContinueProtocolAllLaunchesActiveProtocolsInResumeMode(projectServiceMo
         currentUser={"id": 1},
     )
 
-    assert result == {"status": "ok", "message": "Protocol subtree continued successfully"}
+    assertSuccessEnvelope(result)
     assert activeProtocol.runMode.get() == "resume-mode"
     assert service.currentProject.launchedProtocols == [activeProtocol]
 
@@ -648,7 +650,7 @@ def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
 
     result = service.resetProtocolFrom(10)
 
-    assert result == {"status": "ok", "message": "Protocol subtree reset successfully"}
+    assertSuccessEnvelope(result)
 
 
 def test_StopProtocolStopsEachProtocol(service):
@@ -659,5 +661,5 @@ def test_StopProtocolStopsEachProtocol(service):
 
     result = service.stopProtocol(["10", "11"])
 
-    assert result == {"status": "ok", "message": "Protocol stopped successfully"}
+    assertSuccessEnvelope(result)
     assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
