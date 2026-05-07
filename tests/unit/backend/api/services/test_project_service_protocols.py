@@ -104,6 +104,7 @@ class FakeProtocol:
         self.gpuList = FakeValueHolder("")
         self.numberOfThreads = FakeValueHolder(1)
         self.runMode = FakeValueHolder(None)
+        self.runName = FakeValueHolder("")
 
     def addParam(self, name, param):
         self._params[name] = param
