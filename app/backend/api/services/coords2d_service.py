@@ -28,6 +28,7 @@ import io
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from fastapi import HTTPException, Response, status
 from PIL import Image, ImageEnhance, ImageOps
@@ -259,7 +260,7 @@ class Coords2dService:
 
         micrographs: Dict[str, Any] = {}
         try:
-            iterator = micrographsSet.iterItems()
+            iterator = micrographsSet.iterItems(iterate=False)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -277,7 +278,7 @@ class Coords2dService:
         counts: Dict[str, int] = {}
 
         try:
-            for coordinate in coordinatesSet.iterItems():
+            for coordinate in coordinatesSet.iterItems(iterate=False):
                 micId = self._coordinateMicId(coordinate)
                 if not micId:
                     continue
@@ -381,7 +382,7 @@ class Coords2dService:
             try:
                 coordinatesIterator = [
                     coordinate
-                    for coordinate in coordinatesSet.iterItems()
+                    for coordinate in coordinatesSet.iterItems(iterate=False)
                     if self._coordinateMicId(coordinate) == str(micId)
                 ]
             except Exception as e:
@@ -416,7 +417,7 @@ class Coords2dService:
             pass
 
         try:
-            for micrograph in micrographsSet.iterItems():
+            for micrograph in micrographsSet.iterItems(iterate=False):
                 if self._micrographId(micrograph) == str(micId):
                     return micrograph
         except Exception:
@@ -476,14 +477,16 @@ class Coords2dService:
         coordSet.append(coordinate)
 
     def createCoordinatesOutput(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        currentUser: Any,
-        protocolId: int,
-        outputName: str,
-        payload: Dict[str, Any],
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: Any,
+            protocolId: int,
+            outputName: str,
+            payload: Dict[str, Any],
     ) -> Dict[str, Any]:
+        payload = payload or {}
+
         protocol, coordinatesSet = self._loadCoordinatesOutput(
             mapper,
             projectId,
@@ -500,7 +503,7 @@ class Coords2dService:
                 detail=f"Could not load source micrographs: {e}",
             )
 
-        replacementMap: Dict[str, List[Dict[str, float]]] = {}
+        replacementMap: Dict[str, Dict[str, Any]] = {}
 
         for item in payload.get("micrographs") or []:
             if not isinstance(item, dict):
@@ -511,7 +514,8 @@ class Coords2dService:
                 continue
 
             micId = str(rawMicId)
-            coordinates: List[Dict[str, float]] = []
+            existingCoordinates: Dict[int, Dict[str, float]] = {}
+            newCoordinates: List[Dict[str, float]] = []
 
             for point in item.get("coordinates") or []:
                 if not isinstance(point, dict):
@@ -523,12 +527,42 @@ class Coords2dService:
                 if x is None or y is None:
                     continue
 
-                coordinates.append({"x": x, "y": y})
+                pointId = self._tryInt(point.get("id"))
+                if pointId is None:
+                    newCoordinates.append({"x": x, "y": y})
+                else:
+                    existingCoordinates[pointId] = {"x": x, "y": y}
 
-            replacementMap[micId] = coordinates
+            replacementMap[micId] = {
+                "existing": existingCoordinates,
+                "new": newCoordinates,
+            }
+
+        if not replacementMap:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No coordinate changes provided",
+            )
 
         try:
-            suffix = str(protocol.getOutputsSize())
+            originalCoordinates = list(coordinatesSet.iterItems(iterate=False))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not read original coordinates: {e}",
+            )
+
+        try:
+            maxObjId = coordinatesSet.aggregate(["MAX"], "_objId")[0]["MAX"] or 0
+        except Exception:
+            maxObjId = 0
+            for coordinate in originalCoordinates:
+                objId = self._tryInt(self._safeCall(coordinate, "getObjId", None))
+                if objId is not None:
+                    maxObjId = max(maxObjId, objId)
+
+        try:
+            suffix = f"{protocol.getOutputsSize()}_{uuid4().hex[:8]}"
             coordSet = protocol._createSetOfCoordinates(micrographsSet, suffix=suffix)
         except Exception as e:
             raise HTTPException(
@@ -548,53 +582,61 @@ class Coords2dService:
             except Exception:
                 pass
 
-        nextObjId = 1
+        totalCoordinates = 0
 
         try:
-            for coordinate in coordinatesSet.iterItems():
+            for coordinate in originalCoordinates:
                 micId = self._coordinateMicId(coordinate)
                 if not micId:
                     continue
 
+                objId = self._tryInt(self._safeCall(coordinate, "getObjId", None))
+                if objId is None:
+                    continue
+
                 if micId in replacementMap:
-                    continue
+                    existingCoordinates = replacementMap[micId]["existing"]
 
-                x = self._safeNumber(self._safeCall(coordinate, "getX", None), None)
-                y = self._safeNumber(self._safeCall(coordinate, "getY", None), None)
+                    if objId not in existingCoordinates:
+                        continue
 
-                if x is None or y is None:
-                    continue
+                    x = existingCoordinates[objId]["x"]
+                    y = existingCoordinates[objId]["y"]
+                else:
+                    x = self._safeNumber(self._safeCall(coordinate, "getX", None), None)
+                    y = self._safeNumber(self._safeCall(coordinate, "getY", None), None)
 
-                self._appendCoordinateToSet(
-                    coordinatesSet=coordinatesSet,
-                    coordSet=coordSet,
-                    micrographsSet=micrographsSet,
-                    micId=micId,
-                    x=x,
-                    y=y,
-                    objId=nextObjId,
-                )
-                nextObjId += 1
+                    if x is None or y is None:
+                        continue
+
+                coord = Coordinate()
+                coord.setObjId(objId)
+                coord.setMicrograph(self._resolveMicrographById(micrographsSet, micId))
+                coord.setPosition(float(x), float(y))
+                coordSet.append(coord)
+                totalCoordinates += 1
+
+            coordinateTemplate = self._newCoordinateLike(coordinatesSet)
+
+            for micId, replacement in replacementMap.items():
+                micrograph = self._resolveMicrographById(micrographsSet, micId)
+
+                for point in replacement["new"]:
+                    maxObjId += 1
+                    newCoordinate = coordinateTemplate.clone()
+                    newCoordinate.setObjId(maxObjId)
+                    newCoordinate.setMicrograph(micrograph)
+                    newCoordinate.setPosition(float(point["x"]), float(point["y"]))
+                    coordSet.append(newCoordinate)
+                    totalCoordinates += 1
+
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not copy original coordinates: {e}",
+                detail=f"Could not append coordinates: {e}",
             )
-
-        for micId, coordinates in replacementMap.items():
-            self._resolveMicrographById(micrographsSet, micId)
-
-            for point in coordinates:
-                self._appendCoordinateToSet(
-                    coordinatesSet=coordinatesSet,
-                    coordSet=coordSet,
-                    micrographsSet=micrographsSet,
-                    micId=micId,
-                    x=point["x"],
-                    y=point["y"],
-                    objId=nextObjId,
-                )
-                nextObjId += 1
 
         try:
             coordSet.write()
@@ -630,7 +672,7 @@ class Coords2dService:
         return {
             "success": True,
             "outputName": nextOutputName,
-            "totalCoordinates": int(nextObjId - 1),
+            "totalCoordinates": int(totalCoordinates),
             "message": f"The new set of coordinates has been created: {nextOutputName}",
         }
 

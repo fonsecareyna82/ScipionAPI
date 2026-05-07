@@ -32,7 +32,6 @@ import re
 import hashlib
 from urllib.parse import quote
 from pathlib import Path
-import tempfile
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
