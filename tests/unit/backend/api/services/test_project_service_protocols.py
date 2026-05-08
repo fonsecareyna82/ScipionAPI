@@ -524,7 +524,7 @@ def test_RenameProtocolStoresAnnotation(service):
     assertSuccessEnvelope(result)
     assert protocol._label is None
     assert protocol.runName.get() == "Renamed protocol"
-    assert protocol._objComment.get() == "Updated comment"
+    assert protocol._objComment == "Updated comment"
     assert service.currentProject.storedProtocols == [protocol]
 
 
