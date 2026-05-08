@@ -313,6 +313,8 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
             "projectId": projectId,
             "protocolId": protocol.getObjId(),
             "label": protocol._label,
+            "runName": protocol.runName.get(),
+            "comment": protocol._objComment.get(),
         },
     )
 
@@ -349,7 +351,8 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
 
     assert errors == []
     assert protocol.getObjId() == 999
-    assert protocol._label == "My protocol"
+    assert protocol._label is None
+    assert protocol.runName.get() == "My protocol"
     assert protocol.attributeValues["runName"] == "My protocol"
     assert protocol.attributeValues["iterations"] == 5
     assert protocol._objComment.get() == "comment"
@@ -358,7 +361,9 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
         {
             "projectId": 1,
             "protocolId": 999,
-            "label": "My protocol",
+            "label": None,
+            "runName": "My protocol",
+            "comment": "comment",
         }
     ]
 
@@ -510,14 +515,16 @@ def test_LaunchProtocolSchedulesProtocol(service, mapper, monkeypatch):
     assert service.currentProject.launchedProtocols == []
 
 
-def test_RenameProtocolStoresNewLabel(service):
+def test_RenameProtocolStoresAnnotation(service):
     protocol = FakeProtocol(objId=10)
     service.currentProject.protocols[10] = protocol
 
-    result = service.renameProtocol(10, "Renamed protocol")
+    result = service.renameProtocol(10, "Renamed protocol", "Updated comment")
 
     assertSuccessEnvelope(result)
-    assert protocol._label == "Renamed protocol"
+    assert protocol._label is None
+    assert protocol.runName.get() == "Renamed protocol"
+    assert protocol._objComment.get() == "Updated comment"
     assert service.currentProject.storedProtocols == [protocol]
 
 
