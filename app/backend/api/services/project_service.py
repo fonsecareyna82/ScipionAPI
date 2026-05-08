@@ -2281,7 +2281,7 @@ class ProjectService:
 
                 if key == "runName":
                     protocol.runName.set(castedValue)
-                    protocol.setObjLabel(castedValue)
+                    # protocol.setObjLabel(castedValue)
 
                 logger.info("[INFO] Set param %s = %s", key, castedValue)
             except Exception as e:
@@ -3009,7 +3009,7 @@ class ProjectService:
 
         return result
 
-    def renameProtocol(self, protocolId, newName):
+    def renameProtocol(self, protocolId, newName, newComment):
         protocol = self.currentProject.getProtocol(int(protocolId))
         if protocol is None:
             raise HTTPException(
@@ -3019,7 +3019,8 @@ class ProjectService:
 
         try:
             protocol.runName.set(newName)
-            protocol.setObjLabel(newName)
+            protocol._objComment = newComment
+            # protocol.setObjLabel(newName)
             self.currentProject._storeProtocol(protocol)
         except Exception as e:
             logger.exception(

@@ -515,7 +515,8 @@ def renameProtocol(
         )
 
     try:
-        newName = getattr(payload, "name", None)
+        newName = getattr(payload, "runName", None)
+        newComment = getattr(payload, "comment", None)
         if not newName or not str(newName).strip():
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -523,8 +524,7 @@ def renameProtocol(
                          "errors": ["Missing name"],
                          "workflow": []},
             )
-
-        service.renameProtocol(protocolId, str(newName).strip())
+        service.renameProtocol(protocolId, str(newName).strip(), str(newComment).strip())
         service.syncProjectGraphAfterMutation(
             mapper,
             projectId,

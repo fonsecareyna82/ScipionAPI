@@ -103,7 +103,8 @@ class ProtocolUpdateRequest(BaseModel):
 
 
 class ProtocolRenameIn(BaseModel):
-    name: str
+    runName: str
+    comment: Optional[str] = ""
 
 
 class ProtocolDuplicateIn(BaseModel):
