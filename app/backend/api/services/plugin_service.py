@@ -11,6 +11,7 @@ from scipion.install.plugin_funcs import PluginRepository
 
 from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
 from app.utils.scipion_helper import serializeToJson
+from app.backend.resources import getPluginCategoryIds, getPluginCategoryData
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class PluginService:
 
                 serializedPlugin = serializeToJson(pluginObj)
                 serializedPlugin["fullLogo"] = self._buildFullLogo(serializedPlugin)
+                pipName = str(serializedPlugin.get("pipName") or pluginKey).strip()
+                serializedPlugin["categories"] = getPluginCategoryIds(pipName)
+                serializedPlugin["categoryData"] = getPluginCategoryData(pipName)
 
                 isInstalled = False
                 try:
