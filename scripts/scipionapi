@@ -23,6 +23,7 @@ pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
 # pipRobustnessDefaults
 pipRetries="${SCIPIONAPI_PIP_RETRIES:-10}"
 pipTimeout="${SCIPIONAPI_PIP_TIMEOUT:-120}"
+pipVerbose="${SCIPIONAPI_PIP_VERBOSE:-0}"
 
 # scipionCoreInstallToggle
 installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
@@ -71,12 +72,19 @@ envExistsNow() {
 
 runPipInstall() {
   local pipArgs=("$@")
+  local verboseArgs=()
+
+  if [[ "${pipVerbose}" == "1" ]]; then
+    verboseArgs=(-v)
+  fi
+
   local cmd=(
-    conda run -n "${effectiveEnvName}"
+    conda run --no-capture-output -n "${effectiveEnvName}"
     python -m pip install
     --progress-bar on
     --retries "${pipRetries}"
     --timeout "${pipTimeout}"
+    "${verboseArgs[@]}"
     "${pipArgs[@]}"
   )
 
