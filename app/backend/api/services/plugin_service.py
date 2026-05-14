@@ -80,11 +80,13 @@ class PluginService:
                 serializedPlugin["fullLogo"] = self._buildFullLogo(serializedPlugin)
                 pipName = str(serializedPlugin.get("pipName") or pluginKey).strip()
                 categories = getPluginCategoryIds(pipName)
-                if 'tomography' not in categories:
-                    continue
-                serializedPlugin["categories"] = ['tomography']
-                # serializedPlugin["categoryData"] = getPluginCategoryData(pipName)
-                serializedPlugin["categoryData"] = [{'description': 'Tomograms, tilt series and subtomogram workflows', 'id': 'tomography', 'title': 'Tomography'}]
+                serializedPlugin["categories"] = categories
+                serializedPlugin["categoryData"] = getPluginCategoryData(pipName)
+
+                # if 'tomography' not in categories:
+                #     continue
+                # serializedPlugin["categories"] = ['tomography']
+                # serializedPlugin["categoryData"] = [{'description': 'Tomograms, tilt series and subtomogram workflows', 'id': 'tomography', 'title': 'Tomography'}]
 
                 isInstalled = False
                 try:
