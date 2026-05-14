@@ -113,7 +113,7 @@ plugins = {
     "scipion-em-epu": ["tomography"],
     "scipion-em-tomoj": ["tomography"],
     "scipion-em-aitom": ["tomography"],
-    "scipion-em-xmipptomo": ["tomography"],
+
 
 
 
@@ -157,6 +157,7 @@ plugins = {
     "scipion-em-miplib": ["unclassified"],
     "scipion-em-ccpem": ["unclassified"],
     "scipion-em-ispyb": ["unclassified"],
+    "scipion-em-xmipptomo": ["unclassified"],
 }
 
 

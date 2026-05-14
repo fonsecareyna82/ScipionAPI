@@ -26,6 +26,7 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
                                                     ProtocolWizardExecuteRequest)
 from app.backend.api.services.project_service import ProjectService
+from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
@@ -2627,6 +2628,98 @@ def getMetadataTableWindow(
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
     resp.headers["Vary"] = "Authorization"
     return resp
+
+# ======================================================================
+#                            ANALYZE RESULTS:  EXTERNAL VIEWERS
+# ======================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listExternalViewers(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    objectId: Optional[str] = Query(None),
+    objectKind: Optional[str] = Query(None),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        viewers = service.listExternalViewers(
+            protocolId=protocolId,
+            outputName=outputName,
+            objectId=objectId,
+            objectKind=objectKind,
+        )
+        return {"viewers": viewers}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in listExternalViewers: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list external viewers: {e}",
+        )
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers/{viewerId}/launch",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def launchExternalViewer(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    viewerId: str,
+    payload: Optional[ExternalViewerLaunchRequest] = Body(default=None),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payload = payload or ExternalViewerLaunchRequest()
+
+    try:
+        return service.launchExternalViewer(
+            protocolId=protocolId,
+            outputName=outputName,
+            viewerId=viewerId,
+            objectId=payload.objectId,
+            objectKind=payload.objectKind,
+            params=payload.params or {},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in launchExternalViewer: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to launch external viewer: {e}",
+        )
 
 # ======================================================================
 #                            PROTOCOL TAGS
