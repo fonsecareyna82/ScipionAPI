@@ -6895,6 +6895,43 @@ class ProjectService:
 
         return None
 
+    def _resolveExternalViewerCTFTomoSeries(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        targetId = str(objectId).strip()
+        if not targetId:
+            return None
+
+        try:
+            for item in outputObj:
+                itemIds = self._getExternalViewerObjectIds(item)
+
+                for methodName in (
+                        "getTsId",
+                        "getTomoId",
+                        "getCTFTomoSeriesId",
+                        "getObjId",
+                        "getObjLabel",
+                        "getName",
+                ):
+                    method = getattr(item, methodName, None)
+                    if callable(method):
+                        try:
+                            value = method()
+                            if value is not None:
+                                itemIds.add(str(value))
+                        except Exception:
+                            pass
+
+                if targetId in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        return None
+
     def _isSingleExternalViewerObject(self, outputObj: Any) -> bool:
         if outputObj is None:
             return False
@@ -6915,10 +6952,9 @@ class ProjectService:
 
     def _findExternalViewerClasses(self, targetObj: Any) -> List[Any]:
         try:
-            domain = pyworkflow.Config.getDomain()
-            viewers = domain.findViewers(targetObj, DESKTOP_TKINTER) or []
+            viewers = Config.getDomain().findViewers(targetObj, DESKTOP_TKINTER) or []
             return list(viewers)
-        except Exception as e:
+        except BaseException as e:
             logger.exception(
                 "Failed to find external viewers for object type %s: %s",
                 type(targetObj).__name__,
@@ -7094,6 +7130,14 @@ class ProjectService:
 
         if objectKindText in {"coords3dtomogram", "coords3d-tomogram", "coordinates3dtomogram"}:
             resolved = self._resolveExternalViewerCoords3dTomogram(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        if objectKindText in {"ctftomoseries", "ctf-tomo-series", "ctfseries"}:
+            resolved = self._resolveExternalViewerCTFTomoSeries(
                 outputObj=outputObj,
                 objectId=objectId,
             )
