@@ -62,6 +62,12 @@ from pyworkflow.object import PointerList, Pointer, CsvList
 from pyworkflow.protocol import MODE_RESUME, MODE_RESTART, STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED
 from pyworkflow.template import TemplateList
 
+try:
+    from pyworkflow.viewer import DESKTOP_TKINTER
+except Exception:
+    DESKTOP_TKINTER = None
+    findViewers=None
+
 logger = logging.getLogger(__name__)
 
 import os
@@ -6832,6 +6838,536 @@ class ProjectService:
                 "totalRows": int(totalRows),
                 "rows": resultRows,
             }
+
+    # -----------------------------
+    # External viewers methods
+    # -----------------------------
+
+    def _resolveExternalViewerCoords3dTomogram(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        targetId = str(objectId).strip()
+        if not targetId:
+            return None
+
+        cached = getattr(self, "tomoList", {}).get(targetId)
+        if cached is not None:
+            return cached
+
+        getTomogram = getattr(outputObj, "_getTomogram", None)
+        if callable(getTomogram):
+            try:
+                tomo = getTomogram(targetId)
+                if tomo is not None:
+                    return tomo
+            except Exception:
+                pass
+
+        iterTomograms = getattr(outputObj, "iterTomograms", None)
+        if callable(iterTomograms):
+            try:
+                for tomo in iterTomograms():
+                    tomoIds = self._getExternalViewerObjectIds(tomo)
+
+                    getTsId = getattr(tomo, "getTsId", None)
+                    if callable(getTsId):
+                        try:
+                            tomoIds.add(str(getTsId()))
+                        except Exception:
+                            pass
+
+                    getObjLabel = getattr(tomo, "getObjLabel", None)
+                    if callable(getObjLabel):
+                        try:
+                            tomoIds.add(str(getObjLabel()))
+                        except Exception:
+                            pass
+
+                    if targetId in tomoIds:
+                        if not hasattr(self, "tomoList") or self.tomoList is None:
+                            self.tomoList = {}
+                        self.tomoList[targetId] = tomo
+                        return tomo
+            except Exception:
+                pass
+
+        return None
+
+    def _isSingleExternalViewerObject(self, outputObj: Any) -> bool:
+        if outputObj is None:
+            return False
+
+        getItem = getattr(outputObj, "getItem", None)
+        if callable(getItem):
+            return False
+
+        iterItems = getattr(outputObj, "__iter__", None)
+        if callable(iterItems):
+            return False
+
+        getFileName = getattr(outputObj, "getFileName", None)
+        if callable(getFileName):
+            return True
+
+        return False
+
+    def _findExternalViewerClasses(self, targetObj: Any) -> List[Any]:
+        try:
+            domain = pyworkflow.Config.getDomain()
+            viewers = domain.findViewers(targetObj, DESKTOP_TKINTER) or []
+            return list(viewers)
+        except Exception as e:
+            logger.exception(
+                "Failed to find external viewers for object type %s: %s",
+                type(targetObj).__name__,
+                e,
+            )
+            return []
+
+    def _normalizeExternalViewerId(self, viewerClass: Any) -> str:
+        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
+        viewerId = className.strip()
+
+        if viewerId.lower().endswith("viewer"):
+            viewerId = viewerId[:-6]
+
+        viewerId = re.sub(r"[^A-Za-z0-9]+", "-", viewerId).strip("-").lower()
+        return viewerId or "viewer"
+
+    def _buildExternalViewerDescriptor(self, viewerClass: Any) -> Dict[str, Any]:
+        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
+        moduleName = getattr(viewerClass, "__module__", None)
+
+        label = (
+            getattr(viewerClass, "_label", None)
+            or getattr(viewerClass, "label", None)
+            or className
+        )
+
+        label = str(label).replace("Viewer", "").strip() or className
+
+        return {
+            "id": self._normalizeExternalViewerId(viewerClass),
+            "label": label,
+            "className": className,
+            "moduleName": moduleName,
+            "available": True,
+            "reason": None,
+        }
+
+    def _unwrapScipionObject(self, obj: Any) -> Any:
+        if obj is None:
+            return None
+
+        getter = getattr(obj, "get", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if value is not None:
+                    return value
+            except Exception:
+                pass
+
+        return obj
+
+    def _getProtocolOutputObject(
+        self,
+        protocolId: int,
+        outputName: str,
+    ) -> Tuple[Any, Any]:
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}. {e}",
+            )
+
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        outputObj = None
+
+        if hasattr(protocol, outputName):
+            outputObj = getattr(protocol, outputName)
+
+        if outputObj is None:
+            iterator = getattr(protocol, "iterOutputAttributes", None)
+            if callable(iterator):
+                try:
+                    for attrName, attrObj in iterator():
+                        if str(attrName) == str(outputName):
+                            outputObj = attrObj
+                            break
+                except Exception:
+                    pass
+
+        outputObj = self._unwrapScipionObject(outputObj)
+
+        if outputObj is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output not found: {outputName}",
+            )
+
+        return protocol, outputObj
+
+    def _getExternalViewerObjectIds(self, obj: Any) -> Set[str]:
+        values: Set[str] = set()
+
+        def addValue(value: Any):
+            if value is None:
+                return
+
+            getter = getattr(value, "get", None)
+            if callable(getter):
+                try:
+                    value = getter()
+                except Exception:
+                    pass
+
+            if value is None:
+                return
+
+            text = str(value).strip()
+            if text:
+                values.add(text)
+
+        for methodName in (
+            "getTsId",
+            "getObjId",
+            "getId",
+            "getName",
+            "getFileName",
+        ):
+            method = getattr(obj, methodName, None)
+            if callable(method):
+                try:
+                    addValue(method())
+                except Exception:
+                    pass
+
+        for attrName in (
+            "tsId",
+            "id",
+            "objId",
+            "_objId",
+            "name",
+            "label",
+            "filename",
+            "fileName",
+        ):
+            if hasattr(obj, attrName):
+                try:
+                    addValue(getattr(obj, attrName))
+                except Exception:
+                    pass
+
+        return values
+
+    def _resolveExternalViewerTargetObject(
+            self,
+            outputObj: Any,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+    ) -> Any:
+        if objectId is None or str(objectId).strip() == "":
+            return outputObj
+
+        targetId = str(objectId).strip()
+        objectKindText = str(objectKind or "").strip().lower()
+
+        if objectKindText in {"volume", "tomogram"} and self._isSingleExternalViewerObject(outputObj):
+            if targetId in {"0", "1"}:
+                return outputObj
+
+        if objectKindText in {"coords3dtomogram", "coords3d-tomogram", "coordinates3dtomogram"}:
+            resolved = self._resolveExternalViewerCoords3dTomogram(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        if objectKindText in {"volume", "tomogram"}:
+            resolved = self._resolveExternalViewerSetItemByPublicId(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        try:
+            for item in outputObj:
+                itemIds = self._getExternalViewerObjectIds(item)
+                if targetId in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Object '{targetId}' not found inside output. "
+                f"objectKind={objectKind or 'unknown'}"
+            ),
+        )
+
+    def _resolveExternalViewerSetItemByPublicId(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        try:
+            publicId = int(objectId)
+        except Exception:
+            return None
+
+        getItem = getattr(outputObj, "getItem", None)
+        if callable(getItem):
+            for key, value in (
+                    ("_objId", publicId + 1),
+                    ("_objId", publicId),
+                    ("id", publicId),
+                    ("index", publicId),
+            ):
+                try:
+                    item = getItem(key, value)
+                    if item is not None:
+                        return item
+                except Exception:
+                    pass
+
+        try:
+            for index, item in enumerate(outputObj):
+                if index == publicId:
+                    return item
+
+                itemIds = self._getExternalViewerObjectIds(item)
+                if str(publicId) in itemIds or str(publicId + 1) in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        return None
+
+    def listExternalViewers(
+        self,
+        protocolId: int,
+        outputName: str,
+        objectId: Optional[Union[str, int]] = None,
+        objectKind: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        protocol, outputObj = self._getProtocolOutputObject(
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        targetObj = self._resolveExternalViewerTargetObject(
+            outputObj=outputObj,
+            objectId=objectId,
+            objectKind=objectKind,
+        )
+
+        viewerClasses = self._findExternalViewerClasses(targetObj)
+
+        descriptors = []
+        seenIds: Set[str] = set()
+        excludedViewer = ['TomoDataViewer', 'MDViewer', 'DataViewer', 'CtfEstimationTomoViewer']
+        for viewerClass in viewerClasses:
+            descriptor = self._buildExternalViewerDescriptor(viewerClass)
+            viewerId = descriptor["id"]
+            if descriptor['className'] in excludedViewer:
+                continue
+
+            if viewerId in seenIds:
+                className = descriptor.get("className") or viewerId
+                viewerId = f"{viewerId}-{len(seenIds) + 1}"
+                descriptor["id"] = viewerId
+                descriptor["className"] = className
+
+            seenIds.add(viewerId)
+            descriptors.append(descriptor)
+
+        return descriptors
+
+    def _matchExternalViewerClass(
+        self,
+        viewerClasses: List[Any],
+        viewerId: str,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        requested = str(viewerId or "").strip().lower()
+
+        for viewerClass in viewerClasses:
+            descriptor = self._buildExternalViewerDescriptor(viewerClass)
+
+            tokens = {
+                str(descriptor.get("id") or "").lower(),
+                str(descriptor.get("label") or "").lower(),
+                str(descriptor.get("className") or "").lower(),
+                str(descriptor.get("moduleName") or "").lower(),
+            }
+
+            className = str(descriptor.get("className") or "")
+            if className.lower().endswith("viewer"):
+                tokens.add(className[:-6].lower())
+
+            if requested in tokens:
+                return viewerClass, descriptor
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"External viewer not found or not compatible: {viewerId}",
+        )
+
+    def _createExternalViewerInstance(self, viewerClass: Any, protocol: Any) -> Any:
+        attempts = [
+            {"project": self.currentProject, "protocol": protocol},
+            {"protocol": protocol},
+            {"project": self.currentProject},
+            {},
+        ]
+
+        lastError = None
+
+        for kwargs in attempts:
+            try:
+                viewer = viewerClass(**kwargs)
+                return viewer
+            except TypeError as e:
+                lastError = e
+            except Exception as e:
+                lastError = e
+                break
+
+        raise RuntimeError(f"Could not create viewer instance: {lastError}")
+
+    def _showExternalView(self, view: Any):
+        if view is None:
+            return
+
+        for methodName in ("show", "execute", "launch", "run"):
+            method = getattr(view, methodName, None)
+            if callable(method):
+                method()
+                return
+
+        if callable(view):
+            view()
+
+    def _runExternalViewer(self, viewerClass: Any, protocol: Any, targetObj: Any):
+        viewer = self._createExternalViewerInstance(viewerClass, protocol)
+
+        for methodName in ("setProject",):
+            method = getattr(viewer, methodName, None)
+            if callable(method):
+                try:
+                    method(self.currentProject)
+                except Exception:
+                    pass
+
+        for methodName in ("setProtocol",):
+            method = getattr(viewer, methodName, None)
+            if callable(method):
+                try:
+                    method(protocol)
+                except Exception:
+                    pass
+
+        visualize = getattr(viewer, "visualize", None)
+        if not callable(visualize):
+            visualize = getattr(viewer, "_visualize", None)
+
+        if not callable(visualize):
+            raise RuntimeError("Viewer does not expose a visualize method")
+
+        views = visualize(targetObj)
+
+        if views is None:
+            return
+
+        if not isinstance(views, (list, tuple)):
+            views = [views]
+
+        for view in views:
+            self._showExternalView(view)
+
+    def launchExternalViewer(
+        self,
+        protocolId: int,
+        outputName: str,
+        viewerId: str,
+        objectId: Optional[Union[str, int]] = None,
+        objectKind: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        protocol, outputObj = self._getProtocolOutputObject(
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        targetObj = self._resolveExternalViewerTargetObject(
+            outputObj=outputObj,
+            objectId=objectId,
+            objectKind=objectKind,
+        )
+
+        viewerClasses = self._findExternalViewerClasses(targetObj)
+
+        viewerClass, descriptor = self._matchExternalViewerClass(
+            viewerClasses=viewerClasses,
+            viewerId=viewerId,
+        )
+
+        thread = threading.Thread(
+            target=self._safeRunExternalViewer,
+            args=(viewerClass, protocol, targetObj, descriptor),
+            daemon=True,
+        )
+        thread.start()
+
+        return {
+            "success": True,
+            "viewerId": descriptor["id"],
+            "message": f"{descriptor['label']} launch requested.",
+            "pid": None,
+            "data": {
+                "objectId": objectId,
+                "objectKind": objectKind,
+            },
+        }
+
+    def _safeRunExternalViewer(
+        self,
+        viewerClass: Any,
+        protocol: Any,
+        targetObj: Any,
+        descriptor: Dict[str, Any],
+    ):
+        try:
+            self._runExternalViewer(
+                viewerClass=viewerClass,
+                protocol=protocol,
+                targetObj=targetObj,
+            )
+        except Exception as e:
+            logger.exception(
+                "External viewer failed. viewerId=%s className=%s error=%s",
+                descriptor.get("id"),
+                descriptor.get("className"),
+                e,
+            )
 
     # -----------------------------
     # Tags Service Methods
