@@ -176,6 +176,205 @@ class ProjectService:
             self.objectManager = self._createObjectManager()
         return self.objectManager
 
+    def _getPreviewObjectManager(self) -> ObjectManager:
+        """
+        Return an ObjectManager for preview operations.
+
+        Prefer a fresh instance to avoid sharing SQLite connections across
+        concurrent HTTP requests.
+        """
+        return self._createObjectManager()
+
+    def _safeScipionValue(self, value: Any) -> Any:
+        """
+        Convert Scipion/Python values into JSON-safe preview values.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str) and len(value) > 240:
+                return value[:240] + "..."
+            return value
+
+        if isinstance(value, (list, tuple)):
+            return [self._safeScipionValue(v) for v in value[:20]]
+
+        if isinstance(value, dict):
+            return {
+                str(k): self._safeScipionValue(v)
+                for k, v in list(value.items())[:30]
+            }
+
+        try:
+            text = str(value)
+            return text[:240] + "..." if len(text) > 240 else text
+        except Exception:
+            return repr(value)
+
+    def _tryReadScipionSetWithObjectManager(self, filePath: FsPath) -> Optional[Any]:
+        """
+        Try several ObjectManager entry points because different metadata
+        viewer versions expose slightly different method names.
+        """
+        objMgr = self._getPreviewObjectManager()
+        fileName = str(filePath)
+
+        candidateCalls = [
+            ("read", (fileName,)),
+            ("load", (fileName,)),
+            ("open", (fileName,)),
+            ("getObject", (fileName,)),
+            ("getDataObject", (fileName,)),
+            ("getDataObjects", (fileName,)),
+        ]
+
+        lastError = None
+
+        for methodName, args in candidateCalls:
+            method = getattr(objMgr, methodName, None)
+            if method is None:
+                continue
+
+            try:
+                result = method(*args)
+                if result is not None:
+                    if isinstance(result, (list, tuple)) and result:
+                        return result[0]
+                    return result
+            except Exception as exc:
+                lastError = exc
+
+        if lastError is not None:
+            logger.debug(
+                "Could not read Scipion sqlite with ObjectManager. file=%s error=%s",
+                fileName,
+                lastError,
+            )
+
+        return None
+
+    def _extractScipionSetPreviewInfo(self, obj: Any) -> Dict[str, Any]:
+        """
+        Build a compact preview payload from a Scipion set-like object.
+        """
+        objectClass = obj.__class__.__name__ if obj is not None else None
+
+        objectCount = None
+        for methodName in ("getSize", "__len__"):
+            try:
+                if methodName == "__len__":
+                    objectCount = len(obj)
+                else:
+                    method = getattr(obj, methodName, None)
+                    if method is not None:
+                        objectCount = int(method())
+                if objectCount is not None:
+                    break
+            except Exception:
+                pass
+
+        summary: list[Dict[str, Any]] = []
+
+        if objectClass:
+            summary.append({"key": "Object class", "value": objectClass})
+        if objectCount is not None:
+            summary.append({"key": "Items", "value": objectCount})
+
+        scalarMethods = [
+            ("Sampling rate", "getSamplingRate"),
+            ("Dimensions", "getDimensions"),
+            ("First item", "getFirstItem"),
+            ("File name", "getFileName"),
+        ]
+
+        for label, methodName in scalarMethods:
+            try:
+                method = getattr(obj, methodName, None)
+                if method is None:
+                    continue
+                value = method()
+                safeValue = self._safeScipionValue(value)
+                if safeValue not in (None, ""):
+                    summary.append({"key": label, "value": safeValue})
+            except Exception:
+                pass
+
+        sampleRows = []
+        sampleColumns: list[str] = []
+
+        try:
+            iterator = iter(obj)
+            for index, item in enumerate(iterator):
+                if index >= 10:
+                    break
+
+                row = self._buildScipionItemPreviewRow(item)
+                if row:
+                    for key in row.keys():
+                        if key not in sampleColumns:
+                            sampleColumns.append(key)
+                    sampleRows.append(row)
+        except Exception:
+            pass
+
+        return {
+            "objectClass": objectClass,
+            "objectCount": objectCount,
+            "summary": summary,
+            "sample": {
+                "columns": sampleColumns,
+                "rows": sampleRows,
+            },
+        }
+
+    def _buildScipionItemPreviewRow(self, item: Any) -> Dict[str, Any]:
+        """
+        Build a compact preview row for one Scipion object item.
+        """
+        row: Dict[str, Any] = {}
+
+        candidates = [
+            ("id", "getObjId"),
+            ("class", "getClassName"),
+            ("fileName", "getFileName"),
+            ("index", "getIndex"),
+            ("enabled", "isEnabled"),
+            ("samplingRate", "getSamplingRate"),
+            ("dimensions", "getDimensions"),
+        ]
+
+        for key, methodName in candidates:
+            try:
+                method = getattr(item, methodName, None)
+                if method is None:
+                    continue
+                value = method()
+                row[key] = self._safeScipionValue(value)
+            except Exception:
+                pass
+
+        if not row:
+            try:
+                row["value"] = self._safeScipionValue(item)
+            except Exception:
+                pass
+
+        return row
+
+    def _inspectScipionSqliteDatabase(self, filePath: FsPath) -> Optional[Dict[str, Any]]:
+        """
+        Inspect a Scipion SQLite object database using the metadata viewer
+        ObjectManager when possible.
+        """
+        obj = self._tryReadScipionSetWithObjectManager(filePath)
+        if obj is None:
+            return None
+
+        info = self._extractScipionSetPreviewInfo(obj)
+        info["reader"] = "ObjectManager"
+        return info
+
     @staticmethod
     def sanitizeProjectName(rawName: str) -> str:
         """
@@ -3555,9 +3754,17 @@ class ProjectService:
 
         if self._isGlobalFsBrowserMode(protocolId):
             root = self._getGlobalFsBrowserRoot()
-            return fileHandlers.previewRemoteEntryUnderRoot(root, path)
+            return fileHandlers.previewRemoteEntryUnderRoot(
+                root,
+                path,
+                databaseInspector=self._inspectScipionSqliteDatabase,
+            )
 
-        return fileHandlers.previewProtocolRemoteEntry(protocolId, path)
+        return fileHandlers.previewProtocolRemoteEntry(
+            protocolId,
+            path,
+            databaseInspector=self._inspectScipionSqliteDatabase,
+        )
 
     def previewProtocolImageFile(self, protocolId, path, inline: bool):
         """

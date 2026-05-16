@@ -27,7 +27,10 @@
 from __future__ import annotations
 import io
 import os
+import json
+import sqlite3
 import mimetypes
+from urllib.parse import quote
 from pathlib import Path as FsPath
 from typing import Union, Dict, Any, Optional
 
@@ -318,7 +321,12 @@ class FileHandlers:
             },
         )
 
-    def previewRemoteEntryUnderRoot(self, root: Union[str, FsPath], path: str) -> Response:
+    def previewRemoteEntryUnderRoot(
+            self,
+            root: Union[str, FsPath],
+            path: str,
+            databaseInspector=None,
+    ) -> Response:
         """
         Return a unified lightweight preview for a file under an arbitrary safe root.
         """
@@ -425,6 +433,14 @@ class FileHandlers:
                 kind=kind,
                 name=filePath.name,
                 meta=meta,
+            )
+
+        if self._isSqliteLike(filePath):
+            return self._previewSqliteDatabase(
+                filePath=filePath,
+                mime=mime,
+                sizeBytes=sizeBytes,
+                databaseInspector=databaseInspector,
             )
 
         maxBytes = 256 * 1024
@@ -584,9 +600,18 @@ class FileHandlers:
         root = self._browserRootAbs(protocolId).resolve()
         return self.listRemoteDirectoryUnderRoot(root, path)
 
-    def previewProtocolRemoteEntry(self, protocolId: str, path: str) -> Response:
+    def previewProtocolRemoteEntry(
+            self,
+            protocolId: str,
+            path: str,
+            databaseInspector=None,
+    ) -> Response:
         root = self._browserRootAbs(protocolId).resolve()
-        return self.previewRemoteEntryUnderRoot(root, path)
+        return self.previewRemoteEntryUnderRoot(
+            root,
+            path,
+            databaseInspector=databaseInspector,
+        )
 
     def _renderImageSpecAsPngAndMeta(self, imageSpec: str, backingPath: FsPath):
         """
@@ -695,6 +720,406 @@ class FileHandlers:
         """
         suf = filePath.suffix.lower()
         return suf in IMAGES_FILE_EXTENSIONS
+
+    def _isSqliteLike(self, filePath: FsPath) -> bool:
+        """
+        Return True if this file should be inspected as a SQLite database.
+        """
+        suffix = filePath.suffix.lower()
+        if suffix in {".sqlite", ".sqlite3", ".db"}:
+            return True
+
+        try:
+            with open(filePath, "rb") as handle:
+                return handle.read(16) == b"SQLite format 3\x00"
+        except Exception:
+            return False
+
+    def _connectReadonlySqlite(self, filePath: FsPath) -> sqlite3.Connection:
+        """
+        Open a SQLite database in read-only mode.
+        """
+        resolvedPath = str(filePath.resolve()).replace("\\", "/")
+        sqliteUri = f"file:{quote(resolvedPath, safe='/:')}?mode=ro"
+
+        conn = sqlite3.connect(sqliteUri, uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @staticmethod
+    def _quoteSqliteIdentifier(identifier: str) -> str:
+        """
+        Quote a SQLite identifier safely.
+        """
+        return '"' + str(identifier).replace('"', '""') + '"'
+
+    @staticmethod
+    def _normalizeSqliteCell(value: Any) -> Any:
+        """
+        Convert SQLite values into JSON-safe preview values.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, (int, float, str)):
+            if isinstance(value, str) and len(value) > 240:
+                return value[:240] + "..."
+            return value
+
+        if isinstance(value, bytes):
+            return f"<bytes {len(value)}>"
+
+        return str(value)
+
+    def _fetchSqlitePragmaValue(
+            self,
+            conn: sqlite3.Connection,
+            pragmaName: str,
+            defaultValue: Any = None,
+    ) -> Any:
+        """
+        Fetch a single-value PRAGMA safely.
+        """
+        try:
+            row = conn.execute(f"PRAGMA {pragmaName}").fetchone()
+            if row is None:
+                return defaultValue
+            if len(row.keys()) <= 0:
+                return defaultValue
+            return row[0]
+        except Exception:
+            return defaultValue
+
+    def _fetchSqliteQuickCheck(self, conn: sqlite3.Connection) -> str:
+        """
+        Run a lightweight integrity check.
+        """
+        try:
+            row = conn.execute("PRAGMA quick_check(1)").fetchone()
+            if row is None:
+                return "unknown"
+            return str(row[0])
+        except Exception:
+            return "unknown"
+
+    def _inspectGenericSqliteDatabase(
+            self,
+            filePath: FsPath,
+            sizeBytes: Optional[int],
+    ) -> Dict[str, Any]:
+        """
+        Inspect a SQLite database without depending on Scipion object readers.
+        """
+        warnings: list[str] = []
+        tables: list[Dict[str, Any]] = []
+        sample: Optional[Dict[str, Any]] = None
+
+        try:
+            conn = self._connectReadonlySqlite(filePath)
+        except Exception as exc:
+            return {
+                "engine": "sqlite",
+                "readable": False,
+                "isScipion": False,
+                "summary": [
+                    {"key": "Status", "value": "Could not open database"},
+                    {"key": "Error", "value": str(exc)},
+                ],
+                "tables": [],
+                "sample": None,
+                "warnings": [str(exc)],
+            }
+
+        try:
+            pageSize = self._fetchSqlitePragmaValue(conn, "page_size")
+            pageCount = self._fetchSqlitePragmaValue(conn, "page_count")
+            encoding = self._fetchSqlitePragmaValue(conn, "encoding")
+            userVersion = self._fetchSqlitePragmaValue(conn, "user_version")
+            applicationId = self._fetchSqlitePragmaValue(conn, "application_id")
+            quickCheck = self._fetchSqliteQuickCheck(conn)
+
+            schemaRows = conn.execute(
+                """
+                SELECT name, type
+                FROM sqlite_master
+                WHERE type IN ('table', 'view')
+                  AND name NOT LIKE 'sqlite_%'
+                ORDER BY type, name
+                """
+            ).fetchall()
+
+            indexCountRow = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name NOT LIKE 'sqlite_%'
+                """
+            ).fetchone()
+            indexCount = int(indexCountRow["count"]) if indexCountRow is not None else 0
+
+            maxTables = 60
+            if len(schemaRows) > maxTables:
+                warnings.append(f"Only the first {maxTables} tables/views are described.")
+
+            for schemaRow in schemaRows[:maxTables]:
+                tableName = str(schemaRow["name"])
+                tableType = str(schemaRow["type"])
+                quotedName = self._quoteSqliteIdentifier(tableName)
+
+                columnsInfo = []
+                try:
+                    pragmaRows = conn.execute(f"PRAGMA table_info({quotedName})").fetchall()
+                    for pragmaRow in pragmaRows:
+                        columnsInfo.append({
+                            "name": str(pragmaRow["name"]),
+                            "type": str(pragmaRow["type"] or ""),
+                            "notNull": bool(pragmaRow["notnull"]),
+                            "primaryKey": bool(pragmaRow["pk"]),
+                        })
+                except Exception as exc:
+                    warnings.append(f"Could not inspect columns for {tableName}: {exc}")
+
+                rowCount: Optional[int] = None
+                if tableType == "table":
+                    try:
+                        countRow = conn.execute(f"SELECT COUNT(*) AS count FROM {quotedName}").fetchone()
+                        rowCount = int(countRow["count"]) if countRow is not None else None
+                    except Exception as exc:
+                        warnings.append(f"Could not count rows for {tableName}: {exc}")
+
+                tables.append({
+                    "name": tableName,
+                    "type": tableType,
+                    "rows": rowCount,
+                    "columns": len(columnsInfo),
+                    "columnPreview": columnsInfo[:12],
+                })
+
+            sampleTable = self._chooseSqliteSampleTable(tables)
+            if sampleTable:
+                sample = self._buildSqliteSample(conn, sampleTable)
+
+            isScipionLike = self._looksLikeScipionSqlite(tables)
+
+            summary = [
+                {"key": "Status", "value": "Readable"},
+                {"key": "Type", "value": "Scipion SQLite database" if isScipionLike else "SQLite database"},
+                {"key": "Tables", "value": len([t for t in tables if t.get("type") == "table"])},
+                {"key": "Views", "value": len([t for t in tables if t.get("type") == "view"])},
+                {"key": "Indexes", "value": indexCount},
+            ]
+
+            if sizeBytes is not None:
+                summary.append({"key": "Size", "value": sizeBytes})
+            if encoding:
+                summary.append({"key": "Encoding", "value": encoding})
+            if pageSize:
+                summary.append({"key": "Page size", "value": pageSize})
+            if pageCount:
+                summary.append({"key": "Page count", "value": pageCount})
+            if userVersion is not None:
+                summary.append({"key": "User version", "value": userVersion})
+            if applicationId is not None:
+                summary.append({"key": "Application id", "value": applicationId})
+            if quickCheck:
+                summary.append({"key": "Quick check", "value": quickCheck})
+
+            return {
+                "engine": "sqlite",
+                "readable": True,
+                "isScipion": isScipionLike,
+                "objectClass": None,
+                "summary": summary,
+                "tables": tables,
+                "sample": sample,
+                "warnings": warnings,
+            }
+
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _looksLikeScipionSqlite(self, tables: list[Dict[str, Any]]) -> bool:
+        """
+        Best-effort schema heuristic for Scipion object databases.
+        """
+        tableNames = {str(t.get("name") or "").lower() for t in tables}
+
+        scipionHints = {
+            "objects",
+            "relations",
+            "properties",
+            "classes",
+        }
+
+        return bool(tableNames.intersection(scipionHints))
+
+    def _chooseSqliteSampleTable(self, tables: list[Dict[str, Any]]) -> Optional[str]:
+        """
+        Pick the most useful table for a compact row preview.
+        """
+        if not tables:
+            return None
+
+        preferredNames = ["Objects", "objects", "Properties", "properties"]
+
+        for preferredName in preferredNames:
+            for table in tables:
+                if table.get("type") == "table" and table.get("name") == preferredName:
+                    return str(table["name"])
+
+        regularTables = [t for t in tables if t.get("type") == "table"]
+        if not regularTables:
+            return None
+
+        regularTables.sort(
+            key=lambda t: (
+                int(t.get("rows") or 0),
+                str(t.get("name") or "").lower(),
+            ),
+            reverse=True,
+        )
+
+        return str(regularTables[0].get("name") or "") or None
+
+    def _buildSqliteSample(
+            self,
+            conn: sqlite3.Connection,
+            tableName: str,
+            maxRows: int = 25,
+            maxColumns: int = 12,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build a compact preview of rows from one SQLite table.
+        """
+        if not tableName:
+            return None
+
+        quotedName = self._quoteSqliteIdentifier(tableName)
+
+        try:
+            pragmaRows = conn.execute(f"PRAGMA table_info({quotedName})").fetchall()
+            columns = [str(row["name"]) for row in pragmaRows][:maxColumns]
+        except Exception:
+            columns = []
+
+        if not columns:
+            return None
+
+        quotedColumns = ", ".join(self._quoteSqliteIdentifier(c) for c in columns)
+
+        try:
+            rows = conn.execute(
+                f"SELECT {quotedColumns} FROM {quotedName} LIMIT ?",
+                (maxRows,),
+            ).fetchall()
+        except Exception:
+            return None
+
+        outRows = []
+        for row in rows:
+            outRows.append([
+                self._normalizeSqliteCell(row[col])
+                for col in columns
+            ])
+
+        return {
+            "table": tableName,
+            "columns": columns,
+            "rows": outRows,
+            "truncated": len(outRows) >= maxRows,
+        }
+
+    def _tryInspectScipionSqliteDatabase(self, filePath: FsPath) -> Optional[Dict[str, Any]]:
+        """
+        Hook for Scipion-specific object inspection.
+
+        This is intentionally isolated so the generic SQLite preview remains
+        stable even if Scipion readers fail for a particular file.
+        """
+        try:
+            # Scipion reader integration will be added here.
+            return None
+        except Exception:
+            return None
+
+    def _previewSqliteDatabase(
+            self,
+            filePath: FsPath,
+            mime: str,
+            sizeBytes: Optional[int],
+            databaseInspector=None,
+    ) -> Response:
+        """
+        Return a structured preview for SQLite databases.
+        """
+        effectiveMime = mime
+        if not effectiveMime or effectiveMime == "application/octet-stream":
+            effectiveMime = "application/vnd.sqlite3"
+
+        databaseInfo = self._inspectGenericSqliteDatabase(
+            filePath=filePath,
+            sizeBytes=sizeBytes,
+        )
+
+        scipionInfo = None
+
+        if databaseInspector is not None:
+            try:
+                scipionInfo = databaseInspector(filePath)
+            except Exception as exc:
+                warnings = databaseInfo.setdefault("warnings", [])
+                warnings.append(f"Scipion reader failed: {exc}")
+
+        if scipionInfo:
+            databaseInfo["isScipion"] = True
+            databaseInfo["scipion"] = scipionInfo
+
+            objectClass = scipionInfo.get("objectClass")
+            if objectClass:
+                databaseInfo["objectClass"] = objectClass
+
+            objectCount = scipionInfo.get("objectCount")
+            if objectCount is not None:
+                databaseInfo["objectCount"] = objectCount
+
+        databaseType = "scipion" if databaseInfo.get("isScipion") else "sqlite"
+
+        meta = {
+            "name": filePath.name,
+            "mime": effectiveMime,
+            "sizeBytes": sizeBytes,
+            "databaseType": databaseType,
+            "readable": bool(databaseInfo.get("readable")),
+            "tableCount": len(databaseInfo.get("tables") or []),
+            "objectClass": databaseInfo.get("objectClass"),
+        }
+
+        payload = {
+            "kind": "database",
+            "mime": effectiveMime,
+            "meta": meta,
+            "database": databaseInfo,
+        }
+
+        response = Response(
+            content=json.dumps(payload, ensure_ascii=False),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'inline; filename="{filePath.name}"',
+            },
+        )
+
+        return self._attachPreviewContract(
+            response=response,
+            kind="database",
+            name=filePath.name,
+            meta=meta,
+            responseMime="application/json",
+        )
 
     # -------------------------
     # Colormap helpers for volumes
