@@ -25,6 +25,8 @@
 # ******************************************************************************
 
 import importlib
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -222,3 +224,199 @@ def test_PreviewRemoteEntryUnderRootWrapsTextPreviewWithContract(handlers, tmp_p
     assert response.headers["X-Preview-Name"] == "notes.txt"
     assert response.headers["X-Preview-Mime"] == "text/plain"
     assert response.headers["X-Preview-Schema"] == "scipion"
+
+def test_PreviewRemoteEntryUnderRootReturnsDatabasePreviewForSqlite(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    dbPath = root / "particles.sqlite"
+
+    conn = sqlite3.connect(dbPath)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE Objects (
+                id INTEGER PRIMARY KEY,
+                fileName TEXT,
+                enabled INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO Objects (id, fileName, enabled) VALUES (?, ?, ?)",
+            (1, "particles.mrcs", 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = handlers.previewRemoteEntryUnderRoot(root, "particles.sqlite")
+
+    assert response.media_type == "application/json"
+    assert response.headers["X-Preview-Kind"] == "database"
+    assert response.headers["X-Preview-Name"] == "particles.sqlite"
+    assert response.headers["X-Preview-Mime"] == "application/vnd.sqlite3"
+    assert response.headers["X-Preview-ResponseMime"] == "application/json"
+    assert response.headers["X-Preview-Schema"] == "scipion"
+
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["kind"] == "database"
+    assert payload["mime"] == "application/vnd.sqlite3"
+    assert payload["meta"]["name"] == "particles.sqlite"
+    assert payload["meta"]["databaseType"] == "scipion"
+    assert payload["meta"]["readable"] is True
+    assert payload["meta"]["tableCount"] >= 1
+
+    database = payload["database"]
+    assert database["engine"] == "sqlite"
+    assert database["readable"] is True
+    assert database["isScipion"] is True
+
+    tables = database["tables"]
+    assert any(table["name"] == "Objects" for table in tables)
+
+    sample = database["sample"]
+    assert sample["table"] == "Objects"
+    assert sample["columns"] == ["id", "fileName", "enabled"]
+    assert sample["rows"][0] == [1, "particles.mrcs", 1]
+
+
+def test_PreviewRemoteEntryUnderRootReturnsDatabasePreviewForDbExtension(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    dbPath = root / "cache.db"
+
+    conn = sqlite3.connect(dbPath)
+    try:
+        conn.execute("CREATE TABLE CacheItems (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO CacheItems (id, name) VALUES (?, ?)", (1, "first"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = handlers.previewRemoteEntryUnderRoot(root, "cache.db")
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.headers["X-Preview-Kind"] == "database"
+    assert payload["kind"] == "database"
+    assert payload["database"]["readable"] is True
+    assert payload["database"]["isScipion"] is False
+    assert any(table["name"] == "CacheItems" for table in payload["database"]["tables"])
+
+
+def test_PreviewRemoteEntryUnderRootDetectsSqliteByHeaderWithoutKnownExtension(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    dbPath = root / "metadata.dat"
+
+    conn = sqlite3.connect(dbPath)
+    try:
+        conn.execute("CREATE TABLE Metadata (id INTEGER PRIMARY KEY, label TEXT)")
+        conn.execute("INSERT INTO Metadata (id, label) VALUES (?, ?)", (1, "demo"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = handlers.previewRemoteEntryUnderRoot(root, "metadata.dat")
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.headers["X-Preview-Kind"] == "database"
+    assert payload["kind"] == "database"
+    assert payload["database"]["readable"] is True
+    assert any(table["name"] == "Metadata" for table in payload["database"]["tables"])
+
+
+def test_PreviewRemoteEntryUnderRootDatabaseInspectorCanAddScipionInfo(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    dbPath = root / "particles.sqlite"
+
+    conn = sqlite3.connect(dbPath)
+    try:
+        conn.execute("CREATE TABLE Objects (id INTEGER PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    def fakeDatabaseInspector(filePath):
+        assert filePath.name == "particles.sqlite"
+        return {
+            "reader": "ObjectManager",
+            "objectClass": "SetOfParticles",
+            "objectCount": 42,
+            "summary": [
+                {"key": "Object class", "value": "SetOfParticles"},
+                {"key": "Items", "value": 42},
+            ],
+        }
+
+    response = handlers.previewRemoteEntryUnderRoot(
+        root,
+        "particles.sqlite",
+        databaseInspector=fakeDatabaseInspector,
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["kind"] == "database"
+    assert payload["meta"]["databaseType"] == "scipion"
+    assert payload["meta"]["objectClass"] == "SetOfParticles"
+
+    database = payload["database"]
+    assert database["isScipion"] is True
+    assert database["objectClass"] == "SetOfParticles"
+    assert database["objectCount"] == 42
+    assert database["scipion"]["reader"] == "ObjectManager"
+
+
+def test_PreviewRemoteEntryUnderRootDatabaseInspectorFailureKeepsGenericPreview(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    dbPath = root / "cache.sqlite"
+
+    conn = sqlite3.connect(dbPath)
+    try:
+        conn.execute("CREATE TABLE CacheItems (id INTEGER PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    def failingDatabaseInspector(filePath):
+        raise RuntimeError("reader exploded")
+
+    response = handlers.previewRemoteEntryUnderRoot(
+        root,
+        "cache.sqlite",
+        databaseInspector=failingDatabaseInspector,
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["kind"] == "database"
+    assert payload["database"]["readable"] is True
+    assert any(
+        "Scipion reader failed: reader exploded" in warning
+        for warning in payload["database"]["warnings"]
+    )
+
+
+def test_PreviewRemoteEntryUnderRootUnreadableSqliteReturnsDatabasePayload(handlers, tmp_path):
+    root = tmp_path / "browser-root"
+    root.mkdir(parents=True, exist_ok=True)
+
+    brokenDb = root / "broken.sqlite"
+    brokenDb.write_bytes(b"not a sqlite database")
+
+    response = handlers.previewRemoteEntryUnderRoot(root, "broken.sqlite")
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert response.headers["X-Preview-Kind"] == "database"
+    assert payload["kind"] == "database"
+    assert payload["database"]["engine"] == "sqlite"
+    assert payload["database"]["readable"] is False
+    assert payload["meta"]["readable"] is False
+    assert payload["database"]["tables"] == []
+    assert payload["database"]["warnings"]
