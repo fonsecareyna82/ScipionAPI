@@ -90,11 +90,11 @@ class FakeFileHandlers:
         self.calls.append(("previewProtocolTextFile", protocolId, path))
         return {"mode": "protocol-text", "protocolId": protocolId, "path": path}
 
-    def previewRemoteEntryUnderRoot(self, root, path):
+    def previewRemoteEntryUnderRoot(self, root, path, databaseInspector=None):
         self.calls.append(("previewRemoteEntryUnderRoot", root, path))
         return {"mode": "global-preview", "root": str(root), "path": path}
 
-    def previewProtocolRemoteEntry(self, protocolId, path):
+    def previewProtocolRemoteEntry(self, protocolId, path, databaseInspector=None):
         self.calls.append(("previewProtocolRemoteEntry", protocolId, path))
         return {"mode": "protocol-preview", "protocolId": protocolId, "path": path}
 

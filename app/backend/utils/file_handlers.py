@@ -936,6 +936,22 @@ class FileHandlers:
                 "warnings": warnings,
             }
 
+        except Exception as exc:
+            return {
+                "engine": "sqlite",
+                "readable": False,
+                "isScipion": False,
+                "objectClass": None,
+                "objectCount": None,
+                "summary": [
+                    {"key": "Status", "value": "Could not inspect database"},
+                    {"key": "Error", "value": str(exc)},
+                ],
+                "tables": [],
+                "sample": None,
+                "warnings": [str(exc)],
+            }
+
         finally:
             try:
                 conn.close()
