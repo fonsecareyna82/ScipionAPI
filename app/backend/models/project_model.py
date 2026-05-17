@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 # models/project_model.py
+from typing import Optional, Union, Dict, Any
 
 from pydantic import BaseModel
 from datetime import datetime
@@ -75,3 +76,9 @@ class ProjectResponse(BaseModel):
 class ProjectUpdateRequest(BaseModel):
     name: str
     description: str
+
+
+class ExternalViewerLaunchRequest(BaseModel):
+    objectId: Optional[Union[str, int]] = None
+    objectKind: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None

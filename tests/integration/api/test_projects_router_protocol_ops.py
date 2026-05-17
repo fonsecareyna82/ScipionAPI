@@ -26,6 +26,20 @@
 from fastapi import HTTPException
 
 
+def patchRenameProtocolFake(fakeProjectService):
+    # patchRenameProtocolFake
+    def renameProtocol(protocolId, newName, newComment=""):
+        fakeProjectService.lastRenameProtocolCall = {
+            "protocolId": protocolId,
+            "newName": newName,
+            "newComment": newComment,
+        }
+        if fakeProjectService.renameProtocolError is not None:
+            raise fakeProjectService.renameProtocolError
+
+    fakeProjectService.renameProtocol = renameProtocol
+
+
 def test_LoadProtocolReturns404WhenProjectMissing(projectClient, fakeProjectService):
     fakeProjectService.projectByIdResult = None
 
@@ -212,7 +226,7 @@ def test_SuggestionProtocolReturnsSuggestions(projectClient, fakeProjectService)
 def test_RenameProtocolRejectsBlankName(projectClient):
     response = projectClient.put(
         "/projects/1/protocols/10/rename",
-        json={"name": "   "},
+        json={"runName": "   ", "comment": "Ignored comment"},
     )
 
     assert response.status_code == 422
@@ -224,9 +238,14 @@ def test_RenameProtocolRejectsBlankName(projectClient):
 
 
 def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
+    patchRenameProtocolFake(fakeProjectService)
+
     response = projectClient.put(
         "/projects/1/protocols/10/rename",
-        json={"name": "  Renamed protocol  "},
+        json={
+            "runName": "  Renamed protocol  ",
+            "comment": "  Updated comment  ",
+        },
     )
 
     assert response.status_code == 200
@@ -239,6 +258,7 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
     assert fakeProjectService.lastRenameProtocolCall == {
         "protocolId": 10,
         "newName": "Renamed protocol",
+        "newComment": "Updated comment",
     }
 
     assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
@@ -413,7 +433,9 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
         "checkPid": True,
     }
 
+
 def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+    patchRenameProtocolFake(fakeProjectService)
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
         detail="rename protocol succeeded but graph sync to PostgreSQL failed",
@@ -421,7 +443,7 @@ def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProject
 
     response = projectClient.put(
         "/projects/1/protocols/10/rename",
-        json={"name": "Renamed protocol"},
+        json={"runName": "Renamed protocol", "comment": "Updated comment"},
     )
 
     assert response.status_code == 500
@@ -434,6 +456,7 @@ def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProject
     assert fakeProjectService.lastRenameProtocolCall == {
         "protocolId": 10,
         "newName": "Renamed protocol",
+        "newComment": "Updated comment",
     }
 
 
