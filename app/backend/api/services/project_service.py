@@ -41,11 +41,13 @@ import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
+from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
@@ -4616,6 +4618,67 @@ class ProjectService:
         out *= (z * y * x) / float(tz * ty * tx)
 
         return np.asarray(out, dtype=np.float32)
+
+    def _strideDownsampleVolume(self, volume: np.ndarray,
+                                maxDim: int) -> np.ndarray:
+        z, y, x = volume.shape
+        largestDim = max(z, y, x)
+        if largestDim <= maxDim:
+            return volume.astype(np.float32, copy=False)
+
+        step = max(1, int(np.ceil(largestDim / float(maxDim))))
+        return volume[::step, ::step, ::step].astype(np.float32, copy=False)
+
+    def _downsampleVolumeForSurface(
+            self,
+            volume: np.ndarray,
+            *,
+            maxDim: int,
+            method: str,
+    ) -> np.ndarray:
+        methodLower = (method or "stride").lower()
+
+        if methodLower == "none":
+            return volume.astype(np.float32, copy=False)
+
+        if methodLower == "stride":
+            return self._strideDownsampleVolume(volume,
+                                                maxDim=maxDim)
+
+        return self._downsampleVolumePreview(volume,
+                                             maxDim=maxDim,
+                                             method=methodLower)
+
+    def getVolumeSurfaceMesh(self, protocolId, outputName, volumeId, level,
+                             maxDim, method, maxTriangles, currentUser):
+
+        _protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        volumePath = self._getVolumePathFromOutput(output, volumeId)
+
+        volume, _props = readVolumeArray3d(volumePath)
+        volumeSmall = self._downsampleVolumeForSurface(
+            volume,
+            maxDim=maxDim,
+            method=method,
+        )
+
+        mesh = buildVolumeSurfaceMesh(
+            volumeSmall,
+            level=level,
+            maxTriangles=maxTriangles,
+        )
+
+        mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
+        mesh["maxDim"] = int(maxDim)
+        mesh["method"] = method
+        mesh["volumeId"] = str(volumeId)
+        mesh["outputName"] = outputName
+
+        response = JSONResponse(mesh)
+        response.headers["X-Debug-Auth"] = "ok"
+        response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        response.headers["Vary"] = "Authorization"
+        return response
 
     def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
         """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""

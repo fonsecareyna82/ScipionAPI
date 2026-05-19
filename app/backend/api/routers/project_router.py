@@ -1,7 +1,6 @@
 import logging
 import os
 import hashlib
-import numpy as np
 from email.utils import formatdate
 
 from fastapi import (
@@ -35,8 +34,6 @@ from app.backend.models.protocol_model import (
     DeletePayload,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
-from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
-from app.backend.utils.volume_utils import readVolumeArray3d
 
 logger = logging.getLogger(__name__)
 
@@ -1546,35 +1543,6 @@ def getVolumeData3d(
         method=method,
     )
 
-
-def _strideDownsampleVolume(volume: np.ndarray, maxDim: int) -> np.ndarray:
-    z, y, x = volume.shape
-    largestDim = max(z, y, x)
-    if largestDim <= maxDim:
-        return volume.astype(np.float32, copy=False)
-
-    step = max(1, int(np.ceil(largestDim / float(maxDim))))
-    return volume[::step, ::step, ::step].astype(np.float32, copy=False)
-
-
-def _downsampleVolumeForSurface(
-    service: ProjectService,
-    volume: np.ndarray,
-    *,
-    maxDim: int,
-    method: str,
-) -> np.ndarray:
-    methodLower = (method or "stride").lower()
-
-    if methodLower == "none":
-        return volume.astype(np.float32, copy=False)
-
-    if methodLower == "stride":
-        return _strideDownsampleVolume(volume, maxDim=maxDim)
-
-    return service._downsampleVolumePreview(volume, maxDim=maxDim, method=methodLower)
-
-
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/surface",
     response_model=Any,
@@ -1599,34 +1567,15 @@ def getVolumeSurfaceMesh(
         raise HTTPException(status_code=404, detail="Project not found")
 
     try:
-        _protocol, output = service._resolveOutputForVolumes(protocolId, outputName)
-        volumePath = service._getVolumePathFromOutput(output, volumeId)
 
-        volume, _props = readVolumeArray3d(volumePath)
-        volumeSmall = _downsampleVolumeForSurface(
-            service,
-            volume,
-            maxDim=maxDim,
-            method=method,
-        )
-
-        mesh = buildVolumeSurfaceMesh(
-            volumeSmall,
-            level=level,
-            maxTriangles=maxTriangles,
-        )
-
-        mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
-        mesh["maxDim"] = int(maxDim)
-        mesh["method"] = method
-        mesh["volumeId"] = str(volumeId)
-        mesh["outputName"] = outputName
-
-        response = JSONResponse(mesh)
-        response.headers["X-Debug-Auth"] = "ok"
-        response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
-        response.headers["Vary"] = "Authorization"
-        return response
+        return service.getVolumeSurfaceMesh(protocolId=protocolId,
+                                            outputName=outputName,
+                                            volumeId=volumeId,
+                                            level=level,
+                                            maxDim=maxDim,
+                                            method=method,
+                                            maxTriangles=maxTriangles,
+                                            currentUser=currentUser)
 
     except HTTPException:
         raise
