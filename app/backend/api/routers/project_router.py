@@ -1097,6 +1097,7 @@ def pollProtocolLogs(
 def _isGlobalFsBrowserMode(projectId: int, protocolId: Union[int, str]) -> bool:
     return str(projectId).strip() == "-1" and str(protocolId).strip() == "-1"
 
+
 def _ensureProjectForFsRequest(
     projectId: int,
     protocolId: Union[int, str],
