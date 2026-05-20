@@ -6,19 +6,22 @@ from fastapi import HTTPException
 
 def _cleanVolume(volume: np.ndarray) -> np.ndarray:
     arr = np.asarray(volume, dtype=np.float32)
+
     if arr.ndim != 3:
         raise HTTPException(status_code=500, detail="Expected a 3D volume")
 
     finiteMask = np.isfinite(arr)
+
     if finiteMask.all():
-        return arr
+        return np.array(arr, dtype=np.float32, copy=True, order="C")
 
     if finiteMask.any():
         fillValue = float(np.nanmedian(arr[finiteMask]))
     else:
         fillValue = 0.0
 
-    return np.where(finiteMask, arr, fillValue).astype(np.float32, copy=False)
+    cleaned = np.where(finiteMask, arr, fillValue)
+    return np.array(cleaned, dtype=np.float32, copy=True, order="C")
 
 
 def _autoIsoLevel(volume: np.ndarray) -> float:
@@ -126,6 +129,8 @@ def buildVolumeSurfaceMesh(
     return {
         "kind": "surfaceMesh",
         "level": float(levelValue),
+        "rangeMin": float(np.nanmin(arr)),
+        "rangeMax": float(np.nanmax(arr)),
         "dims": [int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2])],
         "order": "zyx",
         "vertexCount": int(verticesXyz.shape[0]),
