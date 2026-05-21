@@ -629,13 +629,13 @@ class SettingsService:
             logger.exception("Error warming Manager()")
         logger.warning("registry count [after Manager()]: %s", self._registryCount())
 
-        try:
-            tempList = TemplateList()
-            tempList.addScipionTemplates(None)
-            tempList.addPluginTemplates(None)
-        except Exception:
-            logger.exception("Error warming TemplateList plugins")
-        logger.warning("registry count [after TemplateList warmup]: %s", self._registryCount())
+        # try:
+        #     tempList = TemplateList()
+        #     tempList.addScipionTemplates(None)
+        #     tempList.addPluginTemplates(None)
+        # except Exception:
+        #     logger.exception("Error warming TemplateList plugins")
+        # logger.warning("registry count [after TemplateList warmup]: %s", self._registryCount())
 
     def getEnvironmentVariables(self, currentUser: Any) -> list[dict[str, str]]:
         # getEnvironmentVariables

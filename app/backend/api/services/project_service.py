@@ -1641,7 +1641,7 @@ class ProjectService:
         tempList = TemplateList()
         tempId = None
         # Try to find all templates from the template folder and the plugins
-        tempList.addScipionTemplates(tempId)
+        # tempList.addScipionTemplates(tempId)
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
 
