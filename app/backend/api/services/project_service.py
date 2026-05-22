@@ -1835,6 +1835,7 @@ class ProjectService:
             return templates
 
         workflows: List[Dict[str, Any]] = []
+        pluginAvailabilityCache: Dict[str, bool] = {}
 
         for index, template in enumerate(templates or []):
             try:
@@ -1863,7 +1864,10 @@ class ProjectService:
                     except Exception:
                         requiredPluginNames = []
 
-                missingPluginNames = self._getMissingWorkflowPluginNames(requiredPluginNames)
+                missingPluginNames = self._getMissingWorkflowPluginNames(
+                    requiredPluginNames,
+                    availabilityCache=pluginAvailabilityCache,
+                )
 
                 workflowId = safeString(templateIdValue).strip()
                 if not workflowId:
@@ -4137,43 +4141,73 @@ class ProjectService:
 
         return {name for name in installedNames if name}
 
-    def _getMissingWorkflowPluginNames(self, requiredPluginNames: List[str]) -> List[str]:
-        # getMissingWorkflowPluginNames
-        if not requiredPluginNames:
-            return []
+    def _isWorkflowPluginAvailable(
+            self,
+            pluginName: str,
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> bool:
+        # isWorkflowPluginAvailable
+        name = str(pluginName or "").strip()
+        if not name:
+            return True
 
-        installedNames = self._getInstalledPluginNamesForWorkflowImport()
-        missing: List[str] = []
+        if availabilityCache is not None and name in availabilityCache:
+            return availabilityCache[name]
 
-        for pluginName in requiredPluginNames:
-            if pluginName in installedNames:
-                continue
+        available = False
 
+        try:
+            import importlib.util
+            available = importlib.util.find_spec(name) is not None
+        except Exception:
+            available = False
+
+        if not available:
             try:
-                __import__(pluginName)
-                continue
+                __import__(name)
+                available = True
             except Exception:
+                available = False
+
+        if availabilityCache is not None:
+            availabilityCache[name] = available
+
+        return available
+
+    def _getMissingWorkflowPluginNames(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> List[str]:
+        # getMissingWorkflowPluginNames
+        missing: List[str] = []
+        seen: Set[str] = set()
+
+        for rawPluginName in requiredPluginNames or []:
+            pluginName = str(rawPluginName or "").strip()
+            if not pluginName or pluginName in seen:
+                continue
+
+            seen.add(pluginName)
+
+            if not self._isWorkflowPluginAvailable(
+                    pluginName,
+                    availabilityCache=availabilityCache,
+            ):
                 missing.append(pluginName)
 
         return missing
 
-    def _validateWorkflowRequiredPlugins(self, requiredPluginNames: List[str]) -> None:
+    def _validateWorkflowRequiredPlugins(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> None:
         # validateWorkflowRequiredPlugins
-        if not requiredPluginNames:
-            return
-
-        installedNames = self._getInstalledPluginNamesForWorkflowImport()
-        missing: List[str] = []
-
-        for pluginName in requiredPluginNames:
-            if pluginName in installedNames:
-                continue
-
-            try:
-                __import__(pluginName)
-                continue
-            except Exception:
-                missing.append(pluginName)
+        missing = self._getMissingWorkflowPluginNames(
+            requiredPluginNames,
+            availabilityCache=availabilityCache,
+        )
 
         if missing:
             raise HTTPException(
