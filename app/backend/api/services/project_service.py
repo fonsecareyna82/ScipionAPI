@@ -1900,25 +1900,51 @@ class ProjectService:
                 detail="No workflows are currently available",
             )
 
-        workflowIdStr = str(workflowId)
+        # 3) Find the template by id or name
+        workflowIdStr = str(workflowId).strip()
         selectedTemplate: Any = None
 
-        # 3) Find the template by id or name
-        for t in templates:
-            templateId = getattr(t, "id", None)
-            templateName = getattr(t, "name", None)
+        def getTemplateValue(template: Any, key: str, default: Any = None) -> Any:
+            if isinstance(template, dict):
+                return template.get(key, default)
+            return getattr(template, key, default)
 
-            if (templateId is not None and str(templateId) == workflowIdStr) or (
-                    templateName and str(templateName) == workflowIdStr
-            ):
-                selectedTemplate = t
+        def toCleanString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> Set[str]:
+            templateId = toCleanString(getTemplateValue(template, "id"))
+            templateName = toCleanString(getTemplateValue(template, "name"))
+            templateSource = toCleanString(getTemplateValue(template, "source"))
+            templatePath = toCleanString(getTemplateValue(template, "templatePath"))
+
+            candidates: Set[str] = set()
+
+            if templateId:
+                candidates.add(templateId)
+
+            if templateName:
+                candidates.add(templateName)
+
+            if templateSource and templateName:
+                candidates.add("%s:%s" % (templateSource, templateName))
+
+            if templatePath:
+                candidates.add(templatePath)
+
+            candidates.add(str(fallbackIndex))
+
+            return candidates
+
+        # 3) Find the template by normalized id, source:name, name or path
+        for index, template in enumerate(templates):
+            candidateIds = buildTemplateCandidateIds(template, index)
+
+            if workflowIdStr in candidateIds:
+                selectedTemplate = template
                 break
-
-        if selectedTemplate is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Workflow '{workflowIdStr}' not found",
-            )
 
         # 4) Ensure params attribute exists and is an ordered mapping
         if not hasattr(selectedTemplate, "params") or selectedTemplate.params is None:
