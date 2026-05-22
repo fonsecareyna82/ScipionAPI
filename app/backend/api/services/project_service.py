@@ -1633,19 +1633,245 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
-    def listProjectWorkflows(self):
+    def listProjectWorkflows(self, raw: bool = False):
         """
-        Return a list of workflows (id, name, description, ...)
-        configured for the given project and visible to currentUser.
+        Return available workflow templates.
+
+        By default this method returns JSON-serializable workflow objects
+        with parsed content and a small preview graph for the frontend.
+
+        If raw=True, return the original Template objects. This is useful for
+        internal operations such as applyWorkflowToProject, where the selected
+        template object needs replaceEnvVariables() and createTemplateFile().
         """
+        def getValue(item: Any, key: str, default: Any = None) -> Any:
+            if isinstance(item, dict):
+                return item.get(key, default)
+            return getattr(item, key, default)
+
+        def safeString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        def makeWorkflowId(source: Any, name: Any, fallbackIndex: int) -> str:
+            sourceText = safeString(source).strip()
+            nameText = safeString(name).strip()
+
+            if sourceText and nameText:
+                return "%s:%s" % (sourceText, nameText)
+
+            if nameText:
+                return nameText
+
+            return str(fallbackIndex)
+
+        def parseWorkflowContent(rawContent: Any) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+            if rawContent is None:
+                return [], None
+
+            if isinstance(rawContent, list):
+                return [item for item in rawContent if isinstance(item, dict)], None
+
+            if isinstance(rawContent, str):
+                text = rawContent.strip()
+                if not text:
+                    return [], None
+
+                try:
+                    parsed = json.loads(text)
+                except Exception as e:
+                    return [], "Invalid workflow content JSON: %s" % e
+
+                if isinstance(parsed, list):
+                    return [item for item in parsed if isinstance(item, dict)], None
+
+                return [], "Workflow content JSON is not a list."
+
+            return [], "Unsupported workflow content format."
+
+        def normalizeParams(rawParams: Any) -> Any:
+            if rawParams is None:
+                return None
+
+            if isinstance(rawParams, collections.OrderedDict):
+                return dict(rawParams)
+
+            if isinstance(rawParams, dict):
+                return rawParams
+
+            try:
+                return dict(rawParams)
+            except Exception:
+                return rawParams
+
+        def iterReferenceValues(value: Any) -> List[Tuple[str, str]]:
+            refs: List[Tuple[str, str]] = []
+
+            if isinstance(value, str):
+                for match in re.finditer(r"\b(\d+)\.([A-Za-z_][A-Za-z0-9_\.]*)\b", value.strip()):
+                    refs.append((match.group(1), match.group(2)))
+                return refs
+
+            if isinstance(value, list):
+                for item in value:
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            if isinstance(value, dict):
+                for item in value.values():
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            return refs
+
+        def buildWorkflowPreviewGraph(protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
+            nodeIds: Set[str] = set()
+            nodes: List[Dict[str, Any]] = []
+            edges: List[Dict[str, Any]] = []
+
+            for index, protocol in enumerate(protocols):
+                protocolId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not protocolId:
+                    protocolId = str(index)
+
+                nodeIds.add(protocolId)
+
+                className = safeString(
+                    protocol.get("object.className")
+                    or protocol.get("className")
+                    or ""
+                ).strip()
+
+                label = safeString(
+                    protocol.get("object.label")
+                    or protocol.get("label")
+                    or protocol.get("runName")
+                    or className
+                    or protocolId
+                ).strip()
+
+                comment = safeString(
+                    protocol.get("object.comment")
+                    or protocol.get("comment")
+                    or ""
+                ).strip()
+
+                nodes.append(
+                    {
+                        "id": protocolId,
+                        "protocolId": protocolId,
+                        "className": className,
+                        "label": label,
+                        "comment": comment,
+                        "runName": protocol.get("runName"),
+                        "order": index,
+                    }
+                )
+
+            edgeSeen: Set[Tuple[str, str, str, str]] = set()
+
+            for index, protocol in enumerate(protocols):
+                targetId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not targetId:
+                    targetId = str(index)
+
+                for paramName, value in protocol.items():
+                    if str(paramName).startswith("object."):
+                        continue
+
+                    refs = iterReferenceValues(value)
+
+                    for sourceId, outputName in refs:
+                        if sourceId not in nodeIds:
+                            continue
+
+                        edgeKey = (sourceId, targetId, outputName, str(paramName))
+                        if edgeKey in edgeSeen:
+                            continue
+
+                        edgeSeen.add(edgeKey)
+
+                        edges.append(
+                            {
+                                "id": "%s:%s->%s:%s" % (sourceId, outputName, targetId, paramName),
+                                "source": sourceId,
+                                "target": targetId,
+                                "sourceOutput": outputName,
+                                "targetParam": str(paramName),
+                            }
+                        )
+
+            childIds = {edge["target"] for edge in edges}
+            rootIds = [node["id"] for node in nodes if node["id"] not in childIds]
+
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "rootIds": rootIds,
+            }
+
         tempList = TemplateList()
         tempId = None
-        # Try to find all templates from the template folder and the plugins
-        # tempList.addScipionTemplates(tempId)
+
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
 
-        return tempList.sortListByPluginName().templates
+        templates = tempList.sortListByPluginName().templates
+
+        if raw:
+            return templates
+
+        workflows: List[Dict[str, Any]] = []
+
+        for index, template in enumerate(templates or []):
+            try:
+                source = getValue(template, "source")
+                name = getValue(template, "name")
+                description = getValue(template, "description")
+                rawContent = getValue(template, "content")
+                params = normalizeParams(getValue(template, "params"))
+                projectName = getValue(template, "projectName")
+                templatePath = getValue(template, "templatePath")
+                templateIdValue = getValue(template, "id")
+
+                protocols, parseError = parseWorkflowContent(rawContent)
+                previewGraph = buildWorkflowPreviewGraph(protocols)
+
+                workflowId = safeString(templateIdValue).strip()
+                if not workflowId:
+                    workflowId = makeWorkflowId(source, name, index)
+
+                workflows.append(
+                    {
+                        "id": workflowId,
+                        "source": safeString(source),
+                        "name": safeString(name),
+                        "description": safeString(description),
+                        "params": params,
+                        "projectName": projectName,
+                        "templatePath": safeString(templatePath),
+                        "content": protocols,
+                        "parseError": parseError,
+                        "protocolsCount": len(protocols),
+                        "previewGraph": previewGraph,
+                    }
+                )
+            except Exception:
+                logger.exception("Failed to normalize workflow template")
+                continue
+
+        return workflows
 
     def applyWorkflowToProject(
             self,
@@ -1667,7 +1893,7 @@ class ProjectService:
             )
 
         # 2) Get available templates/workflows
-        templates = self.listProjectWorkflows() or []
+        templates = self.listProjectWorkflows(raw=True) or []
         if not templates:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
