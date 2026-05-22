@@ -1973,13 +1973,29 @@ class ProjectService:
             )
 
         # 6) Apply the workflow to the current project in Scipion
+        workflowImportInfo = self._prepareWorkflowFileForImport(workflowFile)
+        importWorkflowFile = workflowImportInfo.get("workflowFile") or workflowFile
+        cleanupFile = workflowImportInfo.get("cleanupFile")
+
         try:
-            loadResult = self.currentProject.loadProtocols(workflowFile)
+            loadResult = self.currentProject.loadProtocols(importWorkflowFile)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
             )
+        finally:
+            if cleanupFile:
+                try:
+                    os.remove(str(cleanupFile))
+                except Exception:
+                    logger.debug(
+                        "Could not remove temporary workflow import file: %s",
+                        cleanupFile,
+                        exc_info=True,
+                    )
 
         # 7) Sync protocols + dependencies to PostgreSQL
         try:
@@ -2010,6 +2026,8 @@ class ProjectService:
             "protocolsCount": syncInfo.get("protocols"),
             "dependenciesCount": syncInfo.get("dependencies"),
             "loadResult": str(loadResult) if loadResult is not None else None,
+            "scipionWebWrapped": bool(workflowImportInfo.get("wrapped")),
+            "requiredPluginNames": workflowImportInfo.get("requiredPluginNames") or [],
         }
 
     @staticmethod
@@ -3789,6 +3807,304 @@ class ProjectService:
         raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
         return Path(raw).expanduser().resolve()
 
+    def _decodeExportJsonPayload(self, rawExport: Any) -> Any:
+        if isinstance(rawExport, str):
+            text = rawExport.strip()
+            if not text:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Scipion export returned empty content",
+                )
+
+            try:
+                return json.loads(text)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scipion export returned invalid JSON text: {e}",
+                )
+
+        if isinstance(rawExport, (list, dict)):
+            return rawExport
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unsupported export payload returned by Scipion",
+        )
+
+    def _getProtocolPluginNameForExport(self, protocol: Any) -> str:
+        try:
+            plugin = protocol.getPlugin()
+        except Exception:
+            plugin = None
+
+        if plugin is not None:
+            try:
+                name = plugin.getName()
+                if name:
+                    return str(name).strip()
+            except Exception:
+                pass
+
+            try:
+                moduleName = getattr(plugin, "__name__", None)
+                if moduleName:
+                    return str(moduleName).strip()
+            except Exception:
+                pass
+
+        try:
+            moduleName = protocol.__class__.__module__
+            if moduleName:
+                return str(moduleName).split(".")[0].strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _getProtocolClassNameForExport(self, protocol: Any) -> str:
+        try:
+            className = protocol.getClassName()
+            if className:
+                return str(className).strip()
+        except Exception:
+            pass
+
+        try:
+            return protocol.__class__.__name__
+        except Exception:
+            return ""
+
+    def _getProtocolObjIdForExport(self, protocol: Any) -> str:
+        try:
+            objId = protocol.getObjId()
+            if objId is not None:
+                return str(objId).strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _buildWorkflowPluginMetadata(self, protocolList: List[Any]) -> Dict[str, Any]:
+        protocolPlugins: List[Dict[str, str]] = []
+        requiredPluginNames: List[str] = []
+        seenPluginNames: Set[str] = set()
+
+        for protocol in protocolList or []:
+            protocolId = self._getProtocolObjIdForExport(protocol)
+            className = self._getProtocolClassNameForExport(protocol)
+            pluginName = self._getProtocolPluginNameForExport(protocol)
+
+            if pluginName and pluginName not in seenPluginNames:
+                seenPluginNames.add(pluginName)
+                requiredPluginNames.append(pluginName)
+
+            protocolPlugins.append(
+                {
+                    "protocolId": protocolId,
+                    "className": className,
+                    "pluginName": pluginName,
+                }
+            )
+
+        requiredPluginNames.sort()
+
+        return {
+            "format": "scipionweb.workflow.export",
+            "version": 1,
+            "requiredPluginNames": requiredPluginNames,
+            "protocolPlugins": protocolPlugins,
+            "exportedAt": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def _buildWorkflowExportJsonContent(
+            self,
+            rawExport: Any,
+            protocolList: List[Any],
+    ) -> str:
+        exportPayload = self._decodeExportJsonPayload(rawExport)
+        pluginMetadata = self._buildWorkflowPluginMetadata(protocolList)
+
+        wrappedPayload = {
+            "scipionWeb": pluginMetadata,
+            "content": exportPayload,
+        }
+
+        try:
+            return json.dumps(wrappedPayload, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to serialize workflow export payload: {e}",
+            )
+
+
+
+    def _readWorkflowTemplateJsonPayload(self, workflowFile: Any) -> Optional[Any]:
+        # readWorkflowTemplateJsonPayload
+        try:
+            path = Path(str(workflowFile)).expanduser().resolve()
+        except Exception:
+            return None
+
+        if not path.exists() or not path.is_file():
+            return None
+
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+
+        if not text:
+            return None
+
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _isScipionWebWorkflowExportPayload(self, payload: Any) -> bool:
+        # isScipionWebWorkflowExportPayload
+        if not isinstance(payload, dict):
+            return False
+
+        metadata = payload.get("scipionWeb")
+        if not isinstance(metadata, dict):
+            return False
+
+        return metadata.get("format") == "scipionweb.workflow.export" and "content" in payload
+
+    def _getRequiredPluginNamesFromWorkflowPayload(self, payload: Dict[str, Any]) -> List[str]:
+        # getRequiredPluginNamesFromWorkflowPayload
+        metadata = payload.get("scipionWeb") or {}
+        rawNames = metadata.get("requiredPluginNames") or []
+
+        names: List[str] = []
+        seen: Set[str] = set()
+
+        for rawName in rawNames:
+            name = str(rawName or "").strip()
+            if not name or name in seen:
+                continue
+
+            seen.add(name)
+            names.append(name)
+
+        return names
+
+    def _getInstalledPluginNamesForWorkflowImport(self) -> Set[str]:
+        # getInstalledPluginNamesForWorkflowImport
+        installedNames: Set[str] = set()
+
+        try:
+            from app.backend.api.services.plugin_service import PluginService
+
+            plugins = PluginService().getPlugins(forceRefresh=False)
+            for plugin in plugins or []:
+                if not isinstance(plugin, dict):
+                    continue
+
+                if not plugin.get("installed"):
+                    continue
+
+                for key in ("name", "pipName", "pluginName", "moduleName", "packageName"):
+                    value = plugin.get(key)
+                    if value:
+                        installedNames.add(str(value).strip())
+        except Exception:
+            logger.debug("Could not load installed plugin names from PluginService", exc_info=True)
+
+        try:
+            domain = self.currentProject.getDomain()
+            rawPlugins = getattr(domain, "getPlugins", lambda: {})() or {}
+
+            if isinstance(rawPlugins, dict):
+                for key, plugin in rawPlugins.items():
+                    if key:
+                        installedNames.add(str(key).strip())
+
+                    try:
+                        pluginName = plugin.getName()
+                        if pluginName:
+                            installedNames.add(str(pluginName).strip())
+                    except Exception:
+                        pass
+        except Exception:
+            logger.debug("Could not load installed plugin names from Scipion domain", exc_info=True)
+
+        return {name for name in installedNames if name}
+
+    def _validateWorkflowRequiredPlugins(self, requiredPluginNames: List[str]) -> None:
+        # validateWorkflowRequiredPlugins
+        if not requiredPluginNames:
+            return
+
+        installedNames = self._getInstalledPluginNamesForWorkflowImport()
+        missing: List[str] = []
+
+        for pluginName in requiredPluginNames:
+            if pluginName in installedNames:
+                continue
+
+            try:
+                __import__(pluginName)
+                continue
+            except Exception:
+                missing.append(pluginName)
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing required plugins for workflow import: %s" % ", ".join(missing),
+            )
+
+    def _prepareWorkflowFileForImport(self, workflowFile: Any) -> Dict[str, Any]:
+        # prepareWorkflowFileForImport
+        payload = self._readWorkflowTemplateJsonPayload(workflowFile)
+
+        if not self._isScipionWebWorkflowExportPayload(payload):
+            return {
+                "workflowFile": workflowFile,
+                "cleanupFile": None,
+                "wrapped": False,
+                "requiredPluginNames": [],
+            }
+
+        assert isinstance(payload, dict)
+
+        requiredPluginNames = self._getRequiredPluginNamesFromWorkflowPayload(payload)
+        self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+        content = payload.get("content")
+        if not isinstance(content, (list, dict)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid ScipionWeb workflow export: content must be a JSON list or object.",
+            )
+
+        sourcePath = Path(str(workflowFile)).expanduser().resolve()
+        tempPath = sourcePath.parent / (
+            ".scipionweb-import-%s.json" % uuid4().hex
+        )
+
+        try:
+            tempPath.write_text(
+                json.dumps(content, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to prepare workflow import file: %s" % e,
+            )
+
+        return {
+            "workflowFile": str(tempPath),
+            "cleanupFile": str(tempPath),
+            "wrapped": True,
+            "requiredPluginNames": requiredPluginNames,
+        }
+
     def _normalizeExportJsonContent(self, rawExport: Any) -> str:
         if isinstance(rawExport, str):
             text = rawExport.strip()
@@ -4146,7 +4462,7 @@ class ProjectService:
                 )
 
             rawExport = self.currentProject.getProtocolsJson(protocolList)
-            content = self._normalizeExportJsonContent(rawExport)
+            content = self._buildWorkflowExportJsonContent(rawExport, protocolList)
 
             rootPath = self._resolveFsRootForWrite("-1")
             targetDir = self._guardFsPathWithinRootForWrite(rootPath, directoryPath)
