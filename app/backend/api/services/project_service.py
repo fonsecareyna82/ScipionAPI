@@ -1850,6 +1850,21 @@ class ProjectService:
                 protocols, parseError = parseWorkflowContent(rawContent)
                 previewGraph = buildWorkflowPreviewGraph(protocols)
 
+                requiredPluginNames = []
+                missingPluginNames = []
+
+                if isinstance(rawContent, str):
+                    requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
+
+                if not requiredPluginNames and templatePath:
+                    try:
+                        templateText = Path(str(templatePath)).expanduser().read_text(encoding="utf-8")
+                        requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
+                    except Exception:
+                        requiredPluginNames = []
+
+                missingPluginNames = self._getMissingWorkflowPluginNames(requiredPluginNames)
+
                 workflowId = safeString(templateIdValue).strip()
                 if not workflowId:
                     workflowId = makeWorkflowId(source, name, index)
@@ -1867,6 +1882,14 @@ class ProjectService:
                         "parseError": parseError,
                         "protocolsCount": len(protocols),
                         "previewGraph": previewGraph,
+                        "requiredPluginNames": requiredPluginNames,
+                        "missingPluginNames": missingPluginNames,
+                        "canLoad": len(missingPluginNames) == 0,
+                        "disabledReason": (
+                            "Missing required plugins: %s" % ", ".join(missingPluginNames)
+                            if missingPluginNames
+                            else ""
+                        ),
                     }
                 )
             except Exception:
@@ -4113,6 +4136,26 @@ class ProjectService:
             logger.debug("Could not load installed plugin names from Scipion domain", exc_info=True)
 
         return {name for name in installedNames if name}
+
+    def _getMissingWorkflowPluginNames(self, requiredPluginNames: List[str]) -> List[str]:
+        # getMissingWorkflowPluginNames
+        if not requiredPluginNames:
+            return []
+
+        installedNames = self._getInstalledPluginNamesForWorkflowImport()
+        missing: List[str] = []
+
+        for pluginName in requiredPluginNames:
+            if pluginName in installedNames:
+                continue
+
+            try:
+                __import__(pluginName)
+                continue
+            except Exception:
+                missing.append(pluginName)
+
+        return missing
 
     def _validateWorkflowRequiredPlugins(self, requiredPluginNames: List[str]) -> None:
         # validateWorkflowRequiredPlugins
