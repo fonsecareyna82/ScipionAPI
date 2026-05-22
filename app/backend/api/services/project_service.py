@@ -1946,6 +1946,12 @@ class ProjectService:
                 selectedTemplate = template
                 break
 
+        if selectedTemplate is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow '{workflowIdStr}' not found",
+            )
+
         # 4) Ensure params attribute exists and is an ordered mapping
         if not hasattr(selectedTemplate, "params") or selectedTemplate.params is None:
             selectedTemplate.params = collections.OrderedDict()
