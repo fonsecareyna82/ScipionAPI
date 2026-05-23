@@ -109,6 +109,10 @@ _lastNewProtocolRevision = -1
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
 
+# Global lock for Scipion project thumbnail operations.
+# Loading several Scipion projects concurrently can mix project state in Pyworkflow internals.
+_thumbnailProjectLock = threading.Lock()
+
 
 def _invalidateProtocolsTreeCacheIfNeeded() -> int:
     # invalidateProtocolsTreeCacheIfNeeded

@@ -25,7 +25,7 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
                                                     ProtocolWizardExecuteRequest)
-from app.backend.api.services.project_service import ProjectService
+from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -3058,7 +3058,7 @@ def getProjectThumbnail(
             filePath=thumbPath,
             filename="project_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3160,7 +3160,7 @@ def getProtocolThumbnail(
             filePath=thumbPath,
             filename=f"protocol_{protocolId}_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3241,19 +3241,71 @@ def listProjectThumbnailItems(
         service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+            if not dbProj:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(dbProj)
 
-        items = service.listProjectThumbnailItems(
-            projectId=projectId,
-            force=False,
-            size=size,
-            maxProtocols=maxProtocols,
-            maxOutputsPerProtocol=maxOutputsPerProtocol,
-        )
+            items = service.listProjectThumbnailItems(
+                projectId=projectId,
+                force=False,
+                size=size,
+                maxProtocols=maxProtocols,
+                maxOutputsPerProtocol=maxOutputsPerProtocol,
+            )
+
+            validItems = []
+
+            for group in items or []:
+                if not isinstance(group, dict):
+                    continue
+
+                protocolIdValue = group.get("protocolId")
+
+                try:
+                    protocol = service.currentProject.getProtocol(int(protocolIdValue))
+                except Exception:
+                    logger.warning(
+                        "Skipping thumbnail group because protocol was not found. "
+                        "projectId=%s protocolId=%s group=%s",
+                        projectId,
+                        protocolIdValue,
+                        group,
+                    )
+                    continue
+
+                validOutputs = []
+
+                for output in group.get("outputs") or []:
+                    if not isinstance(output, dict):
+                        continue
+
+                    outputNameValue = output.get("outputName")
+                    if not outputNameValue:
+                        continue
+
+                    if not hasattr(protocol, str(outputNameValue)):
+                        logger.warning(
+                            "Skipping thumbnail output because it does not belong to protocol. "
+                            "projectId=%s protocolId=%s outputName=%s",
+                            projectId,
+                            protocolIdValue,
+                            outputNameValue,
+                        )
+                        continue
+
+                    validOutputs.append(output)
+
+                if not validOutputs:
+                    continue
+
+                nextGroup = dict(group)
+                nextGroup["outputs"] = validOutputs
+                validItems.append(nextGroup)
+
+            items = validItems
 
         response = JSONResponse(items)
         response.headers["Cache-Control"] = "private, no-store"
@@ -3286,29 +3338,46 @@ def getProtocolOutputThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+            if not dbProj:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolOutputThumbnail(
-            protocolId=protocolId,
-            outputName=outputName,
-            force=False,
-            size=size,
-        )
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=False,
+                size=size,
+            )
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
-            raise HTTPException(status_code=404, detail="Protocol output thumbnail not found")
+            logger.warning(
+                "Protocol output thumbnail not found. projectId=%s protocolId=%s outputName=%s result=%s",
+                projectId,
+                protocolId,
+                outputName,
+                result,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "Protocol output thumbnail not found",
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "result": result,
+                },
+            )
 
         return _buildCachedThumbnailResponse(
             request=request,
             filePath=thumbPath,
             filename=f"protocol_{protocolId}_{outputName}_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3319,8 +3388,6 @@ def getProtocolOutputThumbnail(
             status_code=500,
             detail=f"Failed to load protocol output thumbnail: {e}",
         )
-
-
 
 # *****************************************
 # Wizards routers
