@@ -25,7 +25,6 @@
 # ******************************************************************************
 import os
 import socket
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -176,6 +175,7 @@ def _checkPythonVersion() -> StatusRow:
 
     return _fail("Python", f"Python {versionText}; Python 3.8 is required")
 
+
 def _resolveCondaExe(env: Dict[str, str]) -> str:
     # Resolve conda executable from env or PATH.
     candidates = [
@@ -248,6 +248,7 @@ def _checkConda(env: Dict[str, str]) -> List[StatusRow]:
         rows.append(_warn("Active conda env", "CONDA_DEFAULT_ENV is not set"))
 
     return rows
+
 
 def _checkImport(moduleName: str, label: Optional[str] = None, required: bool = True) -> StatusRow:
     # Check whether a Python module can be imported.
