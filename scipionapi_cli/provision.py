@@ -145,7 +145,9 @@ def _safeExtractZip(zipPath: Path, destDir: Path) -> None:
     with zipfile.ZipFile(zipPath, "r") as zf:
         for member in zf.infolist():
             memberPath = (destDir / member.filename).resolve()
-            if not str(memberPath).startswith(str(destRoot)):
+            try:
+                memberPath.relative_to(destRoot)
+            except ValueError:
                 raise RuntimeError(f"Unsafe zip content detected: {member.filename}")
         zf.extractall(destDir)
 
@@ -321,6 +323,11 @@ def provisionCommand(
     else:
         _printWarning("Skipping bootstrap phase")
 
+    if webDist:
+        webDistPath = Path(webDist).expanduser()
+        if not webDistPath.exists():
+            raise RuntimeError(f"webDist does not exist: {webDistPath}")
+
     repoRoot = resolveRepoRoot()
     _printStep("Resolving repository root", str(repoRoot))
 
@@ -424,11 +431,6 @@ def provisionCommand(
         ("API docs", f"http://{displayHost}:{apiPort}{mountPath}/docs" if serveWeb else f"http://{displayHost}:{apiPort}/docs"),
         ("Serve web", "yes" if serveWeb else "no"),
     ]
-
-    if webDist:
-        webDistPath = Path(webDist).expanduser()
-        if not webDistPath.exists():
-            raise RuntimeError(f"webDist does not exist: {webDistPath}")
 
     if serveWeb:
         summaryRows.append(("Web URL", f"http://{displayHost}:{apiPort}/"))
