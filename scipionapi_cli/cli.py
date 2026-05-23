@@ -9,6 +9,7 @@ from importlib import metadata as importlibMetadata
 from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
+from scipionapi_cli.doctor import doctorCommand
 from scipionapi_cli.runtime import (
     logsCommand,
     restartCommand,
@@ -90,9 +91,11 @@ app = typer.Typer(
         "  scipionapi status\n"
         "  scipionapi logs\n"
         "  scipionapi version\n\n"
+        "  scipionapi doctor\n"
         "[bold]Command groups[/bold]\n"
         "  [cyan]Setup[/cyan]: bootstrap, install, provision\n"
         "  [cyan]Runtime[/cyan]: start, stop, restart, status, logs\n"
+        "  [cyan]Diagnostics[/cyan]: doctor\n"
         "  [cyan]Info[/cyan]: version\n"
     ),
 )
@@ -325,6 +328,28 @@ def status() -> None:
 def logs() -> None:
     # followRuntimeLogs
     logsCommand()
+
+
+@app.command(
+    "doctor",
+    help="Run read-only diagnostics for the repository, environment, database, broker, imports, and runtime services.",
+)
+def doctor(
+    strict: bool = typer.Option(
+        False,
+        "--strict/--no-strict",
+        help="Exit with code 1 when failures are detected.",
+        show_default=True,
+    ),
+    full: bool = typer.Option(
+        True,
+        "--full/--quick",
+        help="Run heavier checks such as importing the FastAPI app and checking Alembic.",
+        show_default=True,
+    ),
+) -> None:
+    # runDoctorDiagnostics
+    doctorCommand(strict=strict, full=full)
 
 
 @app.command(
