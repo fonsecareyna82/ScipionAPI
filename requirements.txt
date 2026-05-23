@@ -1,6 +1,6 @@
-scipion-pyworkflow
-scipion-em
-scipion-app
+scipion-pyworkflow @ git+https://github.com/scipion-em/scipion-pyworkflow.git@scipionWeb
+scipion-em @ git+https://github.com/scipion-em/scipion-em.git@scipionWeb
+scipion-app @ git+https://github.com/scipion-em/scipion-app.git@scipionWeb
 scipion-em-tomo
 pyxmipp3
 
@@ -26,6 +26,7 @@ fastapi-mail==0.3.4.0
 pillow==10.1.0
 numpy~=1.24.4
 matplotlib~=3.7.3
+scikit-image===0.19.3
 
 typer==0.20.0
 pytest==8.3.5

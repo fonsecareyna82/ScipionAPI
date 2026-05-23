@@ -33,6 +33,7 @@ import logging
 import os
 import tempfile
 import threading
+import re
 
 from collections import OrderedDict
 from configparser import RawConfigParser
@@ -61,6 +62,73 @@ logger = logging.getLogger(__name__)
 
 _envLock = threading.Lock()
 _hostLock = threading.Lock()
+
+_envNamePattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_customEnvironmentFileName = "scipionweb_environment.json"
+
+
+def _isValidEnvironmentName(name: str) -> bool:
+    return bool(_envNamePattern.match(name))
+
+
+def _getCustomEnvironmentPath() -> str:
+    return os.path.join(_getScipionHome(), "config", _customEnvironmentFileName)
+
+
+def _readCustomEnvironmentVariables() -> dict[str, str]:
+    path = _getCustomEnvironmentPath()
+
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except Exception:
+        logger.exception("Failed to read custom environment variables from %s", path)
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    result: dict[str, str] = {}
+
+    for rawName, rawValue in raw.items():
+        name = _toStr(rawName).strip()
+        if not name or not _isValidEnvironmentName(name):
+            continue
+
+        result[name] = "" if rawValue is None else str(rawValue)
+
+    return result
+
+
+def _writeCustomEnvironmentVariablesAtomic(values: dict[str, str]) -> None:
+    path = _getCustomEnvironmentPath()
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+
+    fd, tempPath = tempfile.mkstemp(
+        prefix=".scipionweb_environment.",
+        suffix=".tmp",
+        dir=directory,
+        text=True,
+    )
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(values, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        os.replace(tempPath, path)
+    finally:
+        if os.path.exists(tempPath):
+            try:
+                os.remove(tempPath)
+            except Exception:
+                pass
 
 
 def _toStr(value: Any) -> str:
@@ -561,13 +629,13 @@ class SettingsService:
             logger.exception("Error warming Manager()")
         logger.warning("registry count [after Manager()]: %s", self._registryCount())
 
-        try:
-            tempList = TemplateList()
-            tempList.addScipionTemplates(None)
-            tempList.addPluginTemplates(None)
-        except Exception:
-            logger.exception("Error warming TemplateList plugins")
-        logger.warning("registry count [after TemplateList warmup]: %s", self._registryCount())
+        # try:
+        #     tempList = TemplateList()
+        #     tempList.addScipionTemplates(None)
+        #     tempList.addPluginTemplates(None)
+        # except Exception:
+        #     logger.exception("Error warming TemplateList plugins")
+        # logger.warning("registry count [after TemplateList warmup]: %s", self._registryCount())
 
     def getEnvironmentVariables(self, currentUser: Any) -> list[dict[str, str]]:
         # getEnvironmentVariables
@@ -577,10 +645,12 @@ class SettingsService:
             self._warmupEnvironmentRegistry()
 
             rows = []
+            seenNames: set[str] = set()
 
             for variable in VariablesRegistry.__iter__():
                 try:
                     variableName = _toStr(getattr(variable, "name", "")).strip()
+                    seenNames.add(variableName)
                     if not variableName:
                         continue
 
@@ -611,6 +681,27 @@ class SettingsService:
                 except Exception:
                     continue
 
+            customVars = _readCustomEnvironmentVariables()
+
+            for variableName, storedValue in customVars.items():
+                if variableName in seenNames:
+                    continue
+
+                currentValue = os.environ.get(variableName, storedValue)
+                os.environ[variableName] = currentValue
+
+                rows.append(
+                    {
+                        "name": variableName,
+                        "value": currentValue,
+                        "default": "",
+                        "description": "User-defined environment variable from Scipion Web.",
+                        "source": "ScipionWeb",
+                        "isDefault": False,
+                        "type": "STRING",
+                    }
+                )
+
             rows.sort(key=lambda item: (item.get("name") or "").upper())
             return rows
 
@@ -627,18 +718,37 @@ class SettingsService:
         changed = False
 
         with _envLock:
+            self._warmupEnvironmentRegistry()
+
             patchItems: dict[str, str] = {}
+
             for rawName, rawValue in patch.items():
                 name = _toStr(rawName).strip()
+
                 if not name:
                     continue
+
+                if not _isValidEnvironmentName(name):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid environment variable name: {name}",
+                    )
+
                 patchItems[name] = "" if rawValue is None else str(rawValue)
 
             if patchItems:
+                registryNames: set[str] = set()
+                registryChanged = False
+
                 for variable in VariablesRegistry.__iter__():
                     try:
                         variableName = _toStr(getattr(variable, "name", "")).strip()
-                        if not variableName or variableName not in patchItems:
+                        if not variableName:
+                            continue
+
+                        registryNames.add(variableName)
+
+                        if variableName not in patchItems:
                             continue
 
                         nextValue = patchItems[variableName]
@@ -656,11 +766,37 @@ class SettingsService:
                         else:
                             variable.isDefault = False
 
+                        registryChanged = True
                         changed = True
                     except Exception:
                         continue
 
-                if changed:
+                customPatch = {
+                    name: value
+                    for name, value in patchItems.items()
+                    if name not in registryNames
+                }
+
+                if customPatch:
+                    customVars = _readCustomEnvironmentVariables()
+                    customChanged = False
+
+                    for variableName, nextValue in customPatch.items():
+                        currentStoredValue = customVars.get(variableName)
+                        currentEnvValue = os.environ.get(variableName)
+
+                        if currentStoredValue == nextValue and currentEnvValue == nextValue:
+                            continue
+
+                        os.environ[variableName] = nextValue
+                        customVars[variableName] = nextValue
+                        customChanged = True
+                        changed = True
+
+                    if customChanged:
+                        _writeCustomEnvironmentVariablesAtomic(customVars)
+
+                if registryChanged:
                     VariablesRegistry.save(pyworkflow.Config.SCIPION_CONFIG)
 
         if changed:
