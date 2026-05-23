@@ -410,27 +410,36 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_pathExists(repoRoot / "alembic.ini", "Repository alembic.ini", required=True))
     rows.append(_pathExists(repoRoot / "app", "Repository app package", required=True))
     rows.append(_checkPythonVersion())
-    rows.append(_pathExists(envPath, ".env file", required=True))
+    envExists = envPath.exists()
+    rows.append(_pathExists(envPath, ".env file", required=False))
 
     rows.extend(_checkFilesystem(env, scipionHome))
     rows.extend(_checkScipionConfig(scipionHome))
 
-    rows.extend(
-        _checkRequiredEnv(
-            env,
-            [
-                "SCIPION_HOME",
-                "DATABASE_URL",
-                "DATABASE_NAME",
-                "DATABASE_USER",
-                "DATABASE_PASS",
-                "SECRET_KEY",
-                "BROKER_URL",
-                "API_HOST",
-                "API_PORT",
-            ],
+    if envExists:
+        rows.extend(
+            _checkRequiredEnv(
+                env,
+                [
+                    "SCIPION_HOME",
+                    "DATABASE_URL",
+                    "DATABASE_NAME",
+                    "DATABASE_USER",
+                    "DATABASE_PASS",
+                    "SECRET_KEY",
+                    "BROKER_URL",
+                    "API_HOST",
+                    "API_PORT",
+                ],
+            )
         )
-    )
+    else:
+        rows.append(
+            _warn(
+                "Environment configuration",
+                "Install has not been run yet. Run `scipionapi install` or `scipionapi provision`.",
+            )
+        )
 
     rows.extend(
         _checkOptionalEnv(
@@ -458,8 +467,12 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_checkImport("psycopg2", "Import psycopg2", required=True))
     rows.append(_checkImport("pyworkflow", "Import pyworkflow", required=False))
 
-    rows.append(_checkPostgres(env))
-    rows.append(_checkRedis(env))
+    if envExists:
+        rows.append(_checkPostgres(env))
+        rows.append(_checkRedis(env))
+    else:
+        rows.append(_warn("PostgreSQL", "Skipped because .env file is missing"))
+        rows.append(_warn("Redis", "Skipped because .env file is missing"))
 
     apiHost = env.get("API_HOST") or "0.0.0.0"
     apiPort = env.get("API_PORT") or "8080"
@@ -469,7 +482,10 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
     rows.append(_checkPidFile(runDir / "worker.pid", "Worker PID"))
 
-    rows.append(_checkWebDist(env))
+    if envExists:
+        rows.append(_checkWebDist(env))
+    else:
+        rows.append(_warn("Web dist", "Skipped because .env file is missing"))
 
     if full:
         rows.append(_checkImport("app.backend.main", "Import app.backend.main", required=True))
