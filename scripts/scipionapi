@@ -128,7 +128,7 @@ ensureScipionCoreInstalled() {
     return 0
   fi
 
-  if "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 then
+  if "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
     return 0
   fi
 
