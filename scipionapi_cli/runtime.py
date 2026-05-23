@@ -237,6 +237,51 @@ def _httpCheck(url: str, timeoutSec: float = 2.0) -> Tuple[bool, str]:
         return False, str(e)
 
 
+def _envFloat(env: Dict[str, str], key: str, default: float) -> float:
+    # readFloatEnv
+    try:
+        return float(env.get(key, default))
+    except Exception:
+        return default
+
+
+def _envInt(env: Dict[str, str], key: str, default: int) -> int:
+    # readIntEnv
+    try:
+        return int(env.get(key, default))
+    except Exception:
+        return default
+
+
+def _waitForTcp(host: str, port: str, timeoutSec: float, intervalSec: float = 0.5) -> bool:
+    # waitForTcpEndpoint
+    deadline = time.time() + max(0.1, timeoutSec)
+
+    while time.time() < deadline:
+        if _tcpReachable(host, port, timeoutSec=1.0):
+            return True
+        time.sleep(max(0.1, intervalSec))
+
+    return False
+
+
+def _waitForHttp(url: str, timeoutSec: float, intervalSec: float = 0.5) -> Tuple[bool, str]:
+    # waitForHttpEndpoint
+    deadline = time.time() + max(0.1, timeoutSec)
+    lastDetail = "not checked"
+
+    while time.time() < deadline:
+        ok, detail = _httpCheck(url, timeoutSec=2.0)
+        lastDetail = detail
+
+        if ok:
+            return True, detail
+
+        time.sleep(max(0.1, intervalSec))
+
+    return False, lastDetail
+
+
 def _getProcessElapsedTime(pid: int) -> Optional[str]:
     # getProcessElapsedTime
     try:
@@ -404,6 +449,11 @@ def startCommand() -> None:
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
+    celeryConcurrency = (env.get("CELERY_CONCURRENCY") or "").strip()
+    celeryQueue = (env.get("CELERY_QUEUE") or env.get("CELERY_QUEUES") or "").strip()
+
+    apiStartupTimeout = _envFloat(env, "API_STARTUP_TIMEOUT", 20.0)
+    workerStartupWait = _envFloat(env, "WORKER_STARTUP_WAIT", 2.0)
 
     _printPanel("Starting Scipion API services")
     _printKeyValueTable(
@@ -449,9 +499,14 @@ def startCommand() -> None:
         _writePid(apiPidPath, apiPid)
         _printSuccess(f"API started (pid={apiPid})")
 
-    apiTcpOk = _tcpReachable(apiHost, apiPort)
     docsUrl = _docsUrl(env)
-    docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
+
+    if apiPidPath.exists():
+        apiTcpOk = _waitForTcp(apiHost, apiPort, timeoutSec=apiStartupTimeout)
+        docsHttpOk, docsHttpDetail = _waitForHttp(docsUrl, timeoutSec=apiStartupTimeout)
+    else:
+        apiTcpOk = False
+        docsHttpOk, docsHttpDetail = False, "API PID file not found"
 
     _printServiceStatusTable(
         "API checks",
@@ -473,6 +528,8 @@ def startCommand() -> None:
             ("PID", workerPid if workerPid is not None else "-"),
             ("Celery app", celeryApp),
             ("Log level", celeryLogLevel),
+            ("Concurrency", celeryConcurrency or "default"),
+            ("Queue", celeryQueue or "default"),
             ("PID file", workerPidPath),
             ("Log file", workerLogPath),
         ],
@@ -484,12 +541,29 @@ def startCommand() -> None:
         workerEnv["PYTHONPATH"] = str(repoRoot)
         workerEnv["PYTHONUNBUFFERED"] = "1"
 
+        workerCommand = [
+            sys.executable,
+            "-m",
+            "celery",
+            "-A",
+            celeryApp,
+            "worker",
+            "--loglevel",
+            celeryLogLevel,
+        ]
+
+        if celeryConcurrency:
+            workerCommand.extend(["--concurrency", celeryConcurrency])
+
+        if celeryQueue:
+            workerCommand.extend(["-Q", celeryQueue])
+
         workerPid = _startDetachedProcess(
-            [sys.executable, "-m", "celery", "-A", celeryApp, "worker", "--loglevel", celeryLogLevel],
+            workerCommand,
             cwd=repoRoot,
             env=workerEnv,
             logPath=workerLogPath,
-            sanityWaitSec=1.0,
+            sanityWaitSec=workerStartupWait,
         )
         _writePid(workerPidPath, workerPid)
         _printSuccess(f"Worker started (pid={workerPid})")
@@ -583,6 +657,8 @@ def statusCommand() -> None:
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
+    celeryConcurrency = (env.get("CELERY_CONCURRENCY") or "").strip()
+    celeryQueue = (env.get("CELERY_QUEUE") or env.get("CELERY_QUEUES") or "").strip()
 
     docsUrl = _docsUrl(env)
     webUrl = _webUrl(env)
@@ -632,6 +708,8 @@ def statusCommand() -> None:
             ("Uptime", workerUptime or "-"),
             ("Celery app", celeryApp),
             ("Log level", celeryLogLevel),
+            ("Concurrency", celeryConcurrency or "default"),
+            ("Queue", celeryQueue or "default"),
             ("PID file", workerPidPath),
             ("Log file", celeryLogPath),
         ],
