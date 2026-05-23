@@ -309,6 +309,11 @@ def provisionCommand(
         ],
     )
 
+    if webDist:
+        webDistPath = Path(webDist).expanduser()
+        if not webDistPath.exists():
+            raise RuntimeError(f"webDist does not exist: {webDistPath}")
+
     if runBootstrap:
         _printStep("Running bootstrap phase")
         from scipionapi_cli.bootstrap import bootstrapCommand
@@ -322,11 +327,6 @@ def provisionCommand(
         _printSuccess("Bootstrap phase completed")
     else:
         _printWarning("Skipping bootstrap phase")
-
-    if webDist:
-        webDistPath = Path(webDist).expanduser()
-        if not webDistPath.exists():
-            raise RuntimeError(f"webDist does not exist: {webDistPath}")
 
     repoRoot = resolveRepoRoot()
     _printStep("Resolving repository root", str(repoRoot))
