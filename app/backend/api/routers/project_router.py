@@ -25,7 +25,7 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
                                                     ProtocolWizardExecuteRequest)
-from app.backend.api.services.project_service import ProjectService
+from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -34,6 +34,7 @@ from app.backend.models.protocol_model import (
     DeletePayload,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -1097,6 +1098,7 @@ def pollProtocolLogs(
 def _isGlobalFsBrowserMode(projectId: int, protocolId: Union[int, str]) -> bool:
     return str(projectId).strip() == "-1" and str(protocolId).strip() == "-1"
 
+
 def _ensureProjectForFsRequest(
     projectId: int,
     protocolId: Union[int, str],
@@ -1540,6 +1542,50 @@ def getVolumeData3d(
         maxDim=maxDim,
         method=method,
     )
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/surface",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+    summary="Get a real marching-cubes surface mesh for a volume",
+)
+def getVolumeSurfaceMesh(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    volumeId: Union[int, str],
+    level: Optional[float] = Query(None, description="Absolute iso level. If omitted, an automatic level is used."),
+    maxDim: int = Query(192, ge=32, le=512, alias="maxDim"),
+    method: Literal["binning", "stride", "linear", "fourier", "none"] = Query("stride"),
+    maxTriangles: int = Query(350000, ge=1000, le=1500000, alias="maxTriangles"),
+    currentUser: Dict[str, Any] = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+
+        return service.getVolumeSurfaceMesh(protocolId=protocolId,
+                                            outputName=outputName,
+                                            volumeId=volumeId,
+                                            level=level,
+                                            maxDim=maxDim,
+                                            method=method,
+                                            maxTriangles=maxTriangles,
+                                            currentUser=currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to generate volume surface mesh")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate volume surface mesh: {exc}",
+        )
+
 # ==============================================================================
 #        ANALYZE RESULTS: TILT SERIES (SetOfTiltSeries)
 # ==============================================================================
@@ -3012,7 +3058,7 @@ def getProjectThumbnail(
             filePath=thumbPath,
             filename="project_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3114,7 +3160,7 @@ def getProtocolThumbnail(
             filePath=thumbPath,
             filename=f"protocol_{protocolId}_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3195,19 +3241,71 @@ def listProjectThumbnailItems(
         service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+            if not dbProj:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(dbProj)
 
-        items = service.listProjectThumbnailItems(
-            projectId=projectId,
-            force=False,
-            size=size,
-            maxProtocols=maxProtocols,
-            maxOutputsPerProtocol=maxOutputsPerProtocol,
-        )
+            items = service.listProjectThumbnailItems(
+                projectId=projectId,
+                force=False,
+                size=size,
+                maxProtocols=maxProtocols,
+                maxOutputsPerProtocol=maxOutputsPerProtocol,
+            )
+
+            validItems = []
+
+            for group in items or []:
+                if not isinstance(group, dict):
+                    continue
+
+                protocolIdValue = group.get("protocolId")
+
+                try:
+                    protocol = service.currentProject.getProtocol(int(protocolIdValue))
+                except Exception:
+                    logger.warning(
+                        "Skipping thumbnail group because protocol was not found. "
+                        "projectId=%s protocolId=%s group=%s",
+                        projectId,
+                        protocolIdValue,
+                        group,
+                    )
+                    continue
+
+                validOutputs = []
+
+                for output in group.get("outputs") or []:
+                    if not isinstance(output, dict):
+                        continue
+
+                    outputNameValue = output.get("outputName")
+                    if not outputNameValue:
+                        continue
+
+                    if not hasattr(protocol, str(outputNameValue)):
+                        logger.warning(
+                            "Skipping thumbnail output because it does not belong to protocol. "
+                            "projectId=%s protocolId=%s outputName=%s",
+                            projectId,
+                            protocolIdValue,
+                            outputNameValue,
+                        )
+                        continue
+
+                    validOutputs.append(output)
+
+                if not validOutputs:
+                    continue
+
+                nextGroup = dict(group)
+                nextGroup["outputs"] = validOutputs
+                validItems.append(nextGroup)
+
+            items = validItems
 
         response = JSONResponse(items)
         response.headers["Cache-Control"] = "private, no-store"
@@ -3240,29 +3338,46 @@ def getProtocolOutputThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+            if not dbProj:
+                raise HTTPException(status_code=404, detail="Project not found")
 
-        service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(dbProj)
 
-        result = service.buildProtocolOutputThumbnail(
-            protocolId=protocolId,
-            outputName=outputName,
-            force=False,
-            size=size,
-        )
+            result = service.buildProtocolOutputThumbnail(
+                protocolId=protocolId,
+                outputName=outputName,
+                force=False,
+                size=size,
+            )
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
-            raise HTTPException(status_code=404, detail="Protocol output thumbnail not found")
+            logger.warning(
+                "Protocol output thumbnail not found. projectId=%s protocolId=%s outputName=%s result=%s",
+                projectId,
+                protocolId,
+                outputName,
+                result,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "Protocol output thumbnail not found",
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "result": result,
+                },
+            )
 
         return _buildCachedThumbnailResponse(
             request=request,
             filePath=thumbPath,
             filename=f"protocol_{protocolId}_{outputName}_thumbnail.png",
             currentUser=currentUser,
-            maxAge=120,
+            maxAge=900,
         )
 
     except HTTPException:
@@ -3273,8 +3388,6 @@ def getProtocolOutputThumbnail(
             status_code=500,
             detail=f"Failed to load protocol output thumbnail: {e}",
         )
-
-
 
 # *****************************************
 # Wizards routers

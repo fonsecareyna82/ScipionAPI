@@ -41,11 +41,13 @@ import numpy as np
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
+from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
@@ -106,6 +108,10 @@ _lastNewProtocolRevision = -1
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
+
+# Global lock for Scipion project thumbnail operations.
+# Loading several Scipion projects concurrently can mix project state in Pyworkflow internals.
+_thumbnailProjectLock = threading.Lock()
 
 
 def _invalidateProtocolsTreeCacheIfNeeded() -> int:
@@ -1631,19 +1637,274 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
-    def listProjectWorkflows(self):
+    def listProjectWorkflows(self, raw: bool = False):
         """
-        Return a list of workflows (id, name, description, ...)
-        configured for the given project and visible to currentUser.
+        Return available workflow templates.
+
+        By default this method returns JSON-serializable workflow objects
+        with parsed content and a small preview graph for the frontend.
+
+        If raw=True, return the original Template objects. This is useful for
+        internal operations such as applyWorkflowToProject, where the selected
+        template object needs replaceEnvVariables() and createTemplateFile().
         """
+        def getValue(item: Any, key: str, default: Any = None) -> Any:
+            if isinstance(item, dict):
+                return item.get(key, default)
+            return getattr(item, key, default)
+
+        def safeString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        def makeWorkflowId(source: Any, name: Any, fallbackIndex: int) -> str:
+            sourceText = safeString(source).strip()
+            nameText = safeString(name).strip()
+
+            if sourceText and nameText:
+                return "%s:%s" % (sourceText, nameText)
+
+            if nameText:
+                return nameText
+
+            return str(fallbackIndex)
+
+        def parseWorkflowContent(rawContent: Any) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+            if rawContent is None:
+                return [], None
+
+            if isinstance(rawContent, list):
+                return [item for item in rawContent if isinstance(item, dict)], None
+
+            if isinstance(rawContent, str):
+                text = rawContent.strip()
+                if not text:
+                    return [], None
+
+                text = self._extractWorkflowJsonText(text)
+
+                try:
+                    parsed = json.loads(text)
+                except Exception as e:
+                    return [], "Invalid workflow content JSON: %s" % e
+
+                if isinstance(parsed, list):
+                    return [item for item in parsed if isinstance(item, dict)], None
+
+                return [], "Workflow content JSON is not a list."
+
+            return [], "Unsupported workflow content format."
+
+        def normalizeParams(rawParams: Any) -> Any:
+            if rawParams is None:
+                return None
+
+            if isinstance(rawParams, collections.OrderedDict):
+                return dict(rawParams)
+
+            if isinstance(rawParams, dict):
+                return rawParams
+
+            try:
+                return dict(rawParams)
+            except Exception:
+                return rawParams
+
+        def iterReferenceValues(value: Any) -> List[Tuple[str, str]]:
+            refs: List[Tuple[str, str]] = []
+
+            if isinstance(value, str):
+                for match in re.finditer(r"\b(\d+)\.([A-Za-z_][A-Za-z0-9_\.]*)\b", value.strip()):
+                    refs.append((match.group(1), match.group(2)))
+                return refs
+
+            if isinstance(value, list):
+                for item in value:
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            if isinstance(value, dict):
+                for item in value.values():
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            return refs
+
+        def buildWorkflowPreviewGraph(protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
+            nodeIds: Set[str] = set()
+            nodes: List[Dict[str, Any]] = []
+            edges: List[Dict[str, Any]] = []
+
+            for index, protocol in enumerate(protocols):
+                protocolId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not protocolId:
+                    protocolId = str(index)
+
+                nodeIds.add(protocolId)
+
+                className = safeString(
+                    protocol.get("object.className")
+                    or protocol.get("className")
+                    or ""
+                ).strip()
+
+                label = safeString(
+                    protocol.get("object.label")
+                    or protocol.get("label")
+                    or protocol.get("runName")
+                    or className
+                    or protocolId
+                ).strip()
+
+                comment = safeString(
+                    protocol.get("object.comment")
+                    or protocol.get("comment")
+                    or ""
+                ).strip()
+
+                nodes.append(
+                    {
+                        "id": protocolId,
+                        "protocolId": protocolId,
+                        "className": className,
+                        "label": label,
+                        "comment": comment,
+                        "runName": protocol.get("runName"),
+                        "order": index,
+                    }
+                )
+
+            edgeSeen: Set[Tuple[str, str, str, str]] = set()
+
+            for index, protocol in enumerate(protocols):
+                targetId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not targetId:
+                    targetId = str(index)
+
+                for paramName, value in protocol.items():
+                    if str(paramName).startswith("object."):
+                        continue
+
+                    refs = iterReferenceValues(value)
+
+                    for sourceId, outputName in refs:
+                        if sourceId not in nodeIds:
+                            continue
+
+                        edgeKey = (sourceId, targetId, outputName, str(paramName))
+                        if edgeKey in edgeSeen:
+                            continue
+
+                        edgeSeen.add(edgeKey)
+
+                        edges.append(
+                            {
+                                "id": "%s:%s->%s:%s" % (sourceId, outputName, targetId, paramName),
+                                "source": sourceId,
+                                "target": targetId,
+                                "sourceOutput": outputName,
+                                "targetParam": str(paramName),
+                            }
+                        )
+
+            childIds = {edge["target"] for edge in edges}
+            rootIds = [node["id"] for node in nodes if node["id"] not in childIds]
+
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "rootIds": rootIds,
+            }
+
         tempList = TemplateList()
         tempId = None
-        # Try to find all templates from the template folder and the plugins
-        tempList.addScipionTemplates(tempId)
+
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
 
-        return tempList.sortListByPluginName().templates
+        templates = tempList.sortListByPluginName().templates
+
+        if raw:
+            return templates
+
+        workflows: List[Dict[str, Any]] = []
+        pluginAvailabilityCache: Dict[str, bool] = {}
+
+        for index, template in enumerate(templates or []):
+            try:
+                source = getValue(template, "source")
+                name = getValue(template, "name")
+                description = getValue(template, "description")
+                rawContent = getValue(template, "content")
+                params = normalizeParams(getValue(template, "params"))
+                projectName = getValue(template, "projectName")
+                templatePath = getValue(template, "templatePath")
+                templateIdValue = getValue(template, "id")
+
+                protocols, parseError = parseWorkflowContent(rawContent)
+                previewGraph = buildWorkflowPreviewGraph(protocols)
+
+                requiredPluginNames = []
+                missingPluginNames = []
+
+                if isinstance(rawContent, str):
+                    requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
+
+                if not requiredPluginNames and templatePath:
+                    try:
+                        templateText = Path(str(templatePath)).expanduser().read_text(encoding="utf-8")
+                        requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
+                    except Exception:
+                        requiredPluginNames = []
+
+                missingPluginNames = self._getMissingWorkflowPluginNames(
+                    requiredPluginNames,
+                    availabilityCache=pluginAvailabilityCache,
+                )
+
+                workflowId = safeString(templateIdValue).strip()
+                if not workflowId:
+                    workflowId = makeWorkflowId(source, name, index)
+
+                workflows.append(
+                    {
+                        "id": workflowId,
+                        "source": safeString(source),
+                        "name": safeString(name),
+                        "description": safeString(description),
+                        "params": params,
+                        "projectName": projectName,
+                        "templatePath": safeString(templatePath),
+                        "content": protocols,
+                        "parseError": parseError,
+                        "protocolsCount": len(protocols),
+                        "previewGraph": previewGraph,
+                        "requiredPluginNames": requiredPluginNames,
+                        "missingPluginNames": missingPluginNames,
+                        "canLoad": len(missingPluginNames) == 0,
+                        "disabledReason": (
+                            "Missing required plugins: %s" % ", ".join(missingPluginNames)
+                            if missingPluginNames
+                            else ""
+                        ),
+                    }
+                )
+            except Exception:
+                logger.exception("Failed to normalize workflow template")
+                continue
+
+        return workflows
 
     def applyWorkflowToProject(
             self,
@@ -1665,25 +1926,57 @@ class ProjectService:
             )
 
         # 2) Get available templates/workflows
-        templates = self.listProjectWorkflows() or []
+        templates = self.listProjectWorkflows(raw=True) or []
         if not templates:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No workflows are currently available",
             )
 
-        workflowIdStr = str(workflowId)
+        # 3) Find the template by id or name
+        workflowIdStr = str(workflowId).strip()
         selectedTemplate: Any = None
 
-        # 3) Find the template by id or name
-        for t in templates:
-            templateId = getattr(t, "id", None)
-            templateName = getattr(t, "name", None)
+        def getTemplateValue(template: Any, key: str, default: Any = None) -> Any:
+            if isinstance(template, dict):
+                return template.get(key, default)
+            return getattr(template, key, default)
 
-            if (templateId is not None and str(templateId) == workflowIdStr) or (
-                    templateName and str(templateName) == workflowIdStr
-            ):
-                selectedTemplate = t
+        def toCleanString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> Set[str]:
+            templateId = toCleanString(getTemplateValue(template, "id"))
+            templateName = toCleanString(getTemplateValue(template, "name"))
+            templateSource = toCleanString(getTemplateValue(template, "source"))
+            templatePath = toCleanString(getTemplateValue(template, "templatePath"))
+
+            candidates: Set[str] = set()
+
+            if templateId:
+                candidates.add(templateId)
+
+            if templateName:
+                candidates.add(templateName)
+
+            if templateSource and templateName:
+                candidates.add("%s:%s" % (templateSource, templateName))
+
+            if templatePath:
+                candidates.add(templatePath)
+
+            candidates.add(str(fallbackIndex))
+
+            return candidates
+
+        # 3) Find the template by normalized id, source:name, name or path
+        for index, template in enumerate(templates):
+            candidateIds = buildTemplateCandidateIds(template, index)
+
+            if workflowIdStr in candidateIds:
+                selectedTemplate = template
                 break
 
         if selectedTemplate is None:
@@ -1713,13 +2006,29 @@ class ProjectService:
             )
 
         # 6) Apply the workflow to the current project in Scipion
+        workflowImportInfo = self._prepareWorkflowFileForImport(workflowFile)
+        importWorkflowFile = workflowImportInfo.get("workflowFile") or workflowFile
+        cleanupFile = workflowImportInfo.get("cleanupFile")
+
         try:
-            loadResult = self.currentProject.loadProtocols(workflowFile)
+            loadResult = self.currentProject.loadProtocols(importWorkflowFile)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
             )
+        finally:
+            if cleanupFile:
+                try:
+                    os.remove(str(cleanupFile))
+                except Exception:
+                    logger.debug(
+                        "Could not remove temporary workflow import file: %s",
+                        cleanupFile,
+                        exc_info=True,
+                    )
 
         # 7) Sync protocols + dependencies to PostgreSQL
         try:
@@ -1750,6 +2059,9 @@ class ProjectService:
             "protocolsCount": syncInfo.get("protocols"),
             "dependenciesCount": syncInfo.get("dependencies"),
             "loadResult": str(loadResult) if loadResult is not None else None,
+            "scipionWebWrapped": bool(workflowImportInfo.get("wrapped")),
+            "scipionWebMetadata": bool(workflowImportInfo.get("hasScipionWebMetadata")),
+            "requiredPluginNames": workflowImportInfo.get("requiredPluginNames") or [],
         }
 
     @staticmethod
@@ -3529,6 +3841,451 @@ class ProjectService:
         raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
         return Path(raw).expanduser().resolve()
 
+    def _extractWorkflowJsonText(self, text: str) -> str:
+        # extractWorkflowJsonText
+        raw = str(text or "").strip()
+        if not raw:
+            return raw
+
+        if raw.startswith("[") or raw.startswith("{"):
+            return raw
+
+        lines = raw.splitlines()
+
+        for index, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith("[") or stripped.startswith("{"):
+                return "\n".join(lines[index:]).strip()
+
+        return raw
+
+    def _sanitizeWorkflowHeaderValue(self, value: Any) -> str:
+        # sanitizeWorkflowHeaderValue
+        return (
+            str(value or "")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("|", "/")
+            .replace(";", " ")
+            .strip()
+        )
+
+    def _buildWorkflowTemplateHeader(self, protocolList: List[Any]) -> str:
+        # buildWorkflowTemplateHeader
+        metadata = self._buildWorkflowPluginMetadata(protocolList)
+
+        requiredPluginNames = [
+            self._sanitizeWorkflowHeaderValue(name)
+            for name in metadata.get("requiredPluginNames", [])
+            if self._sanitizeWorkflowHeaderValue(name)
+        ]
+
+        lines = [
+            "ScipionWeb metadata format: scipionweb.workflow.metadata",
+            "ScipionWeb metadata version: 1",
+            "ScipionWeb exported at UTC: %s" % self._sanitizeWorkflowHeaderValue(
+                metadata.get("exportedAt", "")
+            ),
+            "Scipion required plugins: %s" % ", ".join(requiredPluginNames),
+        ]
+
+        return "\n".join(lines).rstrip() + "\n\n"
+
+    def _extractRequiredPluginNamesFromWorkflowText(self, text: str) -> List[str]:
+        # extractRequiredPluginNamesFromWorkflowText
+        for line in str(text or "").splitlines():
+            cleanLine = line.strip()
+
+            if not cleanLine:
+                continue
+
+            if cleanLine.startswith("[") or cleanLine.startswith("{"):
+                break
+
+            match = re.match(
+                r"^Scipion required plugins:\s*(.*)$",
+                cleanLine,
+                flags=re.IGNORECASE,
+            )
+
+            if not match:
+                continue
+
+            rawNames = match.group(1).strip()
+            if not rawNames:
+                return []
+
+            names: List[str] = []
+            seen: Set[str] = set()
+
+            for rawName in rawNames.split(","):
+                name = rawName.strip()
+                if not name or name in seen:
+                    continue
+
+                seen.add(name)
+                names.append(name)
+
+            return names
+
+        return []
+
+    def _decodeExportJsonPayload(self, rawExport: Any) -> Any:
+        if isinstance(rawExport, str):
+            text = rawExport.strip()
+            if not text:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Scipion export returned empty content",
+                )
+
+            try:
+                return json.loads(text)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scipion export returned invalid JSON text: {e}",
+                )
+
+        if isinstance(rawExport, (list, dict)):
+            return rawExport
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unsupported export payload returned by Scipion",
+        )
+
+    def _getProtocolPluginNameForExport(self, protocol: Any) -> str:
+        try:
+            plugin = protocol.getPlugin()
+        except Exception:
+            plugin = None
+
+        if plugin is not None:
+            try:
+                name = plugin.getName()
+                if name:
+                    return str(name).strip()
+            except Exception:
+                pass
+
+            try:
+                moduleName = getattr(plugin, "__name__", None)
+                if moduleName:
+                    return str(moduleName).strip()
+            except Exception:
+                pass
+
+        try:
+            moduleName = protocol.__class__.__module__
+            if moduleName:
+                return str(moduleName).split(".")[0].strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _getProtocolClassNameForExport(self, protocol: Any) -> str:
+        try:
+            className = protocol.getClassName()
+            if className:
+                return str(className).strip()
+        except Exception:
+            pass
+
+        try:
+            return protocol.__class__.__name__
+        except Exception:
+            return ""
+
+    def _getProtocolObjIdForExport(self, protocol: Any) -> str:
+        try:
+            objId = protocol.getObjId()
+            if objId is not None:
+                return str(objId).strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _buildWorkflowPluginMetadata(self, protocolList: List[Any]) -> Dict[str, Any]:
+        protocolPlugins: List[Dict[str, str]] = []
+        requiredPluginNames: List[str] = []
+        seenPluginNames: Set[str] = set()
+
+        for protocol in protocolList or []:
+            protocolId = self._getProtocolObjIdForExport(protocol)
+            className = self._getProtocolClassNameForExport(protocol)
+            pluginName = self._getProtocolPluginNameForExport(protocol)
+
+            if pluginName and pluginName not in seenPluginNames:
+                seenPluginNames.add(pluginName)
+                requiredPluginNames.append(pluginName)
+
+            protocolPlugins.append(
+                {
+                    "protocolId": protocolId,
+                    "className": className,
+                    "pluginName": pluginName,
+                }
+            )
+
+        requiredPluginNames.sort()
+
+        return {
+            "format": "scipionweb.workflow.export",
+            "version": 1,
+            "requiredPluginNames": requiredPluginNames,
+            "protocolPlugins": protocolPlugins,
+            "exportedAt": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def _buildWorkflowExportJsonContent(
+            self,
+            rawExport: Any,
+            protocolList: List[Any],
+    ) -> str:
+        # buildWorkflowExportJsonContent
+        jsonContent = self._normalizeExportJsonContent(rawExport)
+        header = self._buildWorkflowTemplateHeader(protocolList)
+
+        return header + jsonContent
+
+    def _readWorkflowTemplateJsonPayload(self, workflowFile: Any) -> Optional[Any]:
+        # readWorkflowTemplateJsonPayload
+        try:
+            path = Path(str(workflowFile)).expanduser().resolve()
+        except Exception:
+            return None
+
+        if not path.exists() or not path.is_file():
+            return None
+
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+
+        if not text:
+            return None
+
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _isScipionWebWorkflowExportPayload(self, payload: Any) -> bool:
+        # isScipionWebWorkflowExportPayload
+        if not isinstance(payload, dict):
+            return False
+
+        metadata = payload.get("scipionWeb")
+        if not isinstance(metadata, dict):
+            return False
+
+        return metadata.get("format") == "scipionweb.workflow.export" and "content" in payload
+
+    def _getRequiredPluginNamesFromWorkflowPayload(self, payload: Dict[str, Any]) -> List[str]:
+        # getRequiredPluginNamesFromWorkflowPayload
+        metadata = payload.get("scipionWeb") or {}
+        rawNames = metadata.get("requiredPluginNames") or []
+
+        names: List[str] = []
+        seen: Set[str] = set()
+
+        for rawName in rawNames:
+            name = str(rawName or "").strip()
+            if not name or name in seen:
+                continue
+
+            seen.add(name)
+            names.append(name)
+
+        return names
+
+    def _getInstalledPluginNamesForWorkflowImport(self) -> Set[str]:
+        # getInstalledPluginNamesForWorkflowImport
+        installedNames: Set[str] = set()
+
+        try:
+            from app.backend.api.services.plugin_service import PluginService
+
+            plugins = PluginService().getPlugins(forceRefresh=False)
+            for plugin in plugins or []:
+                if not isinstance(plugin, dict):
+                    continue
+
+                if not plugin.get("installed"):
+                    continue
+
+                for key in ("name", "pipName", "pluginName", "moduleName", "packageName"):
+                    value = plugin.get(key)
+                    if value:
+                        installedNames.add(str(value).strip())
+        except Exception:
+            logger.debug("Could not load installed plugin names from PluginService", exc_info=True)
+
+        try:
+            domain = self.currentProject.getDomain()
+            rawPlugins = getattr(domain, "getPlugins", lambda: {})() or {}
+
+            if isinstance(rawPlugins, dict):
+                for key, plugin in rawPlugins.items():
+                    if key:
+                        installedNames.add(str(key).strip())
+
+                    try:
+                        pluginName = plugin.getName()
+                        if pluginName:
+                            installedNames.add(str(pluginName).strip())
+                    except Exception:
+                        pass
+        except Exception:
+            logger.debug("Could not load installed plugin names from Scipion domain", exc_info=True)
+
+        return {name for name in installedNames if name}
+
+    def _isWorkflowPluginAvailable(
+            self,
+            pluginName: str,
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> bool:
+        # isWorkflowPluginAvailable
+        name = str(pluginName or "").strip()
+        if not name:
+            return True
+
+        if availabilityCache is not None and name in availabilityCache:
+            return availabilityCache[name]
+
+        available = False
+
+        try:
+            import importlib.util
+            available = importlib.util.find_spec(name) is not None
+        except Exception:
+            available = False
+
+        if not available:
+            try:
+                __import__(name)
+                available = True
+            except Exception:
+                available = False
+
+        if availabilityCache is not None:
+            availabilityCache[name] = available
+
+        return available
+
+    def _getMissingWorkflowPluginNames(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> List[str]:
+        # getMissingWorkflowPluginNames
+        missing: List[str] = []
+        seen: Set[str] = set()
+
+        for rawPluginName in requiredPluginNames or []:
+            pluginName = str(rawPluginName or "").strip()
+            if not pluginName or pluginName in seen:
+                continue
+
+            seen.add(pluginName)
+
+            if not self._isWorkflowPluginAvailable(
+                    pluginName,
+                    availabilityCache=availabilityCache,
+            ):
+                missing.append(pluginName)
+
+        return missing
+
+    def _validateWorkflowRequiredPlugins(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> None:
+        # validateWorkflowRequiredPlugins
+        missing = self._getMissingWorkflowPluginNames(
+            requiredPluginNames,
+            availabilityCache=availabilityCache,
+        )
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing required plugins for workflow import: %s" % ", ".join(missing),
+            )
+
+    def _prepareWorkflowFileForImport(self, workflowFile: Any) -> Dict[str, Any]:
+        # prepareWorkflowFileForImport
+        payload = self._readWorkflowTemplateJsonPayload(workflowFile)
+
+        # Backward compatibility with previous ScipionWeb wrapper exports.
+        if self._isScipionWebWorkflowExportPayload(payload):
+            assert isinstance(payload, dict)
+
+            requiredPluginNames = self._getRequiredPluginNamesFromWorkflowPayload(payload)
+            self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+            content = payload.get("content")
+            if not isinstance(content, (list, dict)):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid ScipionWeb workflow export: content must be a JSON list or object.",
+                )
+
+            sourcePath = Path(str(workflowFile)).expanduser().resolve()
+            tempPath = sourcePath.parent / (
+                ".scipionweb-import-%s.json" % uuid4().hex
+            )
+
+            try:
+                tempPath.write_text(
+                    json.dumps(content, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to prepare workflow import file: %s" % e,
+                )
+
+            return {
+                "workflowFile": str(tempPath),
+                "cleanupFile": str(tempPath),
+                "wrapped": True,
+                "hasScipionWebMetadata": True,
+                "requiredPluginNames": requiredPluginNames,
+            }
+
+        requiredPluginNames: List[str] = []
+        resolvedPath: Optional[Path] = None
+
+        try:
+            resolvedPath = Path(str(workflowFile)).expanduser().resolve()
+        except Exception:
+            resolvedPath = None
+
+        if resolvedPath is not None and resolvedPath.exists() and resolvedPath.is_file():
+            try:
+                text = resolvedPath.read_text(encoding="utf-8")
+                requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(text)
+            except Exception:
+                requiredPluginNames = []
+
+        self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+        return {
+            "workflowFile": str(resolvedPath) if resolvedPath is not None else workflowFile,
+            "cleanupFile": None,
+            "wrapped": False,
+            "hasScipionWebMetadata": bool(requiredPluginNames),
+            "requiredPluginNames": requiredPluginNames,
+        }
+
     def _normalizeExportJsonContent(self, rawExport: Any) -> str:
         if isinstance(rawExport, str):
             text = rawExport.strip()
@@ -3537,6 +4294,8 @@ class ProjectService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Scipion export returned empty content",
                 )
+
+            text = self._extractWorkflowJsonText(text)
 
             try:
                 json.loads(text)
@@ -3886,7 +4645,7 @@ class ProjectService:
                 )
 
             rawExport = self.currentProject.getProtocolsJson(protocolList)
-            content = self._normalizeExportJsonContent(rawExport)
+            content = self._buildWorkflowExportJsonContent(rawExport, protocolList)
 
             rootPath = self._resolveFsRootForWrite("-1")
             targetDir = self._guardFsPathWithinRootForWrite(rootPath, directoryPath)
@@ -4616,6 +5375,67 @@ class ProjectService:
         out *= (z * y * x) / float(tz * ty * tx)
 
         return np.asarray(out, dtype=np.float32)
+
+    def _strideDownsampleVolume(self, volume: np.ndarray,
+                                maxDim: int) -> np.ndarray:
+        z, y, x = volume.shape
+        largestDim = max(z, y, x)
+        if largestDim <= maxDim:
+            return volume.astype(np.float32, copy=False)
+
+        step = max(1, int(np.ceil(largestDim / float(maxDim))))
+        return volume[::step, ::step, ::step].astype(np.float32, copy=False)
+
+    def _downsampleVolumeForSurface(
+            self,
+            volume: np.ndarray,
+            *,
+            maxDim: int,
+            method: str,
+    ) -> np.ndarray:
+        methodLower = (method or "stride").lower()
+
+        if methodLower == "none":
+            return volume.astype(np.float32, copy=False)
+
+        if methodLower == "stride":
+            return self._strideDownsampleVolume(volume,
+                                                maxDim=maxDim)
+
+        return self._downsampleVolumePreview(volume,
+                                             maxDim=maxDim,
+                                             method=methodLower)
+
+    def getVolumeSurfaceMesh(self, protocolId, outputName, volumeId, level,
+                             maxDim, method, maxTriangles, currentUser):
+
+        _protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        volumePath = self._getVolumePathFromOutput(output, volumeId)
+
+        volume, _props = readVolumeArray3d(volumePath)
+        volumeSmall = self._downsampleVolumeForSurface(
+            volume,
+            maxDim=maxDim,
+            method=method,
+        )
+
+        mesh = buildVolumeSurfaceMesh(
+            volumeSmall,
+            level=level,
+            maxTriangles=maxTriangles,
+        )
+
+        mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
+        mesh["maxDim"] = int(maxDim)
+        mesh["method"] = method
+        mesh["volumeId"] = str(volumeId)
+        mesh["outputName"] = outputName
+
+        response = JSONResponse(mesh)
+        response.headers["X-Debug-Auth"] = "ok"
+        response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        response.headers["Vary"] = "Authorization"
+        return response
 
     def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
         """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""

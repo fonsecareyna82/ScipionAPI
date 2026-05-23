@@ -74,8 +74,12 @@ class FileHandlers:
           - protocolRoot: relative to rootAbs (defaults to startPath)
           - path: legacy absolute protocol path (backward compatibility)
         """
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocolAbsPath = os.path.abspath(protocol.getPath())
+        fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
+        if str(protocolId).strip() != fakeProtocolId:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+            protocolAbsPath = os.path.abspath(protocol.getPath())
+        else:
+            protocolAbsPath = os.path.abspath(self.currentProject.getPath())
 
         rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
