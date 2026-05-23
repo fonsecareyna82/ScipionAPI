@@ -176,6 +176,78 @@ def _checkPythonVersion() -> StatusRow:
 
     return _fail("Python", f"Python {versionText}; Python 3.8 is required")
 
+def _resolveCondaExe(env: Dict[str, str]) -> str:
+    # Resolve conda executable from env or PATH.
+    candidates = [
+        (os.environ.get("SCIPIONAPI_CONDA_EXE") or "").strip(),
+        (os.environ.get("CONDA_EXE") or "").strip(),
+        (env.get("CONDA_EXE") or "").strip(),
+        "conda",
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        try:
+            proc = runCmd([candidate, "--version"], capture=True, timeout=5)
+        except Exception:
+            continue
+
+        if proc.returncode == 0:
+            return candidate
+
+    return ""
+
+
+def _checkConda(env: Dict[str, str]) -> List[StatusRow]:
+    # Check conda executable and target environment.
+    rows: List[StatusRow] = []
+
+    condaExe = _resolveCondaExe(env)
+    if not condaExe:
+        rows.append(_fail("Conda", "conda executable not found"))
+        return rows
+
+    rows.append(_ok("Conda", f"Executable OK: {condaExe}"))
+
+    envName = (
+        os.environ.get("SCIPIONAPI_CONDA_ENV")
+        or os.environ.get("SCIPIONAPI_ENV_NAME")
+        or "scipion4Web"
+    )
+
+    proc = runCmd([condaExe, "env", "list"], capture=True, timeout=10)
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+    if proc.returncode != 0:
+        rows.append(_warn("Conda env list", output.strip() or "Failed to list conda envs"))
+        return rows
+
+    found = False
+    for line in output.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        if parts[0] == envName:
+            found = True
+            break
+
+    if found:
+        rows.append(_ok("Conda env", f"Found target env: {envName}"))
+    else:
+        rows.append(_warn("Conda env", f"Target env not found in conda list: {envName}"))
+
+    activeEnv = os.environ.get("CONDA_DEFAULT_ENV") or ""
+    if activeEnv:
+        if activeEnv == envName:
+            rows.append(_ok("Active conda env", activeEnv))
+        else:
+            rows.append(_warn("Active conda env", f"{activeEnv}; expected {envName}"))
+    else:
+        rows.append(_warn("Active conda env", "CONDA_DEFAULT_ENV is not set"))
+
+    return rows
 
 def _checkImport(moduleName: str, label: Optional[str] = None, required: bool = True) -> StatusRow:
     # Check whether a Python module can be imported.
@@ -410,6 +482,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_pathExists(repoRoot / "alembic.ini", "Repository alembic.ini", required=True))
     rows.append(_pathExists(repoRoot / "app", "Repository app package", required=True))
     rows.append(_checkPythonVersion())
+    rows.extend(_checkConda(env))
     envExists = envPath.exists()
     rows.append(_pathExists(envPath, ".env file", required=False))
 
