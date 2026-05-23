@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from shutil import which
 from typing import List, Optional
+import shlex
 
 from scipionapi_cli.shell import resolveRepoRoot
 
@@ -37,6 +38,29 @@ def _runCapture(cmd: List[str], cwd: Optional[Path] = None) -> subprocess.Comple
         text=True,
     )
 
+def _envInt(name: str, default: int) -> int:
+    # readIntEnv
+    try:
+        return int((os.getenv(name) or "").strip() or default)
+    except Exception:
+        return default
+
+
+def _envFlag(name: str, default: bool = False) -> bool:
+    # readBoolEnv
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _splitPackageList(value: str) -> List[str]:
+    # splitPackageListShellLike
+    try:
+        return [item for item in shlex.split(value or "") if item.strip()]
+    except Exception:
+        return [item for item in (value or "").split(" ") if item.strip()]
+
 
 def _resolveCondaExe() -> str:
     # resolveCondaExeFromEnvOrPath
@@ -45,11 +69,19 @@ def _resolveCondaExe() -> str:
         (os.getenv("CONDA_EXE") or "").strip(),
         which("conda") or "",
     ]
+
     for candidate in candidates:
-        if candidate:
+        if not candidate:
+            continue
+
+        try:
             proc = _runCapture([candidate, "--version"])
-            if proc.returncode == 0:
-                return candidate
+        except Exception:
+            continue
+
+        if proc.returncode == 0:
+            return candidate
+
     raise RuntimeError(
         "conda is required but was not found in PATH "
         "(or SCIPIONAPI_CONDA_EXE/CONDA_EXE is invalid)."
@@ -94,6 +126,27 @@ def _removeCondaEnv(condaExe: str, envName: str) -> None:
 
 def _pip(condaExe: str, envName: str, args: List[str], cwd: Path) -> None:
     # runPipInCondaEnvWithLiveOutput
+    pipRetries = _envInt("SCIPIONAPI_PIP_RETRIES", 10)
+    pipTimeout = _envInt("SCIPIONAPI_PIP_TIMEOUT", 120)
+    pipVerbose = _envFlag("SCIPIONAPI_PIP_VERBOSE", False)
+
+    pipArgs = [
+        "install",
+        "--progress-bar",
+        "on",
+        "--retries",
+        str(pipRetries),
+        "--timeout",
+        str(pipTimeout),
+    ]
+
+    if pipVerbose:
+        pipArgs.append("-v")
+
+    forwardedArgs = list(args)
+    if forwardedArgs and forwardedArgs[0] == "install":
+        forwardedArgs = forwardedArgs[1:]
+
     cmd = [
         condaExe,
         "run",
@@ -103,7 +156,8 @@ def _pip(condaExe: str, envName: str, args: List[str], cwd: Path) -> None:
         "python",
         "-m",
         "pip",
-    ] + args
+    ] + pipArgs + forwardedArgs
+
     _run(cmd, cwd=cwd)
 
 
@@ -257,7 +311,7 @@ def bootstrapCommand(
     _pip(
         condaExe,
         envName,
-        ["install", "--upgrade", "pip", "--progress-bar", "on"],
+        ["install", "--upgrade", "pip"],
         cwd=repoRoot,
     )
     _printSuccess("pip upgrade completed")
@@ -269,7 +323,7 @@ def bootstrapCommand(
         _pip(
             condaExe,
             envName,
-            ["install", "-r", str(reqPath), "--progress-bar", "on"],
+            ["install", "-r", str(reqPath)],
             cwd=repoRoot,
         )
         _printSuccess("requirements.txt installation completed")
@@ -280,11 +334,11 @@ def bootstrapCommand(
     if installScipionCore:
         if not _pythonImportOk(condaExe, envName, "pyworkflow"):
             _printInfo(f"Installing Scipion core packages: {scipionCorePackages}")
-            packages = [p for p in scipionCorePackages.split(" ") if p.strip()]
+            packages = _splitPackageList(scipionCorePackages)
             _pip(
                 condaExe,
                 envName,
-                ["install", "--progress-bar", "on"] + packages,
+                ["install"] + packages,
                 cwd=repoRoot,
             )
 
@@ -303,7 +357,7 @@ def bootstrapCommand(
     _pip(
         condaExe,
         envName,
-        ["install", "-e", str(repoRoot), "--progress-bar", "on"],
+        ["install", "-e", str(repoRoot)],
         cwd=repoRoot,
     )
     _printSuccess("Editable package installation completed")
