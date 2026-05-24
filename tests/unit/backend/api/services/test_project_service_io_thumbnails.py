@@ -227,7 +227,7 @@ def test_BuildProjectThumbnailDelegatesToThumbnailService(projectServiceModule, 
 
     result = service.buildProjectThumbnail(force=True, size=800, maxProtocols=9)
 
-    assert result == {"kind": "project", "size": size} if False else {"kind": "project", "size": 800}
+    assert result == {"kind": "project", "size": 800}
     assert FakeThumbnailService.instances[0].calls == [
         {
             "method": "buildProjectThumbnail",
