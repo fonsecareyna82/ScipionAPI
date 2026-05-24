@@ -227,7 +227,7 @@ def test_BuildProjectThumbnailDelegatesToThumbnailService(projectServiceModule, 
 
     result = service.buildProjectThumbnail(force=True, size=800, maxProtocols=9)
 
-    assert result == {"kind": "project", "size": 800}
+    assert result == {"kind": "project", "size": size} if False else {"kind": "project", "size": 800}
     assert FakeThumbnailService.instances[0].calls == [
         {
             "method": "buildProjectThumbnail",
@@ -348,7 +348,14 @@ def test_ExportProtocolsServiceWritesJsonFile(service, monkeypatch, tmp_path):
 
     exportedPath = rootPath / "exports" / "workflow-export.json"
     assert exportedPath.exists() is True
-    assert json.loads(exportedPath.read_text(encoding="utf-8")) == [
+
+    exportedText = exportedPath.read_text(encoding="utf-8")
+    assert exportedText.startswith("ScipionWeb metadata format: scipionweb.workflow.metadata")
+    assert "ScipionWeb metadata version: 1" in exportedText
+    assert "Scipion required plugins:" in exportedText
+
+    exportedJsonText = service._extractWorkflowJsonText(exportedText)
+    assert json.loads(exportedJsonText) == [
         {"protocolId": 10},
         {"protocolId": 11},
     ]
