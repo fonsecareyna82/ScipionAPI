@@ -50,6 +50,15 @@ def formatCommand(args: List[str]) -> str:
     return " ".join(str(arg) for arg in args)
 
 
+def _normalizeOutput(value: object) -> str:
+    # Convert subprocess timeout output to text safely.
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def runCmd(
     args: List[str],
     cwd: Optional[Path] = None,
@@ -113,11 +122,24 @@ def runCmd(
             stderr="",
         )
 
-    return subprocess.run(
-        args,
-        cwd=cwdText,
-        env=mergedEnv,
-        text=True,
-        capture_output=capture,
-        timeout=timeout,
-    )
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwdText,
+            env=mergedEnv,
+            text=True,
+            capture_output=capture,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _normalizeOutput(exc.stdout)
+        stderr = _normalizeOutput(exc.stderr)
+        timeoutMessage = f"Command timed out after {timeout} seconds: {formatCommand(args)}"
+        stderr = f"{stderr}\n{timeoutMessage}".strip()
+
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=124,
+            stdout=stdout,
+            stderr=stderr,
+        )
