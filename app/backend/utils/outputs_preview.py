@@ -554,7 +554,7 @@ class OutputsPreview(FileHandlers):
             if isClasses2D and renderSizeIdx is not None:
                 try:
                     sizeVal = row.getValues()[renderSizeIdx]
-                    labels.append(f"{sizeVal} particles")
+                    labels.append(f"n={sizeVal}")
                 except Exception:
                     labels.append("")
 
@@ -627,7 +627,7 @@ class OutputsPreview(FileHandlers):
             if isClasses3D and renderSizeIdx is not None:
                 try:
                     sizeVal = row.getValues()[renderSizeIdx]
-                    labels.append(f"{sizeVal} particles")
+                    labels.append(f"n={sizeVal}")
                 except Exception:
                     labels.append("")
             else:
@@ -643,7 +643,10 @@ class OutputsPreview(FileHandlers):
             labels.extend([""] * (len(tiles) - len(labels)))
 
         total = rowCount or len(tiles)
-        summary = f"{total} classes" if isClasses3D else f"{total} items"
+        if isClasses3D:
+            summary = f"{total} classes" if total != 1 else "1 class"
+        else:
+            summary = f"{total} items" if total != 1 else "1 item"
         return tiles, labels, cols, tileSize, summary
 
     def renderImageFromFilePath(
@@ -1002,6 +1005,133 @@ class OutputsPreview(FileHandlers):
 
         return (Path.cwd() / p).resolve()
 
+
+    # ------------------------------------------------------------------ #
+    # Text rendering helpers
+    # ------------------------------------------------------------------ #
+    def _previewFontCandidates(self, bold: bool = False) -> List[str]:
+        # Return stable font candidates available on most Linux installations.
+        if bold:
+            return [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+                "DejaVuSans-Bold.ttf",
+                "arialbd.ttf",
+                "arial.ttf",
+            ]
+
+        return [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "DejaVuSans.ttf",
+            "arial.ttf",
+        ]
+
+    def _loadPreviewFont(self, size: int, bold: bool = False):
+        # Load a predictable TrueType font when available, otherwise use PIL default.
+        fontSize = max(8, int(size))
+
+        for path in self._previewFontCandidates(bold=bold):
+            try:
+                if path.startswith("/") and not Path(path).exists():
+                    continue
+                return ImageFont.truetype(path, fontSize)
+            except Exception:
+                continue
+
+        return ImageFont.load_default()
+
+    def _measureText(self, draw: ImageDraw.ImageDraw, text: str, font) -> Tuple[int, int]:
+        # Measure text safely across Pillow versions.
+        try:
+            bbox = draw.textbbox((0, 0), str(text), font=font)
+            return max(0, bbox[2] - bbox[0]), max(0, bbox[3] - bbox[1])
+        except Exception:
+            try:
+                return font.getsize(str(text))
+            except Exception:
+                return max(1, len(str(text)) * 7), 12
+
+    def _fitTextFont(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        maxWidth: int,
+        maxHeight: int,
+        initialSize: int,
+        minSize: int = 9,
+        bold: bool = False,
+    ):
+        # Reduce font size until the text fits in the available box.
+        safeText = str(text or "").strip()
+        safeMaxWidth = max(1, int(maxWidth))
+        safeMaxHeight = max(1, int(maxHeight))
+
+        for size in range(max(int(initialSize), int(minSize)), int(minSize) - 1, -1):
+            font = self._loadPreviewFont(size, bold=bold)
+            textW, textH = self._measureText(draw, safeText, font)
+            if textW <= safeMaxWidth and textH <= safeMaxHeight:
+                return font
+
+        return self._loadPreviewFont(minSize, bold=bold)
+
+    def _truncateTextToWidth(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font,
+        maxWidth: int,
+    ) -> str:
+        # Truncate long labels with ellipsis instead of letting them overflow.
+        safeText = str(text or "").strip()
+        if not safeText:
+            return ""
+
+        textW, _ = self._measureText(draw, safeText, font)
+        if textW <= maxWidth:
+            return safeText
+
+        ellipsis = "..."
+        for end in range(len(safeText), 0, -1):
+            candidate = safeText[:end].rstrip() + ellipsis
+            candidateW, _ = self._measureText(draw, candidate, font)
+            if candidateW <= maxWidth:
+                return candidate
+
+        return ellipsis
+
+    def _fitMultilineFont(
+        self,
+        draw: ImageDraw.ImageDraw,
+        lines: List[str],
+        maxWidth: int,
+        maxHeight: int,
+        initialSize: int,
+        minSize: int = 10,
+        bold: bool = False,
+    ):
+        # Reduce font size until all lines fit inside the available box.
+        safeLines = [str(line or "").strip() for line in lines if str(line or "").strip()]
+        if not safeLines:
+            return self._loadPreviewFont(minSize, bold=bold)
+
+        safeMaxWidth = max(1, int(maxWidth))
+        safeMaxHeight = max(1, int(maxHeight))
+
+        for size in range(max(int(initialSize), int(minSize)), int(minSize) - 1, -1):
+            font = self._loadPreviewFont(size, bold=bold)
+            lineSizes = [self._measureText(draw, line, font) for line in safeLines]
+            maxLineWidth = max((item[0] for item in lineSizes), default=0)
+            lineHeight = max((item[1] for item in lineSizes), default=size)
+            totalHeight = len(safeLines) * lineHeight + max(0, len(safeLines) - 1) * max(2, size // 4)
+
+            if maxLineWidth <= safeMaxWidth and totalHeight <= safeMaxHeight:
+                return font
+
+        return self._loadPreviewFont(minSize, bold=bold)
+
     # ------------------------------------------------------------------ #
     # Gallery (supports L and RGB; can forceRgb)
     # ------------------------------------------------------------------ #
@@ -1041,12 +1171,8 @@ class OutputsPreview(FileHandlers):
         padPx = pad * scale
         cellPx = tileSize * scale
 
-        try:
-            labelFontSize = max(12 * scale, int(cellPx * 0.22))
-            labelFont = ImageFont.truetype("arial.ttf", labelFontSize)
-        except Exception:
-            labelFont = ImageFont.load_default()
-            labelFontSize = getattr(labelFont, "size", 12 * scale)
+        labelFontSize = 11
+        labelFont = self._loadPreviewFont(labelFontSize, bold=True)
 
         if hasLabels:
             sample = "0000"
@@ -1065,28 +1191,22 @@ class OutputsPreview(FileHandlers):
         summaryFont = None
         summaryHeight = 0
         if hasSummary:
+            summaryText = str(summary or "").strip()
+
             try:
-                if cols >= 4:
-                    baseFromWidth = canvasW * 0.07
-                    baseFromCell = cellPx * 0.55
-                else:
-                    baseFromWidth = canvasW * 0.05
-                    baseFromCell = cellPx * 0.35
-
-                summaryFontSize = int(
-                    min(
-                        max(baseFromWidth, baseFromCell, 18 * scale),
-                        cellPx * 0.9,
-                    )
+                summaryFont = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    13,
                 )
-                summaryFont = ImageFont.truetype("arial.ttf", summaryFontSize)
             except Exception:
-                summaryFont = labelFont
-                summaryFontSize = labelFontSize
+                try:
+                    summaryFont = ImageFont.truetype("arial.ttf", 13)
+                except Exception:
+                    summaryFont = ImageFont.load_default()
 
-            sbbox = summaryFont.getbbox(summary)
-            sH = sbbox[3] - sbbox[1] if sbbox else summaryFontSize
-            summaryPadY = max(4 * scale, int(sH * 0.2))
+            sbbox = summaryFont.getbbox(summaryText)
+            sH = sbbox[3] - sbbox[1] if sbbox else 13
+            summaryPadY = 5
             summaryHeight = sH + 2 * summaryPadY
 
         canvasMode = "RGB" if isRgb else "L"
@@ -1162,13 +1282,8 @@ class OutputsPreview(FileHandlers):
                 textH = bbox[3] - bbox[1]
 
                 maxWidth = cellPx - 6 * scale
-                if textW > maxWidth and textW > 0:
-                    ratio = maxWidth / float(textW)
-                    maxChars = max(3, int(len(text) * ratio))
-                    text = text[:maxChars]
-                    bbox = draw.textbbox((0, 0), text, font=labelFont)
-                    textW = bbox[2] - bbox[0]
-                    textH = bbox[3] - bbox[1]
+                text = self._truncateTextToWidth(draw, text, labelFont, maxWidth)
+                textW, textH = self._measureText(draw, text, labelFont)
 
                 barTop = max(0, cellPx - labelBarHeight)
                 barBottom = cellPx - 1
@@ -1196,9 +1311,13 @@ class OutputsPreview(FileHandlers):
 
         if hasSummary and summaryFont is not None:
             draw = ImageDraw.Draw(canvas)
-            sbbox = summaryFont.getbbox(summary)
-            sW = sbbox[2] - sbbox[0]
-            sH = sbbox[3] - sbbox[1]
+            summaryText = self._truncateTextToWidth(
+                draw,
+                str(summary or ""),
+                summaryFont,
+                max(1, canvasW - 2 * padPx),
+            )
+            sW, sH = self._measureText(draw, summaryText, summaryFont)
 
             bandTop = canvasH - summaryHeight
             bandBottom = canvasH - 1
@@ -1213,7 +1332,7 @@ class OutputsPreview(FileHandlers):
             )
             draw.text(
                 (xSummary, ySummary),
-                summary,
+                summaryText,
                 font=summaryFont,
                 fill=textDark,
             )
@@ -1265,29 +1384,98 @@ class OutputsPreview(FileHandlers):
     # Fallback "No Image" PNG
     # ------------------------------------------------------------------ #
     def _makeNoPreviewImageResponse(self) -> Response:
-        width, height = 140, 140
-        bgColor, borderColor, textColor = 245, 200, 80
+        width, height = 260, 180
+        bgColor = (248, 250, 252)
+        borderColor = (203, 213, 225)
+        iconColor = (148, 163, 184)
+        textColor = (51, 65, 85)
+        subTextColor = (100, 116, 139)
 
-        img = Image.new("L", (width, height), color=bgColor)
+        img = Image.new("RGB", (width, height), color=bgColor)
         draw = ImageDraw.Draw(img)
 
-        margin = 10
-        draw.rectangle(
+        margin = 14
+        draw.rounded_rectangle(
             [(margin, margin), (width - margin, height - margin)],
+            radius=18,
             outline=borderColor,
-            width=1,
+            width=2,
+            fill=(255, 255, 255),
         )
 
-        msg = "No Image Available"
-        try:
-            font = ImageFont.truetype("arial.ttf", 52)
-        except Exception:
-            font = ImageFont.load_default()
+        iconBox = (
+            width // 2 - 26,
+            28,
+            width // 2 + 26,
+            80,
+        )
+        draw.rounded_rectangle(
+            iconBox,
+            radius=10,
+            outline=iconColor,
+            width=2,
+            fill=(241, 245, 249),
+        )
+        draw.line(
+            [
+                (iconBox[0] + 10, iconBox[3] - 12),
+                (iconBox[0] + 22, iconBox[1] + 26),
+                (iconBox[0] + 34, iconBox[3] - 18),
+                (iconBox[2] - 8, iconBox[1] + 18),
+            ],
+            fill=iconColor,
+            width=2,
+        )
+        draw.ellipse(
+            (
+                iconBox[0] + 12,
+                iconBox[1] + 10,
+                iconBox[0] + 22,
+                iconBox[1] + 20,
+            ),
+            fill=iconColor,
+        )
 
-        bbox = draw.textbbox((0, 0), msg, font=font)
-        x = (width - (bbox[2] - bbox[0])) // 2
-        y = (height - (bbox[3] - bbox[1])) // 2
-        draw.text((x, y), msg, font=font, fill=textColor)
+        titleLines = ["No image", "available"]
+        titleFont = self._fitMultilineFont(
+            draw,
+            titleLines,
+            maxWidth=width - 48,
+            maxHeight=54,
+            initialSize=24,
+            minSize=12,
+            bold=True,
+        )
+
+        lineSizes = [self._measureText(draw, line, titleFont) for line in titleLines]
+        lineHeight = max((item[1] for item in lineSizes), default=16)
+        lineGap = max(3, lineHeight // 4)
+
+        y = 95
+        for line in titleLines:
+            textW, textH = self._measureText(draw, line, titleFont)
+            x = max(8, (width - textW) // 2)
+            draw.text((x, y), line, font=titleFont, fill=textColor)
+            y += lineHeight + lineGap
+
+        subtitle = type(self.output).__name__
+        subtitleFont = self._fitTextFont(
+            draw,
+            subtitle,
+            maxWidth=width - 52,
+            maxHeight=18,
+            initialSize=12,
+            minSize=9,
+            bold=False,
+        )
+        subtitle = self._truncateTextToWidth(draw, subtitle, subtitleFont, width - 52)
+        subW, _subH = self._measureText(draw, subtitle, subtitleFont)
+        draw.text(
+            (max(8, (width - subW) // 2), min(height - 34, y + 4)),
+            subtitle,
+            font=subtitleFont,
+            fill=subTextColor,
+        )
 
         buf = io.BytesIO()
         img.save(buf, format="PNG")
