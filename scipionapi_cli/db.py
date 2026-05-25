@@ -34,6 +34,58 @@ def _hasCommand(command: str) -> bool:
     return which(command) is not None
 
 
+def _envFloat(env: Dict[str, str], key: str, default: float) -> float:
+    # readFloatEnv
+    try:
+        return float(env.get(key, default))
+    except Exception:
+        return default
+
+
+def _usesSudo(psqlBase: list) -> bool:
+    # checkWhetherAdminConnectionUsesSudo
+    return bool(psqlBase) and str(psqlBase[0]) == "sudo"
+
+
+def _buildSudoValidateCommand() -> list:
+    # buildSudoValidateCommand
+    sudoArgs = ["sudo"]
+    if os.environ.get("SCIPIONAPI_SUDO_NONINTERACTIVE", "").strip() == "1":
+        sudoArgs.append("-n")
+    return sudoArgs + ["-v"]
+
+
+def _validateSudoAccess(env: Dict[str, str], commandEnv: Dict[str, str]) -> None:
+    # validateSudoAccessBeforePostgresBootstrap
+    timeoutSec = _envFloat(env, "POSTGRES_SUDO_TIMEOUT", 90.0)
+    command = _buildSudoValidateCommand()
+
+    _printInfo("PostgreSQL bootstrap needs sudo access to run psql as the postgres user.")
+    _printInfo("If sudo asks for your password, enter your Linux user password.")
+
+    proc = runCmd(command, env=commandEnv, live=True, timeout=timeoutSec)
+    if proc.returncode == 0:
+        _printInfo("sudo access validated")
+        return
+
+    detail = (proc.stderr or proc.stdout or "").strip()
+    if proc.returncode == 124:
+        raise RuntimeError(
+            "sudo validation timed out while preparing PostgreSQL bootstrap.\n"
+            "Run the installer from an interactive terminal, or set DATABASE_ADMIN_USER/DATABASE_ADMIN_PASS, "
+            "or pre-create the database/user and set DATABASE_SKIP_BOOTSTRAP=1.\n"
+            f"{detail}"
+        )
+
+    raise RuntimeError(
+        "sudo validation failed while preparing PostgreSQL bootstrap.\n"
+        "Run the installer from an interactive terminal, or configure PostgreSQL admin credentials using "
+        "DATABASE_ADMIN_USER and DATABASE_ADMIN_PASS, or pre-create the database/user and set "
+        "DATABASE_SKIP_BOOTSTRAP=1.\n"
+        f"{detail}"
+    )
+
+
 def _resolveAdminConnection(env: Dict[str, str]) -> Tuple[list, Dict[str, str]]:
     # resolvePostgresAdminConnection
     postgresHost = (env.get("POSTGRES_HOST") or "localhost").strip()
@@ -97,17 +149,17 @@ def _resolveAdminConnection(env: Dict[str, str]) -> Tuple[list, Dict[str, str]]:
     return sudoArgs + ["psql", "-v", "ON_ERROR_STOP=1"], commandEnv
 
 
-def _runPsqlScalar(psqlBase: list, commandEnv: Dict[str, str], sql: str) -> str:
+def _runPsqlScalar(psqlBase: list, commandEnv: Dict[str, str], sql: str, timeoutSec: float) -> str:
     # psqlScalar
-    proc = runCmd(psqlBase + ["-tA", "-c", sql], env=commandEnv, capture=True)
+    proc = runCmd(psqlBase + ["-tA", "-c", sql], env=commandEnv, capture=True, timeout=timeoutSec)
     if proc.returncode != 0:
         raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stderr}")
     return (proc.stdout or "").strip()
 
 
-def _runPsqlExec(psqlBase: list, commandEnv: Dict[str, str], sql: str) -> None:
+def _runPsqlExec(psqlBase: list, commandEnv: Dict[str, str], sql: str, timeoutSec: float) -> None:
     # psqlExec
-    proc = runCmd(psqlBase + ["-c", sql], env=commandEnv, capture=True)
+    proc = runCmd(psqlBase + ["-c", sql], env=commandEnv, capture=True, timeout=timeoutSec)
     if proc.returncode != 0:
         raise RuntimeError(f"psql failed.\nSQL: {sql}\n{proc.stdout}\n{proc.stderr}")
 
@@ -127,6 +179,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
     dbName = (env.get("DATABASE_NAME") or "").strip()
     dbUser = (env.get("DATABASE_USER") or "").strip()
     dbPass = env.get("DATABASE_PASS") or ""
+    psqlTimeoutSec = _envFloat(env, "POSTGRES_COMMAND_TIMEOUT", 60.0)
 
     _validateIdentifier(dbName, "database name")
     _validateIdentifier(dbUser, "database user")
@@ -137,11 +190,15 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
 
     psqlBase, commandEnv = _resolveAdminConnection(env)
 
+    if _usesSudo(psqlBase):
+        _validateSudoAccess(env, commandEnv)
+
     _printInfo(f"Checking PostgreSQL role '{dbUser}'")
     roleExists = _runPsqlScalar(
         psqlBase,
         commandEnv,
         f"SELECT 1 FROM pg_roles WHERE rolname='{safeDbUser}'",
+        psqlTimeoutSec,
     )
 
     if roleExists != "1":
@@ -150,6 +207,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
             psqlBase,
             commandEnv,
             f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}';",
+            psqlTimeoutSec,
         )
     else:
         _printInfo(f"Role '{dbUser}' already exists")
@@ -158,6 +216,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
             psqlBase,
             commandEnv,
             f"ALTER ROLE {dbUser} WITH LOGIN PASSWORD '{safeDbPass}';",
+            psqlTimeoutSec,
         )
 
     _printInfo(f"Checking PostgreSQL database '{dbName}'")
@@ -165,17 +224,18 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         psqlBase,
         commandEnv,
         f"SELECT 1 FROM pg_database WHERE datname='{safeDbName}'",
+        psqlTimeoutSec,
     )
 
     if dbExists != "1":
         _printInfo(f"Creating PostgreSQL database '{dbName}'")
-        _runPsqlExec(psqlBase, commandEnv, f"CREATE DATABASE {dbName} OWNER {dbUser};")
+        _runPsqlExec(psqlBase, commandEnv, f"CREATE DATABASE {dbName} OWNER {dbUser};", psqlTimeoutSec)
     else:
         _printInfo(f"Database '{dbName}' already exists")
 
     _printInfo(f"Ensuring owner and database privileges for '{dbName}'")
-    _runPsqlExec(psqlBase, commandEnv, f"ALTER DATABASE {dbName} OWNER TO {dbUser};")
-    _runPsqlExec(psqlBase, commandEnv, f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};")
+    _runPsqlExec(psqlBase, commandEnv, f"ALTER DATABASE {dbName} OWNER TO {dbUser};", psqlTimeoutSec)
+    _runPsqlExec(psqlBase, commandEnv, f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};", psqlTimeoutSec)
 
     psqlDbBase = _withDatabase(psqlBase, dbName)
 
@@ -187,7 +247,7 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         f" GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {dbUser};"
         f" GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO {dbUser};"
     )
-    _runPsqlExec(psqlDbBase, commandEnv, ensureSchemaSql)
+    _runPsqlExec(psqlDbBase, commandEnv, ensureSchemaSql, psqlTimeoutSec)
 
     _printInfo("Fixing ownership for existing schema objects")
     fixOwnershipSql = f"""
@@ -207,7 +267,7 @@ BEGIN
   END LOOP;
 END $$;
 """.strip()
-    _runPsqlExec(psqlDbBase, commandEnv, fixOwnershipSql)
+    _runPsqlExec(psqlDbBase, commandEnv, fixOwnershipSql, psqlTimeoutSec)
 
     _printInfo("Ensuring default privileges for future migrations")
     defaultPrivsSql = (
@@ -215,7 +275,7 @@ END $$;
         f" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO {dbUser};"
         f" ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON FUNCTIONS TO {dbUser};"
     )
-    _runPsqlExec(psqlDbBase, commandEnv, defaultPrivsSql)
+    _runPsqlExec(psqlDbBase, commandEnv, defaultPrivsSql, psqlTimeoutSec)
 
 
 def _withDatabase(psqlBase: list, dbName: str) -> list:
@@ -224,7 +284,7 @@ def _withDatabase(psqlBase: list, dbName: str) -> list:
         result = []
         skipNext = False
 
-        for index, value in enumerate(psqlBase):
+        for value in psqlBase:
             if skipNext:
                 skipNext = False
                 continue
@@ -248,16 +308,28 @@ def _parseUpgradeTargetRevision(output: str) -> Optional[str]:
     return match.group(1)
 
 
+def _alembicTimeout() -> float:
+    # readAlembicTimeout
+    try:
+        return float(os.environ.get("ALEMBIC_COMMAND_TIMEOUT", "180"))
+    except Exception:
+        return 180.0
+
+
 def runAlembicUpgrade(repoRoot: Path) -> None:
     # runAlembicUpgradeHead
+    timeoutSec = _alembicTimeout()
     _printInfo("Running Alembic upgrade to head")
-    proc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True)
+    proc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True, timeout=timeoutSec)
 
     if proc.returncode == 0:
         _printInfo("Alembic upgrade finished successfully")
         return
 
     combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+    if proc.returncode == 124:
+        raise RuntimeError(f"Alembic upgrade timed out after {timeoutSec} seconds.\n{combined}")
 
     if ("InsufficientPrivilege" in combined) or ("permission denied" in combined):
         raise RuntimeError(
@@ -280,7 +352,7 @@ def runAlembicUpgrade(repoRoot: Path) -> None:
         )
 
     _printInfo(f"Stamping duplicate-table revision '{targetRevision}'")
-    stampProc = runCmd(["alembic", "stamp", targetRevision], cwd=repoRoot, live=True)
+    stampProc = runCmd(["alembic", "stamp", targetRevision], cwd=repoRoot, live=True, timeout=timeoutSec)
     if stampProc.returncode != 0:
         raise RuntimeError(
             "Alembic stamp failed.\n"
@@ -288,7 +360,7 @@ def runAlembicUpgrade(repoRoot: Path) -> None:
         )
 
     _printInfo("Retrying Alembic upgrade after stamp")
-    retryProc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True)
+    retryProc = runCmd(["alembic", "upgrade", "head"], cwd=repoRoot, live=True, timeout=timeoutSec)
     if retryProc.returncode != 0:
         combinedRetry = (retryProc.stdout or "") + "\n" + (retryProc.stderr or "")
         raise RuntimeError(f"Alembic upgrade failed after stamping.\n{combinedRetry}")
