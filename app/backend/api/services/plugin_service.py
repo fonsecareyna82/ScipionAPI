@@ -130,7 +130,12 @@ class PluginService:
                 return plugin
         return None
 
-    def installPlugin(self, pluginName: str, taskId: Optional[str] = None) -> Dict[str, Any]:
+    def installPlugin(
+        self,
+        pluginName: str,
+        taskId: Optional[str] = None,
+        skipBinaries: bool = False,
+    ) -> Dict[str, Any]:
         plugin: Optional[Any] = None
 
         try:
@@ -147,9 +152,13 @@ class PluginService:
             installed = plugin.installPipModule()
 
             if installed:
-                if taskId:
-                    writePluginTaskStep(taskId, "Installing binaries...")
-                plugin.installBin({"args": ["-j", "3"]})
+                if skipBinaries:
+                    if taskId:
+                        writePluginTaskStep(taskId, "Skipping binaries installation.")
+                else:
+                    if taskId:
+                        writePluginTaskStep(taskId, "Installing binaries...")
+                    plugin.installBin({"args": ["-j", "3"]})
             else:
                 if taskId:
                     writePluginTaskStep(taskId, "Pip module reported no installation action.")
@@ -159,7 +168,7 @@ class PluginService:
             if taskId:
                 writePluginTaskStep(taskId, "Plugin installed successfully.")
 
-            return {"installed": "SUCCESS"}
+            return {"installed": "SUCCESS", "skipBinaries": bool(skipBinaries)}
 
         except Exception:
             logger.exception("Error installing the plugin.")
@@ -169,12 +178,13 @@ class PluginService:
                 writePluginTaskStep(taskId, "Rolling back installation...")
 
             if plugin is not None:
-                try:
-                    plugin.uninstallBins()
-                except Exception:
-                    logger.exception("Error uninstalling binaries during install rollback.")
-                    if taskId:
-                        appendPluginTaskLog(taskId, traceback.format_exc())
+                if not skipBinaries:
+                    try:
+                        plugin.uninstallBins()
+                    except Exception:
+                        logger.exception("Error uninstalling binaries during install rollback.")
+                        if taskId:
+                            appendPluginTaskLog(taskId, traceback.format_exc())
 
                 try:
                     plugin.uninstallPip()
