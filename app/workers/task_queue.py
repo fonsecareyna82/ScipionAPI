@@ -64,7 +64,7 @@ class InstallPluginTask(Task):
 
 
 @celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.installPluginTask")
-def installPluginTask(self, pip_name: str) -> str:
+def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
     taskId = str(self.request.id)
 
     with pluginTaskLogCapture(taskId):
@@ -77,9 +77,10 @@ def installPluginTask(self, pip_name: str) -> str:
         from app.backend.api.services.plugin_service import PluginService
         service = PluginService()
 
-        self.update_state(state="PROGRESS", meta={"step": "Installing plugin..."})
-        writePluginTaskStep(taskId, "Installing plugin...")
-        service.installPlugin(pip_name, taskId=taskId)
+        installStep = "Installing plugin without binaries..." if skip_binaries else "Installing plugin..."
+        self.update_state(state="PROGRESS", meta={"step": installStep})
+        writePluginTaskStep(taskId, installStep)
+        service.installPlugin(pip_name, taskId=taskId, skipBinaries=skip_binaries)
 
         self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
         writePluginTaskStep(taskId, "Refreshing plugin metadata...")
@@ -97,7 +98,8 @@ def installPluginTask(self, pip_name: str) -> str:
 
         self.update_state(state="PROGRESS", meta={"step": "Completed"})
         writePluginTaskStep(taskId, "Completed")
-        return f"Plugin {pip_name} installed successfully!"
+        suffix = " without binaries" if skip_binaries else ""
+        return f"Plugin {pip_name} installed successfully{suffix}!"
 
 
 @celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.uninstallPluginTask")
