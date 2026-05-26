@@ -33,8 +33,20 @@ scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scip
 scipionHomeValue="${SCIPION_HOME:-}"
 
 # ensureConda
-if ! command -v conda >/dev/null 2>&1; then
+# resolveCondaExe
+condaExe="${SCIPIONAPI_CONDA_EXE:-${CONDA_EXE:-}}"
+if [[ -z "${condaExe}" ]]; then
+  condaExe="$(command -v conda || true)"
+fi
+
+if [[ -z "${condaExe}" ]]; then
   echo "ERROR: conda is required but was not found in PATH." >&2
+  echo "Set SCIPIONAPI_CONDA_EXE=/path/to/conda if conda is not on PATH." >&2
+  exit 1
+fi
+
+if ! "${condaExe}" --version >/dev/null 2>&1; then
+  echo "ERROR: conda executable is not valid: ${condaExe}" >&2
   exit 1
 fi
 
@@ -43,6 +55,9 @@ printWrapperHelp() {
 ScipionAPI wrapper (conda-managed)
 
 This script runs the scipionapi CLI inside a conda env.
+
+Conda executable:
+  ${condaExe}
 
 Conda env:
   ${effectiveEnvName}
@@ -63,7 +78,7 @@ EOF
 }
 
 envExistsNow() {
-  if conda env list | awk '{print $1}' | grep -qx "${effectiveEnvName}"; then
+  if "${condaExe}" env list | awk '{print $1}' | grep -qx "${effectiveEnvName}"; then
     echo "1"
   else
     echo "0"
@@ -79,7 +94,7 @@ runPipInstall() {
   fi
 
   local cmd=(
-    conda run --no-capture-output -n "${effectiveEnvName}"
+    "${condaExe}" run --no-capture-output -n "${effectiveEnvName}"
     python -m pip install
     --progress-bar on
     --retries "${pipRetries}"
@@ -101,10 +116,10 @@ runPipInstall() {
 scipionapiInstalled() {
   if [[ -n "${scipionHomeValue}" ]]; then
     env SCIPION_HOME="${scipionHomeValue}" SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      conda run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
   else
     env SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      conda run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
   fi
 }
 
@@ -113,7 +128,7 @@ ensureScipionCoreInstalled() {
     return 0
   fi
 
-  if conda run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
+  if "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -121,7 +136,7 @@ ensureScipionCoreInstalled() {
   read -r -a scipionCorePackagesArray <<< "${scipionCorePackages}"
   runPipInstall "${scipionCorePackagesArray[@]}"
 
-  conda run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
+  "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
     echo "ERROR: pyworkflow import still failing after installing Scipion core packages." >&2
     exit 1
   }
@@ -135,7 +150,7 @@ bootstrapEnv() {
 
   if [[ "${exists}" == "0" ]]; then
     echo "Creating conda env: ${effectiveEnvName} (python=${pythonVersion})"
-    conda create -y -n "${effectiveEnvName}" "python=${pythonVersion}"
+    "${condaExe}" create -y -n "${effectiveEnvName}" "python=${pythonVersion}"
   fi
 
   echo "[bootstrap] Upgrading pip"
@@ -174,11 +189,11 @@ runInCondaCli() {
     exec env \
       SCIPION_HOME="${scipionHomeValue}" \
       SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      conda run -n "${effectiveEnvName}" scipionapi "$@"
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi "$@"
   else
     exec env \
       SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      conda run -n "${effectiveEnvName}" scipionapi "$@"
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi "$@"
   fi
 }
 
@@ -200,10 +215,10 @@ if [[ -z "${cmd}" ]] || [[ "${cmd}" == "--help" ]] || [[ "${cmd}" == "-h" ]] || 
   if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
     if [[ -n "${scipionHomeValue}" ]]; then
       exec env SCIPION_HOME="${scipionHomeValue}" SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-        conda run -n "${effectiveEnvName}" scipionapi --help
+        "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help
     fi
     exec env SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      conda run -n "${effectiveEnvName}" scipionapi --help
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help
   fi
   printWrapperHelp
   exit 0

@@ -27,7 +27,6 @@
 import importlib
 import sys
 import types
-from typing import Any, Dict, Iterator, Optional
 
 import pytest
 from fastapi import FastAPI
@@ -55,9 +54,13 @@ class FakePluginService:
     def getPlugin(self, pluginName):
         return self.pluginByName.get(pluginName)
 
-    def installPlugin(self, pluginName, taskId=None):
-        self.installCalls.append({"pluginName": pluginName, "taskId": taskId})
-        return {"installed": "SUCCESS"}
+    def installPlugin(self, pluginName, taskId=None, skipBinaries=False):
+        self.installCalls.append({
+            "pluginName": pluginName,
+            "taskId": taskId,
+            "skipBinaries": skipBinaries,
+        })
+        return {"installed": "SUCCESS", "skipBinaries": skipBinaries}
 
     def uninstallPlugin(self, pluginName, taskId=None):
         self.uninstallCalls.append({"pluginName": pluginName, "taskId": taskId})
@@ -78,8 +81,8 @@ class ImportSafePluginService:
     def getPlugin(self, pluginName):
         return None
 
-    def installPlugin(self, pluginName, taskId=None):
-        return {"installed": "SUCCESS"}
+    def installPlugin(self, pluginName, taskId=None, skipBinaries=False):
+        return {"installed": "SUCCESS", "skipBinaries": skipBinaries}
 
     def uninstallPlugin(self, pluginName, taskId=None):
         return {"uninstalled": "SUCCESS"}
@@ -201,10 +204,11 @@ def test_LoadPluginReturnsPlugin(pluginClient):
 def test_InstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, pluginRouterModule, monkeypatch):
     captured = {}
 
-    async def fakeStartInProcessTask(taskFn, pluginName, operation):
+    async def fakeStartInProcessTask(taskFn, pluginName, operation, **taskKwargs):
         captured["taskFn"] = taskFn
         captured["pluginName"] = pluginName
         captured["operation"] = operation
+        captured["taskKwargs"] = taskKwargs
         return {
             "taskId": "local-install-1",
             "status": "STARTED",
@@ -224,15 +228,47 @@ def test_InstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, plugin
     assert captured["taskFn"] == pluginRouterModule.service.installPlugin
     assert captured["pluginName"] == "scipion-em-xmipp"
     assert captured["operation"] == "install"
+    assert captured["taskKwargs"] == {"skipBinaries": False}
+
+
+def test_InstallPluginPassesSkipBinariesToLocalBackend(pluginClient, pluginRouterModule, monkeypatch):
+    captured = {}
+
+    async def fakeStartInProcessTask(taskFn, pluginName, operation, **taskKwargs):
+        captured["taskFn"] = taskFn
+        captured["pluginName"] = pluginName
+        captured["operation"] = operation
+        captured["taskKwargs"] = taskKwargs
+        return {
+            "taskId": "local-install-skip-binaries-1",
+            "status": "STARTED",
+            "backend": "local",
+        }
+
+    monkeypatch.setattr(pluginRouterModule, "_startInProcessTask", fakeStartInProcessTask)
+
+    response = pluginClient.post("/plugins/install/scipion-em-xmipp?skipBinaries=true")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "taskId": "local-install-skip-binaries-1",
+        "status": "STARTED",
+        "backend": "local",
+    }
+    assert captured["taskFn"] == pluginRouterModule.service.installPlugin
+    assert captured["pluginName"] == "scipion-em-xmipp"
+    assert captured["operation"] == "install"
+    assert captured["taskKwargs"] == {"skipBinaries": True}
 
 
 def test_UninstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, pluginRouterModule, monkeypatch):
     captured = {}
 
-    async def fakeStartInProcessTask(taskFn, pluginName, operation):
+    async def fakeStartInProcessTask(taskFn, pluginName, operation, **taskKwargs):
         captured["taskFn"] = taskFn
         captured["pluginName"] = pluginName
         captured["operation"] = operation
+        captured["taskKwargs"] = taskKwargs
         return {
             "taskId": "local-uninstall-1",
             "status": "STARTED",
@@ -252,6 +288,7 @@ def test_UninstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, plug
     assert captured["taskFn"] == pluginRouterModule.service.uninstallPlugin
     assert captured["pluginName"] == "scipion-em-xmipp"
     assert captured["operation"] == "uninstall"
+    assert captured["taskKwargs"] == {}
 
 
 def test_InstallPluginUsesCeleryWhenAvailable(pluginClient, pluginRouterModule, monkeypatch):
@@ -284,7 +321,41 @@ def test_InstallPluginUsesCeleryWhenAvailable(pluginClient, pluginRouterModule, 
     assert initializeCalls[0]["operation"] == "install"
 
     assert len(fakeTask.calls) == 1
-    assert fakeTask.calls[0]["args"] == ["scipion-em-relion"]
+    assert fakeTask.calls[0]["args"] == ["scipion-em-relion", False]
+    assert fakeTask.calls[0]["task_id"] == body["taskId"]
+
+
+def test_InstallPluginPassesSkipBinariesToCelery(pluginClient, pluginRouterModule, monkeypatch):
+    fakeTask = FakeCeleryTask()
+    initializeCalls = []
+
+    def fakeInitializePluginTaskLog(taskId, pluginName, operation):
+        initializeCalls.append({
+            "taskId": taskId,
+            "pluginName": pluginName,
+            "operation": operation,
+        })
+
+    monkeypatch.setattr(pluginRouterModule, "_celeryAppAvailable", True)
+    monkeypatch.setattr(pluginRouterModule, "_celeryInstallAvailable", True)
+    monkeypatch.setattr(pluginRouterModule, "installPluginTask", fakeTask)
+    monkeypatch.setattr(pluginRouterModule, "initializePluginTaskLog", fakeInitializePluginTaskLog)
+
+    response = pluginClient.post("/plugins/install/scipion-em-relion?skipBinaries=true")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "PENDING"
+    assert body["backend"] == "celery"
+    assert isinstance(body["taskId"], str)
+    assert len(body["taskId"]) > 0
+
+    assert len(initializeCalls) == 1
+    assert initializeCalls[0]["pluginName"] == "scipion-em-relion"
+    assert initializeCalls[0]["operation"] == "install"
+
+    assert len(fakeTask.calls) == 1
+    assert fakeTask.calls[0]["args"] == ["scipion-em-relion", True]
     assert fakeTask.calls[0]["task_id"] == body["taskId"]
 
 

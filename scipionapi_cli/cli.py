@@ -1,5 +1,7 @@
+import os
 import re
 from pathlib import Path
+from typing import Optional
 
 import typer
 from importlib import metadata as importlibMetadata
@@ -7,6 +9,7 @@ from importlib import metadata as importlibMetadata
 from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
+from scipionapi_cli.doctor import doctorCommand
 from scipionapi_cli.runtime import (
     logsCommand,
     restartCommand,
@@ -46,6 +49,28 @@ def _resolveCliVersion() -> str:
     return "unknown"
 
 
+def _resolveAdminPassword(
+    password: Optional[str],
+    passwordEnv: Optional[str],
+    promptLabel: str = "Admin password",
+) -> str:
+    # Resolve admin password from CLI, environment variable, or hidden prompt.
+    if password:
+        return password
+
+    if passwordEnv:
+        envValue = os.environ.get(passwordEnv)
+        if envValue:
+            return envValue
+
+        raise typer.BadParameter(
+            f"Environment variable '{passwordEnv}' is not set or is empty.",
+            param_hint="--password-env",
+        )
+
+    return typer.prompt(promptLabel, hide_input=True, confirmation_prompt=True)
+
+
 CLI_VERSION = _resolveCliVersion()
 
 app = typer.Typer(
@@ -59,16 +84,18 @@ app = typer.Typer(
         "application, optionally deploy the web frontend, and manage runtime services.\n\n"
         "[bold]Typical usage[/bold]\n"
         "  scipionapi bootstrap\n"
-        "  scipionapi install --user <name> --email <email> --pass <password>\n"
-        "  scipionapi provision --user <name> --email <email> --pass <password> "
-        "[--web-dist <dir|zip>]\n"
+        "  scipionapi install --user <name> --email <email>\n"
+        "  scipionapi install --user <name> --email <email> --password-env ADMIN_PASSWORD\n"
+        "  scipionapi provision --user <name> --email <email> [--web-dist <dir|zip>]\n"
         "  scipionapi start\n"
         "  scipionapi status\n"
         "  scipionapi logs\n"
         "  scipionapi version\n\n"
+        "  scipionapi doctor\n"
         "[bold]Command groups[/bold]\n"
         "  [cyan]Setup[/cyan]: bootstrap, install, provision\n"
         "  [cyan]Runtime[/cyan]: start, stop, restart, status, logs\n"
+        "  [cyan]Diagnostics[/cyan]: doctor\n"
         "  [cyan]Info[/cyan]: version\n"
     ),
 )
@@ -119,7 +146,7 @@ def bootstrap(
 
 @app.command(
     "install",
-    help="Configure SCIPION_HOME/.env, create required directories and config files, ensure local DB/user, run migrations, and ensure admin user. Does not install Python packages."
+    help="Configure SCIPION_HOME/.env, create required directories and config files, ensure DB/user, run migrations, and ensure admin user. Does not install Python packages."
 )
 def install(
     user: str = typer.Option(
@@ -132,17 +159,28 @@ def install(
         "--email",
         help="Admin email.",
     ),
-    password: str = typer.Option(
-        ...,
+    password: Optional[str] = typer.Option(
+        None,
         "--pass",
-        help="Admin password.",
+        "--password",
+        help="Admin password. Prefer the hidden prompt or --password-env for security.",
+        show_default=False,
+    ),
+    passwordEnv: Optional[str] = typer.Option(
+        None,
+        "--password-env",
+        envvar="SCIPIONAPI_ADMIN_PASSWORD_ENV",
+        help="Name of an environment variable containing the admin password.",
+        show_default=False,
     ),
 ) -> None:
     # nonInteractiveInstall
+    adminPassword = _resolveAdminPassword(password, passwordEnv)
+
     installCommand(
         adminUser=user,
         adminEmail=email,
-        adminPassword=password,
+        adminPassword=adminPassword,
     )
 
 
@@ -164,12 +202,21 @@ def provision(
         "--email",
         help="Admin email.",
     ),
-    password: str = typer.Option(
-        ...,
+    password: Optional[str] = typer.Option(
+        None,
         "--pass",
-        help="Admin password.",
+        "--password",
+        help="Admin password. Prefer the hidden prompt or --password-env for security.",
+        show_default=False,
     ),
-    webDist: str = typer.Option(
+    passwordEnv: Optional[str] = typer.Option(
+        None,
+        "--password-env",
+        envvar="SCIPIONAPI_ADMIN_PASSWORD_ENV",
+        help="Name of an environment variable containing the admin password.",
+        show_default=False,
+    ),
+    webDist: Optional[str] = typer.Option(
         None,
         "--web-dist",
         help="Path to a Vite dist directory or a .zip containing the built frontend.",
@@ -180,7 +227,7 @@ def provision(
         help="Mount path used by the API in integrated web mode.",
         show_default=True,
     ),
-    apiBaseUrl: str = typer.Option(
+    apiBaseUrl: Optional[str] = typer.Option(
         None,
         "--api-base-url",
         help="API base URL the web frontend should use. Defaults to the resolved API mount path.",
@@ -221,10 +268,12 @@ def provision(
     ),
 ) -> None:
     # provisionOneShot
+    adminPassword = _resolveAdminPassword(password, passwordEnv)
+
     provisionCommand(
         adminUser=user,
         adminEmail=email,
-        adminPassword=password,
+        adminPassword=adminPassword,
         webDist=webDist,
         apiMountPath=apiMountPath,
         apiBaseUrl=apiBaseUrl,
@@ -279,6 +328,28 @@ def status() -> None:
 def logs() -> None:
     # followRuntimeLogs
     logsCommand()
+
+
+@app.command(
+    "doctor",
+    help="Run read-only diagnostics for the repository, environment, database, broker, imports, and runtime services.",
+)
+def doctor(
+    strict: bool = typer.Option(
+        False,
+        "--strict/--no-strict",
+        help="Exit with code 1 when failures are detected.",
+        show_default=True,
+    ),
+    full: bool = typer.Option(
+        True,
+        "--full/--quick",
+        help="Run heavier checks such as importing the FastAPI app and checking Alembic.",
+        show_default=True,
+    ),
+) -> None:
+    # runDoctorDiagnostics
+    doctorCommand(strict=strict, full=full)
 
 
 @app.command(
