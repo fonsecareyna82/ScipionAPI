@@ -84,7 +84,7 @@ def loadPlugin(pluginName: str):
     return plugin
 
 
-async def _startInProcessTask(taskFn, pluginName: str, operation: str) -> TaskStartResponse:
+async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwargs) -> TaskStartResponse:
     taskId = uuid4().hex
     initializePluginTaskLog(taskId, pluginName, operation)
     loop = asyncio.get_running_loop()
@@ -93,7 +93,7 @@ async def _startInProcessTask(taskFn, pluginName: str, operation: str) -> TaskSt
         try:
             writePluginTaskStep(taskId, "Starting in-process task...")
             with pluginTaskLogCapture(taskId):
-                result = await loop.run_in_executor(None, taskFn, pluginName, taskId)
+                result = await loop.run_in_executor(None, lambda: taskFn(pluginName, taskId, **taskKwargs))
             writePluginTaskStep(taskId, "In-process task completed.")
             _inProcessResults[taskId] = {"status": "SUCCESS", "result": result, "error": None}
         except Exception as e:
@@ -107,15 +107,20 @@ async def _startInProcessTask(taskFn, pluginName: str, operation: str) -> TaskSt
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
-async def installPlugin(pluginName: str):
+async def installPlugin(pluginName: str, skipBinaries: bool = False):
     try:
         if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
             taskId = uuid4().hex
             initializePluginTaskLog(taskId, pluginName, "install")
-            installPluginTask.apply_async(args=[pluginName], task_id=taskId)
+            installPluginTask.apply_async(args=[pluginName, skipBinaries], task_id=taskId)
             return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
 
-        return await _startInProcessTask(service.installPlugin, pluginName, "install")
+        return await _startInProcessTask(
+            service.installPlugin,
+            pluginName,
+            "install",
+            skipBinaries=skipBinaries,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
