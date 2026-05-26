@@ -3,6 +3,7 @@ import os
 import secrets
 from shutil import which
 from typing import Dict, Optional, List, Any, Tuple
+from urllib.parse import quote_plus
 
 from app.utils.scipion_helper import getFreePort
 from scipionapi_cli.shell import resolveRepoRoot
@@ -63,8 +64,24 @@ def _buildDatabaseUrl(
     dbPort: str,
     dbName: str,
 ) -> str:
-    # buildDatabaseUrl
-    return f"postgresql://{dbUser}:{dbPass}@{dbHost}:{dbPort}/{dbName}"
+    # Build a PostgreSQL URL with escaped credentials.
+    safeUser = quote_plus(dbUser)
+    safePass = quote_plus(dbPass)
+    safeHost = dbHost.strip()
+    safePort = str(dbPort).strip()
+    safeName = quote_plus(dbName)
+
+    return f"postgresql://{safeUser}:{safePass}@{safeHost}:{safePort}/{safeName}"
+
+
+def _maskSecret(value: str, visible: int = 4) -> str:
+    # Mask sensitive values for console output.
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= visible:
+        return "*" * len(text)
+    return f"{text[:visible]}{'*' * 8}"
 
 
 def _writeFileIfMissingOrEmpty(path: Path, content: str) -> Path:
@@ -286,7 +303,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
 
     dbName = existing.get("DATABASE_NAME") or "scipion_db"
     dbUser = existing.get("DATABASE_USER") or "scipion_user"
-    dbPass = existing.get("DATABASE_PASS") or "scipion_pass"
+    dbPass = existing.get("DATABASE_PASS") or secrets.token_urlsafe(32)
     dbHost = existing.get("POSTGRES_HOST") or "localhost"
     dbPort = existing.get("POSTGRES_PORT") or "5432"
     databaseUrl = _buildDatabaseUrl(
@@ -330,6 +347,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
             ("hosts.conf", hostsConfPath),
             ("Database name", dbName),
             ("Database user", dbUser),
+            ("Database password", _maskSecret(dbPass)),
             ("Postgres host", dbHost),
             ("Postgres port", dbPort),
             ("API host", existing.get("API_HOST") or "0.0.0.0"),
@@ -361,7 +379,6 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
         "WEB_API_BASE_URL": existing.get("WEB_API_BASE_URL") or "/api",
         "ADMIN_USERNAME": adminUser,
         "ADMIN_EMAIL": adminEmail,
-        "ADMIN_PASSWORD": adminPassword,
         "SCIPION_PORT": scipionPort,
         "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
         "BACKEND_RELOAD_MODE": "prod",
@@ -393,7 +410,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     _printSuccess("Alembic upgrade completed")
 
     _printStep("Ensuring admin user")
-    ensureAdminUser(env)
+    ensureAdminUser(env, adminPassword=adminPassword)
     _printSuccess(f"Admin user ensured: {adminEmail}")
 
     if not condaExePath:

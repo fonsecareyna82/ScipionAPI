@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -144,7 +145,9 @@ def _safeExtractZip(zipPath: Path, destDir: Path) -> None:
     with zipfile.ZipFile(zipPath, "r") as zf:
         for member in zf.infolist():
             memberPath = (destDir / member.filename).resolve()
-            if not str(memberPath).startswith(str(destRoot)):
+            try:
+                memberPath.relative_to(destRoot)
+            except ValueError:
                 raise RuntimeError(f"Unsafe zip content detected: {member.filename}")
         zf.extractall(destDir)
 
@@ -212,6 +215,14 @@ def _normalizeApiBaseUrl(value: str, fallbackMountPath: str) -> str:
     return apiBaseUrl.rstrip("/") or "/"
 
 
+def _envFlag(name: str, default: bool = False) -> bool:
+    # readBoolEnv
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def deployWebDist(
     scipionHome: Path,
     webDist: Path,
@@ -247,11 +258,13 @@ def deployWebDist(
         _safeRemoveTree(tempExtract)
         tempExtract.mkdir(parents=True, exist_ok=True)
 
-        _safeExtractZip(webDist, tempExtract)
-        normalizedSrc = _normalizeViteDistLayout(tempExtract)
-        _printStep("Copying extracted web assets", str(normalizedSrc))
-        _copyDirContents(normalizedSrc, targetDist)
-        _safeRemoveTree(tempExtract)
+        try:
+            _safeExtractZip(webDist, tempExtract)
+            normalizedSrc = _normalizeViteDistLayout(tempExtract)
+            _printStep("Copying extracted web assets", str(normalizedSrc))
+            _copyDirContents(normalizedSrc, targetDist)
+        finally:
+            _safeRemoveTree(tempExtract)
 
     else:
         raise RuntimeError(f"Unsupported webDist input: {webDist} (expected directory or .zip file)")
@@ -295,6 +308,11 @@ def provisionCommand(
             ("Scipion core packages", scipionCorePackages),
         ],
     )
+
+    if webDist:
+        webDistPath = Path(webDist).expanduser()
+        if not webDistPath.exists():
+            raise RuntimeError(f"webDist does not exist: {webDistPath}")
 
     if runBootstrap:
         _printStep("Running bootstrap phase")
@@ -367,15 +385,29 @@ def provisionCommand(
         env = readEnvFile(envPath)
         _printSuccess("Integrated web mode enabled")
     else:
-        updates = {
-            "SERVE_WEB": "0",
-            "API_MOUNT_PATH": resolvedApiMountPath,
-        }
-        _printStep("Updating environment for API-only mode", str(envPath))
-        writeEnvFile(envPath, updates)
-        exportEnvToOs(envPath)
-        env = readEnvFile(envPath)
-        _printSuccess("API-only mode enabled")
+        disableWeb = _envFlag("SCIPIONAPI_DISABLE_WEB", False)
+
+        if disableWeb:
+            updates = {
+                "SERVE_WEB": "0",
+                "API_MOUNT_PATH": resolvedApiMountPath,
+            }
+            _printStep("Updating environment for API-only mode", str(envPath))
+            writeEnvFile(envPath, updates)
+            exportEnvToOs(envPath)
+            env = readEnvFile(envPath)
+            _printSuccess("API-only mode enabled")
+        else:
+            updates = {
+                "API_MOUNT_PATH": resolvedApiMountPath,
+            }
+            _printStep("Keeping existing web mode because no webDist was provided", str(envPath))
+            writeEnvFile(envPath, updates)
+            exportEnvToOs(envPath)
+            env = readEnvFile(envPath)
+            _printSuccess(
+                "Web mode unchanged. Set SCIPIONAPI_DISABLE_WEB=1 to force API-only mode."
+            )
 
     _printStep("Starting services")
     startCommand()
