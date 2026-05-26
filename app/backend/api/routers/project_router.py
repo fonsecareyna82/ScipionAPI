@@ -3022,6 +3022,42 @@ def _buildCachedThumbnailResponse(
     )
     return _attachDebugHeaders(response, currentUser)
 
+
+def _loadThumbnailProjectContext(
+    service: ProjectService,
+    mapper: PostgresqlFlatMapper,
+    projectId: int,
+    currentUser: Dict[str, Any],
+) -> dict:
+    dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not dbProj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    service.loadProjectForThumbnails(dbProj)
+    return dbProj
+
+
+def _runThumbnailProjectJob(
+    service: ProjectService,
+    mapper: PostgresqlFlatMapper,
+    projectId: int,
+    currentUser: Dict[str, Any],
+    job,
+):
+    with _thumbnailProjectLock:
+        try:
+            _loadThumbnailProjectContext(service, mapper, projectId, currentUser)
+            return job()
+        finally:
+            _clearThumbnailProjectContext(service)
+
+def _clearThumbnailProjectContext(service: ProjectService) -> None:
+    try:
+        service.clearCurrentProject()
+    except Exception:
+        logger.debug("Could not clear thumbnail project context", exc_info=True)
+
+
 @router.get(
     "/{projectId}/thumbnail",
     response_model=None,
@@ -3037,17 +3073,17 @@ def getProjectThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            try:
+                _loadThumbnailProjectContext(service, mapper, projectId, currentUser)
 
-        service.loadProjectForThumbnails(dbProj)
-
-        result = service.buildProjectThumbnail(
-            force=False,
-            size=size,
-            maxProtocols=maxProtocols,
-        )
+                result = service.buildProjectThumbnail(
+                    force=False,
+                    size=size,
+                    maxProtocols=maxProtocols,
+                )
+            finally:
+                _clearThumbnailProjectContext(service)
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
@@ -3085,17 +3121,17 @@ def rebuildProjectThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        with _thumbnailProjectLock:
+            try:
+                _loadThumbnailProjectContext(service, mapper, projectId, currentUser)
 
-        service.loadProjectForThumbnails(dbProj)
-
-        result = service.buildProjectThumbnail(
-            force=True,
-            size=size,
-            maxProtocols=maxProtocols,
-        )
+                result = service.buildProjectThumbnail(
+                    force=True,
+                    size=size,
+                    maxProtocols=maxProtocols,
+                )
+            finally:
+                _clearThumbnailProjectContext(service)
 
         response = JSONResponse(
             {
@@ -3131,25 +3167,28 @@ def getProtocolThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        def buildThumbnail():
+            if outputName:
+                return service.buildProtocolOutputThumbnail(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    force=False,
+                    size=size,
+                )
 
-        service.loadProjectForThumbnails(dbProj)
-
-        if outputName:
-            result = service.buildProtocolOutputThumbnail(
-                protocolId=protocolId,
-                outputName=outputName,
-                force=False,
-                size=size,
-            )
-        else:
-            result = service.buildProtocolThumbnail(
+            return service.buildProtocolThumbnail(
                 protocolId=protocolId,
                 force=False,
                 size=size,
             )
+
+        result = _runThumbnailProjectJob(
+            service=service,
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            job=buildThumbnail,
+        )
 
         thumbPath = result.get("absolutePath")
         if not thumbPath:
@@ -3188,25 +3227,28 @@ def rebuildProtocolThumbnail(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
+        def buildThumbnail():
+            if outputName:
+                return service.buildProtocolOutputThumbnail(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    force=True,
+                    size=size,
+                )
 
-        service.loadProjectForThumbnails(dbProj)
-
-        if outputName:
-            result = service.buildProtocolOutputThumbnail(
-                protocolId=protocolId,
-                outputName=outputName,
-                force=True,
-                size=size,
-            )
-        else:
-            result = service.buildProtocolThumbnail(
+            return service.buildProtocolThumbnail(
                 protocolId=protocolId,
                 force=True,
                 size=size,
             )
+
+        result = _runThumbnailProjectJob(
+            service=service,
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            job=buildThumbnail,
+        )
 
         response = JSONResponse(
             {
@@ -3320,6 +3362,8 @@ def listProjectThumbnailItems(
             status_code=500,
             detail=f"Failed to list project thumbnail items: {e}",
         )
+    finally:
+        _clearThumbnailProjectContext(service)
 
 
 @router.get(
