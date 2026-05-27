@@ -561,8 +561,13 @@ def updateCommand(
         or os.environ.get("SCIPIONAPI_UPDATE_BASE_URL")
         or DEFAULT_UPDATE_BASE_URL
     )
+
+    requestedVersionInput = (version or "").strip()
+    if requestedVersionInput.lower() == "latest":
+        requestedVersionInput = ""
+
     requestedVersion = _normalizeVersionTag(
-        version
+        requestedVersionInput
         or env.get("SCIPIONAPI_UPDATE_VERSION")
         or os.environ.get("SCIPIONAPI_UPDATE_VERSION")
         or "latest"
