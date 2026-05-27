@@ -10,6 +10,8 @@ from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.doctor import doctorCommand
+from scipionapi_cli.update import updateCommand
+from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
 from scipionapi_cli.runtime import (
     logsCommand,
     restartCommand,
@@ -21,6 +23,9 @@ from scipionapi_cli.runtime import (
 
 def _resolveCliVersion() -> str:
     # resolveCliVersion
+    if SCIPIONAPI_RELEASE_TAG:
+        return SCIPIONAPI_RELEASE_TAG
+
     packageName = "scipionapi"
 
     try:
@@ -42,7 +47,8 @@ def _resolveCliVersion() -> str:
                 flags=re.MULTILINE,
             )
             if match:
-                return match.group(1)
+                value = match.group(1)
+                return value if value.startswith("v") else f"v{value}"
     except Exception:
         pass
 
@@ -79,14 +85,17 @@ app = typer.Typer(
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
     help=(
-        f"[bold cyan]Scipion API CLI[/bold cyan] [dim]v{CLI_VERSION}[/dim]\n\n"
+        f"[bold cyan]Scipion API CLI[/bold cyan] [dim]{CLI_VERSION}[/dim]\n\n"
         "Utilities to bootstrap the conda environment, install and configure the "
-        "application, optionally deploy the web frontend, and manage runtime services.\n\n"
+        "application, optionally deploy the web frontend, manage runtime services, "
+        "and update existing installations.\n\n"
         "[bold]Typical usage[/bold]\n"
         "  scipionapi bootstrap\n"
         "  scipionapi install --user <name> --email <email>\n"
         "  scipionapi install --user <name> --email <email> --password-env ADMIN_PASSWORD\n"
         "  scipionapi provision --user <name> --email <email> [--web-dist <dir|zip>]\n"
+        "  scipionapi update\n"
+        "  scipionapi update --version v4.0.0\n"
         "  scipionapi start\n"
         "  scipionapi status\n"
         "  scipionapi logs\n"
@@ -94,6 +103,7 @@ app = typer.Typer(
         "  scipionapi doctor\n"
         "[bold]Command groups[/bold]\n"
         "  [cyan]Setup[/cyan]: bootstrap, install, provision\n"
+        "  [cyan]Update[/cyan]: update\n"
         "  [cyan]Runtime[/cyan]: start, stop, restart, status, logs\n"
         "  [cyan]Diagnostics[/cyan]: doctor\n"
         "  [cyan]Info[/cyan]: version\n"
@@ -282,6 +292,85 @@ def provision(
         pythonVersion=pythonVersion,
         installScipionCore=installScipionCore,
         scipionCorePackages=scipionCorePackages,
+    )
+
+
+@app.command(
+    "update",
+    help=(
+        "Update an existing installation from ScipionAPI/ScipionWeb release ZIPs "
+        "while preserving SCIPION_HOME, .env, projects, logs, and database data."
+    ),
+)
+def update(
+    version: str = typer.Option(
+        "latest",
+        "--version",
+        envvar="SCIPIONAPI_UPDATE_VERSION",
+        help="Target release tag such as v4.0.0. Use latest to resolve the newest release.",
+        show_default=True,
+    ),
+    baseUrl: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        envvar="SCIPIONAPI_UPDATE_BASE_URL",
+        help="Base URL containing manifest.json and release ZIPs.",
+        show_default=False,
+    ),
+    apiZipUrl: Optional[str] = typer.Option(
+        None,
+        "--api-zip-url",
+        help="Explicit ScipionAPI ZIP URL. Overrides the URL resolved from version/base URL.",
+        show_default=False,
+    ),
+    webZipUrl: Optional[str] = typer.Option(
+        None,
+        "--web-zip-url",
+        help="Explicit ScipionWeb dist ZIP URL. Overrides the URL resolved from version/base URL.",
+        show_default=False,
+    ),
+    apiOnly: bool = typer.Option(
+        False,
+        "--api-only",
+        help="Update only the API source/package and migrations.",
+        show_default=True,
+    ),
+    webOnly: bool = typer.Option(
+        False,
+        "--web-only",
+        help="Update only the deployed web dist.",
+        show_default=True,
+    ),
+    dryRun: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Resolve the target release and print the update plan without changing files.",
+        show_default=True,
+    ),
+    noRestart: bool = typer.Option(
+        False,
+        "--no-restart",
+        help="Do not restart services after applying the update.",
+        show_default=True,
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Reinstall even if the current API version matches the target version.",
+        show_default=True,
+    ),
+) -> None:
+    # updateExistingInstallation
+    updateCommand(
+        version=version,
+        baseUrl=baseUrl,
+        apiZipUrl=apiZipUrl,
+        webZipUrl=webZipUrl,
+        apiOnly=apiOnly,
+        webOnly=webOnly,
+        dryRun=dryRun,
+        noRestart=noRestart,
+        force=force,
     )
 
 
