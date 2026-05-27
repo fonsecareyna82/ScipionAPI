@@ -50,6 +50,8 @@ if ! "${condaExe}" --version >/dev/null 2>&1; then
   exit 1
 fi
 
+condaCliRun=("${condaExe}" run --live-stream -n "${effectiveEnvName}")
+
 printWrapperHelp() {
   cat <<EOF
 ScipionAPI wrapper (conda-managed)
@@ -96,7 +98,7 @@ runPipInstall() {
   fi
 
   local cmd=(
-    "${condaExe}" run --no-capture-output -n "${effectiveEnvName}"
+    "${condaExe}" run --live-stream -n "${effectiveEnvName}"
     python -m pip install
     --progress-bar on
     --retries "${pipRetries}"
@@ -191,11 +193,11 @@ runInCondaCli() {
     exec env \
       SCIPION_HOME="${scipionHomeValue}" \
       SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      "${condaExe}" run -n "${effectiveEnvName}" scipionapi "$@"
+      "${condaCliRun[@]}" scipionapi "$@"
   else
     exec env \
       SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      "${condaExe}" run -n "${effectiveEnvName}" scipionapi "$@"
+      "${condaCliRun[@]}" scipionapi "$@"
   fi
 }
 
@@ -217,10 +219,10 @@ if [[ -z "${cmd}" ]] || [[ "${cmd}" == "--help" ]] || [[ "${cmd}" == "-h" ]] || 
   if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
     if [[ -n "${scipionHomeValue}" ]]; then
       exec env SCIPION_HOME="${scipionHomeValue}" SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-        "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help
+        "${condaCliRun[@]}" scipionapi --help
     fi
     exec env SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
-      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help
+      "${condaCliRun[@]}" scipionapi --help
   fi
   printWrapperHelp
   exit 0
