@@ -66,12 +66,14 @@ Typical usage:
   ./scripts/scipionapi bootstrap
   ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
   ./scripts/scipionapi install --user ... --email ... --pass ...
+  ./scripts/scipionapi update [--version v4.0.0]
   ./scripts/scipionapi start|stop|restart|status|logs
 
 Notes:
   - bootstrap installs Python packages in the conda environment
   - install configures SCIPION_HOME, database, migrations, and admin user
   - provision combines bootstrap/install/start in one flow
+  - update downloads ScipionAPI/ScipionWeb release ZIPs and preserves current .env/data
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
 EOF
