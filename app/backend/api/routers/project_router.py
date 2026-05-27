@@ -3350,7 +3350,7 @@ def listProjectThumbnailItems(
             items = validItems
 
         response = JSONResponse(items)
-        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
         response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
         return _attachDebugHeaders(response, currentUser)
 
