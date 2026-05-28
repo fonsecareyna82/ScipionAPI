@@ -555,6 +555,22 @@ def _restoreApiBackup(repoRoot: Path, backupRoot: Path) -> None:
         if backupPath.exists() or backupPath.is_symlink():
             _copyPath(backupPath, targetPath)
 
+    _ensurePostUpdatePermissions(repoRoot)
+
+
+def _ensureExecutableFile(path: Path) -> None:
+    # ensureExecutableFile
+    if not path.exists() or not path.is_file():
+        return
+
+    currentMode = path.stat().st_mode
+    path.chmod(currentMode | 0o755)
+
+
+def _ensurePostUpdatePermissions(repoRoot: Path) -> None:
+    # ensurePostUpdatePermissions
+    _ensureExecutableFile(repoRoot / "scripts" / "scipionapi")
+
 
 def _applyApiUpdate(repoRoot: Path, apiSourceRoot: Path) -> None:
     # applyApiUpdate
@@ -566,6 +582,8 @@ def _applyApiUpdate(repoRoot: Path, apiSourceRoot: Path) -> None:
 
         _printInfo(f"Updating API path: {relativePath}")
         _replacePath(srcPath, repoRoot / relativePath)
+
+    _ensurePostUpdatePermissions(repoRoot)
 
 
 def _runPipInstall(repoRoot: Path, args: List[str]) -> None:
