@@ -227,20 +227,59 @@ removeCondaEnv() {
 }
 
 uninstallWeb() {
+  if has_flag "-h" "$@" || has_flag "--help" "$@" || has_flag "help" "$@"; then
+    if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+      runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@"
+    else
+      cat <<EOF
+Usage: ./scripts/scipionapi uninstall-web [OPTIONS]
+
+Safely remove ScipionWeb/ScipionAPI runtime resources.
+
+Options:
+  --dry-run              Print the cleanup plan without removing anything.
+  --yes, -y              Run without interactive confirmation.
+  --keep-database        Do not drop the configured PostgreSQL database.
+  --keep-database-role   Drop the database but keep the PostgreSQL role.
+  --keep-web-dist        Do not remove the deployed web dist directory.
+  --remove-scipion-home  Remove SCIPION_HOME.
+  --remove-conda-env     Remove the conda env after cleanup.
+  --keep-conda-env       Keep the conda env.
+  -h, --help             Show this help and exit.
+
+Important:
+  Conda env removal is now opt-in. Use --remove-conda-env explicitly.
+EOF
+    fi
+    return 0
+  fi
+
   requireEnvOrExplain
   cd "${repoRoot}"
 
-  local removeConda="1"
-  if has_flag "--dry-run" "$@" || has_flag "--keep-conda-env" "$@"; then
-    removeConda="0"
+  local removeConda="0"
+  if has_flag "--remove-conda-env" "$@" && ! has_flag "--dry-run" "$@"; then
+    removeConda="1"
   fi
 
-  local condaFlag="--remove-conda-env"
-  if [[ "${removeConda}" == "0" ]]; then
-    condaFlag="--keep-conda-env"
+  local condaFlag="--keep-conda-env"
+  if [[ "${removeConda}" == "1" ]]; then
+    condaFlag="--remove-conda-env"
   fi
 
-  runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@" "${condaFlag}"
+  local forwardedArgs=()
+  for arg in "$@"; do
+    case "${arg}" in
+      --remove-conda-env|--keep-conda-env)
+        continue
+        ;;
+      *)
+        forwardedArgs+=("${arg}")
+        ;;
+    esac
+  done
+
+  runInCondaCliNoExec python -m scipionapi_cli.uninstall "${forwardedArgs[@]}" "${condaFlag}"
 
   if [[ "${removeConda}" == "1" ]]; then
     removeCondaEnv
@@ -248,6 +287,7 @@ uninstallWeb() {
     echo "Keeping conda env: ${effectiveEnvName}"
   fi
 }
+
 
 has_flag() {
   local needle="$1"
