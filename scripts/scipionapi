@@ -240,7 +240,7 @@ uninstallWeb() {
     condaFlag="--keep-conda-env"
   fi
 
-  runInCondaCliNoExec python -m scipionapi_cli.uninstall run "$@" "${condaFlag}"
+  runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@" "${condaFlag}"
 
   if [[ "${removeConda}" == "1" ]]; then
     removeCondaEnv
