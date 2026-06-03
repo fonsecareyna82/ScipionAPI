@@ -9,6 +9,7 @@ from packaging.version import parse as parseVersion  # type: ignore
 from pyworkflow.config import Config
 from scipion.install.plugin_funcs import PluginRepository
 
+from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
 from app.utils.scipion_helper import serializeToJson
 from app.backend.resources import getPluginCategoryIds, getPluginCategoryData
@@ -20,8 +21,10 @@ class PluginService:
     def __init__(
         self,
         pluginRepository: Optional[PluginRepository] = None,
+        pluginDevelService: Optional[PluginDevelService] = None,
     ):
         self.pluginRepository = pluginRepository or PluginRepository()
+        self.pluginDevelService = pluginDevelService or PluginDevelService()
         self._pluginsCache: Optional[List[Dict[str, Any]]] = None
         self._cacheLock = Lock()
         self._logoBaseUrl = "https://scipion.i2pc.es/"
@@ -63,6 +66,27 @@ class PluginService:
 
         raise KeyError(f"Plugin not found: {pipName}")
 
+    def _applyDevelMetadata(self, serializedPlugin: Dict[str, Any]) -> None:
+        pipName = str(serializedPlugin.get("pipName") or "").strip()
+        if not pipName:
+            serializedPlugin["installMode"] = "standard"
+            serializedPlugin["localPath"] = ""
+            serializedPlugin["devel"] = False
+            return
+
+        develPlugin = self.pluginDevelService.getDevelPluginByPipName(pipName)
+        if not develPlugin:
+            serializedPlugin["installMode"] = "standard"
+            serializedPlugin["localPath"] = ""
+            serializedPlugin["devel"] = False
+            return
+
+        serializedPlugin["installMode"] = "devel"
+        serializedPlugin["localPath"] = develPlugin.get("path", "")
+        serializedPlugin["devel"] = True
+        serializedPlugin["develInstalledAt"] = develPlugin.get("installedAt", "")
+        serializedPlugin["develUpdatedAt"] = develPlugin.get("updatedAt", "")
+
     def getPlugins(self, forceRefresh: bool = False) -> List[Dict[str, Any]]:
         with self._cacheLock:
             if self._pluginsCache is not None and not forceRefresh:
@@ -102,6 +126,8 @@ class PluginService:
                     serializedPlugin["toUpdate"] = self._isUpdateAvailable(latestRelease, pipVersion)
                 else:
                     serializedPlugin["toUpdate"] = False
+
+                self._applyDevelMetadata(serializedPlugin)
 
                 try:
                     pluginBinaryList = pluginObj.getInstallenv()
@@ -222,6 +248,7 @@ class PluginService:
                 if taskId:
                     writePluginTaskStep(taskId, "Plugin is not installed. Nothing to do.")
 
+            self.pluginDevelService.unregisterDevelPlugin(pluginName)
             self.clearCache()
 
             if taskId:
