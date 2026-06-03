@@ -1,6 +1,7 @@
 import asyncio
+import importlib
 import logging
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, Optional, Literal, Set
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
@@ -54,6 +55,7 @@ except Exception:
 
 _inProcessResults: Dict[str, Dict[str, Any]] = {}
 _inProcessTasks: Dict[str, asyncio.Task] = {}
+_refreshedTerminalTaskIds: Set[str] = set()
 
 
 class TaskStartResponse(BaseModel):
@@ -89,6 +91,30 @@ class InstallDevelPluginRequest(BaseModel):
     path: str = Field(..., description="Local path to a Scipion plugin source directory")
     skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
     force: bool = Field(False, description="Force reinstall when supported by the configured Scipion installer")
+
+
+def _isTerminalTaskStatus(status: Optional[str]) -> bool:
+    return str(status or "").upper() in {"SUCCESS", "FAILURE"}
+
+
+def _refreshPluginCatalogAfterTask(taskId: str, status: Optional[str]) -> None:
+    if not _isTerminalTaskStatus(status):
+        return
+
+    if taskId in _refreshedTerminalTaskIds:
+        return
+
+    _refreshedTerminalTaskIds.add(taskId)
+
+    try:
+        service.clearCache()
+    except Exception:
+        logger.exception("Could not clear plugin catalog cache after task %s", taskId)
+
+    try:
+        importlib.invalidate_caches()
+    except Exception:
+        logger.debug("Could not invalidate import caches after task %s", taskId, exc_info=True)
 
 
 @router.get("/", response_model=Any)
@@ -240,13 +266,7 @@ async def getTaskStatus(taskId: str):
         except Exception:
             meta = None
 
-        if status in ("SUCCESS", "FAILURE"):
-            service.clearCache()
-            try:
-                import importlib
-                importlib.invalidate_caches()
-            except Exception:
-                pass
+        _refreshPluginCatalogAfterTask(taskId, status)
 
         if status == "SUCCESS":
             return TaskStatusResponse(
@@ -280,9 +300,12 @@ async def getTaskStatus(taskId: str):
     if local is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    status = str(local.get("status", "UNKNOWN"))
+    _refreshPluginCatalogAfterTask(taskId, status)
+
     return TaskStatusResponse(
         taskId=taskId,
-        status=str(local.get("status", "UNKNOWN")),
+        status=status,
         backend="local",
         result=local.get("result"),
         error=local.get("error"),
@@ -309,6 +332,8 @@ async def getTaskLog(taskId: str, offset: int = 0, limit: int = 65536):
             status = str(local.get("status", "UNKNOWN"))
             completed = status in ("SUCCESS", "FAILURE")
             backend = "local"
+
+    _refreshPluginCatalogAfterTask(taskId, status)
 
     return TaskLogResponse(
         taskId=taskId,
