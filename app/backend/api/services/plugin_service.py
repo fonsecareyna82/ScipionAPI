@@ -1,3 +1,4 @@
+import importlib
 import logging
 import traceback
 from threading import Lock
@@ -29,8 +30,27 @@ class PluginService:
         self._cacheLock = Lock()
         self._logoBaseUrl = "https://scipion.i2pc.es/"
 
-    def clearCache(self) -> None:
-        self._pluginsCache = None
+    def clearCache(self, reloadRepository: bool = True) -> None:
+        with self._cacheLock:
+            self._pluginsCache = None
+
+            if not reloadRepository:
+                return
+
+            try:
+                importlib.invalidate_caches()
+            except Exception:
+                logger.debug("Could not invalidate import caches after plugin change.", exc_info=True)
+
+            try:
+                Config.setDomain("pwem")
+            except Exception:
+                logger.debug("Could not reset Scipion domain after plugin change.", exc_info=True)
+
+            try:
+                self.pluginRepository = PluginRepository()
+            except Exception:
+                logger.exception("Could not recreate PluginRepository after plugin change.")
 
     def _buildFullLogo(self, serializedPlugin: Dict[str, Any]) -> str:
         logo = (serializedPlugin.get("logo") or "").lstrip("/")
