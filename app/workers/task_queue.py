@@ -102,6 +102,53 @@ def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
         return f"Plugin {pip_name} installed successfully{suffix}!"
 
 
+@celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.installDevelPluginTask")
+def installDevelPluginTask(
+    self,
+    plugin_path: str,
+    skip_binaries: bool = False,
+    force: bool = False,
+) -> str:
+    taskId = str(self.request.id)
+
+    with pluginTaskLogCapture(taskId):
+        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+        writePluginTaskStep(taskId, "Preparing environment...")
+        prepareEnvironment()
+
+        self.update_state(state="PROGRESS", meta={"step": "Loading devel service..."})
+        writePluginTaskStep(taskId, "Loading devel service...")
+        from app.backend.api.services.plugin_devel_service import PluginDevelService
+        service = PluginDevelService()
+
+        self.update_state(state="PROGRESS", meta={"step": "Installing devel plugin..."})
+        writePluginTaskStep(taskId, "Installing devel plugin...")
+        result = service.installDevelPlugin(
+            plugin_path,
+            taskId=taskId,
+            skipBinaries=skip_binaries,
+            force=force,
+        )
+
+        self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
+        writePluginTaskStep(taskId, "Refreshing plugin metadata...")
+        newRev = bumpPluginsRevision()
+        logger.warning("pluginsRevisionBumped=%s", newRev)
+        logger.warning(
+            "pluginsRevisionBumped=%s scipionHome=%s",
+            newRev,
+            os.environ.get("SCIPION_HOME"),
+        )
+        writePluginTaskStep(taskId, f"Plugins revision bumped to {newRev}")
+
+        writePluginTaskStep(taskId, "Triggering backend reload if enabled...")
+        triggerBackendReloadIfEnabled()
+
+        self.update_state(state="PROGRESS", meta={"step": "Completed"})
+        writePluginTaskStep(taskId, "Completed")
+        return f"Devel plugin {result.get('pipName')} installed successfully from {result.get('path')}!"
+
+
 @celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.uninstallPluginTask")
 def uninstallPluginTask(self, pip_name: str) -> str:
     taskId = str(self.request.id)
