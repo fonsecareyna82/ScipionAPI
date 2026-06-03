@@ -1,6 +1,10 @@
 import importlib
+import importlib.metadata as importlibMetadata
+import json
 import logging
+import re
 import traceback
+from pathlib import Path
 from threading import Lock
 from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
@@ -13,7 +17,7 @@ from scipion.install.plugin_funcs import PluginRepository
 from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
 from app.utils.scipion_helper import serializeToJson
-from app.backend.resources import getPluginCategoryIds, getPluginCategoryData
+from app.backend.resources import getPluginCategoryIds, getPluginCategoryData, getPluginCategoriesCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,9 @@ class PluginService:
         except Exception:
             return False
 
+    def _normalizePipName(self, pipName: str) -> str:
+        return str(pipName or "").strip().lower()
+
     def _loadRawPlugins(self) -> Dict[str, Any]:
         try:
             Config.setDomain("pwem")
@@ -85,6 +92,281 @@ class PluginService:
                 continue
 
         raise KeyError(f"Plugin not found: {pipName}")
+
+    def _loadPackageMetadata(self, pipName: str) -> Dict[str, str]:
+        try:
+            metadata = importlibMetadata.metadata(pipName)
+        except importlibMetadata.PackageNotFoundError:
+            return {}
+        except Exception:
+            logger.debug("Could not read package metadata for %s", pipName, exc_info=True)
+            return {}
+
+        return {
+            "name": metadata.get("Name", "") or "",
+            "version": metadata.get("Version", "") or "",
+            "summary": metadata.get("Summary", "") or "",
+            "author": metadata.get("Author", "") or "",
+            "email": metadata.get("Author-email", "") or "",
+            "homePage": metadata.get("Home-page", "") or "",
+        }
+
+    def _splitTomlComment(self, line: str) -> str:
+        inSingle = False
+        inDouble = False
+        escaped = False
+        out = []
+
+        for ch in line:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+
+            if ch == "\\" and inDouble:
+                out.append(ch)
+                escaped = True
+                continue
+
+            if ch == "'" and not inDouble:
+                inSingle = not inSingle
+                out.append(ch)
+                continue
+
+            if ch == '"' and not inSingle:
+                inDouble = not inDouble
+                out.append(ch)
+                continue
+
+            if ch == "#" and not inSingle and not inDouble:
+                break
+
+            out.append(ch)
+
+        return "".join(out).strip()
+
+    def _parseTomlScalar(self, value: str) -> Any:
+        text = value.strip().rstrip(",").strip()
+        if not text:
+            return ""
+
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+            return text[1:-1]
+
+        if text.startswith("[") and text.endswith("]"):
+            return re.findall(r"['\"]([^'\"]+)['\"]", text)
+
+        return text
+
+    def _readPyprojectMetadata(self, pluginPath: Optional[str]) -> Dict[str, Any]:
+        if not pluginPath:
+            return {}
+
+        pyprojectPath = Path(pluginPath).expanduser() / "pyproject.toml"
+        if not pyprojectPath.exists():
+            return {}
+
+        try:
+            text = pyprojectPath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            logger.debug("Could not read pyproject metadata: %s", pyprojectPath, exc_info=True)
+            return {}
+
+        sections: Dict[str, Dict[str, Any]] = {}
+        currentSection = ""
+
+        for rawLine in text.splitlines():
+            line = self._splitTomlComment(rawLine)
+            if not line:
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                currentSection = line.strip("[]").strip()
+                sections.setdefault(currentSection, {})
+                continue
+
+            if not currentSection or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+
+            sections.setdefault(currentSection, {})[key] = self._parseTomlScalar(value)
+
+        project = sections.get("project", {})
+        scipionweb = sections.get("tool.scipionweb", {})
+
+        rawCategories = scipionweb.get("categories") or scipionweb.get("category") or []
+        if isinstance(rawCategories, str):
+            categories = [rawCategories]
+        elif isinstance(rawCategories, list):
+            categories = [str(x).strip() for x in rawCategories if str(x).strip()]
+        else:
+            categories = []
+
+        return {
+            "name": project.get("name") or "",
+            "version": project.get("version") or "",
+            "summary": scipionweb.get("summary") or project.get("description") or "",
+            "displayName": scipionweb.get("display_name") or scipionweb.get("title") or "",
+            "homePage": scipionweb.get("homepage") or scipionweb.get("home_page") or "",
+            "logo": scipionweb.get("logo") or scipionweb.get("icon") or "",
+            "categories": categories,
+        }
+
+    def _loadUserPluginMetadata(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            metadataPath = self.pluginDevelService._getScipionHome() / "web" / "plugin_metadata.json"
+        except Exception:
+            return {}
+
+        if not metadataPath.exists():
+            return {}
+
+        try:
+            raw = json.loads(metadataPath.read_text(encoding="utf-8") or "{}")
+        except Exception:
+            logger.debug("Could not read plugin metadata file: %s", metadataPath, exc_info=True)
+            return {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for pipName, metadata in raw.items():
+            if isinstance(metadata, dict):
+                result[self._normalizePipName(str(pipName))] = metadata
+        return result
+
+    def _coerceCategoryIds(self, rawValue: Any) -> List[str]:
+        if rawValue is None:
+            return []
+
+        values = rawValue if isinstance(rawValue, list) else [rawValue]
+        result: List[str] = []
+        seen = set()
+
+        for value in values:
+            text = str(value or "").strip().lower()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+
+        return result
+
+    def _humanizeCategoryId(self, categoryId: str) -> str:
+        return " ".join(part.capitalize() for part in re.split(r"[_\-]+", categoryId) if part) or categoryId
+
+    def _buildCategoryDataFromIds(self, categoryIds: List[str]) -> List[Dict[str, Any]]:
+        catalog = getPluginCategoriesCatalog()
+        data: List[Dict[str, Any]] = []
+
+        for categoryId in categoryIds:
+            if categoryId in catalog:
+                category = catalog[categoryId]
+                data.append({
+                    "id": categoryId,
+                    "title": category.get("title", self._humanizeCategoryId(categoryId)),
+                    "description": category.get("description", ""),
+                })
+            else:
+                data.append({
+                    "id": categoryId,
+                    "title": self._humanizeCategoryId(categoryId),
+                    "description": "Custom plugin category",
+                })
+
+        return data
+
+    def _resolveCategories(self, pipName: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        metadata = metadata or {}
+        categoryIds = self._coerceCategoryIds(metadata.get("categories"))
+
+        if categoryIds:
+            return {
+                "categories": categoryIds,
+                "categoryData": self._buildCategoryDataFromIds(categoryIds),
+            }
+
+        return {
+            "categories": getPluginCategoryIds(pipName),
+            "categoryData": getPluginCategoryData(pipName),
+        }
+
+    def _buildLocalMetadata(self, develPlugin: Dict[str, Any]) -> Dict[str, Any]:
+        pipName = str(develPlugin.get("pipName") or "").strip()
+        pluginPath = str(develPlugin.get("path") or "").strip()
+
+        packageMetadata = self._loadPackageMetadata(pipName) if pipName else {}
+        pyprojectMetadata = self._readPyprojectMetadata(pluginPath)
+        userMetadata = self._loadUserPluginMetadata().get(self._normalizePipName(pipName), {})
+
+        metadata: Dict[str, Any] = {}
+        metadata.update(packageMetadata)
+        metadata.update({k: v for k, v in pyprojectMetadata.items() if v not in (None, "", [])})
+        metadata.update({k: v for k, v in userMetadata.items() if v not in (None, "", [])})
+        return metadata
+
+    def _buildMissingDevelPluginEntry(self, develPlugin: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        pipName = str(develPlugin.get("pipName") or "").strip()
+        if not pipName:
+            return None
+
+        pluginPath = str(develPlugin.get("path") or "").strip()
+        metadata = self._buildLocalMetadata(develPlugin)
+        version = str(metadata.get("version") or "").strip()
+        displayName = str(metadata.get("displayName") or metadata.get("name") or pipName).strip()
+        summary = str(metadata.get("summary") or "Local devel plugin").strip()
+        logo = str(metadata.get("logo") or "").strip()
+        categoryInfo = self._resolveCategories(pipName, metadata)
+
+        return {
+            "author": metadata.get("author", ""),
+            "binVersions": [],
+            "compatibleReleases": {},
+            "dirName": Path(pluginPath).name if pluginPath else pipName,
+            "email": metadata.get("email", ""),
+            "homePage": metadata.get("homePage", ""),
+            "latestRelease": version or "local",
+            "name": displayName,
+            "pipName": pipName,
+            "pipVersion": version or "local",
+            "pluginEnv": "",
+            "pluginSourceUrl": pluginPath,
+            "remote": False,
+            "summary": summary,
+            "icon": logo,
+            "iconUrl": logo,
+            "fullLogo": self._buildFullLogo({"logo": logo}) if logo else "",
+            "installed": True,
+            "toUpdate": False,
+            "installMode": "devel",
+            "localPath": pluginPath,
+            "devel": True,
+            "develInstalledAt": develPlugin.get("installedAt", ""),
+            "develUpdatedAt": develPlugin.get("updatedAt", ""),
+            "binaries": {},
+            "categories": categoryInfo["categories"],
+            "categoryData": categoryInfo["categoryData"],
+            "source": "devel",
+        }
+
+    def _appendMissingDevelPlugins(self, serializedList: List[Dict[str, Any]], seenPipNames: set) -> None:
+        for develPlugin in self.pluginDevelService.listDevelPlugins():
+            pipName = str(develPlugin.get("pipName") or "").strip()
+            normalized = self._normalizePipName(pipName)
+            if not normalized or normalized in seenPipNames:
+                continue
+
+            entry = self._buildMissingDevelPluginEntry(develPlugin)
+            if not entry:
+                continue
+
+            seenPipNames.add(normalized)
+            serializedList.append(entry)
 
     def _applyDevelMetadata(self, serializedPlugin: Dict[str, Any]) -> None:
         pipName = str(serializedPlugin.get("pipName") or "").strip()
@@ -114,6 +396,7 @@ class PluginService:
 
             rawPlugins = self._loadRawPlugins()
             serializedList: List[Dict[str, Any]] = []
+            seenPipNames = set()
 
             for pluginKey in sorted(rawPlugins.keys(), reverse=True):
                 pluginObj = rawPlugins.get(pluginKey)
@@ -123,9 +406,9 @@ class PluginService:
                 serializedPlugin = serializeToJson(pluginObj)
                 serializedPlugin["fullLogo"] = self._buildFullLogo(serializedPlugin)
                 pipName = str(serializedPlugin.get("pipName") or pluginKey).strip()
-                categories = getPluginCategoryIds(pipName)
-                serializedPlugin["categories"] = categories
-                serializedPlugin["categoryData"] = getPluginCategoryData(pipName)
+                categoryInfo = self._resolveCategories(pipName)
+                serializedPlugin["categories"] = categoryInfo["categories"]
+                serializedPlugin["categoryData"] = categoryInfo["categoryData"]
 
                 # if 'tomography' not in categories:
                 #     continue
@@ -164,7 +447,11 @@ class PluginService:
                 except Exception:
                     pass
 
+                seenPipNames.add(self._normalizePipName(pipName))
                 serializedList.append(serializedPlugin)
+
+            self._appendMissingDevelPlugins(serializedList, seenPipNames)
+            serializedList.sort(key=lambda plugin: str(plugin.get("pipName") or plugin.get("name") or "").lower(), reverse=True)
 
             self._pluginsCache = serializedList
             return list(self._pluginsCache)
