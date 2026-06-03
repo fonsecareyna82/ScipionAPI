@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_service import PluginService
 from app.backend.api.services.plugin_task_log import (
     appendPluginTaskLog,
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plugins", tags=["Plugins"])
 service = PluginService()
+develService = PluginDevelService()
 
 try:
     from app.workers.task_queue import celeryApp  # type: ignore
@@ -33,6 +35,14 @@ try:
 except Exception:
     installPluginTask = None  # type: ignore
     _celeryInstallAvailable = False
+
+try:
+    from app.workers.task_queue import installDevelPluginTask  # type: ignore
+    _celeryInstallDevelAvailable = True
+except Exception:
+    installDevelPluginTask = None  # type: ignore
+    _celeryInstallDevelAvailable = False
+
 
 try:
     from app.workers.task_queue import uninstallPluginTask  # type: ignore
@@ -71,9 +81,66 @@ class TaskLogResponse(BaseModel):
     status: Optional[str] = None
 
 
+class DevelPluginPathRequest(BaseModel):
+    path: str = Field(..., description="Local path to a Scipion plugin source directory")
+
+
+class InstallDevelPluginRequest(BaseModel):
+    path: str = Field(..., description="Local path to a Scipion plugin source directory")
+    skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
+    force: bool = Field(False, description="Force reinstall when supported by the configured Scipion installer")
+
+
 @router.get("/", response_model=Any)
 def loadPlugins():
     return service.getPlugins()
+
+
+@router.post("/devel/validate", response_model=Any)
+def validateDevelPluginPath(payload: DevelPluginPathRequest):
+    try:
+        return develService.validateDevelPluginPath(payload.path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/devel", response_model=Any)
+def listDevelPlugins():
+    try:
+        return develService.listDevelPlugins()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/devel/install", response_model=TaskStartResponse)
+async def installDevelPlugin(payload: InstallDevelPluginRequest):
+    try:
+        validation = develService.validateDevelPluginPath(payload.path)
+        if not validation.get("valid"):
+            raise HTTPException(status_code=400, detail=validation)
+
+        pluginLabel = str(validation.get("pipName") or validation.get("path") or "devel-plugin")
+
+        if _celeryAppAvailable and _celeryInstallDevelAvailable and installDevelPluginTask is not None:
+            taskId = uuid4().hex
+            initializePluginTaskLog(taskId, pluginLabel, "install-devel")
+            installDevelPluginTask.apply_async(
+                args=[payload.path, payload.skipBinaries, payload.force],
+                task_id=taskId,
+            )
+            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
+
+        return await _startInProcessTask(
+            develService.installDevelPlugin,
+            payload.path,
+            "install-devel",
+            skipBinaries=payload.skipBinaries,
+            force=payload.force,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{pluginName}", response_model=Any)
