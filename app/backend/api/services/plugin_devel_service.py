@@ -133,8 +133,10 @@ class PluginDevelService:
         return [Path.home().resolve()]
 
     def _getBrowserRoot(self) -> Path:
-        root = Path(os.environ.get("SCIPIONAPI_DEVEL_BROWSER_ROOT", "/")).expanduser().resolve()
-        return root
+        roots = self._getBrowserRoots()
+        if roots:
+            return roots[0]
+        return Path.home().resolve()
 
     def _isPathAllowed(self, path: Path) -> bool:
         allowedRoots = self._getAllowedRoots()
@@ -147,20 +149,6 @@ class PluginDevelService:
                 return True
             except ValueError:
                 continue
-        return False
-
-    def _isPathVisibleInBrowser(self, path: Path) -> bool:
-        browserRoots = self._getBrowserRoots()
-        for root in browserRoots:
-            try:
-                path.resolve().relative_to(root)
-                return True
-            except ValueError:
-                try:
-                    root.resolve().relative_to(path.resolve())
-                    return True
-                except ValueError:
-                    continue
         return False
 
     def _resolveBrowserPath(self, relPath: str) -> Path:
@@ -181,7 +169,7 @@ class PluginDevelService:
         try:
             resolvedPath.relative_to(root)
         except ValueError:
-            raise ValueError("Browser path is outside the configured browser root")
+            raise ValueError("Browser path is outside the configured devel plugin root")
         return resolvedPath
 
     def _pathToBrowserRel(self, path: Path) -> str:
@@ -190,17 +178,10 @@ class PluginDevelService:
 
     def getDevelPluginBrowserPaths(self) -> Dict[str, Any]:
         root = self._getBrowserRoot()
-        visibleRoots = self._getBrowserRoots()
-        startPath = ""
-        if visibleRoots:
-            try:
-                startPath = str(visibleRoots[0].resolve().relative_to(root)).replace(os.sep, "/")
-            except ValueError:
-                startPath = ""
         return {
             "rootAbs": str(root),
-            "startPath": startPath,
-            "allowedRoots": [str(root) for root in visibleRoots],
+            "startPath": "",
+            "allowedRoots": [str(root) for root in self._getBrowserRoots()],
         }
 
     def listDevelPluginBrowserDirectory(self, relPath: str = "") -> List[Dict[str, Any]]:
@@ -209,14 +190,10 @@ class PluginDevelService:
             raise FileNotFoundError(f"Directory does not exist: {directory}")
         if not directory.is_dir():
             raise NotADirectoryError(f"Path is not a directory: {directory}")
-        if not self._isPathVisibleInBrowser(directory):
-            raise ValueError("Directory is outside configured devel plugin browser roots")
 
         items: List[Dict[str, Any]] = []
         for child in directory.iterdir():
             try:
-                if not self._isPathVisibleInBrowser(child):
-                    continue
                 stat = child.stat()
                 isDir = child.is_dir()
                 relChild = self._pathToBrowserRel(child)
