@@ -3,7 +3,7 @@ import logging
 from typing import Any, Dict, Optional, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.backend.api.services.plugin_devel_service import PluginDevelService
@@ -108,6 +108,28 @@ def validateDevelPluginPath(payload: DevelPluginPathRequest):
 def listDevelPlugins():
     try:
         return develService.listDevelPlugins()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/devel/browser/paths", response_model=Any)
+def getDevelPluginBrowserPaths():
+    try:
+        return develService.getDevelPluginBrowserPaths()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/devel/browser/list", response_model=Any)
+def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative path inside the devel plugin browser root")):
+    try:
+        return develService.listDevelPluginBrowserDirectory(path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except NotADirectoryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
