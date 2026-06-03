@@ -69,6 +69,7 @@ Typical usage:
   ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
   ./scripts/scipionapi install --user ... --email ... --pass ...
   ./scripts/scipionapi update [--version v4.0.0]
+  ./scripts/scipionapi uninstall-web --yes
   ./scripts/scipionapi start|stop|restart|status|logs
 
 Notes:
@@ -76,6 +77,7 @@ Notes:
   - install configures SCIPION_HOME, database, migrations, and admin user
   - provision combines bootstrap/install/start in one flow
   - update downloads ScipionAPI/ScipionWeb release ZIPs and preserves current .env/data
+  - uninstall-web stops services and removes the web runtime resources without deleting this repo
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
 EOF
@@ -201,6 +203,52 @@ runInCondaCli() {
   fi
 }
 
+runInCondaCliNoExec() {
+  if [[ -n "${scipionHomeValue}" ]]; then
+    env \
+      SCIPION_HOME="${scipionHomeValue}" \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  else
+    env \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  fi
+}
+
+removeCondaEnv() {
+  if [[ "$(envExistsNow)" == "0" ]]; then
+    echo "Conda env not found: ${effectiveEnvName}"
+    return 0
+  fi
+
+  echo "Removing conda env: ${effectiveEnvName}"
+  "${condaExe}" env remove -n "${effectiveEnvName}" -y || true
+}
+
+uninstallWeb() {
+  requireEnvOrExplain
+  cd "${repoRoot}"
+
+  local removeConda="1"
+  if has_flag "--dry-run" "$@" || has_flag "--keep-conda-env" "$@"; then
+    removeConda="0"
+  fi
+
+  local condaFlag="--remove-conda-env"
+  if [[ "${removeConda}" == "0" ]]; then
+    condaFlag="--keep-conda-env"
+  fi
+
+  runInCondaCliNoExec python -m scipionapi_cli.uninstall run "$@" "${condaFlag}"
+
+  if [[ "${removeConda}" == "1" ]]; then
+    removeCondaEnv
+  else
+    echo "Keeping conda env: ${effectiveEnvName}"
+  fi
+}
+
 has_flag() {
   local needle="$1"
   shift
@@ -248,6 +296,12 @@ if [[ "${cmd}" == "provision" ]]; then
   fi
 
   runInCondaCli provision "$@"
+fi
+
+if [[ "${cmd}" == "uninstall-web" ]]; then
+  shift || true
+  uninstallWeb "$@"
+  exit 0
 fi
 
 requireEnvOrExplain
