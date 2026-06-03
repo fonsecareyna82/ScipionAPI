@@ -149,6 +149,20 @@ class PluginDevelService:
                 continue
         return False
 
+    def _isPathVisibleInBrowser(self, path: Path) -> bool:
+        browserRoots = self._getBrowserRoots()
+        for root in browserRoots:
+            try:
+                path.resolve().relative_to(root)
+                return True
+            except ValueError:
+                try:
+                    root.resolve().relative_to(path.resolve())
+                    return True
+                except ValueError:
+                    continue
+        return False
+
     def _resolveBrowserPath(self, relPath: str) -> Path:
         root = self._getBrowserRoot()
         rawPath = str(relPath or "").replace("\\", "/").strip()
@@ -195,10 +209,14 @@ class PluginDevelService:
             raise FileNotFoundError(f"Directory does not exist: {directory}")
         if not directory.is_dir():
             raise NotADirectoryError(f"Path is not a directory: {directory}")
+        if not self._isPathVisibleInBrowser(directory):
+            raise ValueError("Directory is outside configured devel plugin browser roots")
 
         items: List[Dict[str, Any]] = []
         for child in directory.iterdir():
             try:
+                if not self._isPathVisibleInBrowser(child):
+                    continue
                 stat = child.stat()
                 isDir = child.is_dir()
                 relChild = self._pathToBrowserRel(child)
