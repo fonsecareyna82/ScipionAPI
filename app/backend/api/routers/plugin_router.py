@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 import logging
-from typing import Any, Dict, Optional, Literal, Set
+from typing import Any, Dict, Optional, Literal, Set, List
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,6 +36,13 @@ try:
 except Exception:
     installPluginTask = None  # type: ignore
     _celeryInstallAvailable = False
+
+try:
+    from app.workers.task_queue import installPluginsBatchTask  # type: ignore
+    _celeryInstallBatchAvailable = True
+except Exception:
+    installPluginsBatchTask = None  # type: ignore
+    _celeryInstallBatchAvailable = False
 
 try:
     from app.workers.task_queue import installDevelPluginTask  # type: ignore
@@ -91,6 +98,11 @@ class InstallDevelPluginRequest(BaseModel):
     path: str = Field(..., description="Local path to a Scipion plugin source directory")
     skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
     force: bool = Field(False, description="Force reinstall when supported by the configured Scipion installer")
+
+
+class InstallPluginsBatchRequest(BaseModel):
+    plugins: List[str] = Field(..., description="Plugin pip names to install or update")
+    skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
 
 
 def _isTerminalTaskStatus(status: Optional[str]) -> bool:
@@ -219,6 +231,45 @@ async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwa
     _inProcessTasks[taskId] = asyncio.create_task(runner())
     _inProcessResults[taskId] = {"status": "STARTED", "result": None, "error": None}
     return TaskStartResponse(taskId=taskId, status="STARTED", backend="local")
+
+
+@router.post("/install-batch", response_model=TaskStartResponse)
+async def installPluginsBatch(payload: InstallPluginsBatchRequest):
+    try:
+        plugins = []
+        seen = set()
+        for pluginName in payload.plugins:
+            cleanPluginName = str(pluginName or "").strip()
+            if not cleanPluginName or cleanPluginName in seen:
+                continue
+            seen.add(cleanPluginName)
+            plugins.append(cleanPluginName)
+
+        if not plugins:
+            raise HTTPException(status_code=400, detail="No plugins selected")
+
+        if _celeryAppAvailable and _celeryInstallBatchAvailable and installPluginsBatchTask is not None:
+            taskId = uuid4().hex
+            initializePluginTaskLog(taskId, f"batch:{len(plugins)}", "install-batch")
+            installPluginsBatchTask.apply_async(
+                args=[plugins, payload.skipBinaries],
+                task_id=taskId,
+            )
+            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
+
+        if len(plugins) == 1:
+            return await _startInProcessTask(
+                service.installPlugin,
+                plugins[0],
+                "install",
+                skipBinaries=payload.skipBinaries,
+            )
+
+        raise HTTPException(status_code=503, detail="Batch plugin install requires Celery")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
