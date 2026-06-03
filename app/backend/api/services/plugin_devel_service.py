@@ -1,5 +1,6 @@
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -125,6 +126,18 @@ class PluginDevelService:
             roots.append(Path(rawRoot).expanduser().resolve())
         return roots
 
+    def _getBrowserRoots(self) -> List[Path]:
+        allowedRoots = self._getAllowedRoots()
+        if allowedRoots:
+            return allowedRoots
+        return [Path.home().resolve()]
+
+    def _getPrimaryBrowserRoot(self) -> Path:
+        roots = self._getBrowserRoots()
+        if not roots:
+            return Path.home().resolve()
+        return roots[0]
+
     def _isPathAllowed(self, path: Path) -> bool:
         allowedRoots = self._getAllowedRoots()
         if not allowedRoots:
@@ -137,6 +150,67 @@ class PluginDevelService:
             except ValueError:
                 continue
         return False
+
+    def _resolveBrowserPath(self, relPath: str) -> Path:
+        root = self._getPrimaryBrowserRoot()
+        rawPath = str(relPath or "").replace("\\", "/").strip()
+        rawPath = rawPath.lstrip("/")
+        parts = []
+        for part in rawPath.split("/"):
+            if not part or part == ".":
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+
+        resolvedPath = (root / Path(*parts)).resolve() if parts else root.resolve()
+        try:
+            resolvedPath.relative_to(root)
+        except ValueError:
+            raise ValueError("Browser path is outside the configured devel plugin root")
+        return resolvedPath
+
+    def getDevelPluginBrowserPaths(self) -> Dict[str, Any]:
+        root = self._getPrimaryBrowserRoot()
+        return {
+            "rootAbs": str(root),
+            "startPath": "",
+            "allowedRoots": [str(root) for root in self._getBrowserRoots()],
+        }
+
+    def listDevelPluginBrowserDirectory(self, relPath: str = "") -> List[Dict[str, Any]]:
+        directory = self._resolveBrowserPath(relPath)
+        if not directory.exists():
+            raise FileNotFoundError(f"Directory does not exist: {directory}")
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {directory}")
+
+        items: List[Dict[str, Any]] = []
+        for child in directory.iterdir():
+            try:
+                stat = child.stat()
+                isDir = child.is_dir()
+                relChild = str(child.relative_to(self._getPrimaryBrowserRoot())).replace(os.sep, "/")
+                mime, _ = mimetypes.guess_type(str(child))
+                items.append(
+                    {
+                        "name": child.name,
+                        "path": relChild,
+                        "absPath": str(child.resolve()),
+                        "isDir": isDir,
+                        "size": 0 if isDir else stat.st_size,
+                        "mime": "inode/directory" if isDir else (mime or "application/octet-stream"),
+                    }
+                )
+            except PermissionError:
+                continue
+            except OSError:
+                continue
+
+        items.sort(key=lambda item: (not bool(item.get("isDir")), str(item.get("name") or "").lower()))
+        return items
 
     def _extractNameFromPyproject(self, pyprojectPath: Path) -> Optional[str]:
         try:
