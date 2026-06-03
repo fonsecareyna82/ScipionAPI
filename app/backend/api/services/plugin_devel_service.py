@@ -132,11 +132,9 @@ class PluginDevelService:
             return allowedRoots
         return [Path.home().resolve()]
 
-    def _getPrimaryBrowserRoot(self) -> Path:
-        roots = self._getBrowserRoots()
-        if not roots:
-            return Path.home().resolve()
-        return roots[0]
+    def _getBrowserRoot(self) -> Path:
+        root = Path(os.environ.get("SCIPIONAPI_DEVEL_BROWSER_ROOT", "/")).expanduser().resolve()
+        return root
 
     def _isPathAllowed(self, path: Path) -> bool:
         allowedRoots = self._getAllowedRoots()
@@ -152,7 +150,7 @@ class PluginDevelService:
         return False
 
     def _resolveBrowserPath(self, relPath: str) -> Path:
-        root = self._getPrimaryBrowserRoot()
+        root = self._getBrowserRoot()
         rawPath = str(relPath or "").replace("\\", "/").strip()
         rawPath = rawPath.lstrip("/")
         parts = []
@@ -169,15 +167,26 @@ class PluginDevelService:
         try:
             resolvedPath.relative_to(root)
         except ValueError:
-            raise ValueError("Browser path is outside the configured devel plugin root")
+            raise ValueError("Browser path is outside the configured browser root")
         return resolvedPath
 
+    def _pathToBrowserRel(self, path: Path) -> str:
+        root = self._getBrowserRoot()
+        return str(path.resolve().relative_to(root)).replace(os.sep, "/")
+
     def getDevelPluginBrowserPaths(self) -> Dict[str, Any]:
-        root = self._getPrimaryBrowserRoot()
+        root = self._getBrowserRoot()
+        visibleRoots = self._getBrowserRoots()
+        startPath = ""
+        if visibleRoots:
+            try:
+                startPath = str(visibleRoots[0].resolve().relative_to(root)).replace(os.sep, "/")
+            except ValueError:
+                startPath = ""
         return {
             "rootAbs": str(root),
-            "startPath": "",
-            "allowedRoots": [str(root) for root in self._getBrowserRoots()],
+            "startPath": startPath,
+            "allowedRoots": [str(root) for root in visibleRoots],
         }
 
     def listDevelPluginBrowserDirectory(self, relPath: str = "") -> List[Dict[str, Any]]:
@@ -192,7 +201,7 @@ class PluginDevelService:
             try:
                 stat = child.stat()
                 isDir = child.is_dir()
-                relChild = str(child.relative_to(self._getPrimaryBrowserRoot())).replace(os.sep, "/")
+                relChild = self._pathToBrowserRel(child)
                 mime, _ = mimetypes.guess_type(str(child))
                 items.append(
                     {
