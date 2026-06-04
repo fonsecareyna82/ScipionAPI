@@ -32,8 +32,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.backend.api.routers import plugin_router
-
 
 class FakePluginService:
     # fakePluginService
@@ -122,43 +120,16 @@ class FakeCeleryTask:
         })
 
 
-@pytest.fixture()
-def pluginClient(monkeypatch):
-    app = FastAPI()
-    app.include_router(plugin_router.router)
-
-    plugin_router._inProcessResults.clear()
-    plugin_router._inProcessTasks.clear()
-    plugin_router._refreshedTerminalTaskIds.clear()
-
-    monkeypatch.setattr(plugin_router, "_celeryAppAvailable", False)
-    monkeypatch.setattr(plugin_router, "_celeryInstallAvailable", False)
-    monkeypatch.setattr(plugin_router, "_celeryInstallBatchAvailable", False)
-    monkeypatch.setattr(plugin_router, "_celeryInstallDevelAvailable", False)
-    monkeypatch.setattr(plugin_router, "_celeryUninstallAvailable", False)
-    monkeypatch.setattr(plugin_router, "celeryApp", None)
-    monkeypatch.setattr(plugin_router, "installPluginTask", None)
-    monkeypatch.setattr(plugin_router, "installPluginsBatchTask", None)
-    monkeypatch.setattr(plugin_router, "installDevelPluginTask", None)
-    monkeypatch.setattr(plugin_router, "uninstallPluginTask", None)
-
-    yield TestClient(app)
-
-    plugin_router._inProcessResults.clear()
-    plugin_router._inProcessTasks.clear()
-    plugin_router._refreshedTerminalTaskIds.clear()
-
-
 @pytest.fixture
 def pluginRouterModule(monkeypatch):
     # pluginRouterModule
-    moduleName = "app.backend.api.services.plugin_service"
-    previousPluginServiceModule = sys.modules.get(moduleName)
+    pluginServiceModuleName = "app.backend.api.services.plugin_service"
+    previousPluginServiceModule = sys.modules.get(pluginServiceModuleName)
     previousPluginRouterModule = sys.modules.get("app.backend.api.routers.plugin_router")
 
-    fakePluginServiceModule = types.ModuleType(moduleName)
+    fakePluginServiceModule = types.ModuleType(pluginServiceModuleName)
     fakePluginServiceModule.PluginService = ImportSafePluginService
-    sys.modules[moduleName] = fakePluginServiceModule
+    sys.modules[pluginServiceModuleName] = fakePluginServiceModule
 
     sys.modules.pop("app.backend.api.routers.plugin_router", None)
 
@@ -169,9 +140,9 @@ def pluginRouterModule(monkeypatch):
         sys.modules.pop("app.backend.api.routers.plugin_router", None)
 
         if previousPluginServiceModule is None:
-            sys.modules.pop(moduleName, None)
+            sys.modules.pop(pluginServiceModuleName, None)
         else:
-            sys.modules[moduleName] = previousPluginServiceModule
+            sys.modules[pluginServiceModuleName] = previousPluginServiceModule
 
         if previousPluginRouterModule is not None:
             sys.modules["app.backend.api.routers.plugin_router"] = previousPluginRouterModule
@@ -189,11 +160,16 @@ def pluginClient(pluginRouterModule, fakePluginService, monkeypatch):
     monkeypatch.setattr(pluginRouterModule, "service", fakePluginService)
     monkeypatch.setattr(pluginRouterModule, "_inProcessResults", {})
     monkeypatch.setattr(pluginRouterModule, "_inProcessTasks", {})
+    monkeypatch.setattr(pluginRouterModule, "_refreshedTerminalTaskIds", set())
     monkeypatch.setattr(pluginRouterModule, "_celeryAppAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "_celeryInstallAvailable", False)
+    monkeypatch.setattr(pluginRouterModule, "_celeryInstallBatchAvailable", False)
+    monkeypatch.setattr(pluginRouterModule, "_celeryInstallDevelAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "_celeryUninstallAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "celeryApp", None)
     monkeypatch.setattr(pluginRouterModule, "installPluginTask", None)
+    monkeypatch.setattr(pluginRouterModule, "installPluginsBatchTask", None)
+    monkeypatch.setattr(pluginRouterModule, "installDevelPluginTask", None)
     monkeypatch.setattr(pluginRouterModule, "uninstallPluginTask", None)
 
     app = FastAPI()
@@ -551,7 +527,7 @@ def test_install_batch_requires_celery_for_multiple_plugins(pluginClient):
     assert response.json()["detail"] == "Batch plugin install requires Celery"
 
 
-def test_install_batch_uses_local_fallback_for_single_plugin(pluginClient, monkeypatch):
+def test_install_batch_uses_local_fallback_for_single_plugin(pluginClient, pluginRouterModule, monkeypatch):
     started = []
 
     async def fakeStartInProcessTask(taskFn, pluginName, operation, **taskKwargs):
@@ -563,9 +539,9 @@ def test_install_batch_uses_local_fallback_for_single_plugin(pluginClient, monke
                 "taskKwargs": taskKwargs,
             }
         )
-        return plugin_router.TaskStartResponse(taskId="task-1", status="STARTED", backend="local")
+        return pluginRouterModule.TaskStartResponse(taskId="task-1", status="STARTED", backend="local")
 
-    monkeypatch.setattr(plugin_router, "_startInProcessTask", fakeStartInProcessTask)
+    monkeypatch.setattr(pluginRouterModule, "_startInProcessTask", fakeStartInProcessTask)
 
     response = pluginClient.post(
         "/plugins/install-batch",
@@ -575,25 +551,27 @@ def test_install_batch_uses_local_fallback_for_single_plugin(pluginClient, monke
     assert response.status_code == 200
     assert response.json() == {"taskId": "task-1", "status": "STARTED", "backend": "local"}
     assert len(started) == 1
-    assert started[0]["taskFn"] == plugin_router.service.installPlugin
+    assert started[0]["taskFn"] == pluginRouterModule.service.installPlugin
     assert started[0]["pluginName"] == "scipion-em-a"
     assert started[0]["operation"] == "install"
     assert started[0]["taskKwargs"] == {"skipBinaries": True}
 
 
-def test_install_batch_submits_celery_task_when_available(pluginClient, monkeypatch):
-    calls = []
-    initialized = []
+def test_install_batch_submits_celery_task_when_available(pluginClient, pluginRouterModule, monkeypatch):
+    fakeTask = FakeCeleryTask()
+    initializeCalls = []
 
-    class DummyTask:
-        def apply_async(self, args, task_id):
-            calls.append({"args": args, "task_id": task_id})
+    def fakeInitializePluginTaskLog(taskId, pluginName, operation):
+        initializeCalls.append({
+            "taskId": taskId,
+            "pluginName": pluginName,
+            "operation": operation,
+        })
 
-    monkeypatch.setattr(plugin_router, "_celeryAppAvailable", True)
-    monkeypatch.setattr(plugin_router, "_celeryInstallBatchAvailable", True)
-    monkeypatch.setattr(plugin_router, "installPluginsBatchTask", DummyTask())
-    monkeypatch.setattr(plugin_router, "initializePluginTaskLog", lambda taskId, pluginName, operation: initialized.append((taskId, pluginName, operation)))
-    monkeypatch.setattr(plugin_router.uuid4, "__call__", lambda: "fixed-task-id", raising=False)
+    monkeypatch.setattr(pluginRouterModule, "_celeryAppAvailable", True)
+    monkeypatch.setattr(pluginRouterModule, "_celeryInstallBatchAvailable", True)
+    monkeypatch.setattr(pluginRouterModule, "installPluginsBatchTask", fakeTask)
+    monkeypatch.setattr(pluginRouterModule, "initializePluginTaskLog", fakeInitializePluginTaskLog)
 
     response = pluginClient.post(
         "/plugins/install-batch",
@@ -604,20 +582,18 @@ def test_install_batch_submits_celery_task_when_available(pluginClient, monkeypa
     body = response.json()
     assert body["status"] == "PENDING"
     assert body["backend"] == "celery"
-    assert initialized[0][1:] == ("batch:2", "install-batch")
-    assert calls == [{"args": [["scipion-em-a", "scipion-em-b"], False], "task_id": body["taskId"]}]
+    assert initializeCalls == [
+        {
+            "taskId": body["taskId"],
+            "pluginName": "batch:2",
+            "operation": "install-batch",
+        }
+    ]
+    assert fakeTask.calls == [{"args": [["scipion-em-a", "scipion-em-b"], False], "task_id": body["taskId"]}]
 
 
-def test_terminal_task_status_refreshes_plugin_catalog_once(pluginClient, monkeypatch):
-    clearCalls = []
-
-    class DummyService:
-        def clearCache(self):
-            clearCalls.append("clear")
-
-    monkeypatch.setattr(plugin_router, "service", DummyService())
-
-    plugin_router._inProcessResults["task-1"] = {"status": "SUCCESS", "result": {"ok": True}, "error": None}
+def test_terminal_task_status_refreshes_plugin_catalog_once(pluginClient, pluginRouterModule, fakePluginService):
+    pluginRouterModule._inProcessResults["task-1"] = {"status": "SUCCESS", "result": {"ok": True}, "error": None}
 
     first = pluginClient.get("/plugins/tasks/task-1")
     second = pluginClient.get("/plugins/tasks/task-1")
@@ -626,20 +602,13 @@ def test_terminal_task_status_refreshes_plugin_catalog_once(pluginClient, monkey
     assert second.status_code == 200
     assert first.json()["status"] == "SUCCESS"
     assert second.json()["status"] == "SUCCESS"
-    assert clearCalls == ["clear"]
+    assert fakePluginService.clearCacheCalls == 1
 
 
-def test_terminal_task_log_refreshes_plugin_catalog_once(pluginClient, monkeypatch):
-    clearCalls = []
+def test_terminal_task_log_refreshes_plugin_catalog_once(pluginClient, pluginRouterModule, fakePluginService, monkeypatch):
+    monkeypatch.setattr(pluginRouterModule, "readPluginTaskLog", lambda taskId, offset=0, limit=65536: ("done", 4))
 
-    class DummyService:
-        def clearCache(self):
-            clearCalls.append("clear")
-
-    monkeypatch.setattr(plugin_router, "service", DummyService())
-    monkeypatch.setattr(plugin_router, "readPluginTaskLog", lambda taskId, offset=0, limit=65536: ("done", 4))
-
-    plugin_router._inProcessResults["task-2"] = {"status": "FAILURE", "result": None, "error": "boom"}
+    pluginRouterModule._inProcessResults["task-2"] = {"status": "FAILURE", "result": None, "error": "boom"}
 
     first = pluginClient.get("/plugins/tasks/task-2/log")
     second = pluginClient.get("/plugins/tasks/task-2/log")
@@ -648,4 +617,4 @@ def test_terminal_task_log_refreshes_plugin_catalog_once(pluginClient, monkeypat
     assert second.status_code == 200
     assert first.json()["completed"] is True
     assert first.json()["status"] == "FAILURE"
-    assert clearCalls == ["clear"]
+    assert fakePluginService.clearCacheCalls == 1
