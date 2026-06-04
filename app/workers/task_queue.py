@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import List
 
 from dotenv import load_dotenv
 
@@ -100,6 +101,127 @@ def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
         writePluginTaskStep(taskId, "Completed")
         suffix = " without binaries" if skip_binaries else ""
         return f"Plugin {pip_name} installed successfully{suffix}!"
+
+
+@celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.installPluginsBatchTask")
+def installPluginsBatchTask(self, pip_names: List[str], skip_binaries: bool = False) -> str:
+    taskId = str(self.request.id)
+    cleanPipNames = [str(pipName).strip() for pipName in pip_names if str(pipName).strip()]
+    total = len(cleanPipNames)
+
+    with pluginTaskLogCapture(taskId):
+        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+        writePluginTaskStep(taskId, "Preparing environment...")
+        prepareEnvironment()
+
+        self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
+        writePluginTaskStep(taskId, "Loading service...")
+        from app.backend.api.services.plugin_service import PluginService
+        service = PluginService()
+
+        installed = []
+        failed = []
+
+        for index, pipName in enumerate(cleanPipNames, start=1):
+            step = f"Installing {index}/{total}: {pipName}"
+            if skip_binaries:
+                step = f"Installing {index}/{total} without binaries: {pipName}"
+
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "step": step,
+                    "current": pipName,
+                    "index": index,
+                    "total": total,
+                    "installed": installed,
+                    "failed": failed,
+                },
+            )
+            writePluginTaskStep(taskId, step)
+
+            try:
+                service.installPlugin(pipName, taskId=taskId, skipBinaries=skip_binaries)
+                installed.append(pipName)
+                writePluginTaskStep(taskId, f"Completed {index}/{total}: {pipName}")
+            except Exception as exc:
+                failed.append({"pipName": pipName, "error": str(exc)})
+                writePluginTaskStep(taskId, f"Failed {index}/{total}: {pipName}: {exc}")
+                raise
+
+        self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
+        writePluginTaskStep(taskId, "Refreshing plugin metadata...")
+        newRev = bumpPluginsRevision()
+        logger.warning("pluginsRevisionBumped=%s", newRev)
+        logger.warning(
+            "pluginsRevisionBumped=%s scipionHome=%s",
+            newRev,
+            os.environ.get("SCIPION_HOME"),
+        )
+        writePluginTaskStep(taskId, f"Plugins revision bumped to {newRev}")
+
+        writePluginTaskStep(taskId, "Triggering backend reload if enabled...")
+        triggerBackendReloadIfEnabled()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Completed",
+                "total": total,
+                "installed": installed,
+                "failed": failed,
+            },
+        )
+        writePluginTaskStep(taskId, "Completed")
+        suffix = " without binaries" if skip_binaries else ""
+        return f"Installed {len(installed)} plugin(s){suffix}."
+
+
+@celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.installDevelPluginTask")
+def installDevelPluginTask(
+    self,
+    plugin_path: str,
+    skip_binaries: bool = False,
+    force: bool = False,
+) -> str:
+    taskId = str(self.request.id)
+
+    with pluginTaskLogCapture(taskId):
+        self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
+        writePluginTaskStep(taskId, "Preparing environment...")
+        prepareEnvironment()
+
+        self.update_state(state="PROGRESS", meta={"step": "Loading devel service..."})
+        writePluginTaskStep(taskId, "Loading devel service...")
+        from app.backend.api.services.plugin_devel_service import PluginDevelService
+        service = PluginDevelService()
+
+        self.update_state(state="PROGRESS", meta={"step": "Installing devel plugin..."})
+        writePluginTaskStep(taskId, "Installing devel plugin...")
+        result = service.installDevelPlugin(
+            plugin_path,
+            taskId=taskId,
+            skipBinaries=skip_binaries,
+            force=force,
+        )
+
+        self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
+        writePluginTaskStep(taskId, "Refreshing plugin metadata...")
+        newRev = bumpPluginsRevision()
+        logger.warning("pluginsRevisionBumped=%s", newRev)
+        logger.warning(
+            "pluginsRevisionBumped=%s scipionHome=%s",
+            newRev,
+            os.environ.get("SCIPION_HOME"),
+        )
+        writePluginTaskStep(taskId, f"Plugins revision bumped to {newRev}")
+
+        writePluginTaskStep(taskId, "Triggering backend reload if enabled...")
+        triggerBackendReloadIfEnabled()
+
+        self.update_state(state="PROGRESS", meta={"step": "Completed"})
+        writePluginTaskStep(taskId, "Completed")
+        return f"Devel plugin {result.get('pipName')} installed successfully from {result.get('path')}!"
 
 
 @celeryApp.task(base=InstallPluginTask, bind=True, name="app.tasks.uninstallPluginTask")
