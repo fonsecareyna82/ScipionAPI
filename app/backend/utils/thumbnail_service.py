@@ -25,6 +25,7 @@
 # ******************************************************************************
 # app/backend/utils/thumbnail_service.py
 
+import base64
 import io
 import logging
 import os
@@ -749,6 +750,7 @@ class ThumbnailService:
             size: int = 320,
             maxProtocols: int = 12,
             maxOutputsPerProtocol: int = 4,
+            inlineImages: bool = False,
     ) -> List[Dict[str, Any]]:
         groups: List[Dict[str, Any]] = []
 
@@ -796,6 +798,23 @@ class ThumbnailService:
                 if not built.get("exists") or not built.get("absolutePath"):
                     continue
 
+                thumbnailDataUrl = None
+
+                if inlineImages:
+                    try:
+                        thumbPath = Path(str(built["absolutePath"]))
+                        if thumbPath.exists() and thumbPath.stat().st_size > 0:
+                            with thumbPath.open("rb") as fh:
+                                encoded = base64.b64encode(fh.read()).decode("ascii")
+                            thumbnailDataUrl = f"data:image/png;base64,{encoded}"
+                    except Exception:
+                        logger.debug(
+                            "Could not inline thumbnail image. protocolId=%s outputName=%s",
+                            protocolId,
+                            outputName,
+                            exc_info=True,
+                        )
+
                 outputs.append(
                     {
                         "outputName": outputName,
@@ -804,6 +823,7 @@ class ThumbnailService:
                         "thumbnailUrl": (
                             f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName))}/thumbnail"
                         ),
+                        "thumbnailDataUrl": thumbnailDataUrl,
                         "thumbnailRebuildUrl": None,
                     }
                 )
