@@ -69,6 +69,7 @@ Typical usage:
   ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
   ./scripts/scipionapi install --user ... --email ... --pass ...
   ./scripts/scipionapi update [--version v4.0.0]
+  ./scripts/scipionapi uninstall-web --yes
   ./scripts/scipionapi start|stop|restart|status|logs
 
 Notes:
@@ -76,6 +77,7 @@ Notes:
   - install configures SCIPION_HOME, database, migrations, and admin user
   - provision combines bootstrap/install/start in one flow
   - update downloads ScipionAPI/ScipionWeb release ZIPs and preserves current .env/data
+  - uninstall-web stops services and removes the web runtime resources without deleting this repo
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
 EOF
@@ -201,6 +203,92 @@ runInCondaCli() {
   fi
 }
 
+runInCondaCliNoExec() {
+  if [[ -n "${scipionHomeValue}" ]]; then
+    env \
+      SCIPION_HOME="${scipionHomeValue}" \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  else
+    env \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  fi
+}
+
+removeCondaEnv() {
+  if [[ "$(envExistsNow)" == "0" ]]; then
+    echo "Conda env not found: ${effectiveEnvName}"
+    return 0
+  fi
+
+  echo "Removing conda env: ${effectiveEnvName}"
+  "${condaExe}" env remove -n "${effectiveEnvName}" -y || true
+}
+
+uninstallWeb() {
+  if has_flag "-h" "$@" || has_flag "--help" "$@" || has_flag "help" "$@"; then
+    if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+      runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@"
+    else
+      cat <<EOF
+Usage: ./scripts/scipionapi uninstall-web [OPTIONS]
+
+Safely remove ScipionWeb/ScipionAPI runtime resources.
+
+Options:
+  --dry-run              Print the cleanup plan without removing anything.
+  --yes, -y              Run without interactive confirmation.
+  --keep-database        Do not drop the configured PostgreSQL database.
+  --keep-database-role   Drop the database but keep the PostgreSQL role.
+  --keep-web-dist        Do not remove the deployed web dist directory.
+  --remove-scipion-home  Remove SCIPION_HOME.
+  --remove-conda-env     Remove the conda env after cleanup.
+  --keep-conda-env       Keep the conda env.
+  -h, --help             Show this help and exit.
+
+Important:
+  Conda env removal is now opt-in. Use --remove-conda-env explicitly.
+EOF
+    fi
+    return 0
+  fi
+
+  requireEnvOrExplain
+  cd "${repoRoot}"
+
+  local removeConda="0"
+  if has_flag "--remove-conda-env" "$@" && ! has_flag "--dry-run" "$@"; then
+    removeConda="1"
+  fi
+
+  local condaFlag="--keep-conda-env"
+  if [[ "${removeConda}" == "1" ]]; then
+    condaFlag="--remove-conda-env"
+  fi
+
+  local forwardedArgs=()
+  for arg in "$@"; do
+    case "${arg}" in
+      --remove-conda-env|--keep-conda-env)
+        continue
+        ;;
+      *)
+        forwardedArgs+=("${arg}")
+        ;;
+    esac
+  done
+
+  runInCondaCliNoExec python -m scipionapi_cli.uninstall "${forwardedArgs[@]}" "${condaFlag}"
+
+  if [[ "${removeConda}" == "1" ]]; then
+    removeCondaEnv
+  else
+    echo "Keeping conda env: ${effectiveEnvName}"
+  fi
+}
+
+
 has_flag() {
   local needle="$1"
   shift
@@ -248,6 +336,12 @@ if [[ "${cmd}" == "provision" ]]; then
   fi
 
   runInCondaCli provision "$@"
+fi
+
+if [[ "${cmd}" == "uninstall-web" ]]; then
+  shift || true
+  uninstallWeb "$@"
+  exit 0
 fi
 
 requireEnvOrExplain
