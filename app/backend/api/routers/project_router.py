@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import hashlib
@@ -31,7 +32,7 @@ from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
     DuplicatePayload,
-    DeletePayload,
+    DeletePayload, ProtocolOutputThumbnailsRequest,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -3051,6 +3052,7 @@ def _runThumbnailProjectJob(
         finally:
             _clearThumbnailProjectContext(service)
 
+
 def _clearThumbnailProjectContext(service: ProjectService) -> None:
     try:
         service.clearCurrentProject()
@@ -3434,6 +3436,151 @@ def getProtocolOutputThumbnail(
             status_code=500,
             detail=f"Failed to load protocol output thumbnail: {e}",
         )
+
+
+@router.post(
+    "/{projectId}/output-thumbnails",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolOutputThumbnailsBatch(
+        projectId: int,
+        payload: ProtocolOutputThumbnailsRequest,
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    try:
+        requestedOutputs = payload.outputs or []
+
+        if not requestedOutputs:
+            return {
+                "projectId": projectId,
+                "size": payload.size,
+                "items": [],
+            }
+
+        items = []
+
+        with _thumbnailProjectLock:
+            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+            if not dbProj:
+                raise HTTPException(status_code=404, detail="Project not found")
+
+            service.loadProjectForThumbnails(dbProj)
+
+            seen = set()
+
+            for requestedOutput in requestedOutputs:
+                protocolId = int(requestedOutput.protocolId)
+                outputName = str(requestedOutput.outputName or "").strip()
+
+                if not outputName:
+                    continue
+
+                requestKey = (protocolId, outputName)
+                if requestKey in seen:
+                    continue
+                seen.add(requestKey)
+
+                item = {
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "outputClassName": None,
+                    "exists": False,
+                    "cached": False,
+                    "thumbnailUrl": (
+                        f"/projects/{int(projectId)}/protocols/{protocolId}"
+                        f"/outputs/{outputName}/thumbnail"
+                    ),
+                    "thumbnailDataUrl": None,
+                    "error": None,
+                }
+
+                try:
+                    protocol = service.currentProject.getProtocol(protocolId)
+                except Exception:
+                    item["error"] = "Protocol not found"
+                    items.append(item)
+                    continue
+
+                if not hasattr(protocol, outputName):
+                    item["error"] = "Output not found"
+                    items.append(item)
+                    continue
+
+                try:
+                    outputObject = getattr(protocol, outputName)
+                    item["outputClassName"] = outputObject.__class__.__name__
+                except Exception:
+                    item["outputClassName"] = None
+
+                try:
+                    result = service.buildProtocolOutputThumbnail(
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        force=False,
+                        size=payload.size,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        exc_info=True,
+                    )
+                    item["error"] = str(exc)
+                    items.append(item)
+                    continue
+
+                thumbPath = result.get("absolutePath")
+                if not result.get("exists") or not thumbPath:
+                    item["error"] = "Thumbnail not available"
+                    items.append(item)
+                    continue
+
+                item["exists"] = True
+                item["cached"] = bool(result.get("cached"))
+
+                if payload.inlineImages:
+                    try:
+                        if os.path.exists(str(thumbPath)) and os.path.getsize(str(thumbPath)) > 0:
+                            with open(str(thumbPath), "rb") as fh:
+                                encoded = base64.b64encode(fh.read()).decode("ascii")
+                            item["thumbnailDataUrl"] = f"data:image/png;base64,{encoded}"
+                    except Exception:
+                        logger.debug(
+                            "Could not inline batch thumbnail image. projectId=%s protocolId=%s outputName=%s",
+                            projectId,
+                            protocolId,
+                            outputName,
+                            exc_info=True,
+                        )
+
+                items.append(item)
+
+        response = JSONResponse(
+            {
+                "projectId": projectId,
+                "size": payload.size,
+                "items": items,
+            }
+        )
+        response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
+        response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
+        return _attachDebugHeaders(response, currentUser)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in getProtocolOutputThumbnailsBatch: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load protocol output thumbnails: {e}",
+        )
+    finally:
+        _clearThumbnailProjectContext(service)
 
 # *****************************************
 # Wizards routers
