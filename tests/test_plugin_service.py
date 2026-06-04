@@ -189,4 +189,3 @@ def test_existing_repository_plugins_are_not_duplicated_by_devel_manifest(tmp_pa
     service._appendMissingDevelPlugins(serializedList, seenPipNames)
 
     assert serializedList == [{"pipName": "scipion-em-local", "name": "Catalog Plugin"}]
-}
