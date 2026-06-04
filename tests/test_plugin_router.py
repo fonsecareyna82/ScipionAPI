@@ -93,8 +93,11 @@ def test_install_batch_submits_celery_task_when_available(pluginClient, monkeypa
     monkeypatch.setattr(plugin_router, "_celeryAppAvailable", True)
     monkeypatch.setattr(plugin_router, "_celeryInstallBatchAvailable", True)
     monkeypatch.setattr(plugin_router, "installPluginsBatchTask", DummyTask())
-    monkeypatch.setattr(plugin_router, "initializePluginTaskLog", lambda taskId, pluginName, operation: initialized.append((taskId, pluginName, operation)))
-    monkeypatch.setattr(plugin_router.uuid4, "__call__", lambda: "fixed-task-id", raising=False)
+    monkeypatch.setattr(
+        plugin_router,
+        "initializePluginTaskLog",
+        lambda taskId, pluginName, operation: initialized.append((taskId, pluginName, operation)),
+    )
 
     response = pluginClient.post(
         "/plugins/install-batch",
@@ -105,7 +108,7 @@ def test_install_batch_submits_celery_task_when_available(pluginClient, monkeypa
     body = response.json()
     assert body["status"] == "PENDING"
     assert body["backend"] == "celery"
-    assert initialized[0][1:] == ("batch:2", "install-batch")
+    assert initialized == [(body["taskId"], "batch:2", "install-batch")]
     assert calls == [{"args": [["scipion-em-a", "scipion-em-b"], False], "task_id": body["taskId"]}]
 
 
