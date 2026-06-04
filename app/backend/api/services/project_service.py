@@ -2131,6 +2131,7 @@ class ProjectService:
             size: int = 320,
             maxProtocols: int = 12,
             maxOutputsPerProtocol: int = 4,
+            inlineImages: bool = False,
     ):
         thumbnailService = ThumbnailService(self.currentProject)
         return thumbnailService.listProtocolThumbnailItems(
@@ -2139,6 +2140,7 @@ class ProjectService:
             size=size,
             maxProtocols=maxProtocols,
             maxOutputsPerProtocol=maxOutputsPerProtocol,
+            inlineImages=inlineImages,
         )
 
     def _buildProtocolContext(self, projectId, protocol) -> dict:
