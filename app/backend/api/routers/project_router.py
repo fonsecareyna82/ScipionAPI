@@ -3278,6 +3278,7 @@ def listProjectThumbnailItems(
         size: int = Query(320, ge=128, le=1024),
         maxProtocols: int = Query(12, ge=1, le=24),
         maxOutputsPerProtocol: int = Query(4, ge=1, le=12),
+        inlineImages: bool = Query(False),
         currentUser=Depends(getCurrentUser),
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: ProjectService = Depends(getProjectService),
@@ -3296,6 +3297,7 @@ def listProjectThumbnailItems(
                 size=size,
                 maxProtocols=maxProtocols,
                 maxOutputsPerProtocol=maxOutputsPerProtocol,
+                inlineImages=inlineImages,
             )
 
             validItems = []
