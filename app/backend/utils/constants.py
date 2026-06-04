@@ -30,9 +30,9 @@ TEXT_FILE_EXTENSIONS = {".txt", ".log", ".json", ".yaml", ".yml", ".md", ".csv",
                         ".out", ".err", ".script", ".text", ".markdown", ".rst", ".html",
                         ".tex", ".toml", ".ini", ".cfg", ".conf", ".config", ".env",
                         ".py", '.js', '.ts', '.tsx', '.java', '.c', '.cpp', '.h', '.cs',
-                        '.go', '.rs', '.sh', '.bat', '.ps1', '.srt', '.vtt'}
+                        '.go', '.rs', '.sh', '.bat', '.ps1', '.srt', '.vtt', '.rawtlt', '.order'}
 
-IMAGES_FILE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".em", ".stk"}
+IMAGES_FILE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".em", ".stk", ".ali", ".rec"}
 
 TABLE_EXTENSIONS = {".csv", ".tsv", ".star"}
 ARCHIVE_EXTENSIONS = {".zip", ".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".txz", ".tar.xz"}
