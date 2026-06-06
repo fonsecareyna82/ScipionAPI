@@ -69,6 +69,7 @@ from pwem.objects import (
     PdbFile,
     SetOfAtomStructs,
     SetOfPDBs,
+    SetOfSequences,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -780,6 +781,15 @@ class ThumbnailService:
                 or className == "pdb"
         ):
             score = 118
+        elif (
+                "setofsequence" in className
+                or className == "sequence"
+                or "sequence" in className
+        ):
+            score = 116
+        elif "fsc" in className:
+            score = 112
+
         elif "fsc" in className:
             score = 112
         elif self._looksRenderableOutput(output):
@@ -943,6 +953,8 @@ class ThumbnailService:
                 return self._renderLandmarkModelsPreview(protocol, output, size=size)
             if isinstance(output, (SetOfAtomStructs, SetOfPDBs, AtomStruct, PdbFile)):
                 return self._renderAtomStructPreview(protocol, output, size=size)
+            if isinstance(output, SetOfSequences):
+                return self._renderSequencesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -1061,6 +1073,15 @@ class ThumbnailService:
                     or className == "pdb"
             ):
                 image = self._renderAtomStructPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if (
+                    "setofsequence" in className
+                    or className == "sequence"
+                    or "sequence" in className
+            ):
+                image = self._renderSequencesPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -4711,6 +4732,281 @@ class ThumbnailService:
                 continue
 
         return None
+
+    def _renderSequencesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        if isinstance(output, SetOfSequences):
+            sequenceIterator = self._iterItemsDirect(output)
+        else:
+            sequenceIterator = iter([output])
+
+        for sequence in sequenceIterator:
+            try:
+                tile = self._renderSequenceItemPreview(
+                    protocol=protocol,
+                    sequence=sequence,
+                    size=size,
+                )
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                logger.debug("Sequence preview failed", exc_info=True)
+
+        if not tiles:
+            return None
+
+        if len(tiles) == 1:
+            return tiles[0]
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderSequenceItemPreview(
+            self,
+            protocol,
+            sequence,
+            size: int,
+    ) -> Optional[Image.Image]:
+        info = self._extractSequenceInfo(
+            protocol=protocol,
+            sequence=sequence,
+        )
+
+        return self._buildSequenceCardImage(
+            name=info.get("name") or "Sequence",
+            sequenceId=info.get("id"),
+            sequenceType=info.get("type") or "Sequence",
+            sequenceLength=info.get("length"),
+            fileName=info.get("fileName"),
+            preview=info.get("preview"),
+            size=size,
+        )
+
+    def _extractSequenceInfo(
+            self,
+            protocol,
+            sequence,
+    ) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "name": None,
+            "id": None,
+            "type": None,
+            "length": None,
+            "fileName": None,
+            "preview": None,
+        }
+
+        for getterName, key in (
+                ("getSeqName", "name"),
+                ("getId", "id"),
+                ("getDescription", "description"),
+        ):
+            getter = getattr(sequence, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                if value:
+                    info[key] = str(value)
+            except Exception:
+                continue
+
+        getIsAminoacidsFn = getattr(sequence, "getIsAminoacids", None)
+        if callable(getIsAminoacidsFn):
+            try:
+                isAmino = self._safeScalarValue(getIsAminoacidsFn())
+                info["type"] = "Protein" if bool(isAmino) else "Nucleotide"
+            except Exception:
+                info["type"] = "Sequence"
+
+        sequenceText = None
+        getSequenceFn = getattr(sequence, "getSequence", None)
+        if callable(getSequenceFn):
+            try:
+                sequenceText = self._safeScalarValue(getSequenceFn())
+            except Exception:
+                sequenceText = None
+
+        if sequenceText:
+            cleanSequence = "".join(str(sequenceText).split())
+            info["length"] = len(cleanSequence)
+            info["preview"] = cleanSequence[:64]
+
+        getFileNameFn = getattr(sequence, "getFileName", None)
+        if callable(getFileNameFn):
+            try:
+                rawPath = self._safeScalarValue(getFileNameFn())
+            except Exception:
+                rawPath = None
+
+            if rawPath:
+                sourcePath, _sourceIndex = self._splitIndexedImagePath(rawPath)
+                if sourcePath:
+                    resolvedPath = self._resolveFilePath(protocol, sourcePath)
+                    filePath = resolvedPath if resolvedPath is not None else Path(str(sourcePath))
+                    info["fileName"] = filePath.name or Path(str(sourcePath)).name
+
+                    if info.get("length") is None or info.get("preview") is None:
+                        fileInfo = self._readSequenceFileInfo(filePath)
+                        for key, value in fileInfo.items():
+                            if info.get(key) is None and value is not None:
+                                info[key] = value
+
+        if not info.get("name"):
+            info["name"] = info.get("id") or info.get("fileName") or "Sequence"
+
+        if not info.get("type"):
+            info["type"] = "Sequence"
+
+        return info
+
+    def _readSequenceFileInfo(self, filePath: Path) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "name": None,
+            "id": None,
+            "length": None,
+            "preview": None,
+        }
+
+        if filePath is None or not filePath.exists():
+            return info
+
+        try:
+            sequenceParts: List[str] = []
+            header = None
+
+            with filePath.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    text = line.strip()
+                    if not text:
+                        continue
+
+                    if text.startswith(">"):
+                        if header is None:
+                            header = text[1:].strip()
+                        elif sequenceParts:
+                            break
+                        continue
+
+                    if text.startswith(";"):
+                        continue
+
+                    sequenceParts.append(text)
+
+                    if sum(len(part) for part in sequenceParts) >= 5000:
+                        break
+
+            if header:
+                info["id"] = header.split()[0] if header.split() else header
+                info["name"] = header
+
+            cleanSequence = "".join(sequenceParts)
+            cleanSequence = "".join(cleanSequence.split())
+
+            if cleanSequence:
+                info["length"] = len(cleanSequence)
+                info["preview"] = cleanSequence[:64]
+
+        except Exception:
+            return info
+
+        return info
+
+    def _buildSequenceCardImage(
+            self,
+            name: str,
+            sequenceId: Optional[str],
+            sequenceType: str,
+            sequenceLength: Optional[int],
+            fileName: Optional[str],
+            preview: Optional[str],
+            size: int,
+    ) -> Image.Image:
+        width = max(360, int(size))
+        height = max(220, int(round(width * 0.58)))
+
+        image = Image.new("RGB", (width, height), (246, 249, 252))
+        draw = ImageDraw.Draw(image)
+
+        margin = max(18, int(round(width * 0.05)))
+        card = (
+            margin,
+            margin,
+            width - margin,
+            height - margin,
+        )
+
+        draw.rounded_rectangle(
+            card,
+            radius=18,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+
+        badgeText = self._ellipsizeText(sequenceType or "Sequence", 12)
+        badgeW = max(92, min(160, 28 + len(badgeText) * 7))
+        badgeH = 30
+        badgeBox = (
+            margin + 16,
+            margin + 16,
+            margin + 16 + badgeW,
+            margin + 16 + badgeH,
+        )
+
+        draw.rounded_rectangle(
+            badgeBox,
+            radius=9,
+            fill=(226, 232, 240),
+            outline=(203, 213, 225),
+            width=1,
+        )
+        draw.text((badgeBox[0] + 12, badgeBox[1] + 8), badgeText, fill=(15, 23, 42))
+
+        title = self._ellipsizeText(name or "Sequence", 34)
+        draw.text((margin + 16, margin + 58), title, fill=(15, 23, 42))
+
+        subtitleParts: List[str] = []
+        if sequenceId:
+            subtitleParts.append(str(sequenceId))
+        if fileName:
+            subtitleParts.append(str(fileName))
+
+        subtitle = " · ".join(subtitleParts) if subtitleParts else "Sequence data"
+        subtitle = self._ellipsizeText(subtitle, 42)
+        draw.text((margin + 16, margin + 86), subtitle, fill=(51, 65, 85))
+
+        y = margin + 122
+
+        if sequenceLength is not None:
+            stat = f"{sequenceLength} residues"
+        else:
+            stat = "Unknown length"
+
+        draw.rounded_rectangle(
+            (margin + 16, y, margin + 170, y + 28),
+            radius=8,
+            fill=(248, 250, 252),
+            outline=(226, 232, 240),
+            width=1,
+        )
+        draw.text((margin + 28, y + 8), stat, fill=(71, 85, 105))
+
+        if preview:
+            previewText = self._ellipsizeText(preview, 46)
+            draw.text((margin + 16, y + 42), previewText, fill=(100, 116, 139))
+
+        return image
 
     def _renderAtomStructPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
