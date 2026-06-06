@@ -47,7 +47,7 @@ from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries
+from tomo.objects import SetOfTiltSeries, SetOfTiltSeriesM
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -716,6 +716,10 @@ class ThumbnailService:
 
         if "setofmicrograph" in className or "micrograph" in className:
             score = 175
+        elif "classessubtomogram" in className or "classsubtomogram" in className:
+            score = 176
+        elif "averagesubtomogram" in className or "subtomogram" in className:
+            score = 170
         elif "class2d" in className or "average" in className:
             score = 182
         elif "class3d" in className:
@@ -728,6 +732,8 @@ class ThumbnailService:
             score = 164
         elif "tomogram" in className:
             score = 164
+        elif "setoftiltseriesm" in className or "tiltseriesm" in className:
+            score = 148
         elif "setoftiltseries" in className or "tiltseries" in className:
             score = 150
         elif "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
@@ -869,7 +875,9 @@ class ThumbnailService:
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, (SetOfClasses3D, SetOfVolumes)):
                 return self._renderClasses3dOrVolumesPreview(protocol, output, size=size)
-            if isinstance(output, SetOfTiltSeries) or isinstance(output, SetOfTiltSeriesM):
+            if isinstance(output, SetOfTiltSeriesM):
+                return self._renderTiltSeriesMPreview(protocol, output, size=size)
+            if isinstance(output, SetOfTiltSeries):
                 return self._renderTiltSeriesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
@@ -904,10 +912,20 @@ class ThumbnailService:
                 if image is not None:
                     return image
 
+            if "subtomogram" in className:
+                image = self._renderSubTomogramsPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "tomogram" in className or "volume" in className or "class3d" in className:
                 image = self._renderVolumeLikePreview(protocol, output, size=size)
                 if image is not None:
                     return image
+            if "setoftiltseriesm" in className or "tiltseriesm" in className:
+                image = self._renderTiltSeriesMPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "tiltseries" in className:
                 image = self._renderTiltSeriesPreview(protocol, output, size=size)
                 if image is not None:
@@ -1119,11 +1137,92 @@ class ThumbnailService:
 
         return self._composeCleanStrip(tiles, targetHeight=max(190, int(round(size * 0.40))))
 
+    def _renderTiltSeriesMPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+
+        if isinstance(output, SetOfTiltSeriesM):
+            seriesIterator = self._iterItemsDirect(output)
+        else:
+            seriesIterator = iter([output])
+
+        for tiltSeries in seriesIterator:
+            try:
+                tile = self._renderTiltSeriesMMoviePreview(protocol, tiltSeries)
+                if tile is not None:
+                    tiles.append(tile)
+            except Exception:
+                logger.debug("TiltSeriesM movie preview failed", exc_info=True)
+
+            if len(tiles) >= 4:
+                break
+
+        if not tiles:
+            return None
+
+        return self._composeTiltSeriesStrip(tiles[:4], targetWidth=size)
+
+    def _renderTiltSeriesMMoviePreview(self, protocol, tiltSeries) -> Optional[Image.Image]:
+        checkedMovies = 0
+
+        for tiltMovie in self._iterItemsDirect(tiltSeries):
+            checkedMovies += 1
+
+            try:
+                if not self._isEnabled(tiltMovie):
+                    if checkedMovies >= 12:
+                        break
+                    continue
+            except Exception:
+                pass
+
+            tile = self._renderTiltMovieImagePreview(protocol, tiltMovie)
+            if tile is not None:
+                return tile
+
+            if checkedMovies >= 12:
+                break
+
+        return None
+
+    def _renderTiltMovieImagePreview(self, protocol, tiltMovie) -> Optional[Image.Image]:
+        sources: List[Tuple[str, Optional[int]]] = []
+
+        for getterName in ("getOdd", "getEven", "getFileName", "getLocation"):
+            getter = getattr(tiltMovie, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                sourcePath, sourceIndex = self._splitIndexedImagePath(getter())
+                if sourcePath:
+                    sources.append((sourcePath, sourceIndex))
+            except Exception:
+                continue
+
+        seen = set()
+
+        for sourcePath, sourceIndex in sources:
+            key = (sourcePath, sourceIndex)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            image = self._readMoviePreviewFromPath(
+                protocol=protocol,
+                filePath=sourcePath,
+                index=sourceIndex,
+                movie=tiltMovie,
+            )
+            if image is not None:
+                return image
+
+        return None
+
     def _renderTiltSeriesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
         seriesList: List[Any]
 
-        if isinstance(output, SetOfTiltSeries):
+        if isinstance(output, (SetOfTiltSeries, SetOfTiltSeriesM)):
             seriesList = list(self._iterPreviewItems(output, maxItems=4))
         else:
             seriesList = [output]
@@ -1149,18 +1248,42 @@ class ThumbnailService:
                 logger.debug("Direct tilt-series stack preview failed", exc_info=True)
 
             try:
-                frames = list(self._iterPreviewItems(tiltSeries, maxItems=3))
-                if not frames:
-                    continue
+                checkedFrames = 0
 
-                pivot = frames[len(frames) // 2]
-                sourcePath, sourceIndex = self._resolveImageSourceFromItem(pivot)
-                if not sourcePath:
-                    continue
+                for frame in self._iterItemsDirect(tiltSeries):
+                    checkedFrames += 1
 
-                tile = self._readImagePreview(protocol, sourcePath, sourceIndex)
-                if tile is not None:
-                    tiles.append(tile)
+                    sourcePath, sourceIndex = self._resolveImageSourceFromItem(frame)
+                    if not sourcePath:
+                        if checkedFrames >= 8:
+                            break
+                        continue
+
+                    resolvedPath = self._resolveFilePath(protocol, sourcePath)
+                    if resolvedPath is None or not resolvedPath.exists():
+                        if checkedFrames >= 8:
+                            break
+                        continue
+
+                    gray = self._read2dTile(
+                        filePath=resolvedPath,
+                        sliceIndex=None,
+                        preferCentral=True,
+                        thumbSize=maxThumbSize,
+                    )
+
+                    if gray is None:
+                        tile = self._readImagePreview(protocol, sourcePath, sourceIndex)
+                    else:
+                        tile = self._grayTileToImage(gray)
+
+                    if tile is not None:
+                        tiles.append(tile)
+                        break
+
+                    if checkedFrames >= 8:
+                        break
+
             except Exception:
                 logger.debug("Tilt-series frame preview failed", exc_info=True)
 
@@ -2192,6 +2315,137 @@ class ThumbnailService:
             if fig is not None:
                 plt.close(fig)
 
+    def _renderSubTomogramsPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        for item in self._iterItemsDirect(output):
+            try:
+                for candidate in self._iterSubTomogramPreviewCandidates(item):
+                    tile = self._renderVolumePreviewFromItem(protocol, candidate, size=size)
+                    if tile is not None:
+                        tiles.append(tile)
+                        break
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                continue
+
+        if not tiles:
+            tile = self._renderVolumePreviewFromItem(protocol, output, size=size)
+            if tile is not None:
+                tiles.append(tile)
+
+        if not tiles:
+            return None
+
+        return self._composeParticleMosaic(
+            tiles=tiles[:maxItems],
+            targetWidth=size,
+            maxCols=2,
+        )
+
+    def _iterSubTomogramPreviewCandidates(self, item) -> Iterable[Any]:
+        seen: Set[int] = set()
+
+        def emit(candidate):
+            if candidate is None:
+                return
+            candidateId = id(candidate)
+            if candidateId in seen:
+                return
+            seen.add(candidateId)
+            yield candidate
+
+        for getterName in ("getRepresentative", "getRepresentativeItem", "getRep"):
+            getter = getattr(item, getterName, None)
+            if callable(getter):
+                try:
+                    representative = getter()
+                    for candidate in emit(representative):
+                        yield candidate
+                except Exception:
+                    pass
+
+        for candidate in emit(item):
+            yield candidate
+
+        for iteratorName in ("iterSubtomos", "iterItems"):
+            iteratorFn = getattr(item, iteratorName, None)
+            if not callable(iteratorFn):
+                continue
+
+            try:
+                iterator = iteratorFn()
+            except TypeError:
+                try:
+                    iterator = iteratorFn(iterate=False)
+                except Exception:
+                    iterator = None
+            except Exception:
+                iterator = None
+
+            if iterator is None:
+                continue
+
+            try:
+                for subItem in iterator:
+                    for candidate in emit(subItem):
+                        yield candidate
+                    break
+            except Exception:
+                continue
+
+    def _renderVolumePreviewFromItem(
+            self,
+            protocol,
+            item,
+            size: int,
+    ) -> Optional[Image.Image]:
+        for getterName in ("getFileName", "getVolName"):
+            getter = getattr(item, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                rawPath = getter()
+            except Exception:
+                continue
+
+            if not rawPath:
+                continue
+
+            volumePath = self._resolveFilePath(protocol, rawPath)
+            if volumePath is None or not volumePath.exists():
+                continue
+
+            image = self._renderVolumeFromPath(volumePath, size=size)
+            if image is not None:
+                return image
+
+        getLocationFn = getattr(item, "getLocation", None)
+        if callable(getLocationFn):
+            try:
+                location = getLocationFn()
+                rawPath = None
+
+                if isinstance(location, (list, tuple)) and location:
+                    rawPath = location[-1]
+                elif location:
+                    rawPath = location
+
+                if rawPath:
+                    volumePath = self._resolveFilePath(protocol, rawPath)
+                    if volumePath is not None and volumePath.exists():
+                        image = self._renderVolumeFromPath(volumePath, size=size)
+                        if image is not None:
+                            return image
+            except Exception:
+                pass
+
+        return None
+
     def _renderVolumeLikePreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         try:
             getFileNameFn = getattr(output, "getFileName", None)
@@ -2794,8 +3048,73 @@ class ThumbnailService:
             return []
         return items
 
+    def _splitIndexedImagePath(self, value: Any) -> Tuple[Optional[str], Optional[int]]:
+        if value is None:
+            return None, None
+
+        value = self._safeScalarValue(value)
+
+        if isinstance(value, (list, tuple)):
+            rawValues = [self._safeScalarValue(v) for v in value]
+
+            fileName = None
+            index = None
+
+            for raw in reversed(rawValues):
+                if raw is None:
+                    continue
+
+                text = str(raw).strip()
+                if not text:
+                    continue
+
+                if "@" in text:
+                    return self._splitIndexedImagePath(text)
+
+                try:
+                    float(text)
+                    isNumeric = True
+                except Exception:
+                    isNumeric = False
+
+                if not isNumeric:
+                    fileName = text
+                    break
+
+            for raw in rawValues:
+                if raw is None:
+                    continue
+
+                text = str(raw).strip()
+                if not text or text == fileName:
+                    continue
+
+                try:
+                    index = int(float(text))
+                    break
+                except Exception:
+                    continue
+
+            return fileName, index
+
+        text = str(value).strip()
+        if not text:
+            return None, None
+
+        if "@" in text:
+            indexText, fileName = text.split("@", 1)
+            try:
+                index = int(indexText)
+            except Exception:
+                index = None
+
+            return fileName.strip() or None, index
+
+        return text, None
+
     def _resolveImageSourceFromItem(self, item) -> Tuple[Optional[str], Optional[int]]:
         candidateObjects = [item]
+
         for methodName in ("getRepresentative", "getAverage", "getMicrograph", "getParticle", "getImage"):
             getter = getattr(item, methodName, None)
             if callable(getter):
@@ -2807,24 +3126,37 @@ class ThumbnailService:
                     continue
 
         for candidate in candidateObjects:
+            locationFn = getattr(candidate, "getLocation", None)
+            if callable(locationFn):
+                try:
+                    sourcePath, sourceIndex = self._splitIndexedImagePath(locationFn())
+                    if sourcePath:
+                        return sourcePath, sourceIndex
+                except Exception:
+                    pass
+
             getFileNameFn = getattr(candidate, "getFileName", None)
             if not callable(getFileNameFn):
                 continue
+
             try:
                 fileName = getFileNameFn()
             except Exception:
                 fileName = None
-            if not fileName:
+
+            sourcePath, sourceIndex = self._splitIndexedImagePath(fileName)
+            if not sourcePath:
                 continue
 
-            indexValue = None
-            getIndexFn = getattr(candidate, "getIndex", None)
-            if callable(getIndexFn):
-                try:
-                    indexValue = int(getIndexFn())
-                except Exception:
-                    indexValue = None
-            return str(fileName), indexValue
+            if sourceIndex is None:
+                getIndexFn = getattr(candidate, "getIndex", None)
+                if callable(getIndexFn):
+                    try:
+                        sourceIndex = int(self._safeScalarValue(getIndexFn()))
+                    except Exception:
+                        sourceIndex = None
+
+            return sourcePath, sourceIndex
 
         return None, None
 
@@ -2832,7 +3164,12 @@ class ThumbnailService:
     # Low level readers
     # ------------------------------------------------------------------
     def _readImagePreview(self, protocol, filePath: str, index: Optional[int]) -> Optional[Image.Image]:
-        resolvedPath = self._resolveFilePath(protocol, filePath)
+        sourcePath, parsedIndex = self._splitIndexedImagePath(filePath)
+
+        if parsedIndex is not None and index is None:
+            index = parsedIndex
+
+        resolvedPath = self._resolveFilePath(protocol, sourcePath)
         if resolvedPath is None:
             return None
 
@@ -2866,6 +3203,115 @@ class ThumbnailService:
         if image is None:
             return None
         return self._normalizePilImage(image)
+
+    def _readMoviePreviewFromPath(
+            self,
+            protocol,
+            filePath: str,
+            index: Optional[int],
+            movie=None,
+    ) -> Optional[Image.Image]:
+        sourcePath, parsedIndex = self._splitIndexedImagePath(filePath)
+
+        if parsedIndex is not None and index is None:
+            index = parsedIndex
+
+        resolvedPath = self._resolveFilePath(protocol, sourcePath)
+        if resolvedPath is None or not resolvedPath.exists():
+            return None
+
+        candidateIndexes: List[int] = []
+
+        if index is not None:
+            try:
+                indexValue = int(index)
+                candidateIndexes.append(indexValue)
+                if indexValue > 0:
+                    candidateIndexes.append(indexValue - 1)
+            except Exception:
+                pass
+
+        try:
+            getNumberOfFramesFn = getattr(movie, "getNumberOfFrames", None)
+            if callable(getNumberOfFramesFn):
+                numberOfFrames = int(getNumberOfFramesFn())
+                if numberOfFrames > 1:
+                    candidateIndexes.append(numberOfFrames // 2)
+                    candidateIndexes.append(max(0, numberOfFrames // 2 - 1))
+        except Exception:
+            pass
+
+        try:
+            getDimFn = getattr(movie, "getDim", None)
+            if callable(getDimFn):
+                dim = getDimFn()
+                if isinstance(dim, (list, tuple)) and len(dim) >= 3:
+                    frames = int(dim[2])
+                    if frames > 1:
+                        candidateIndexes.append(frames // 2)
+                        candidateIndexes.append(max(0, frames // 2 - 1))
+        except Exception:
+            pass
+
+        candidateIndexes.extend([0, 1])
+
+        try:
+            reader = ImageReadersRegistry.open(str(resolvedPath))
+
+            try:
+                image = reader.getCentralImage(pilImage=True)
+                if image is not None:
+                    return self._normalizePilImage(image)
+            except Exception:
+                pass
+
+            for idx in self._uniqueInts(candidateIndexes):
+                try:
+                    image = reader.getImage(index=idx, pilImage=True)
+                    if image is not None:
+                        return self._normalizePilImage(image)
+                except Exception:
+                    continue
+
+        except Exception:
+            pass
+
+        try:
+            from pwem.emlib.image import ImageHandler
+
+            imageHandler = ImageHandler()
+
+            for idx in self._uniqueInts(candidateIndexes):
+                try:
+                    imageObj = imageHandler.read((idx + 1, str(resolvedPath)))
+                    data = imageObj.getData()
+                    if data is not None:
+                        arr = np.asarray(data)
+                        arr = np.squeeze(arr)
+                        if arr.ndim == 2:
+                            return self._arrayToImage(arr)
+                except Exception:
+                    continue
+
+            try:
+                imageObj = imageHandler.read(str(resolvedPath))
+                data = imageObj.getData()
+                if data is not None:
+                    arr = np.asarray(data)
+                    arr = np.squeeze(arr)
+
+                    if arr.ndim == 3:
+                        arr = arr[arr.shape[0] // 2]
+
+                    if arr.ndim == 2:
+                        return self._arrayToImage(arr)
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+        return None
 
     def _read2dTile(
         self,
