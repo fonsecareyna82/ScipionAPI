@@ -46,6 +46,7 @@ from PIL import Image, ImageDraw, ImageOps, ImageFont
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
+from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries
 
 from app.backend.utils.constants import maxThumbSize
@@ -729,8 +730,10 @@ class ThumbnailService:
             score = 164
         elif "setoftiltseries" in className or "tiltseries" in className:
             score = 150
-        elif "coordinate3d" in className or "setofcoordinates3d" in className:
+        elif "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
             score = 128
+        elif "setofcoordinate" in className or "coordinate" in className:
+            score = 126
         elif "fsc" in className:
             score = 112
         elif self._looksRenderableOutput(output):
@@ -881,8 +884,18 @@ class ThumbnailService:
 
         className = (outputClassName or "").lower()
         try:
-            if "coordinate3d" in className:
+            if "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
                 image = self._renderCoordinates3dPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if (
+                    ("setofcoordinate" in className or "coordinate" in className)
+                    and "coordinate3d" not in className
+                    and "coordinates3d" not in className
+                    and "setofcoordinates3d" not in className
+            ):
+                image = self._renderCoordinates2dPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -1716,20 +1729,215 @@ class ThumbnailService:
 
         return False
 
+    def _iterItemsDirect(self, output, orderBy: Optional[str] = None) -> Iterable[Any]:
+        iterItemsFn = getattr(output, "iterItems", None)
+
+        if callable(iterItemsFn):
+            iterator = None
+
+            try:
+                if orderBy is not None:
+                    iterator = iterItemsFn(orderBy=orderBy)
+                else:
+                    iterator = iterItemsFn(iterate=False)
+            except TypeError:
+                try:
+                    iterator = iterItemsFn()
+                except Exception:
+                    iterator = None
+            except Exception:
+                iterator = None
+
+            if iterator is not None:
+                try:
+                    for item in iterator:
+                        yield item
+                except Exception:
+                    return
+                return
+
+        try:
+            for item in output:
+                yield item
+        except Exception:
+            return
+
+    def _readCoordinateScalar(self, item, getterName: str) -> Optional[float]:
+        getter = getattr(item, getterName, None)
+        if not callable(getter):
+            return None
+
+        for args in ((), (0,)):
+            try:
+                value = self._safeScalarValue(getter(*args))
+                if value is None:
+                    continue
+                return float(value)
+            except TypeError:
+                continue
+            except Exception:
+                continue
+
+        return None
+
+    def _readCoordinate3dScalar(self, item, getterName: str) -> Optional[float]:
+        getter = getattr(item, getterName, None)
+        if not callable(getter):
+            return None
+
+        for args in ((BOTTOM_LEFT_CORNER,), ()):
+            try:
+                value = self._safeScalarValue(getter(*args))
+                if value is None:
+                    continue
+                return float(value)
+            except TypeError:
+                continue
+            except Exception:
+                continue
+
+        return None
+
+    def _renderCoordinates2dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        points: List[Tuple[float, float]] = []
+        maxPoints = 1200
+
+        for item in self._iterItemsDirect(output):
+            try:
+                xValue = self._readCoordinateScalar(item, "getX")
+                yValue = self._readCoordinateScalar(item, "getY")
+
+                if xValue is None or yValue is None:
+                    continue
+
+                if not np.isfinite(xValue) or not np.isfinite(yValue):
+                    continue
+
+                points.append((xValue, yValue))
+
+                if len(points) >= maxPoints:
+                    break
+            except Exception:
+                continue
+
+        if not points:
+            return None
+
+        return self._buildCoordinatesScatterImage(
+            title=self._getOutputClassName(output),
+            points=points,
+            zValues=None,
+            is3d=False,
+            size=size,
+        )
 
     def _renderCoordinates3dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        points: List[Tuple[float, float]] = []
+        zValues: List[float] = []
+        maxPoints = 1200
+
+        iterCoordinatesFn = getattr(output, "iterCoordinates", None)
+
+        if callable(iterCoordinatesFn):
+            tomogramSources: List[Any] = []
+
+            iterTomogramsFn = getattr(output, "iterVolumes", None)
+            if callable(iterTomogramsFn):
+                try:
+                    for tomogram in iterTomogramsFn():
+                        tomogramSources.append(tomogram)
+                except Exception:
+                    logger.debug("Coords3D iterTomograms failed", exc_info=True)
+
+            if not tomogramSources:
+                getTomogramsFn = getattr(output, "getTomograms", None)
+                if callable(getTomogramsFn):
+                    try:
+                        tomograms = getTomogramsFn()
+                        for tomogram in self._iterItemsDirect(tomograms):
+                            tomogramSources.append(tomogram)
+                    except Exception:
+                        logger.debug("Coords3D getTomograms failed", exc_info=True)
+
+            for tomogram in tomogramSources:
+                try:
+                    coordIterator = iterCoordinatesFn(tomogram)
+                except Exception:
+                    continue
+
+                for coord in coordIterator:
+                    try:
+                        xValue = self._readCoordinate3dScalar(coord, "getX")
+                        yValue = self._readCoordinate3dScalar(coord, "getY")
+                        zValue = self._readCoordinate3dScalar(coord, "getZ")
+
+                        if xValue is None or yValue is None or zValue is None:
+                            continue
+
+                        if not (
+                                np.isfinite(xValue)
+                                and np.isfinite(yValue)
+                                and np.isfinite(zValue)
+                        ):
+                            continue
+
+                        points.append((xValue, yValue))
+                        zValues.append(zValue)
+
+                        if len(points) >= maxPoints:
+                            break
+                    except Exception:
+                        continue
+
+                if len(points) >= maxPoints:
+                    break
+
+        if not points:
+            for coord in self._iterItemsDirect(output):
+                try:
+                    xValue = self._readCoordinate3dScalar(coord, "getX")
+                    yValue = self._readCoordinate3dScalar(coord, "getY")
+                    zValue = self._readCoordinate3dScalar(coord, "getZ")
+
+                    if xValue is None or yValue is None or zValue is None:
+                        continue
+
+                    if not (
+                            np.isfinite(xValue)
+                            and np.isfinite(yValue)
+                            and np.isfinite(zValue)
+                    ):
+                        continue
+
+                    points.append((xValue, yValue))
+                    zValues.append(zValue)
+
+                    if len(points) >= maxPoints:
+                        break
+                except Exception:
+                    continue
+
+        if points:
+            return self._buildCoordinatesScatterImage(
+                title=self._getOutputClassName(output),
+                points=points,
+                zValues=zValues,
+                is3d=True,
+                size=size,
+            )
+
         iterTomograms = getattr(output, "iterTomograms", None)
         if callable(iterTomograms):
             try:
-                tomograms = list(iterTomograms())
-                if tomograms:
-                    getFileNameFn = getattr(tomograms[0], "getFileName", None)
+                for tomogram in iterTomograms():
+                    getFileNameFn = getattr(tomogram, "getFileName", None)
                     if callable(getFileNameFn):
                         tomoPath = self._resolveFilePath(protocol, getFileNameFn())
                         if tomoPath is not None:
                             return self._renderVolumeFromPath(tomoPath, size=size)
+                    break
             except Exception:
-                logger.debug("Coords3D iterTomograms preview failed", exc_info=True)
+                logger.debug("Coords3D tomogram fallback preview failed", exc_info=True)
 
         getTomograms = getattr(output, "getTomograms", None)
         if callable(getTomograms):
@@ -1744,9 +1952,132 @@ class ThumbnailService:
                                 return self._renderVolumeFromPath(tomoPath, size=size)
                         break
             except Exception:
-                logger.debug("Coords3D getTomograms preview failed", exc_info=True)
+                logger.debug("Coords3D getTomograms fallback preview failed", exc_info=True)
 
         return None
+
+    def _buildCoordinatesScatterImage(
+            self,
+            title: str,
+            points: List[Tuple[float, float]],
+            zValues: Optional[List[float]],
+            is3d: bool,
+            size: int,
+    ) -> Optional[Image.Image]:
+        fig = None
+        try:
+            cleanPoints: List[Tuple[float, float]] = []
+            cleanZ: List[float] = []
+
+            for index, point in enumerate(points):
+                try:
+                    xValue = float(point[0])
+                    yValue = float(point[1])
+
+                    if not np.isfinite(xValue) or not np.isfinite(yValue):
+                        continue
+
+                    cleanPoints.append((xValue, yValue))
+
+                    if zValues is not None and index < len(zValues):
+                        zValue = float(zValues[index])
+                        cleanZ.append(zValue if np.isfinite(zValue) else 0.0)
+                except Exception:
+                    continue
+
+            if not cleanPoints:
+                return None
+
+            xValues = [point[0] for point in cleanPoints]
+            yValues = [point[1] for point in cleanPoints]
+
+            fig = plt.figure(figsize=(5.2, 3.35), dpi=130)
+            ax = fig.add_subplot(111)
+
+            ax.set_facecolor("white")
+            ax.grid(True, linestyle="-", linewidth=0.45, alpha=0.25)
+            ax.set_title(str(title or "Coordinates"), fontsize=11, pad=6)
+            ax.set_xlabel("X", fontsize=9)
+            ax.set_ylabel("Y", fontsize=9)
+            ax.tick_params(axis="both", labelsize=8)
+
+            pointCount = len(cleanPoints)
+            markerSize = 18 if pointCount <= 250 else 10 if pointCount <= 700 else 6
+
+            if is3d and cleanZ and len(cleanZ) == len(cleanPoints):
+                ax.scatter(
+                    xValues,
+                    yValues,
+                    c=cleanZ,
+                    cmap="viridis",
+                    s=markerSize,
+                    alpha=0.80,
+                    linewidths=0,
+                )
+            else:
+                ax.scatter(
+                    xValues,
+                    yValues,
+                    s=markerSize,
+                    alpha=0.80,
+                    linewidths=0,
+                    color="tab:blue",
+                )
+
+            xMin = min(xValues)
+            xMax = max(xValues)
+            yMin = min(yValues)
+            yMax = max(yValues)
+
+            xPad = max(1.0, (xMax - xMin) * 0.06)
+            yPad = max(1.0, (yMax - yMin) * 0.06)
+
+            ax.set_xlim(xMin - xPad, xMax + xPad)
+            ax.set_ylim(yMax + yPad, yMin - yPad)
+            ax.set_aspect("equal", adjustable="box")
+
+            subtitle = f"{pointCount} coordinates"
+            ax.text(
+                0.99,
+                0.02,
+                subtitle,
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color="#334155",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": "#cbd5e1",
+                    "alpha": 0.85,
+                },
+            )
+
+            fig.subplots_adjust(
+                left=0.13,
+                right=0.96,
+                top=0.86,
+                bottom=0.18,
+            )
+
+            buffer = io.BytesIO()
+            fig.savefig(
+                buffer,
+                format="png",
+                facecolor="white",
+                edgecolor="white",
+                dpi=130,
+            )
+            buffer.seek(0)
+
+            return Image.open(buffer).convert("RGB")
+        except Exception:
+            logger.debug("Coordinates scatter thumbnail failed", exc_info=True)
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
     def _renderVolumeLikePreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         try:
