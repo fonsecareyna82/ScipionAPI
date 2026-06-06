@@ -355,6 +355,7 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
                     "outputClassName": "SetOfVolumes",
                     "exists": True,
                     "thumbnailUrl": "/projects/7/protocols/11/outputs/outputVol/thumbnail",
+                    "thumbnailDataUrl": None,
                     "thumbnailRebuildUrl": None,
                 },
                 {
@@ -362,6 +363,7 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
                     "outputClassName": "SetOfParticles",
                     "exists": True,
                     "thumbnailUrl": "/projects/7/protocols/11/outputs/outputParticles/thumbnail",
+                    "thumbnailDataUrl": None,
                     "thumbnailRebuildUrl": None,
                 },
             ],

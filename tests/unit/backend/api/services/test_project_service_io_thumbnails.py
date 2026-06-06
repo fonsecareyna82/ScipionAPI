@@ -133,7 +133,15 @@ class FakeThumbnailService:
         )
         return {"kind": "output", "protocolId": protocolId, "outputName": outputName}
 
-    def listProtocolThumbnailItems(self, projectId, force=False, size=320, maxProtocols=12, maxOutputsPerProtocol=4):
+    def listProtocolThumbnailItems(
+            self,
+            projectId,
+            force=False,
+            size=320,
+            maxProtocols=12,
+            maxOutputsPerProtocol=4,
+            inlineImages=False,
+    ):
         self.calls.append(
             {
                 "method": "listProtocolThumbnailItems",
@@ -142,6 +150,7 @@ class FakeThumbnailService:
                 "size": size,
                 "maxProtocols": maxProtocols,
                 "maxOutputsPerProtocol": maxOutputsPerProtocol,
+                "inlineImages": inlineImages,
             }
         )
         return [{"projectId": projectId, "kind": "thumbnail-item"}]
@@ -277,6 +286,7 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
             "size": 300,
             "maxProtocols": 8,
             "maxOutputsPerProtocol": 2,
+            "inlineImages": False,
         }
     ]
 
