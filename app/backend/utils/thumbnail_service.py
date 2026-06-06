@@ -65,6 +65,7 @@ from pwem.objects import (
     SetOfMovies,
     SetOfCTF,
     SetOfDefocusGroup,
+    VolumeMask, Mask,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -730,6 +731,12 @@ class ThumbnailService:
             score = 182
         elif "class3d" in className:
             score = 176
+        elif (
+                "volumemask" in className
+                or className == "mask"
+                or "setofmask" in className
+        ):
+            score = 145
         elif "setofparticle" in className or "particle" in className:
             score = 168
         elif "ctftomo" in className or "setofctftomo" in className:
@@ -769,7 +776,13 @@ class ThumbnailService:
         else:
             score = 0
 
-        if "mask" in className and "tomomask" not in className:
+        if (
+                "mask" in className
+                and "tomomask" not in className
+                and "volumemask" not in className
+                and className != "mask"
+                and "setofmask" not in className
+        ):
             score -= 35
 
         if name.startswith("output"):
@@ -899,6 +912,8 @@ class ThumbnailService:
                 return self._renderCtfPreview(protocol, output, size=size)
             if isinstance(output, SetOfDefocusGroup):
                 return self._renderDefocusGroupPreview(output, size=size)
+            if isinstance(output, (Mask, VolumeMask)):
+                return self._renderMaskPreview(protocol, output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
@@ -985,6 +1000,16 @@ class ThumbnailService:
                 image = self._renderTomoMasksPreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
+            if (
+                    "volumemask" in className
+                    or className == "mask"
+                    or "setofmask" in className
+            ):
+                image = self._renderMaskPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
 
             if "tomogram" in className or "volume" in className or "class3d" in className:
                 image = self._renderVolumeLikePreview(protocol, output, size=size)
@@ -4265,6 +4290,82 @@ class ThumbnailService:
                 pass
 
         return None
+
+    def _renderMaskPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        className = self._getOutputClassName(output).lower()
+
+        if isinstance(output, VolumeMask) or "volumemask" in className:
+            return self._renderVolumeMaskPreview(protocol, output, size=size)
+
+        if isinstance(output, Mask) or className == "mask":
+            return self._renderImageMaskPreview(protocol, output)
+
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        for item in self._iterItemsDirect(output):
+            try:
+                image = self._renderMaskPreview(protocol, item, size=size)
+                if image is not None:
+                    tiles.append(image)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                continue
+
+        if not tiles:
+            image = self._renderVolumeMaskPreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            return self._renderImageMaskPreview(protocol, output)
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderVolumeMaskPreview(
+            self,
+            protocol,
+            maskItem,
+            size: int,
+    ) -> Optional[Image.Image]:
+        maskPath = self._resolveVolumePathFromItem(
+            protocol=protocol,
+            item=maskItem,
+            includeVolName=True,
+        )
+
+        if maskPath is None or not maskPath.exists():
+            return None
+
+        image = self._renderTomoMaskOnlyFromPath(maskPath)
+        if image is not None:
+            return image
+
+        return self._renderVolumeFromPath(maskPath, size=size)
+
+    def _renderImageMaskPreview(
+            self,
+            protocol,
+            maskItem,
+    ) -> Optional[Image.Image]:
+        sourcePath, sourceIndex = self._resolveImageSourceFromItem(maskItem)
+        if not sourcePath:
+            return None
+
+        image = self._readImagePreview(protocol, sourcePath, sourceIndex)
+        if image is None:
+            return None
+
+        return self._drawSimplePreviewLabel(
+            image=image,
+            label="Mask",
+        )
 
     def _renderTomoMasksPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
