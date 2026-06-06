@@ -63,6 +63,7 @@ from pwem.objects import (
     SetOfParticles,
     SetOfVolumes,
     SetOfMovies,
+    SetOfCTF
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -732,6 +733,12 @@ class ThumbnailService:
             score = 168
         elif "ctftomo" in className or "setofctftomo" in className:
             score = 156
+        elif (
+                "setofctf" in className
+                or "ctfmodel" in className
+                or (className == "ctf")
+        ):
+            score = 154
         elif "setoftomomask" in className or "tomomask" in className:
             score = 162
         elif "setofvolume" in className or "volume" in className:
@@ -885,6 +892,8 @@ class ThumbnailService:
                 return self._renderMicrographsPreview(protocol, output, size=size)
             if isinstance(output, SetOfMovies):
                 return self._renderMoviesPreview(protocol, output, size=size)
+            if isinstance(output, SetOfCTF):
+                return self._renderCtfPreview(protocol, output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
@@ -946,6 +955,14 @@ class ThumbnailService:
 
             if "setofctftomo" in className or "ctftomo" in className:
                 image = self._renderCtftomoPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+            if (
+                    "setofctf" in className
+                    or "ctfmodel" in className
+                    or className == "ctf"
+            ):
+                image = self._renderCtfPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -1475,6 +1492,302 @@ class ThumbnailService:
             except Exception:
                 pass
         return value
+
+    def _renderCtfPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        ctfItems: List[Any] = []
+        maxItems = 4
+
+        if isinstance(output, SetOfCTF):
+            ctfIterator = self._iterItemsDirect(output, orderBy="id")
+        else:
+            ctfIterator = iter([output])
+
+        for ctfModel in ctfIterator:
+            try:
+                ctfItems.append(ctfModel)
+
+                tile = self._renderCtfPsdPreviewFromItem(
+                    protocol=protocol,
+                    ctfModel=ctfModel,
+                )
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+
+                if len(ctfItems) >= 80 and tiles:
+                    break
+
+            except Exception:
+                logger.debug("CTF item preview failed", exc_info=True)
+
+        if tiles:
+            return self._composeCleanGrid(
+                tiles=tiles[:maxItems],
+                maxCols=2,
+                targetWidth=size,
+                background=(246, 249, 252),
+            )
+
+        if ctfItems:
+            image = self._buildCtfDefocusPreviewImage(
+                ctfItems=ctfItems,
+                size=size,
+            )
+            if image is not None:
+                return image
+
+        return None
+
+    def _renderCtfPsdPreviewFromItem(
+            self,
+            protocol,
+            ctfModel,
+    ) -> Optional[Image.Image]:
+        getPsdFileFn = getattr(ctfModel, "getPsdFile", None)
+        if not callable(getPsdFileFn):
+            return None
+
+        try:
+            psdFile = getPsdFileFn()
+        except Exception:
+            return None
+
+        sourcePath, sourceIndex = self._splitIndexedImagePath(psdFile)
+        if not sourcePath:
+            return None
+
+        psdPath = self._resolveFilePath(protocol, sourcePath)
+        if psdPath is None or not psdPath.exists():
+            return None
+
+        try:
+            gray = self._read2dTile(
+                filePath=psdPath,
+                sliceIndex=sourceIndex,
+                preferCentral=False,
+                thumbSize=maxThumbSize,
+            )
+            if gray is not None:
+                image = self._grayTileToImage(gray)
+                if image is not None:
+                    return self._drawSimplePreviewLabel(
+                        image=image,
+                        label="PSD",
+                    )
+        except Exception:
+            pass
+
+        try:
+            image = self._readImagePreview(protocol, sourcePath, sourceIndex)
+            if image is not None:
+                return self._drawSimplePreviewLabel(
+                    image=image,
+                    label="PSD",
+                )
+        except Exception:
+            pass
+
+        return None
+
+    def _buildCtfDefocusPreviewImage(
+            self,
+            ctfItems: Sequence[Any],
+            size: int,
+    ) -> Optional[Image.Image]:
+        fig = None
+
+        try:
+            data: List[Tuple[float, float, float, float, float]] = []
+
+            for index, ctfModel in enumerate(ctfItems):
+                try:
+                    defocusU = self._safeScalarValue(
+                        getattr(ctfModel, "getDefocusU", lambda: None)()
+                    )
+                    defocusV = self._safeScalarValue(
+                        getattr(ctfModel, "getDefocusV", lambda: None)()
+                    )
+                    resolution = self._safeScalarValue(
+                        getattr(ctfModel, "getResolution", lambda: 0)()
+                    )
+                    fitQuality = self._safeScalarValue(
+                        getattr(ctfModel, "getFitQuality", lambda: 0)()
+                    )
+
+                    if defocusU is None or defocusV is None:
+                        continue
+
+                    xValue = float(index + 1)
+                    defocusUValue = float(defocusU)
+                    defocusVValue = float(defocusV)
+                    resolutionValue = float(resolution or 0)
+                    fitQualityValue = float(fitQuality or 0)
+
+                    if not (
+                            np.isfinite(defocusUValue)
+                            and np.isfinite(defocusVValue)
+                    ):
+                        continue
+
+                    data.append(
+                        (
+                            xValue,
+                            defocusUValue,
+                            defocusVValue,
+                            resolutionValue,
+                            fitQualityValue,
+                        )
+                    )
+
+                except Exception:
+                    continue
+
+            if not data:
+                return None
+
+            xValues = [item[0] for item in data]
+            defocusUValues = [item[1] for item in data]
+            defocusVValues = [item[2] for item in data]
+            resolutionValues = [item[3] for item in data]
+            fitQualityValues = [item[4] for item in data]
+
+            fig = plt.figure(figsize=(5.4, 3.35), dpi=130)
+            defocusPlot = fig.add_subplot(111)
+
+            defocusPlot.set_facecolor("white")
+            defocusPlot.grid(True, linestyle="-", linewidth=0.55, alpha=0.35)
+
+            defocusPlot.set_title("CTF", fontsize=11, pad=6)
+            defocusPlot.set_xlabel("Micrograph / CTF index", fontsize=9)
+            defocusPlot.set_ylabel("Defocus (Å)", fontsize=9)
+            defocusPlot.tick_params(axis="both", labelsize=8)
+
+            lineU, = defocusPlot.plot(
+                xValues,
+                defocusUValues,
+                marker="o",
+                markersize=5.2,
+                linewidth=2.8,
+                color="tab:red",
+                label="DefocusU (Å)",
+                zorder=4,
+            )
+            lineV, = defocusPlot.plot(
+                xValues,
+                defocusVValues,
+                marker="o",
+                markersize=5.2,
+                linewidth=2.8,
+                color="tab:blue",
+                label="DefocusV (Å)",
+                zorder=5,
+            )
+
+            yValues = defocusUValues + defocusVValues
+            yMin = min(yValues)
+            yMax = max(yValues)
+            yPad = max(1.0, (yMax - yMin) * 0.12)
+            defocusPlot.set_ylim(yMin - yPad, yMax + yPad)
+
+            xMin = min(xValues)
+            xMax = max(xValues)
+            if xMax > xMin:
+                xPad = max(0.5, (xMax - xMin) * 0.04)
+                defocusPlot.set_xlim(xMin - xPad, xMax + xPad)
+
+            legendHandles = [lineU, lineV]
+
+            hasResolution = any(value > 0 for value in resolutionValues)
+            hasFitQuality = any(value > 0 for value in fitQualityValues)
+
+            if hasResolution or hasFitQuality:
+                secondPlot = defocusPlot.twinx()
+
+                if hasResolution:
+                    secondPlot.set_ylim(0, max(30.0, max(resolutionValues) * 1.15))
+                    secondPlot.set_ylabel("Resolution (Å)", color="tab:green", fontsize=9)
+                    lineExtra, = secondPlot.plot(
+                        xValues,
+                        resolutionValues,
+                        marker="o",
+                        markersize=4.5,
+                        linewidth=2.3,
+                        color="tab:green",
+                        label="Resolution (Å)",
+                        zorder=3,
+                    )
+                else:
+                    secondPlot.set_ylim(0, max(1.0, max(fitQualityValues) * 1.15))
+                    secondPlot.set_ylabel("Fit quality", color="tab:green", fontsize=9)
+                    lineExtra, = secondPlot.plot(
+                        xValues,
+                        fitQualityValues,
+                        marker="o",
+                        markersize=4.5,
+                        linewidth=2.3,
+                        color="tab:green",
+                        label="Fit quality",
+                        zorder=3,
+                    )
+
+                secondPlot.tick_params(axis="y", labelsize=8, colors="tab:green")
+                legendHandles.append(lineExtra)
+
+            defocusPlot.legend(
+                handles=legendHandles,
+                loc="upper left",
+                fontsize=8,
+                frameon=False,
+                handlelength=2.2,
+                borderaxespad=0.2,
+            )
+
+            subtitle = f"{len(data)} CTFs"
+            defocusPlot.text(
+                0.99,
+                0.02,
+                subtitle,
+                transform=defocusPlot.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color="#334155",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": "#cbd5e1",
+                    "alpha": 0.85,
+                },
+            )
+
+            fig.subplots_adjust(
+                left=0.14,
+                right=0.86,
+                top=0.86,
+                bottom=0.20,
+            )
+
+            buffer = io.BytesIO()
+            fig.savefig(
+                buffer,
+                format="png",
+                facecolor="white",
+                edgecolor="white",
+                dpi=130,
+            )
+            buffer.seek(0)
+
+            return Image.open(buffer).convert("RGB")
+
+        except Exception:
+            logger.debug("CTF defocus thumbnail failed", exc_info=True)
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
     def _renderCtftomoPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         ctfSerie = None
