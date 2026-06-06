@@ -34,6 +34,10 @@ import hashlib
 from urllib.parse import quote
 from pathlib import Path
 import threading
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -717,6 +721,8 @@ class ThumbnailService:
             score = 176
         elif "setofparticle" in className or "particle" in className:
             score = 168
+        elif "ctftomo" in className or "setofctftomo" in className:
+            score = 156
         elif "setofvolume" in className or "volume" in className:
             score = 164
         elif "tomogram" in className:
@@ -860,7 +866,7 @@ class ThumbnailService:
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, (SetOfClasses3D, SetOfVolumes)):
                 return self._renderClasses3dOrVolumesPreview(protocol, output, size=size)
-            if isinstance(output, SetOfTiltSeries):
+            if isinstance(output, SetOfTiltSeries) or isinstance(output, SetOfTiltSeriesM):
                 return self._renderTiltSeriesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
@@ -879,6 +885,12 @@ class ThumbnailService:
                 image = self._renderCoordinates3dPreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
+            if "setofctftomo" in className or "ctftomo" in className:
+                image = self._renderCtftomoPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "tomogram" in className or "volume" in className or "class3d" in className:
                 image = self._renderVolumeLikePreview(protocol, output, size=size)
                 if image is not None:
@@ -1186,6 +1198,400 @@ class ThumbnailService:
 
         return self._composeTiltSeriesStrip(tiles[:4], targetWidth=size)
 
+    def _safeScalarValue(self, value: Any) -> Any:
+        if hasattr(value, "get"):
+            try:
+                return value.get()
+            except Exception:
+                pass
+        return value
+
+    def _renderCtftomoPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        ctfSerie = None
+
+        iterSeriesFn = getattr(output, "iterItems", None)
+        if callable(iterSeriesFn):
+            try:
+                seriesIterator = iterSeriesFn(iterate=False)
+            except TypeError:
+                try:
+                    seriesIterator = iterSeriesFn()
+                except Exception:
+                    seriesIterator = None
+            except Exception:
+                seriesIterator = None
+
+            if seriesIterator is not None:
+                try:
+                    for serie in seriesIterator:
+                        ctfSerie = serie
+                        break
+                except Exception:
+                    ctfSerie = None
+
+        if ctfSerie is None:
+            return None
+
+        itemSelected = self._safeScalarValue(
+            getattr(ctfSerie, "getTsId", lambda: None)()
+        )
+
+        if itemSelected is None:
+            return None
+
+        angDict: Dict[Any, float] = {}
+
+        tiltSeriesSet = None
+        getSetOfTiltSeriesFn = getattr(output, "getSetOfTiltSeries", None)
+        if callable(getSetOfTiltSeriesFn):
+            try:
+                tiltSeriesSet = getSetOfTiltSeriesFn()
+            except Exception:
+                tiltSeriesSet = None
+
+        if tiltSeriesSet is not None:
+            try:
+                iterTiltSeriesFn = getattr(tiltSeriesSet, "iterItems", None)
+                if callable(iterTiltSeriesFn):
+                    try:
+                        tiltSeriesIterator = iterTiltSeriesFn(iterate=False)
+                    except TypeError:
+                        tiltSeriesIterator = iterTiltSeriesFn()
+                else:
+                    tiltSeriesIterator = iter(tiltSeriesSet)
+
+                for ts in tiltSeriesIterator:
+                    tsId = self._safeScalarValue(
+                        getattr(ts, "getTsId", lambda: None)()
+                    )
+
+                    if str(tsId) != str(itemSelected):
+                        continue
+
+                    try:
+                        iterViewsFn = getattr(ts, "iterItems", None)
+                        if callable(iterViewsFn):
+                            try:
+                                viewIterator = iterViewsFn(iterate=False)
+                            except TypeError:
+                                viewIterator = iterViewsFn()
+                        else:
+                            viewIterator = iter(ts)
+
+                        for tiltItem in viewIterator:
+                            acqOrder = self._safeScalarValue(
+                                getattr(tiltItem, "getAcquisitionOrder", lambda: None)()
+                            )
+                            tiltAngle = self._safeScalarValue(
+                                getattr(tiltItem, "getTiltAngle", lambda: None)()
+                            )
+
+                            if acqOrder is None or tiltAngle is None:
+                                continue
+
+                            angDict[acqOrder] = float(tiltAngle)
+
+                    except Exception:
+                        logger.debug("Failed building CTFTomo angle dictionary", exc_info=True)
+
+                    break
+
+            except Exception:
+                logger.debug("Failed iterating associated tilt-series set", exc_info=True)
+
+        if not angDict:
+            return None
+
+        angList: List[float] = []
+        defocusUList: List[float] = []
+        defocusVList: List[float] = []
+        phShList: List[float] = []
+        resList: List[float] = []
+        hasPhaseShift = False
+        lastItemHasPhaseShift = False
+
+        iterItemsFn = getattr(ctfSerie, "iterItems", None)
+        if not callable(iterItemsFn):
+            return None
+
+        try:
+            ctfIterator = iterItemsFn(orderBy="id")
+        except TypeError:
+            try:
+                ctfIterator = iterItemsFn()
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+        try:
+            for item in ctfIterator:
+                acqOrder = self._safeScalarValue(
+                    getattr(item, "getAcquisitionOrder", lambda: None)()
+                )
+
+                if acqOrder not in angDict:
+                    continue
+
+                defocusU = self._safeScalarValue(
+                    getattr(item, "getDefocusU", lambda: None)()
+                )
+                defocusV = self._safeScalarValue(
+                    getattr(item, "getDefocusV", lambda: None)()
+                )
+
+                if defocusU is None or defocusV is None:
+                    continue
+
+                try:
+                    defocusU = float(defocusU)
+                    defocusV = float(defocusV)
+                except Exception:
+                    continue
+
+                if defocusU <= -900 or defocusV <= -0.5:
+                    continue
+
+                angList.append(float(angDict[acqOrder]))
+                defocusUList.append(defocusU)
+                defocusVList.append(defocusV)
+
+                itemHasPhaseShift = False
+                hasPhaseShiftFn = getattr(item, "hasPhaseShift", None)
+                if callable(hasPhaseShiftFn):
+                    try:
+                        itemHasPhaseShift = bool(hasPhaseShiftFn())
+                    except Exception:
+                        itemHasPhaseShift = False
+
+                lastItemHasPhaseShift = itemHasPhaseShift
+
+                if itemHasPhaseShift:
+                    hasPhaseShift = True
+                    phaseShift = self._safeScalarValue(
+                        getattr(item, "getPhaseShift", lambda: 0)()
+                    )
+                    phShList.append(float(phaseShift or 0))
+                else:
+                    phShList.append(0.0)
+
+                resolution = self._safeScalarValue(
+                    getattr(item, "getResolution", lambda: 0)()
+                )
+                resList.append(float(resolution or 0))
+
+        except Exception:
+            logger.debug("Failed iterating CTFTomo measurements", exc_info=True)
+
+        if not angList:
+            return None
+
+        return self._buildCtftomoPlotImage(
+            seriesLabel=self._getCtftomoSeriesLabel(ctfSerie),
+            angList=angList,
+            defocusUList=defocusUList,
+            defocusVList=defocusVList,
+            phShList=phShList,
+            resList=resList,
+            hasPhaseShift=hasPhaseShift and lastItemHasPhaseShift,
+            size=size,
+        )
+
+    def _buildCtftomoPlotImage(
+            self,
+            seriesLabel: str,
+            angList: List[float],
+            defocusUList: List[float],
+            defocusVList: List[float],
+            phShList: List[float],
+            resList: List[float],
+            hasPhaseShift: bool,
+            size: int,
+    ) -> Optional[Image.Image]:
+        fig = None
+        try:
+            data = []
+            for x, defocusU, defocusV, phaseShift, resolution in zip(
+                    angList,
+                    defocusUList,
+                    defocusVList,
+                    phShList,
+                    resList,
+            ):
+                try:
+                    xValue = float(x)
+                    defocusUValue = float(defocusU)
+                    defocusVValue = float(defocusV)
+                    phaseShiftValue = float(phaseShift or 0)
+                    resolutionValue = float(resolution or 0)
+
+                    if not (
+                            np.isfinite(xValue)
+                            and np.isfinite(defocusUValue)
+                            and np.isfinite(defocusVValue)
+                    ):
+                        continue
+
+                    data.append(
+                        (
+                            xValue,
+                            defocusUValue,
+                            defocusVValue,
+                            phaseShiftValue,
+                            resolutionValue,
+                        )
+                    )
+                except Exception:
+                    continue
+
+            if not data:
+                return None
+
+            data.sort(key=lambda item: item[0])
+
+            xValues = [item[0] for item in data]
+            defocusUValues = [item[1] for item in data]
+            defocusVValues = [item[2] for item in data]
+            phaseShiftValues = [item[3] for item in data]
+            resolutionValues = [item[4] for item in data]
+
+            fig = plt.figure(figsize=(5.4, 3.35), dpi=130)
+            defocusPlot = fig.add_subplot(111)
+
+            defocusPlot.set_facecolor("white")
+            defocusPlot.grid(True, linestyle="-", linewidth=0.55, alpha=0.35)
+
+            defocusPlot.set_title(str(seriesLabel or "CTF Tomo"), fontsize=11, pad=6)
+            defocusPlot.set_xlabel("Tilt angle (deg)", fontsize=9)
+            defocusPlot.set_ylabel("Defocus (Å)", fontsize=9)
+
+            defocusPlot.tick_params(axis="both", labelsize=8)
+
+            lineU, = defocusPlot.plot(
+                xValues,
+                defocusUValues,
+                marker="o",
+                markersize=5.5,
+                linewidth=3.2,
+                color="tab:red",
+                label="DefocusU (Å)",
+                zorder=4,
+            )
+            lineV, = defocusPlot.plot(
+                xValues,
+                defocusVValues,
+                marker="o",
+                markersize=5.5,
+                linewidth=3.2,
+                color="tab:blue",
+                label="DefocusV (Å)",
+                zorder=5,
+            )
+
+            yValues = defocusUValues + defocusVValues
+            yMin = min(yValues)
+            yMax = max(yValues)
+            yPad = max(1.0, (yMax - yMin) * 0.12)
+            defocusPlot.set_ylim(yMin - yPad, yMax + yPad)
+
+            xMin = min(xValues)
+            xMax = max(xValues)
+            if xMax > xMin:
+                xPad = max(0.5, (xMax - xMin) * 0.04)
+                defocusPlot.set_xlim(xMin - xPad, xMax + xPad)
+
+            legendHandles = [lineU, lineV]
+
+            if hasPhaseShift:
+                secondPlot = defocusPlot.twinx()
+                secondPlot.set_ylim(0, 180)
+                secondPlot.set_ylabel("Phase shift", color="tab:green", fontsize=9)
+                secondPlot.tick_params(axis="y", labelsize=8, colors="tab:green")
+
+                lineExtra, = secondPlot.plot(
+                    xValues,
+                    phaseShiftValues,
+                    marker="o",
+                    markersize=4.8,
+                    linewidth=2.6,
+                    color="tab:green",
+                    label="Phase shift (deg)",
+                    zorder=3,
+                )
+            else:
+                secondPlot = defocusPlot.twinx()
+                secondPlot.set_ylim(0, 30)
+                secondPlot.set_ylabel("Resolution (Å)", color="tab:green", fontsize=9)
+                secondPlot.tick_params(axis="y", labelsize=8, colors="tab:green")
+
+                lineExtra, = secondPlot.plot(
+                    xValues,
+                    resolutionValues,
+                    marker="o",
+                    markersize=4.8,
+                    linewidth=2.6,
+                    color="tab:green",
+                    label="Resolution (Å)",
+                    zorder=3,
+                )
+
+            legendHandles.append(lineExtra)
+
+            defocusPlot.legend(
+                handles=legendHandles,
+                loc="upper left",
+                fontsize=8,
+                frameon=False,
+                handlelength=2.2,
+                borderaxespad=0.2,
+            )
+
+            fig.subplots_adjust(
+                left=0.14,
+                right=0.86,
+                top=0.86,
+                bottom=0.20,
+            )
+
+            buffer = io.BytesIO()
+            fig.savefig(
+                buffer,
+                format="png",
+                facecolor="white",
+                edgecolor="white",
+                dpi=130,
+            )
+            buffer.seek(0)
+
+            return Image.open(buffer).convert("RGB")
+        except Exception:
+            logger.debug("CTFTomo plot thumbnail failed", exc_info=True)
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
+
+    def _getCtftomoSeriesLabel(self, ctfSerie) -> str:
+        getLabelFn = getattr(ctfSerie, "getObjLabel", None)
+        if callable(getLabelFn):
+            try:
+                label = getLabelFn()
+                if label:
+                    return str(label)
+            except Exception:
+                pass
+
+        getTsIdFn = getattr(ctfSerie, "getTsId", None)
+        if callable(getTsIdFn):
+            try:
+                tsId = getTsIdFn()
+                if tsId is not None:
+                    return str(tsId)
+            except Exception:
+                pass
+
+        return "CTF Tomo"
+
     def _composeParticleMosaic(
             self,
             tiles: Sequence[Image.Image],
@@ -1231,6 +1637,21 @@ class ThumbnailService:
                 index += 1
 
         return canvas
+
+    def _composeTiltSeriesStrip(
+            self,
+            tiles: Sequence[Image.Image],
+            targetWidth: int,
+    ) -> Image.Image:
+        if not tiles:
+            return Image.new("RGB", (420, 220), (246, 249, 252))
+
+        return self._composeCleanGrid(
+            tiles=tiles,
+            maxCols=2,
+            targetWidth=targetWidth,
+            background=(246, 249, 252),
+        )
 
     def _composeMicrographStrip(
             self,
