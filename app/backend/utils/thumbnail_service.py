@@ -62,6 +62,7 @@ from pwem.objects import (
     SetOfMicrographs,
     SetOfParticles,
     SetOfVolumes,
+    SetOfMovies,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -717,6 +718,8 @@ class ThumbnailService:
 
         if "setofmicrograph" in className or "micrograph" in className:
             score = 175
+        elif "setofmovies" in className or ("movie" in className and "particle" not in className):
+            score = 174
         elif "classessubtomogram" in className or "classsubtomogram" in className:
             score = 176
         elif "averagesubtomogram" in className or "subtomogram" in className:
@@ -880,6 +883,8 @@ class ThumbnailService:
         try:
             if isinstance(output, SetOfMicrographs):
                 return self._renderMicrographsPreview(protocol, output, size=size)
+            if isinstance(output, SetOfMovies):
+                return self._renderMoviesPreview(protocol, output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
@@ -958,6 +963,7 @@ class ThumbnailService:
                 image = self._renderVolumeLikePreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
             if "setoftiltseriesm" in className or "tiltseriesm" in className:
                 image = self._renderTiltSeriesMPreview(protocol, output, size=size)
                 if image is not None:
@@ -967,18 +973,27 @@ class ThumbnailService:
                 image = self._renderTiltSeriesPreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
+            if "setofmovies" in className or ("movie" in className and "particle" not in className):
+                image = self._renderMoviesPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "micrograph" in className:
                 image = self._renderMicrographsPreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
             if "particle" in className or "class2d" in className or "average" in className:
                 image = self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
                 if image is not None:
                     return image
+
             if "fsc" in className:
                 image = self._renderFscPreview(output, size=size)
                 if image is not None:
                     return image
+
         except Exception:
             logger.debug(
                 "Typed string renderer failed. protocolId=%s output=%s class=%s",
@@ -1000,6 +1015,88 @@ class ThumbnailService:
                 outputClassName,
                 exc_info=True,
             )
+
+        return None
+
+    def _renderMoviesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        if isinstance(output, SetOfMovies):
+            movieIterator = self._iterItemsDirect(output)
+        else:
+            movieIterator = iter([output])
+
+        for movie in movieIterator:
+            try:
+                tile = self._renderMovieItemPreview(protocol, movie)
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                logger.debug("Movie preview failed", exc_info=True)
+
+        if not tiles:
+            return None
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderMovieItemPreview(self, protocol, movie) -> Optional[Image.Image]:
+        sources: List[Tuple[str, Optional[int]]] = []
+        seen = set()
+
+        for getterName in ("getFileName", "getLocation", "getOdd", "getEven"):
+            getter = getattr(movie, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                sourcePath, sourceIndex = self._splitIndexedImagePath(getter())
+                if sourcePath:
+                    key = (sourcePath, sourceIndex)
+                    if key not in seen:
+                        seen.add(key)
+                        sources.append((sourcePath, sourceIndex))
+            except Exception:
+                continue
+
+        try:
+            sourcePath, sourceIndex = self._resolveImageSourceFromItem(movie)
+            if sourcePath:
+                key = (sourcePath, sourceIndex)
+                if key not in seen:
+                    seen.add(key)
+                    sources.append((sourcePath, sourceIndex))
+        except Exception:
+            pass
+
+        for sourcePath, sourceIndex in sources:
+            try:
+                image = self._readMoviePreviewFromPath(
+                    protocol=protocol,
+                    filePath=sourcePath,
+                    index=sourceIndex,
+                    movie=movie,
+                )
+                if image is not None:
+                    return image
+            except Exception:
+                continue
+
+        for sourcePath, sourceIndex in sources:
+            try:
+                image = self._readImagePreview(protocol, sourcePath, sourceIndex)
+                if image is not None:
+                    return image
+            except Exception:
+                continue
 
         return None
 
