@@ -47,7 +47,8 @@ from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks)
+from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks,
+                          SetOfMeshes,)
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -738,6 +739,8 @@ class ThumbnailService:
             score = 148
         elif "setoftiltseries" in className or "tiltseries" in className:
             score = 150
+        elif "setofmeshes" in className or "mesh" in className:
+            score = 127
         elif "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
             score = 128
         elif "setofcoordinate" in className or "coordinate" in className:
@@ -883,6 +886,8 @@ class ThumbnailService:
                 return self._renderTiltSeriesMPreview(protocol, output, size=size)
             if isinstance(output, SetOfTiltSeries):
                 return self._renderTiltSeriesPreview(protocol, output, size=size)
+            if isinstance(output, SetOfMeshes):
+                return self._renderMeshesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -896,6 +901,11 @@ class ThumbnailService:
 
         className = (outputClassName or "").lower()
         try:
+            if "setofmeshes" in className or "mesh" in className:
+                image = self._renderMeshesPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
                 image = self._renderCoordinates3dPreview(protocol, output, size=size)
                 if image is not None:
@@ -2311,6 +2321,54 @@ class ThumbnailService:
         except Exception:
             logger.debug("Coordinates2D micrograph overlay thumbnail failed", exc_info=True)
             return None
+
+    def _renderMeshesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        image = self._renderCoordinates3dPreview(protocol, output, size=size)
+        if image is not None:
+            return image
+
+        return self._renderMeshesScatterPreview(protocol, output, size=size)
+
+    def _renderMeshesScatterPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        points: List[Tuple[float, float]] = []
+        zValues: List[float] = []
+        maxPoints = 1500
+
+        for meshPoint in self._iterItemsDirect(output):
+            try:
+                xValue = self._readCoordinate3dScalar(meshPoint, "getX")
+                yValue = self._readCoordinate3dScalar(meshPoint, "getY")
+                zValue = self._readCoordinate3dScalar(meshPoint, "getZ")
+
+                if xValue is None or yValue is None or zValue is None:
+                    continue
+
+                if not (
+                        np.isfinite(xValue)
+                        and np.isfinite(yValue)
+                        and np.isfinite(zValue)
+                ):
+                    continue
+
+                points.append((float(xValue), float(yValue)))
+                zValues.append(float(zValue))
+
+                if len(points) >= maxPoints:
+                    break
+
+            except Exception:
+                continue
+
+        if not points:
+            return None
+
+        return self._buildCoordinatesScatterImage(
+            title=self._getOutputClassName(output),
+            points=points,
+            zValues=zValues,
+            is3d=True,
+            size=size,
+        )
 
     def _renderCoordinates3dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         points: List[Tuple[float, float]] = []
