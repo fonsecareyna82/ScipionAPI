@@ -47,7 +47,7 @@ from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries, SetOfTiltSeriesM
+from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks)
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -728,6 +728,8 @@ class ThumbnailService:
             score = 168
         elif "ctftomo" in className or "setofctftomo" in className:
             score = 156
+        elif "setoftomomask" in className or "tomomask" in className:
+            score = 162
         elif "setofvolume" in className or "volume" in className:
             score = 164
         elif "tomogram" in className:
@@ -747,7 +749,7 @@ class ThumbnailService:
         else:
             score = 0
 
-        if "mask" in className:
+        if "mask" in className and "tomomask" not in className:
             score -= 35
 
         if name.startswith("output"):
@@ -873,6 +875,8 @@ class ThumbnailService:
                 return self._renderMicrographsPreview(protocol, output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
+            if isinstance(output, SetOfTomoMasks):
+                return self._renderTomoMasksPreview(protocol, output, size=size)
             if isinstance(output, (SetOfClasses3D, SetOfVolumes)):
                 return self._renderClasses3dOrVolumesPreview(protocol, output, size=size)
             if isinstance(output, SetOfTiltSeriesM):
@@ -914,6 +918,11 @@ class ThumbnailService:
 
             if "subtomogram" in className:
                 image = self._renderSubTomogramsPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if "setoftomomask" in className or "tomomask" in className:
+                image = self._renderTomoMasksPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -2794,6 +2803,302 @@ class ThumbnailService:
                 pass
 
         return None
+
+    def _renderTomoMasksPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        if isinstance(output, SetOfTomoMasks):
+            maskIterator = self._iterItemsDirect(output)
+        else:
+            maskIterator = iter([output])
+
+        for maskItem in maskIterator:
+            try:
+                tile = self._renderTomoMaskPreviewFromItem(
+                    protocol=protocol,
+                    maskItem=maskItem,
+                    size=size,
+                )
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                logger.debug("TomoMask preview failed", exc_info=True)
+
+        if not tiles:
+            return None
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderTomoMaskPreviewFromItem(
+            self,
+            protocol,
+            maskItem,
+            size: int,
+    ) -> Optional[Image.Image]:
+        maskPath = self._resolveVolumePathFromItem(
+            protocol=protocol,
+            item=maskItem,
+            includeVolName=False,
+        )
+
+        if maskPath is None or not maskPath.exists():
+            return None
+
+        tomogramPath = self._resolveTomoMaskReferencePath(
+            protocol=protocol,
+            maskItem=maskItem,
+        )
+
+        if tomogramPath is not None and tomogramPath.exists():
+            image = self._renderTomoMaskOverlayFromPaths(
+                tomogramPath=tomogramPath,
+                maskPath=maskPath,
+            )
+            if image is not None:
+                return image
+
+        return self._renderTomoMaskOnlyFromPath(maskPath)
+
+    def _resolveTomoMaskReferencePath(self, protocol, maskItem) -> Optional[Path]:
+        getTomogramFn = getattr(maskItem, "getTomogram", None)
+        if callable(getTomogramFn):
+            try:
+                tomogram = getTomogramFn()
+                tomogramPath = self._resolveVolumePathFromItem(
+                    protocol=protocol,
+                    item=tomogram,
+                    includeVolName=True,
+                )
+                if tomogramPath is not None and tomogramPath.exists():
+                    return tomogramPath
+            except Exception:
+                pass
+
+        getVolNameFn = getattr(maskItem, "getVolName", None)
+        if callable(getVolNameFn):
+            try:
+                rawPath = getVolNameFn()
+                if rawPath:
+                    tomogramPath = self._resolveFilePath(protocol, rawPath)
+                    if tomogramPath is not None and tomogramPath.exists():
+                        return tomogramPath
+            except Exception:
+                pass
+
+        return None
+
+    def _resolveVolumePathFromItem(
+            self,
+            protocol,
+            item,
+            includeVolName: bool = True,
+    ) -> Optional[Path]:
+        getterNames = ["getFileName"]
+
+        if includeVolName:
+            getterNames.append("getVolName")
+
+        for getterName in getterNames:
+            getter = getattr(item, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                rawPath = getter()
+            except Exception:
+                continue
+
+            sourcePath, _sourceIndex = self._splitIndexedImagePath(rawPath)
+            if not sourcePath:
+                continue
+
+            volumePath = self._resolveFilePath(protocol, sourcePath)
+            if volumePath is not None and volumePath.exists():
+                return volumePath
+
+        getLocationFn = getattr(item, "getLocation", None)
+        if callable(getLocationFn):
+            try:
+                sourcePath, _sourceIndex = self._splitIndexedImagePath(getLocationFn())
+                if sourcePath:
+                    volumePath = self._resolveFilePath(protocol, sourcePath)
+                    if volumePath is not None and volumePath.exists():
+                        return volumePath
+            except Exception:
+                pass
+
+        return None
+
+    def _readVolumeArrayFromPath(self, volumePath: Path) -> Optional[np.ndarray]:
+        try:
+            volume, _props = readVolumeArray3d(str(volumePath))
+            volume = np.asarray(volume)
+
+            if volume.ndim != 3 or volume.size == 0:
+                return None
+
+            return volume
+        except Exception:
+            return None
+
+    def _pickMaskRepresentativeSlice(self, maskVolume: np.ndarray) -> int:
+        try:
+            mask = np.asarray(maskVolume, dtype=np.float32)
+            if mask.ndim != 3 or mask.shape[0] <= 0:
+                return 0
+
+            foreground = np.isfinite(mask) & (np.abs(mask) > 1e-6)
+            counts = foreground.reshape(mask.shape[0], -1).sum(axis=1)
+
+            if counts.size > 0 and int(counts.max()) > 0:
+                return int(np.argmax(counts))
+
+            return int(mask.shape[0] // 2)
+        except Exception:
+            return 0
+
+    def _renderTomoMaskOverlayFromPaths(
+            self,
+            tomogramPath: Path,
+            maskPath: Path,
+    ) -> Optional[Image.Image]:
+        try:
+            tomogramVolume = self._readVolumeArrayFromPath(tomogramPath)
+            maskVolume = self._readVolumeArrayFromPath(maskPath)
+
+            if tomogramVolume is None or maskVolume is None:
+                return None
+
+            maskZSize, _maskYSize, _maskXSize = maskVolume.shape
+            tomoZSize, _tomoYSize, _tomoXSize = tomogramVolume.shape
+
+            if maskZSize <= 0 or tomoZSize <= 0:
+                return None
+
+            maskZ = self._pickMaskRepresentativeSlice(maskVolume)
+
+            if maskZSize > 1 and tomoZSize > 1:
+                tomoZ = int(round(maskZ * float(tomoZSize - 1) / float(maskZSize - 1)))
+            else:
+                tomoZ = tomoZSize // 2
+
+            maskZ = max(0, min(maskZ, maskZSize - 1))
+            tomoZ = max(0, min(tomoZ, tomoZSize - 1))
+
+            tomogramSlice = np.asarray(tomogramVolume[tomoZ], dtype=np.float32)
+            maskSlice = np.asarray(maskVolume[maskZ], dtype=np.float32)
+
+            baseImage = self._arrayToImage(tomogramSlice)
+            if baseImage is None:
+                return None
+
+            baseImage = baseImage.convert("RGB")
+            alpha = self._buildTomoMaskAlpha(maskSlice, baseImage.size)
+            if alpha is None:
+                return baseImage
+
+            overlay = Image.new("RGB", baseImage.size, (255, 64, 64))
+            baseImage.paste(overlay, (0, 0), alpha)
+
+            draw = ImageDraw.Draw(baseImage)
+            label = "Mask overlay"
+            draw.rounded_rectangle(
+                (8, 8, 128, 30),
+                radius=8,
+                fill=(255, 255, 255),
+                outline=(203, 213, 225),
+                width=1,
+            )
+            draw.text((14, 13), label, fill=(51, 65, 85))
+
+            return baseImage
+
+        except Exception:
+            logger.debug("TomoMask overlay thumbnail failed", exc_info=True)
+            return None
+
+    def _renderTomoMaskOnlyFromPath(self, maskPath: Path) -> Optional[Image.Image]:
+        try:
+            maskVolume = self._readVolumeArrayFromPath(maskPath)
+            if maskVolume is None:
+                return None
+
+            zSize, _ySize, _xSize = maskVolume.shape
+            if zSize <= 0:
+                return None
+
+            maskZ = self._pickMaskRepresentativeSlice(maskVolume)
+            maskZ = max(0, min(maskZ, zSize - 1))
+
+            maskSlice = np.asarray(maskVolume[maskZ], dtype=np.float32)
+
+            baseImage = Image.new("RGB", (maskSlice.shape[1], maskSlice.shape[0]), (15, 23, 42))
+            alpha = self._buildTomoMaskAlpha(maskSlice, baseImage.size)
+
+            if alpha is None:
+                return self._arrayToImage(maskSlice)
+
+            overlay = Image.new("RGB", baseImage.size, (255, 64, 64))
+            baseImage.paste(overlay, (0, 0), alpha)
+
+            draw = ImageDraw.Draw(baseImage)
+            label = "Mask"
+            draw.rounded_rectangle(
+                (8, 8, 78, 30),
+                radius=8,
+                fill=(255, 255, 255),
+                outline=(203, 213, 225),
+                width=1,
+            )
+            draw.text((14, 13), label, fill=(51, 65, 85))
+
+            return baseImage
+
+        except Exception:
+            logger.debug("TomoMask standalone thumbnail failed", exc_info=True)
+            return None
+
+    def _buildTomoMaskAlpha(
+            self,
+            maskSlice: np.ndarray,
+            targetSize: Tuple[int, int],
+    ) -> Optional[Image.Image]:
+        try:
+            arr = np.asarray(maskSlice, dtype=np.float32)
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+
+            finiteMask = np.isfinite(arr)
+            if not finiteMask.any():
+                return None
+
+            foreground = finiteMask & (np.abs(arr) > 1e-6)
+            if not foreground.any():
+                return None
+
+            alpha = np.zeros(arr.shape, dtype=np.uint8)
+            alpha[foreground] = 115
+
+            alphaImage = Image.fromarray(alpha, mode="L")
+
+            if alphaImage.size != targetSize:
+                alphaImage = alphaImage.resize(
+                    targetSize,
+                    resample=Image.Resampling.NEAREST,
+                )
+
+            return alphaImage
+        except Exception:
+            return None
 
     def _renderVolumeLikePreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         try:
