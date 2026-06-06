@@ -1923,36 +1923,385 @@ class ThumbnailService:
 
     def _renderCoordinates2dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         points: List[Tuple[float, float]] = []
-        maxPoints = 1200
+        maxPoints = 1500
 
-        for item in self._iterItemsDirect(output):
+        iterMicrographsFn = getattr(output, "iterMicrographs", None)
+        iterCoordinatesFn = getattr(output, "iterCoordinates", None)
+
+        if callable(iterMicrographsFn) and callable(iterCoordinatesFn):
+            bestMicrograph = None
+            bestPoints: List[Tuple[float, float]] = []
+
             try:
-                xValue = self._readCoordinateScalar(item, "getX")
-                yValue = self._readCoordinateScalar(item, "getY")
+                checkedMicrographs = 0
 
-                if xValue is None or yValue is None:
-                    continue
+                for micrograph in iterMicrographsFn():
+                    checkedMicrographs += 1
+                    localPoints: List[Tuple[float, float]] = []
 
-                if not np.isfinite(xValue) or not np.isfinite(yValue):
-                    continue
+                    try:
+                        coordIterator = iterCoordinatesFn(micrograph)
+                    except Exception:
+                        continue
 
-                points.append((xValue, yValue))
+                    for coord in coordIterator:
+                        try:
+                            xValue = self._readCoordinateScalar(coord, "getX")
+                            yValue = self._readCoordinateScalar(coord, "getY")
 
-                if len(points) >= maxPoints:
-                    break
+                            if xValue is None or yValue is None:
+                                continue
+
+                            if not np.isfinite(xValue) or not np.isfinite(yValue):
+                                continue
+
+                            point = (float(xValue), float(yValue))
+                            localPoints.append(point)
+
+                            if len(localPoints) >= maxPoints:
+                                break
+
+                        except Exception:
+                            continue
+
+                    if len(localPoints) > len(bestPoints):
+                        bestMicrograph = micrograph
+                        bestPoints = localPoints
+
+                    if len(bestPoints) >= maxPoints:
+                        break
+
+                    if checkedMicrographs >= 8 and bestPoints:
+                        break
+
+            except Exception:
+                logger.debug("Coordinates2D micrograph iteration failed", exc_info=True)
+
+            if bestMicrograph is not None and bestPoints:
+                image = self._renderCoordinates2dMicrographOverlayPreview(
+                    protocol=protocol,
+                    micrograph=bestMicrograph,
+                    points=bestPoints,
+                    size=size,
+                )
+                if image is not None:
+                    return image
+
+                points.extend(bestPoints[:maxPoints])
+
+        if not points:
+            if callable(iterCoordinatesFn):
+                try:
+                    coordIterator = iterCoordinatesFn()
+                except Exception:
+                    coordIterator = None
+            else:
+                coordIterator = self._iterItemsDirect(output)
+
+            if coordIterator is not None:
+                groupedPoints: Dict[int, Dict[str, Any]] = {}
+
+                for coord in coordIterator:
+                    try:
+                        xValue = self._readCoordinateScalar(coord, "getX")
+                        yValue = self._readCoordinateScalar(coord, "getY")
+
+                        if xValue is None or yValue is None:
+                            continue
+
+                        if not np.isfinite(xValue) or not np.isfinite(yValue):
+                            continue
+
+                        point = (float(xValue), float(yValue))
+                        points.append(point)
+
+                        getMicrographFn = getattr(coord, "getMicrograph", None)
+                        if callable(getMicrographFn):
+                            try:
+                                micrograph = getMicrographFn()
+                            except Exception:
+                                micrograph = None
+
+                            if micrograph is not None:
+                                key = id(micrograph)
+                                entry = groupedPoints.get(key)
+                                if entry is None:
+                                    entry = {
+                                        "micrograph": micrograph,
+                                        "points": [],
+                                    }
+                                    groupedPoints[key] = entry
+
+                                entry["points"].append(point)
+
+                        if len(points) >= maxPoints:
+                            break
+
+                    except Exception:
+                        continue
+
+                if groupedPoints:
+                    groups = sorted(
+                        groupedPoints.values(),
+                        key=lambda entry: len(entry["points"]),
+                        reverse=True,
+                    )
+
+                    for group in groups[:4]:
+                        image = self._renderCoordinates2dMicrographOverlayPreview(
+                            protocol=protocol,
+                            micrograph=group["micrograph"],
+                            points=group["points"],
+                            size=size,
+                        )
+                        if image is not None:
+                            return image
+
+        if points:
+            return self._buildCoordinatesScatterImage(
+                title=self._getOutputClassName(output),
+                points=points,
+                zValues=None,
+                is3d=False,
+                size=size,
+            )
+
+        return None
+
+    def _resolveCoordinatesMicrographs(self, output) -> Optional[Any]:
+        for getterName in ("getMicrographs", "getMicrographsPointer", "getInputMicrographs"):
+            getter = getattr(output, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                micrographs = self._safeScalarValue(getter())
+                if micrographs is not None:
+                    return micrographs
             except Exception:
                 continue
 
-        if not points:
+        return None
+
+    def _micrographLookupKeys(self, value: Any) -> List[Any]:
+        keys: List[Any] = []
+
+        value = self._safeScalarValue(value)
+        if value is None:
+            return keys
+
+        keys.append(value)
+
+        text = str(value).strip()
+        if text:
+            keys.append(text)
+
+            try:
+                keys.append(int(float(text)))
+            except Exception:
+                pass
+
+            try:
+                path = Path(text)
+                if path.name:
+                    keys.append(path.name)
+                if path.stem:
+                    keys.append(path.stem)
+            except Exception:
+                pass
+
+        result: List[Any] = []
+        seen = set()
+
+        for key in keys:
+            marker = str(key)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(key)
+
+        return result
+
+    def _lookupMicrographByKey(
+            self,
+            micrographs,
+            micrographsById: Dict[Any, Any],
+            key: Any,
+    ) -> Optional[Any]:
+        if key is None:
             return None
 
-        return self._buildCoordinatesScatterImage(
-            title=self._getOutputClassName(output),
-            points=points,
-            zValues=None,
-            is3d=False,
-            size=size,
-        )
+        for lookupKey in self._micrographLookupKeys(key):
+            micrograph = micrographsById.get(lookupKey)
+            if micrograph is not None:
+                return micrograph
+
+            micrograph = micrographsById.get(str(lookupKey))
+            if micrograph is not None:
+                return micrograph
+
+        if micrographs is None:
+            return None
+
+        getItemFn = getattr(micrographs, "getItem", None)
+        if callable(getItemFn):
+            for lookupKey in self._micrographLookupKeys(key):
+                for fieldName in ("id", "_objId", "_micId", "micId", "_micName", "micName"):
+                    try:
+                        micrograph = getItemFn(fieldName, lookupKey)
+                        if micrograph is not None:
+                            return micrograph
+                    except Exception:
+                        continue
+
+                try:
+                    micrograph = getItemFn(lookupKey)
+                    if micrograph is not None:
+                        return micrograph
+                except Exception:
+                    pass
+
+        return None
+
+    def _getFirstRenderableMicrograph(self, protocol, micrographs) -> Optional[Any]:
+        if micrographs is None:
+            return None
+
+        for micrograph in self._iterItemsDirect(micrographs):
+            try:
+                sourcePath, sourceIndex = self._resolveImageSourceFromItem(micrograph)
+                if not sourcePath:
+                    continue
+
+                image = self._readImagePreview(protocol, sourcePath, sourceIndex)
+                if image is not None:
+                    return micrograph
+
+            except Exception:
+                continue
+
+        return None
+
+    def _renderCoordinates2dMicrographOverlayPreview(
+            self,
+            protocol,
+            micrograph,
+            points: List[Tuple[float, float]],
+            size: int,
+    ) -> Optional[Image.Image]:
+        try:
+            sourcePath, sourceIndex = self._resolveImageSourceFromItem(micrograph)
+            if not sourcePath:
+                return None
+
+            micrographPath = self._resolveFilePath(protocol, sourcePath)
+            if micrographPath is None or not micrographPath.exists():
+                return None
+
+            gray = self._read2dTile(
+                filePath=micrographPath,
+                sliceIndex=sourceIndex,
+                preferCentral=False,
+                thumbSize=maxThumbSize,
+            )
+
+            if gray is not None:
+                baseImage = self._grayTileToImage(gray)
+            else:
+                baseImage = self._readImagePreview(protocol, sourcePath, sourceIndex)
+
+            if baseImage is None:
+                return None
+
+            baseImage = baseImage.copy().convert("RGB")
+            draw = ImageDraw.Draw(baseImage)
+
+            xDim = None
+            yDim = None
+
+            getDimFn = getattr(micrograph, "getDim", None)
+            if callable(getDimFn):
+                try:
+                    dims = getDimFn()
+                    if isinstance(dims, (list, tuple)) and len(dims) >= 2:
+                        xDim = self._safeScalarValue(dims[0])
+                        yDim = self._safeScalarValue(dims[1])
+                except Exception:
+                    pass
+
+            if xDim is None:
+                getXDimFn = getattr(micrograph, "getXDim", None)
+                if callable(getXDimFn):
+                    try:
+                        xDim = self._safeScalarValue(getXDimFn())
+                    except Exception:
+                        xDim = None
+
+            if yDim is None:
+                getYDimFn = getattr(micrograph, "getYDim", None)
+                if callable(getYDimFn):
+                    try:
+                        yDim = self._safeScalarValue(getYDimFn())
+                    except Exception:
+                        yDim = None
+
+            try:
+                xDim = float(xDim) if xDim is not None else float(baseImage.width)
+            except Exception:
+                xDim = float(baseImage.width)
+
+            try:
+                yDim = float(yDim) if yDim is not None else float(baseImage.height)
+            except Exception:
+                yDim = float(baseImage.height)
+
+            if xDim <= 0:
+                xDim = float(baseImage.width)
+            if yDim <= 0:
+                yDim = float(baseImage.height)
+
+            scaleX = float(baseImage.width) / xDim
+            scaleY = float(baseImage.height) / yDim
+
+            radius = max(2, int(round(min(baseImage.size) * 0.012)))
+            outlineWidth = max(1, int(round(radius * 0.55)))
+
+            for xValue, yValue in points[:1500]:
+                try:
+                    px = int(round(float(xValue) * scaleX))
+                    py = int(round(float(yValue) * scaleY))
+
+                    if px < 0 or py < 0 or px >= baseImage.width or py >= baseImage.height:
+                        continue
+
+                    draw.ellipse(
+                        (
+                            px - radius,
+                            py - radius,
+                            px + radius,
+                            py + radius,
+                        ),
+                        outline=(255, 64, 64),
+                        width=outlineWidth,
+                    )
+                except Exception:
+                    continue
+
+            label = f"{min(len(points), 1500)} coords"
+            draw.rounded_rectangle(
+                (8, 8, 118, 30),
+                radius=8,
+                fill=(255, 255, 255),
+                outline=(203, 213, 225),
+                width=1,
+            )
+            draw.text((14, 13), label, fill=(51, 65, 85))
+
+            return baseImage
+
+        except Exception:
+            logger.debug("Coordinates2D micrograph overlay thumbnail failed", exc_info=True)
+            return None
 
     def _renderCoordinates3dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         points: List[Tuple[float, float]] = []
