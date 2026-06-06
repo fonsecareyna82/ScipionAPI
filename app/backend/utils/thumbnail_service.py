@@ -48,7 +48,7 @@ from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks,
-                          SetOfMeshes, SetOfTiltSeriesCoordinates)
+                          SetOfMeshes, SetOfTiltSeriesCoordinates, SetOfLandmarkModels)
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -735,6 +735,8 @@ class ThumbnailService:
             score = 164
         elif "tomogram" in className:
             score = 164
+        elif "landmark" in className:
+            score = 124
         elif "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
             score = 129
         elif "setoftiltseriesm" in className or "tiltseriesm" in className:
@@ -892,6 +894,8 @@ class ThumbnailService:
                 return self._renderMeshesPreview(protocol, output, size=size)
             if isinstance(output, SetOfTiltSeriesCoordinates):
                 return self._renderTiltSeriesCoordinatesPreview(protocol, output, size=size)
+            if isinstance(output, SetOfLandmarkModels):
+                return self._renderLandmarkModelsPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -905,6 +909,11 @@ class ThumbnailService:
 
         className = (outputClassName or "").lower()
         try:
+            if "landmark" in className:
+                image = self._renderLandmarkModelsPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
                 image = self._renderTiltSeriesCoordinatesPreview(protocol, output, size=size)
                 if image is not None:
@@ -1948,6 +1957,387 @@ class ThumbnailService:
                 continue
 
         return None
+
+    def _renderLandmarkModelsPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        for landmarkModel in self._iterItemsDirect(output):
+            try:
+                tile = self._renderLandmarkModelPreviewFromItem(
+                    protocol=protocol,
+                    landmarkModel=landmarkModel,
+                    size=size,
+                )
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                logger.debug("LandmarkModel preview failed", exc_info=True)
+
+        if not tiles:
+            return None
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderLandmarkModelPreviewFromItem(
+            self,
+            protocol,
+            landmarkModel,
+            size: int,
+    ) -> Optional[Image.Image]:
+        points = self._collectLandmarkModelPoints(
+            protocol=protocol,
+            landmarkModel=landmarkModel,
+            maxPoints=1500,
+        )
+
+        tiltSeries = self._resolveLandmarkModelTiltSeries(landmarkModel)
+
+        if tiltSeries is not None and points:
+            image = self._renderTiltSeriesCoordinatesOverlayPreview(
+                protocol=protocol,
+                tiltSeries=tiltSeries,
+                points=points,
+                size=size,
+            )
+            if image is not None:
+                return image
+
+        if tiltSeries is not None:
+            baseImage, _xDim, _yDim = self._readTiltSeriesRepresentativeImage(
+                protocol=protocol,
+                tiltSeries=tiltSeries,
+            )
+            if baseImage is not None:
+                return self._drawSimplePreviewLabel(
+                    image=baseImage,
+                    label="Landmarks",
+                )
+
+        if points:
+            return self._buildCoordinatesScatterImage(
+                title="Landmarks",
+                points=points,
+                zValues=None,
+                is3d=False,
+                size=size,
+            )
+
+        return None
+
+    def _resolveLandmarkModelTiltSeries(self, landmarkModel) -> Optional[Any]:
+        for getterName in (
+                "getTiltSeries",
+                "getTiltSeriesPointer",
+                "getTiltSeriesObj",
+                "getTs",
+        ):
+            getter = getattr(landmarkModel, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                tiltSeries = self._safeScalarValue(getter())
+                if tiltSeries is not None:
+                    return tiltSeries
+            except Exception:
+                continue
+
+        return None
+
+    def _collectLandmarkModelPoints(
+            self,
+            protocol,
+            landmarkModel,
+            maxPoints: int,
+    ) -> List[Tuple[float, float]]:
+        points: List[Tuple[float, float]] = []
+
+        retrieveInfoTableFn = getattr(landmarkModel, "retrieveInfoTable", None)
+        if callable(retrieveInfoTableFn):
+            try:
+                infoTable = retrieveInfoTableFn()
+                for row in self._iterLandmarkInfoRows(infoTable):
+                    point = self._extractLandmarkPointFromRow(row)
+                    if point is None:
+                        continue
+
+                    points.append(point)
+
+                    if len(points) >= maxPoints:
+                        return points
+            except Exception:
+                logger.debug("LandmarkModel info table parsing failed", exc_info=True)
+
+        if points:
+            return points
+
+        getFileNameFn = getattr(landmarkModel, "getFileName", None)
+        if callable(getFileNameFn):
+            try:
+                filePath = self._resolveFilePath(protocol, getFileNameFn())
+                if filePath is not None and filePath.exists():
+                    points.extend(
+                        self._collectLandmarkPointsFromFile(
+                            filePath=filePath,
+                            maxPoints=maxPoints,
+                        )
+                    )
+            except Exception:
+                logger.debug("LandmarkModel file parsing failed", exc_info=True)
+
+        return points[:maxPoints]
+
+    def _iterLandmarkInfoRows(self, infoTable) -> Iterable[Any]:
+        if infoTable is None:
+            return
+
+        if hasattr(infoTable, "to_dict"):
+            try:
+                records = infoTable.to_dict("records")
+                for record in records:
+                    yield record
+                return
+            except Exception:
+                pass
+
+        if hasattr(infoTable, "iterrows"):
+            try:
+                for _index, row in infoTable.iterrows():
+                    yield row
+                return
+            except Exception:
+                pass
+
+        if isinstance(infoTable, dict):
+            rows = None
+            for key in ("rows", "data", "values", "records"):
+                value = infoTable.get(key)
+                if value is not None:
+                    rows = value
+                    break
+
+            if rows is not None:
+                try:
+                    for row in rows:
+                        yield row
+                    return
+                except Exception:
+                    pass
+
+            yield infoTable
+            return
+
+        for attrName in ("rows", "_rows", "data", "_data"):
+            rows = getattr(infoTable, attrName, None)
+            if rows is None:
+                continue
+
+            try:
+                rows = rows() if callable(rows) else rows
+                for row in rows:
+                    yield row
+                return
+            except Exception:
+                continue
+
+        try:
+            for row in infoTable:
+                yield row
+        except Exception:
+            return
+
+    def _extractLandmarkPointFromRow(self, row) -> Optional[Tuple[float, float]]:
+        xValue = self._readValueFromRow(
+            row=row,
+            names=(
+                "x",
+                "X",
+                "_x",
+                "xcoor",
+                "xcoord",
+                "xCoord",
+                "xCoordinate",
+                "coordX",
+                "positionX",
+            ),
+        )
+        yValue = self._readValueFromRow(
+            row=row,
+            names=(
+                "y",
+                "Y",
+                "_y",
+                "ycoor",
+                "ycoord",
+                "yCoord",
+                "yCoordinate",
+                "coordY",
+                "positionY",
+            ),
+        )
+
+        if xValue is None or yValue is None:
+            numericValues = self._numericValuesFromRow(row)
+            if len(numericValues) >= 2:
+                xValue = numericValues[0]
+                yValue = numericValues[1]
+
+        if xValue is None or yValue is None:
+            return None
+
+        try:
+            xValue = float(xValue)
+            yValue = float(yValue)
+
+            if not np.isfinite(xValue) or not np.isfinite(yValue):
+                return None
+
+            return xValue, yValue
+        except Exception:
+            return None
+
+    def _readValueFromRow(self, row, names: Sequence[str]) -> Optional[float]:
+        if row is None:
+            return None
+
+        if isinstance(row, dict):
+            lowerMap = {str(key).lower(): value for key, value in row.items()}
+
+            for name in names:
+                if name in row:
+                    return self._safeScalarValue(row[name])
+
+                value = lowerMap.get(str(name).lower())
+                if value is not None:
+                    return self._safeScalarValue(value)
+
+            return None
+
+        for name in names:
+            getterName = "get%s" % str(name)[0].upper() + str(name)[1:]
+            getter = getattr(row, getterName, None)
+            if callable(getter):
+                try:
+                    return self._safeScalarValue(getter())
+                except Exception:
+                    pass
+
+            if hasattr(row, name):
+                try:
+                    value = getattr(row, name)
+                    return self._safeScalarValue(value() if callable(value) else value)
+                except Exception:
+                    pass
+
+        try:
+            if hasattr(row, "get"):
+                for name in names:
+                    try:
+                        value = row.get(name)
+                        if value is not None:
+                            return self._safeScalarValue(value)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        return None
+
+    def _numericValuesFromRow(self, row) -> List[float]:
+        values: List[Any] = []
+
+        if isinstance(row, dict):
+            values = list(row.values())
+        elif isinstance(row, (list, tuple)):
+            values = list(row)
+        else:
+            rawValues = getattr(row, "_values", None)
+            if rawValues is not None:
+                values = list(rawValues)
+
+        numericValues: List[float] = []
+        for value in values:
+            try:
+                value = self._safeScalarValue(value)
+                number = float(value)
+
+                if np.isfinite(number):
+                    numericValues.append(number)
+            except Exception:
+                continue
+
+        return numericValues
+
+    def _collectLandmarkPointsFromFile(
+            self,
+            filePath: Path,
+            maxPoints: int,
+    ) -> List[Tuple[float, float]]:
+        points: List[Tuple[float, float]] = []
+
+        try:
+            with filePath.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    text = line.strip()
+                    if not text or text.startswith("#"):
+                        continue
+
+                    tokens = re.split(r"[\s,;]+", text)
+                    numericValues: List[float] = []
+
+                    for token in tokens:
+                        try:
+                            value = float(token)
+                            if np.isfinite(value):
+                                numericValues.append(value)
+                        except Exception:
+                            continue
+
+                    if len(numericValues) < 2:
+                        continue
+
+                    points.append((numericValues[0], numericValues[1]))
+
+                    if len(points) >= maxPoints:
+                        break
+        except Exception:
+            return points
+
+        return points
+
+    def _drawSimplePreviewLabel(
+            self,
+            image: Image.Image,
+            label: str,
+    ) -> Image.Image:
+        canvas = image.copy().convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+
+        label = str(label or "").strip()
+        if not label:
+            return canvas
+
+        textWidth = max(76, min(180, 16 + len(label) * 7))
+
+        draw.rounded_rectangle(
+            (8, 8, textWidth, 30),
+            radius=8,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+        draw.text((14, 13), label, fill=(51, 65, 85))
+
+        return canvas
 
     def _renderTiltSeriesCoordinatesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         points: List[Tuple[float, float]] = []
