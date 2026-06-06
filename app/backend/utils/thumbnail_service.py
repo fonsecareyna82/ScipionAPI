@@ -1847,7 +1847,7 @@ class ThumbnailService:
                     for tomogram in iterTomogramsFn():
                         tomogramSources.append(tomogram)
                 except Exception:
-                    logger.debug("Coords3D iterTomograms failed", exc_info=True)
+                    logger.debug("Coords3D iterVolumes failed", exc_info=True)
 
             if not tomogramSources:
                 getTomogramsFn = getattr(output, "getTomograms", None)
@@ -1860,6 +1860,9 @@ class ThumbnailService:
                         logger.debug("Coords3D getTomograms failed", exc_info=True)
 
             for tomogram in tomogramSources:
+                localPoints: List[Tuple[float, float]] = []
+                localZValues: List[float] = []
+
                 try:
                     coordIterator = iterCoordinatesFn(tomogram)
                 except Exception:
@@ -1881,16 +1884,32 @@ class ThumbnailService:
                         ):
                             continue
 
-                        points.append((xValue, yValue))
-                        zValues.append(zValue)
+                        localPoints.append((xValue, yValue))
+                        localZValues.append(zValue)
 
-                        if len(points) >= maxPoints:
+                        if len(localPoints) >= maxPoints:
                             break
                     except Exception:
                         continue
 
-                if len(points) >= maxPoints:
-                    break
+                if localPoints:
+                    image = self._renderCoordinates3dTomogramOverlayPreview(
+                        protocol=protocol,
+                        tomogram=tomogram,
+                        points=localPoints,
+                        zValues=localZValues,
+                        size=size,
+                    )
+                    if image is not None:
+                        return image
+
+                    remaining = maxPoints - len(points)
+                    if remaining > 0:
+                        points.extend(localPoints[:remaining])
+                        zValues.extend(localZValues[:remaining])
+
+                    if len(points) >= maxPoints:
+                        break
 
         if not points:
             for coord in self._iterItemsDirect(output):
@@ -1926,10 +1945,10 @@ class ThumbnailService:
                 size=size,
             )
 
-        iterTomograms = getattr(output, "iterTomograms", None)
-        if callable(iterTomograms):
+        iterTomogramsFn = getattr(output, "iterVolumes", None)
+        if callable(iterTomogramsFn):
             try:
-                for tomogram in iterTomograms():
+                for tomogram in iterTomogramsFn():
                     getFileNameFn = getattr(tomogram, "getFileName", None)
                     if callable(getFileNameFn):
                         tomoPath = self._resolveFilePath(protocol, getFileNameFn())
@@ -1937,12 +1956,12 @@ class ThumbnailService:
                             return self._renderVolumeFromPath(tomoPath, size=size)
                     break
             except Exception:
-                logger.debug("Coords3D tomogram fallback preview failed", exc_info=True)
+                logger.debug("Coords3D volume fallback preview failed", exc_info=True)
 
-        getTomograms = getattr(output, "getTomograms", None)
-        if callable(getTomograms):
+        getTomogramsFn = getattr(output, "getTomograms", None)
+        if callable(getTomogramsFn):
             try:
-                tomograms = getTomograms()
+                tomograms = getTomogramsFn()
                 if hasattr(tomograms, "iterItems"):
                     for tomo in tomograms.iterItems():
                         getFileNameFn = getattr(tomo, "getFileName", None)
@@ -1955,6 +1974,100 @@ class ThumbnailService:
                 logger.debug("Coords3D getTomograms fallback preview failed", exc_info=True)
 
         return None
+
+    def _renderCoordinates3dTomogramOverlayPreview(
+            self,
+            protocol,
+            tomogram,
+            points: List[Tuple[float, float]],
+            zValues: List[float],
+            size: int,
+    ) -> Optional[Image.Image]:
+        try:
+            getFileNameFn = getattr(tomogram, "getFileName", None)
+            if not callable(getFileNameFn):
+                return None
+
+            tomoPath = self._resolveFilePath(protocol, getFileNameFn())
+            if tomoPath is None or not tomoPath.exists():
+                return None
+
+            volume, _props = readVolumeArray3d(str(tomoPath))
+            volume = np.asarray(volume)
+
+            if volume.ndim != 3:
+                return None
+
+            zSize, ySize, xSize = volume.shape
+            if zSize <= 0 or ySize <= 0 or xSize <= 0:
+                return None
+
+            centerZ = zSize // 2
+            slice2d = np.asarray(volume[centerZ], dtype=np.float32)
+
+            baseImage = self._arrayToImage(slice2d)
+            if baseImage is None:
+                return None
+
+            draw = ImageDraw.Draw(baseImage)
+
+            zTolerance = max(3.0, float(zSize) * 0.04)
+
+            selectedPoints: List[Tuple[float, float]] = []
+            for point, zValue in zip(points, zValues):
+                try:
+                    xValue = float(point[0])
+                    yValue = float(point[1])
+                    zValue = float(zValue)
+
+                    if abs(zValue - float(centerZ)) <= zTolerance:
+                        selectedPoints.append((xValue, yValue))
+                except Exception:
+                    continue
+
+            if not selectedPoints:
+                selectedPoints = [(float(x), float(y)) for x, y in points[:1200]]
+
+            radius = max(2, int(round(min(baseImage.size) * 0.010)))
+            outlineWidth = max(1, int(round(radius * 0.55)))
+
+            for xValue, yValue in selectedPoints[:1200]:
+                try:
+                    px = int(round(xValue))
+                    py = int(round(yValue))
+
+                    if px < 0 or py < 0 or px >= xSize or py >= ySize:
+                        continue
+
+                    draw.ellipse(
+                        (
+                            px - radius,
+                            py - radius,
+                            px + radius,
+                            py + radius,
+                        ),
+                        outline=(255, 64, 64),
+                        width=outlineWidth,
+                    )
+                except Exception:
+                    continue
+
+            label = f"{len(selectedPoints)} coords"
+            draw.rounded_rectangle(
+                (8, 8, 118, 30),
+                radius=8,
+                fill=(255, 255, 255),
+                outline=(203, 213, 225),
+                width=1,
+            )
+            draw.text((14, 13), label, fill=(51, 65, 85))
+
+            return baseImage
+
+        except Exception:
+            logger.debug("Coordinates3D tomogram overlay thumbnail failed", exc_info=True)
+            return None
+
 
     def _buildCoordinatesScatterImage(
             self,
