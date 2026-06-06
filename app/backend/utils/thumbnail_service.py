@@ -48,7 +48,7 @@ from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks,
-                          SetOfMeshes,)
+                          SetOfMeshes, SetOfTiltSeriesCoordinates)
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -735,6 +735,8 @@ class ThumbnailService:
             score = 164
         elif "tomogram" in className:
             score = 164
+        elif "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
+            score = 129
         elif "setoftiltseriesm" in className or "tiltseriesm" in className:
             score = 148
         elif "setoftiltseries" in className or "tiltseries" in className:
@@ -888,6 +890,8 @@ class ThumbnailService:
                 return self._renderTiltSeriesPreview(protocol, output, size=size)
             if isinstance(output, SetOfMeshes):
                 return self._renderMeshesPreview(protocol, output, size=size)
+            if isinstance(output, SetOfTiltSeriesCoordinates):
+                return self._renderTiltSeriesCoordinatesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -901,6 +905,11 @@ class ThumbnailService:
 
         className = (outputClassName or "").lower()
         try:
+            if "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
+                image = self._renderTiltSeriesCoordinatesPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
             if "setofmeshes" in className or "mesh" in className:
                 image = self._renderMeshesPreview(protocol, output, size=size)
                 if image is not None:
@@ -1939,6 +1948,397 @@ class ThumbnailService:
                 continue
 
         return None
+
+    def _renderTiltSeriesCoordinatesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        points: List[Tuple[float, float]] = []
+        bestTiltSeries = None
+        bestPoints: List[Tuple[float, float]] = []
+        maxPoints = 1500
+
+        tiltSeriesSet = self._resolveTiltSeriesCoordinatesSet(output)
+
+        if tiltSeriesSet is not None:
+            checkedTiltSeries = 0
+
+            for tiltSeries in self._iterItemsDirect(tiltSeriesSet):
+                checkedTiltSeries += 1
+
+                localPoints = self._collectTiltSeriesCoordinatePoints(
+                    output=output,
+                    tiltSeries=tiltSeries,
+                    maxPoints=maxPoints,
+                )
+
+                if len(localPoints) > len(bestPoints):
+                    bestTiltSeries = tiltSeries
+                    bestPoints = localPoints
+
+                if bestTiltSeries is not None and bestPoints:
+                    image = self._renderTiltSeriesCoordinatesOverlayPreview(
+                        protocol=protocol,
+                        tiltSeries=bestTiltSeries,
+                        points=bestPoints,
+                        size=size,
+                    )
+                    if image is not None:
+                        return image
+
+                if len(bestPoints) >= maxPoints:
+                    break
+
+                if checkedTiltSeries >= 8 and bestPoints:
+                    break
+
+        if bestPoints:
+            points.extend(bestPoints[:maxPoints])
+
+        if not points:
+            points = self._collectTiltSeriesCoordinatePoints(
+                output=output,
+                tiltSeries=None,
+                maxPoints=maxPoints,
+            )
+
+            if tiltSeriesSet is not None and points:
+                for tiltSeries in self._iterItemsDirect(tiltSeriesSet):
+                    image = self._renderTiltSeriesCoordinatesOverlayPreview(
+                        protocol=protocol,
+                        tiltSeries=tiltSeries,
+                        points=points,
+                        size=size,
+                    )
+                    if image is not None:
+                        return image
+                    break
+
+        if points:
+            return self._buildCoordinatesScatterImage(
+                title=self._getOutputClassName(output),
+                points=points,
+                zValues=None,
+                is3d=False,
+                size=size,
+            )
+
+        return None
+
+    def _resolveTiltSeriesCoordinatesSet(self, output) -> Optional[Any]:
+        for getterName in (
+                "getSetOfTiltSeries",
+                "getTiltSeries",
+                "getTiltSeriesSet",
+                "getInputTiltSeries",
+        ):
+            getter = getattr(output, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                tiltSeriesSet = self._safeScalarValue(getter())
+                if tiltSeriesSet is not None:
+                    return tiltSeriesSet
+            except Exception:
+                continue
+
+        return None
+
+    def _collectTiltSeriesCoordinatePoints(
+            self,
+            output,
+            tiltSeries,
+            maxPoints: int,
+    ) -> List[Tuple[float, float]]:
+        points: List[Tuple[float, float]] = []
+        iterCoordinatesFn = getattr(output, "iterCoordinates", None)
+        coordinateIterator = None
+
+        if callable(iterCoordinatesFn):
+            if tiltSeries is not None:
+                candidateArgs: List[Any] = [tiltSeries]
+
+                for getterName in ("getTsId", "getObjId"):
+                    getter = getattr(tiltSeries, getterName, None)
+                    if not callable(getter):
+                        continue
+
+                    try:
+                        value = self._safeScalarValue(getter())
+                        if value is not None:
+                            candidateArgs.append(value)
+                    except Exception:
+                        continue
+
+                for arg in candidateArgs:
+                    try:
+                        coordinateIterator = iterCoordinatesFn(arg)
+                        break
+                    except Exception:
+                        coordinateIterator = None
+
+            if coordinateIterator is None:
+                try:
+                    coordinateIterator = iterCoordinatesFn()
+                except Exception:
+                    coordinateIterator = None
+
+        if coordinateIterator is None:
+            coordinateIterator = self._iterItemsDirect(output)
+
+        for coord in coordinateIterator:
+            try:
+                if tiltSeries is not None and not self._coordinateMatchesTiltSeries(coord, tiltSeries):
+                    continue
+
+                xValue = self._readCoordinateScalar(coord, "getX")
+                yValue = self._readCoordinateScalar(coord, "getY")
+
+                if xValue is None or yValue is None:
+                    continue
+
+                if not np.isfinite(xValue) or not np.isfinite(yValue):
+                    continue
+
+                points.append((float(xValue), float(yValue)))
+
+                if len(points) >= maxPoints:
+                    break
+
+            except Exception:
+                continue
+
+        return points
+
+    def _coordinateMatchesTiltSeries(self, coord, tiltSeries) -> bool:
+        tiltSeriesKeys: List[Any] = []
+
+        for getterName in ("getTsId", "getObjId"):
+            getter = getattr(tiltSeries, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                if value is not None:
+                    tiltSeriesKeys.append(value)
+                    tiltSeriesKeys.append(str(value))
+            except Exception:
+                continue
+
+        coordKeys: List[Any] = []
+
+        for getterName in (
+                "getTsId",
+                "getTiltSeriesId",
+                "getTiltSeriesObjId",
+                "getTiltSeriesName",
+        ):
+            getter = getattr(coord, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                if value is not None:
+                    coordKeys.append(value)
+                    coordKeys.append(str(value))
+            except Exception:
+                continue
+
+        if not coordKeys or not tiltSeriesKeys:
+            return True
+
+        return any(str(coordKey) == str(tsKey) for coordKey in coordKeys for tsKey in tiltSeriesKeys)
+
+    def _renderTiltSeriesCoordinatesOverlayPreview(
+            self,
+            protocol,
+            tiltSeries,
+            points: List[Tuple[float, float]],
+            size: int,
+    ) -> Optional[Image.Image]:
+        try:
+            baseImage, xDim, yDim = self._readTiltSeriesRepresentativeImage(protocol, tiltSeries)
+            if baseImage is None:
+                return None
+
+            baseImage = baseImage.copy().convert("RGB")
+            draw = ImageDraw.Draw(baseImage)
+
+            try:
+                xDim = float(xDim) if xDim is not None else float(baseImage.width)
+            except Exception:
+                xDim = float(baseImage.width)
+
+            try:
+                yDim = float(yDim) if yDim is not None else float(baseImage.height)
+            except Exception:
+                yDim = float(baseImage.height)
+
+            if xDim <= 0:
+                xDim = float(baseImage.width)
+            if yDim <= 0:
+                yDim = float(baseImage.height)
+
+            scaleX = float(baseImage.width) / xDim
+            scaleY = float(baseImage.height) / yDim
+
+            radius = max(2, int(round(min(baseImage.size) * 0.012)))
+            outlineWidth = max(1, int(round(radius * 0.55)))
+
+            for xValue, yValue in points[:1500]:
+                try:
+                    px = int(round(float(xValue) * scaleX))
+                    py = int(round(float(yValue) * scaleY))
+
+                    if px < 0 or py < 0 or px >= baseImage.width or py >= baseImage.height:
+                        continue
+
+                    draw.ellipse(
+                        (
+                            px - radius,
+                            py - radius,
+                            px + radius,
+                            py + radius,
+                        ),
+                        outline=(255, 64, 64),
+                        width=outlineWidth,
+                    )
+                except Exception:
+                    continue
+
+            label = f"{min(len(points), 1500)} coords"
+            draw.rounded_rectangle(
+                (8, 8, 118, 30),
+                radius=8,
+                fill=(255, 255, 255),
+                outline=(203, 213, 225),
+                width=1,
+            )
+            draw.text((14, 13), label, fill=(51, 65, 85))
+
+            return baseImage
+
+        except Exception:
+            logger.debug("TiltSeriesCoordinates overlay thumbnail failed", exc_info=True)
+            return None
+
+    def _readTiltSeriesRepresentativeImage(
+            self,
+            protocol,
+            tiltSeries,
+    ) -> Tuple[Optional[Image.Image], Optional[float], Optional[float]]:
+        try:
+            getFileNameFn = getattr(tiltSeries, "getFileName", None)
+            if callable(getFileNameFn):
+                stackPath = self._resolveFilePath(protocol, getFileNameFn())
+                if stackPath is not None and stackPath.exists():
+                    gray = self._read2dTile(
+                        filePath=stackPath,
+                        sliceIndex=None,
+                        preferCentral=True,
+                        thumbSize=maxThumbSize,
+                    )
+
+                    if gray is not None:
+                        image = self._grayTileToImage(gray)
+                        xDim, yDim = self._getImageItemDimensions(tiltSeries, image)
+                        return image, xDim, yDim
+        except Exception:
+            logger.debug("Direct tilt-series coordinate image failed", exc_info=True)
+
+        checkedFrames = 0
+
+        for frame in self._iterItemsDirect(tiltSeries):
+            checkedFrames += 1
+
+            try:
+                sourcePath, sourceIndex = self._resolveImageSourceFromItem(frame)
+                if not sourcePath:
+                    if checkedFrames >= 12:
+                        break
+                    continue
+
+                resolvedPath = self._resolveFilePath(protocol, sourcePath)
+                if resolvedPath is None or not resolvedPath.exists():
+                    if checkedFrames >= 12:
+                        break
+                    continue
+
+                gray = self._read2dTile(
+                    filePath=resolvedPath,
+                    sliceIndex=sourceIndex,
+                    preferCentral=False,
+                    thumbSize=maxThumbSize,
+                )
+
+                if gray is not None:
+                    image = self._grayTileToImage(gray)
+                else:
+                    image = self._readImagePreview(protocol, sourcePath, sourceIndex)
+
+                if image is not None:
+                    xDim, yDim = self._getImageItemDimensions(frame, image)
+                    return image, xDim, yDim
+
+            except Exception:
+                continue
+
+            if checkedFrames >= 12:
+                break
+
+        return None, None, None
+
+    def _getImageItemDimensions(
+            self,
+            item,
+            image: Optional[Image.Image] = None,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        xDim = None
+        yDim = None
+
+        getDimFn = getattr(item, "getDim", None)
+        if callable(getDimFn):
+            try:
+                dims = getDimFn()
+                if isinstance(dims, (list, tuple)) and len(dims) >= 2:
+                    xDim = self._safeScalarValue(dims[0])
+                    yDim = self._safeScalarValue(dims[1])
+            except Exception:
+                pass
+
+        if xDim is None:
+            getXDimFn = getattr(item, "getXDim", None)
+            if callable(getXDimFn):
+                try:
+                    xDim = self._safeScalarValue(getXDimFn())
+                except Exception:
+                    xDim = None
+
+        if yDim is None:
+            getYDimFn = getattr(item, "getYDim", None)
+            if callable(getYDimFn):
+                try:
+                    yDim = self._safeScalarValue(getYDimFn())
+                except Exception:
+                    yDim = None
+
+        if image is not None:
+            if xDim is None:
+                xDim = image.width
+            if yDim is None:
+                yDim = image.height
+
+        try:
+            xDim = float(xDim) if xDim is not None else None
+        except Exception:
+            xDim = None
+
+        try:
+            yDim = float(yDim) if yDim is not None else None
+        except Exception:
+            yDim = None
+
+        return xDim, yDim
 
     def _renderCoordinates2dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         points: List[Tuple[float, float]] = []
