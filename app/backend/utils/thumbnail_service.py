@@ -70,6 +70,9 @@ from pwem.objects import (
     SetOfAtomStructs,
     SetOfPDBs,
     SetOfSequences,
+    NormalMode,
+    SetOfNormalModes,
+    SetOfPrincipalComponents,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -787,8 +790,14 @@ class ThumbnailService:
                 or "sequence" in className
         ):
             score = 116
-        elif "fsc" in className:
-            score = 112
+
+        elif (
+                "setofnormalmode" in className
+                or "normalmode" in className
+                or "setofprincipalcomponent" in className
+                or "principalcomponent" in className
+        ):
+            score = 114
 
         elif "fsc" in className:
             score = 112
@@ -955,6 +964,8 @@ class ThumbnailService:
                 return self._renderAtomStructPreview(protocol, output, size=size)
             if isinstance(output, SetOfSequences):
                 return self._renderSequencesPreview(protocol, output, size=size)
+            if isinstance(output, (SetOfNormalModes, SetOfPrincipalComponents, NormalMode)):
+                return self._renderNormalModesPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -1082,6 +1093,16 @@ class ThumbnailService:
                     or "sequence" in className
             ):
                 image = self._renderSequencesPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if (
+                    "setofnormalmode" in className
+                    or "normalmode" in className
+                    or "setofprincipalcomponent" in className
+                    or "principalcomponent" in className
+            ):
+                image = self._renderNormalModesPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -4732,6 +4753,287 @@ class ThumbnailService:
                 continue
 
         return None
+
+    def _renderNormalModesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        modes: List[Any] = []
+
+        if isinstance(output, (SetOfNormalModes, SetOfPrincipalComponents)):
+            modeIterator = self._iterItemsDirect(output)
+        else:
+            modeIterator = iter([output])
+
+        for mode in modeIterator:
+            try:
+                if not self._isEnabled(mode):
+                    continue
+
+                modes.append(mode)
+
+                if len(modes) >= 80:
+                    break
+            except Exception:
+                continue
+
+        if not modes:
+            return None
+
+        image = self._buildNormalModesPlotImage(
+            output=output,
+            modes=modes,
+            size=size,
+        )
+        if image is not None:
+            return image
+
+        return self._buildNormalModesCardImage(
+            output=output,
+            modes=modes,
+            size=size,
+        )
+
+    def _buildNormalModesPlotImage(
+            self,
+            output,
+            modes: Sequence[Any],
+            size: int,
+    ) -> Optional[Image.Image]:
+        fig = None
+
+        try:
+            data: List[Tuple[int, Optional[float], Optional[float]]] = []
+
+            for index, mode in enumerate(modes):
+                score = self._safeScalarValue(
+                    getattr(mode, "getScore", lambda: None)()
+                )
+                collectivity = self._safeScalarValue(
+                    getattr(mode, "getCollectivity", lambda: None)()
+                )
+
+                scoreValue = None
+                collectivityValue = None
+
+                try:
+                    if score is not None:
+                        scoreValue = float(score)
+                        if not np.isfinite(scoreValue):
+                            scoreValue = None
+                except Exception:
+                    scoreValue = None
+
+                try:
+                    if collectivity is not None:
+                        collectivityValue = float(collectivity)
+                        if not np.isfinite(collectivityValue):
+                            collectivityValue = None
+                except Exception:
+                    collectivityValue = None
+
+                if scoreValue is None and collectivityValue is None:
+                    continue
+
+                data.append((index + 1, scoreValue, collectivityValue))
+
+            if not data:
+                return None
+
+            xValues = [item[0] for item in data]
+            scoreValues = [item[1] for item in data]
+            collectivityValues = [item[2] for item in data]
+
+            hasScore = any(value is not None for value in scoreValues)
+            hasCollectivity = any(value is not None for value in collectivityValues)
+
+            if not hasScore and not hasCollectivity:
+                return None
+
+            title = self._getOutputClassName(output) or "Normal modes"
+            title = "Principal components" if "principal" in title.lower() else "Normal modes"
+
+            fig = plt.figure(figsize=(5.4, 3.35), dpi=130)
+            ax = fig.add_subplot(111)
+
+            ax.set_facecolor("white")
+            ax.grid(True, linestyle="-", linewidth=0.55, alpha=0.35)
+            ax.set_title(title, fontsize=11, pad=6)
+            ax.set_xlabel("Mode index", fontsize=9)
+            ax.tick_params(axis="both", labelsize=8)
+
+            legendHandles = []
+
+            if hasScore:
+                scoreX = [x for x, value in zip(xValues, scoreValues) if value is not None]
+                scoreY = [value for value in scoreValues if value is not None]
+
+                ax.set_ylabel("Score", fontsize=9)
+
+                lineScore, = ax.plot(
+                    scoreX,
+                    scoreY,
+                    marker="o",
+                    markersize=5.0,
+                    linewidth=2.5,
+                    color="tab:blue",
+                    label="Score",
+                    zorder=4,
+                )
+                legendHandles.append(lineScore)
+
+            if hasCollectivity:
+                collectivityX = [x for x, value in zip(xValues, collectivityValues) if value is not None]
+                collectivityY = [value for value in collectivityValues if value is not None]
+
+                if hasScore:
+                    collectivityPlot = ax.twinx()
+                    collectivityPlot.set_ylabel("Collectivity", color="tab:green", fontsize=9)
+                    collectivityPlot.tick_params(axis="y", labelsize=8, colors="tab:green")
+                else:
+                    collectivityPlot = ax
+                    collectivityPlot.set_ylabel("Collectivity", fontsize=9)
+
+                lineCollectivity, = collectivityPlot.plot(
+                    collectivityX,
+                    collectivityY,
+                    marker="o",
+                    markersize=5.0,
+                    linewidth=2.5,
+                    color="tab:green",
+                    label="Collectivity",
+                    zorder=3,
+                )
+                legendHandles.append(lineCollectivity)
+
+            if legendHandles:
+                ax.legend(
+                    handles=legendHandles,
+                    loc="upper left",
+                    fontsize=8,
+                    frameon=False,
+                    handlelength=2.2,
+                    borderaxespad=0.2,
+                )
+
+            subtitle = f"{len(modes)} modes"
+            ax.text(
+                0.99,
+                0.02,
+                subtitle,
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color="#334155",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": "#cbd5e1",
+                    "alpha": 0.85,
+                },
+            )
+
+            fig.subplots_adjust(
+                left=0.14,
+                right=0.86,
+                top=0.86,
+                bottom=0.18,
+            )
+
+            buffer = io.BytesIO()
+            fig.savefig(
+                buffer,
+                format="png",
+                facecolor="white",
+                edgecolor="white",
+                dpi=130,
+            )
+            buffer.seek(0)
+
+            return Image.open(buffer).convert("RGB")
+
+        except Exception:
+            logger.debug("Normal modes plot thumbnail failed", exc_info=True)
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
+
+    def _buildNormalModesCardImage(
+            self,
+            output,
+            modes: Sequence[Any],
+            size: int,
+    ) -> Image.Image:
+        width = max(360, int(size))
+        height = max(220, int(round(width * 0.58)))
+
+        image = Image.new("RGB", (width, height), (246, 249, 252))
+        draw = ImageDraw.Draw(image)
+
+        margin = max(18, int(round(width * 0.05)))
+        card = (
+            margin,
+            margin,
+            width - margin,
+            height - margin,
+        )
+
+        draw.rounded_rectangle(
+            card,
+            radius=18,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+
+        className = self._getOutputClassName(output) or "NormalModes"
+        badgeText = "PCs" if "principal" in className.lower() else "Modes"
+
+        badgeBox = (
+            margin + 16,
+            margin + 16,
+            margin + 104,
+            margin + 46,
+        )
+
+        draw.rounded_rectangle(
+            badgeBox,
+            radius=9,
+            fill=(226, 232, 240),
+            outline=(203, 213, 225),
+            width=1,
+        )
+        draw.text((badgeBox[0] + 12, badgeBox[1] + 8), badgeText, fill=(15, 23, 42))
+
+        title = "Principal components" if "principal" in className.lower() else "Normal modes"
+        draw.text((margin + 16, margin + 58), title, fill=(15, 23, 42))
+
+        draw.text(
+            (margin + 16, margin + 88),
+            f"{len(modes)} items",
+            fill=(51, 65, 85),
+        )
+
+        firstFile = None
+        for mode in modes:
+            getter = getattr(mode, "getModeFile", None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                if value:
+                    firstFile = Path(str(value)).name
+                    break
+            except Exception:
+                continue
+
+        if firstFile:
+            firstFile = self._ellipsizeText(firstFile, 42)
+            draw.text((margin + 16, margin + 124), firstFile, fill=(100, 116, 139))
+        else:
+            draw.text((margin + 16, margin + 124), "Mode metadata", fill=(100, 116, 139))
+
+        return image
 
     def _renderSequencesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
