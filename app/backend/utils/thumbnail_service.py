@@ -736,6 +736,22 @@ class ThumbnailService:
             score = 170
         elif "class2d" in className or "average" in className:
             score = 182
+        elif (
+                "setofclassesstructflex" in className
+                or "classstructflex" in className
+                or "setofatomstructflex" in className
+                or "atomstructflex" in className
+        ):
+            score = 119
+        elif (
+                "setofclassesflex" in className
+                or className == "classflex"
+                or "setofvolumesflex" in className
+                or "volumeflex" in className
+        ):
+            score = 166
+        elif "setofparticlesflex" in className or "particleflex" in className:
+            score = 168
         elif "class3d" in className:
             score = 176
         elif (
@@ -991,6 +1007,11 @@ class ThumbnailService:
 
             if "setofmeshes" in className or "mesh" in className:
                 image = self._renderMeshesPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if "flex" in className:
+                image = self._renderFlexPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -5309,6 +5330,281 @@ class ThumbnailService:
             draw.text((margin + 16, y + 42), previewText, fill=(100, 116, 139))
 
         return image
+
+    def _renderFlexPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        className = self._getOutputClassName(output).lower()
+
+        if "setofclassesstructflex" in className or "classstructflex" in className:
+            image = self._renderFlexClassRepresentativesPreview(
+                protocol=protocol,
+                output=output,
+                size=size,
+                representativeKind="atom",
+            )
+            if image is not None:
+                return image
+
+        if "setofclassesflex" in className or className == "classflex":
+            image = self._renderFlexClassRepresentativesPreview(
+                protocol=protocol,
+                output=output,
+                size=size,
+                representativeKind="volume",
+            )
+            if image is not None:
+                return image
+
+        if "setofatomstructflex" in className or "atomstructflex" in className:
+            image = self._renderAtomStructPreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            return self._buildFlexCardImage(
+                output=output,
+                title="AtomStruct Flex",
+                size=size,
+            )
+
+        if "setofvolumesflex" in className:
+            image = self._renderClasses3dOrVolumesPreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            image = self._renderVolumeLikePreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            return self._buildFlexCardImage(
+                output=output,
+                title="Volumes Flex",
+                size=size,
+            )
+
+        if "volumeflex" in className:
+            image = self._renderVolumeLikePreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            return self._buildFlexCardImage(
+                output=output,
+                title="Volume Flex",
+                size=size,
+            )
+
+        if "setofparticlesflex" in className or "particleflex" in className:
+            image = self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
+            if image is not None:
+                return image
+
+            return self._buildFlexCardImage(
+                output=output,
+                title="Particles Flex",
+                size=size,
+            )
+
+        return self._buildFlexCardImage(
+            output=output,
+            title="Flex",
+            size=size,
+        )
+
+    def _renderFlexClassRepresentativesPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+            representativeKind: str,
+    ) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+
+        for representative in self._iterFlexClassRepresentatives(output, maxItems=4):
+            try:
+                if representativeKind == "atom":
+                    tile = self._renderAtomStructPreview(
+                        protocol=protocol,
+                        output=representative,
+                        size=size,
+                    )
+                else:
+                    tile = self._renderVolumeLikePreview(
+                        protocol=protocol,
+                        output=representative,
+                        size=size,
+                    )
+
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= 4:
+                    break
+
+            except Exception:
+                logger.debug("Flex representative preview failed", exc_info=True)
+
+        if tiles:
+            return self._composeCleanGrid(
+                tiles=tiles[:4],
+                maxCols=2,
+                targetWidth=size,
+                background=(246, 249, 252),
+            )
+
+        title = "Classes Struct Flex" if representativeKind == "atom" else "Classes Flex"
+
+        return self._buildFlexCardImage(
+            output=output,
+            title=title,
+            size=size,
+        )
+
+    def _iterFlexClassRepresentatives(self, output, maxItems: int) -> Iterable[Any]:
+        yielded = 0
+
+        iterRepresentativesFn = getattr(output, "iterRepresentatives", None)
+        if callable(iterRepresentativesFn):
+            try:
+                for representative in iterRepresentativesFn():
+                    if representative is None:
+                        continue
+
+                    yield representative
+                    yielded += 1
+
+                    if yielded >= maxItems:
+                        return
+            except Exception:
+                pass
+
+        for classItem in self._iterItemsDirect(output):
+            try:
+                representative = None
+
+                hasRepresentativeFn = getattr(classItem, "hasRepresentative", None)
+                if callable(hasRepresentativeFn):
+                    try:
+                        if not hasRepresentativeFn():
+                            continue
+                    except Exception:
+                        pass
+
+                for getterName in ("getRepresentative", "getRep"):
+                    getter = getattr(classItem, getterName, None)
+                    if not callable(getter):
+                        continue
+
+                    try:
+                        representative = getter()
+                    except Exception:
+                        representative = None
+
+                    if representative is not None:
+                        break
+
+                if representative is None:
+                    continue
+
+                yield representative
+                yielded += 1
+
+                if yielded >= maxItems:
+                    return
+
+            except Exception:
+                continue
+
+    def _buildFlexCardImage(
+            self,
+            output,
+            title: str,
+            size: int,
+    ) -> Image.Image:
+        width = max(360, int(size))
+        height = max(220, int(round(width * 0.58)))
+
+        image = Image.new("RGB", (width, height), (246, 249, 252))
+        draw = ImageDraw.Draw(image)
+
+        margin = max(18, int(round(width * 0.05)))
+        card = (
+            margin,
+            margin,
+            width - margin,
+            height - margin,
+        )
+
+        draw.rounded_rectangle(
+            card,
+            radius=18,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+
+        badgeBox = (
+            margin + 16,
+            margin + 16,
+            margin + 104,
+            margin + 46,
+        )
+
+        draw.rounded_rectangle(
+            badgeBox,
+            radius=9,
+            fill=(226, 232, 240),
+            outline=(203, 213, 225),
+            width=1,
+        )
+        draw.text((badgeBox[0] + 12, badgeBox[1] + 8), "Flex", fill=(15, 23, 42))
+
+        draw.text((margin + 16, margin + 58), title or "Flex", fill=(15, 23, 42))
+
+        className = self._getOutputClassName(output)
+        className = self._ellipsizeText(className or "Flex object", 42)
+
+        draw.text((margin + 16, margin + 88), className, fill=(51, 65, 85))
+
+        progName = self._getFlexProgramName(output)
+        if progName:
+            progName = self._ellipsizeText(progName, 42)
+            draw.text((margin + 16, margin + 124), progName, fill=(100, 116, 139))
+        else:
+            draw.text((margin + 16, margin + 124), "Flex metadata", fill=(100, 116, 139))
+
+        sizeHint = self._safeOutputSize(output)
+        if sizeHint is not None:
+            draw.rounded_rectangle(
+                (margin + 16, margin + 154, margin + 132, margin + 182),
+                radius=8,
+                fill=(248, 250, 252),
+                outline=(226, 232, 240),
+                width=1,
+            )
+            draw.text((margin + 28, margin + 162), f"{sizeHint} items", fill=(71, 85, 105))
+
+        return image
+
+    def _getFlexProgramName(self, output) -> Optional[str]:
+        getFlexInfoFn = getattr(output, "getFlexInfo", None)
+        if not callable(getFlexInfoFn):
+            return None
+
+        try:
+            flexInfo = getFlexInfoFn()
+        except Exception:
+            return None
+
+        if flexInfo is None:
+            return None
+
+        getProgNameFn = getattr(flexInfo, "getProgName", None)
+        if not callable(getProgNameFn):
+            return None
+
+        try:
+            progName = self._safeScalarValue(getProgNameFn())
+            return str(progName) if progName else None
+        except Exception:
+            return None
 
     def _renderAtomStructPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
