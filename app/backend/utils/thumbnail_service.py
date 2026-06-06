@@ -63,7 +63,8 @@ from pwem.objects import (
     SetOfParticles,
     SetOfVolumes,
     SetOfMovies,
-    SetOfCTF
+    SetOfCTF,
+    SetOfDefocusGroup,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -739,6 +740,8 @@ class ThumbnailService:
                 or (className == "ctf")
         ):
             score = 154
+        elif "setofdefocusgroup" in className or "defocusgroup" in className:
+            score = 146
         elif "setoftomomask" in className or "tomomask" in className:
             score = 162
         elif "setofvolume" in className or "volume" in className:
@@ -894,6 +897,8 @@ class ThumbnailService:
                 return self._renderMoviesPreview(protocol, output, size=size)
             if isinstance(output, SetOfCTF):
                 return self._renderCtfPreview(protocol, output, size=size)
+            if isinstance(output, SetOfDefocusGroup):
+                return self._renderDefocusGroupPreview(output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
@@ -963,6 +968,11 @@ class ThumbnailService:
                     or className == "ctf"
             ):
                 image = self._renderCtfPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if "setofdefocusgroup" in className or "defocusgroup" in className:
+                image = self._renderDefocusGroupPreview(output, size=size)
                 if image is not None:
                     return image
 
@@ -1492,6 +1502,200 @@ class ThumbnailService:
             except Exception:
                 pass
         return value
+
+    def _renderDefocusGroupPreview(self, output, size: int) -> Optional[Image.Image]:
+        groups: List[Any] = []
+
+        for group in self._iterItemsDirect(output):
+            try:
+                if not self._isEnabled(group):
+                    continue
+
+                groups.append(group)
+
+                if len(groups) >= 80:
+                    break
+            except Exception:
+                continue
+
+        if not groups:
+            return None
+
+        return self._buildDefocusGroupPreviewImage(
+            groups=groups,
+            size=size,
+        )
+
+    def _buildDefocusGroupPreviewImage(
+            self,
+            groups: Sequence[Any],
+            size: int,
+    ) -> Optional[Image.Image]:
+        fig = None
+
+        try:
+            data: List[Tuple[int, float, float, float, int]] = []
+
+            for index, group in enumerate(groups):
+                try:
+                    defocusMin = self._safeScalarValue(
+                        getattr(group, "getDefocusMin", lambda: None)()
+                    )
+                    defocusMax = self._safeScalarValue(
+                        getattr(group, "getDefocusMax", lambda: None)()
+                    )
+                    defocusAvg = self._safeScalarValue(
+                        getattr(group, "getDefocusAvg", lambda: None)()
+                    )
+                    groupSize = self._safeScalarValue(
+                        getattr(group, "getSize", lambda: 0)()
+                    )
+
+                    if defocusMin is None or defocusMax is None:
+                        continue
+
+                    minValue = float(defocusMin)
+                    maxValue = float(defocusMax)
+
+                    if defocusAvg is None:
+                        avgValue = (minValue + maxValue) * 0.5
+                    else:
+                        avgValue = float(defocusAvg)
+
+                    sizeValue = int(groupSize or 0)
+
+                    if not (
+                            np.isfinite(minValue)
+                            and np.isfinite(maxValue)
+                            and np.isfinite(avgValue)
+                    ):
+                        continue
+
+                    if maxValue < minValue:
+                        minValue, maxValue = maxValue, minValue
+
+                    data.append(
+                        (
+                            index + 1,
+                            minValue,
+                            maxValue,
+                            avgValue,
+                            sizeValue,
+                        )
+                    )
+                except Exception:
+                    continue
+
+            if not data:
+                return None
+
+            data.sort(key=lambda item: item[3])
+
+            yValues = list(range(1, len(data) + 1))
+            minValues = [item[1] for item in data]
+            maxValues = [item[2] for item in data]
+            avgValues = [item[3] for item in data]
+            sizeValues = [item[4] for item in data]
+
+            fig = plt.figure(figsize=(5.4, 3.35), dpi=130)
+            ax = fig.add_subplot(111)
+
+            ax.set_facecolor("white")
+            ax.grid(True, axis="x", linestyle="-", linewidth=0.55, alpha=0.35)
+            ax.set_title("Defocus groups", fontsize=11, pad=6)
+            ax.set_xlabel("Defocus (Å)", fontsize=9)
+            ax.set_ylabel("Group", fontsize=9)
+            ax.tick_params(axis="both", labelsize=8)
+
+            for yValue, minValue, maxValue, avgValue, sizeValue in zip(
+                    yValues,
+                    minValues,
+                    maxValues,
+                    avgValues,
+                    sizeValues,
+            ):
+                ax.plot(
+                    [minValue, maxValue],
+                    [yValue, yValue],
+                    linewidth=4.0,
+                    solid_capstyle="round",
+                    color="tab:blue",
+                    alpha=0.78,
+                )
+                ax.scatter(
+                    [avgValue],
+                    [yValue],
+                    marker="o",
+                    s=38,
+                    color="tab:red",
+                    zorder=4,
+                )
+
+                if sizeValue > 0:
+                    ax.text(
+                        maxValue,
+                        yValue,
+                        f"  n={sizeValue}",
+                        va="center",
+                        ha="left",
+                        fontsize=7.5,
+                        color="#334155",
+                    )
+
+            ax.set_yticks(yValues)
+            ax.set_yticklabels([str(i) for i in yValues])
+
+            xMin = min(minValues)
+            xMax = max(maxValues)
+            if xMax > xMin:
+                xPad = max(1.0, (xMax - xMin) * 0.12)
+                ax.set_xlim(xMin - xPad, xMax + xPad)
+
+            ax.set_ylim(0.4, len(data) + 0.6)
+
+            subtitle = f"{len(data)} groups"
+            ax.text(
+                0.99,
+                0.02,
+                subtitle,
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color="#334155",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": "#cbd5e1",
+                    "alpha": 0.85,
+                },
+            )
+
+            fig.subplots_adjust(
+                left=0.12,
+                right=0.86,
+                top=0.86,
+                bottom=0.18,
+            )
+
+            buffer = io.BytesIO()
+            fig.savefig(
+                buffer,
+                format="png",
+                facecolor="white",
+                edgecolor="white",
+                dpi=130,
+            )
+            buffer.seek(0)
+
+            return Image.open(buffer).convert("RGB")
+
+        except Exception:
+            logger.debug("Defocus group thumbnail failed", exc_info=True)
+            return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
     def _renderCtfPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
