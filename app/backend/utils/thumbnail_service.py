@@ -65,7 +65,10 @@ from pwem.objects import (
     SetOfMovies,
     SetOfCTF,
     SetOfDefocusGroup,
-    VolumeMask, Mask,
+    VolumeMask, Mask, AtomStruct,
+    PdbFile,
+    SetOfAtomStructs,
+    SetOfPDBs,
 )
 from pwem.viewers import RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -769,6 +772,14 @@ class ThumbnailService:
             score = 128
         elif "setofcoordinate" in className or "coordinate" in className:
             score = 126
+        elif (
+                "setofatomstruct" in className
+                or "atomstruct" in className
+                or "setofpdb" in className
+                or className == "pdbfile"
+                or className == "pdb"
+        ):
+            score = 118
         elif "fsc" in className:
             score = 112
         elif self._looksRenderableOutput(output):
@@ -930,6 +941,8 @@ class ThumbnailService:
                 return self._renderTiltSeriesCoordinatesPreview(protocol, output, size=size)
             if isinstance(output, SetOfLandmarkModels):
                 return self._renderLandmarkModelsPreview(protocol, output, size=size)
+            if isinstance(output, (SetOfAtomStructs, SetOfPDBs, AtomStruct, PdbFile)):
+                return self._renderAtomStructPreview(protocol, output, size=size)
             if isinstance(output, SetOfFSCs):
                 return self._renderFscPreview(output, size=size)
         except Exception:
@@ -1010,7 +1023,6 @@ class ThumbnailService:
                 if image is not None:
                     return image
 
-
             if "tomogram" in className or "volume" in className or "class3d" in className:
                 image = self._renderVolumeLikePreview(protocol, output, size=size)
                 if image is not None:
@@ -1038,6 +1050,17 @@ class ThumbnailService:
 
             if "particle" in className or "class2d" in className or "average" in className:
                 image = self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if (
+                    "setofatomstruct" in className
+                    or "atomstruct" in className
+                    or "setofpdb" in className
+                    or className == "pdbfile"
+                    or className == "pdb"
+            ):
+                image = self._renderAtomStructPreview(protocol, output, size=size)
                 if image is not None:
                     return image
 
@@ -4688,6 +4711,197 @@ class ThumbnailService:
                 continue
 
         return None
+
+    def _renderAtomStructPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+        maxItems = 4
+
+        if isinstance(output, (SetOfAtomStructs, SetOfPDBs)):
+            atomIterator = self._iterItemsDirect(output)
+        else:
+            atomIterator = iter([output])
+
+        for atomStruct in atomIterator:
+            try:
+                tile = self._renderAtomStructItemPreview(
+                    protocol=protocol,
+                    atomStruct=atomStruct,
+                    size=size,
+                )
+                if tile is not None:
+                    tiles.append(tile)
+
+                if len(tiles) >= maxItems:
+                    break
+            except Exception:
+                logger.debug("AtomStruct preview failed", exc_info=True)
+
+        if not tiles:
+            return None
+
+        if len(tiles) == 1:
+            return tiles[0]
+
+        return self._composeCleanGrid(
+            tiles=tiles[:maxItems],
+            maxCols=2,
+            targetWidth=size,
+            background=(246, 249, 252),
+        )
+
+    def _renderAtomStructItemPreview(
+            self,
+            protocol,
+            atomStruct,
+            size: int,
+    ) -> Optional[Image.Image]:
+        getFileNameFn = getattr(atomStruct, "getFileName", None)
+        if not callable(getFileNameFn):
+            return None
+
+        try:
+            rawPath = getFileNameFn()
+        except Exception:
+            rawPath = None
+
+        if not rawPath:
+            return None
+
+        sourcePath, _sourceIndex = self._splitIndexedImagePath(rawPath)
+        if not sourcePath:
+            return None
+
+        filePath = self._resolveFilePath(protocol, sourcePath)
+        if filePath is None:
+            filePath = Path(str(sourcePath))
+
+        fileName = filePath.name if filePath.name else Path(str(sourcePath)).name
+        suffix = filePath.suffix.upper().lstrip(".") or "PDB"
+
+        atomCount = None
+        lineCount = None
+
+        if filePath.exists():
+            atomCount, lineCount = self._readAtomStructStats(filePath)
+
+        return self._buildAtomStructCardImage(
+            fileName=fileName,
+            fileType=suffix,
+            atomCount=atomCount,
+            lineCount=lineCount,
+            size=size,
+        )
+
+    def _readAtomStructStats(self, filePath: Path) -> Tuple[Optional[int], Optional[int]]:
+        atomCount = 0
+        lineCount = 0
+
+        try:
+            with filePath.open("r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    lineCount += 1
+
+                    if line.startswith("ATOM") or line.startswith("HETATM"):
+                        atomCount += 1
+
+                    if lineCount >= 50000:
+                        break
+
+            return atomCount if atomCount > 0 else None, lineCount if lineCount > 0 else None
+
+        except Exception:
+            return None, None
+
+    def _buildAtomStructCardImage(
+            self,
+            fileName: str,
+            fileType: str,
+            atomCount: Optional[int],
+            lineCount: Optional[int],
+            size: int,
+    ) -> Image.Image:
+        width = max(360, int(size))
+        height = max(220, int(round(width * 0.58)))
+
+        image = Image.new("RGB", (width, height), (246, 249, 252))
+        draw = ImageDraw.Draw(image)
+
+        margin = max(18, int(round(width * 0.05)))
+        card = (
+            margin,
+            margin,
+            width - margin,
+            height - margin,
+        )
+
+        draw.rounded_rectangle(
+            card,
+            radius=18,
+            fill=(255, 255, 255),
+            outline=(203, 213, 225),
+            width=1,
+        )
+
+        badgeW = 86
+        badgeH = 30
+        badgeBox = (
+            margin + 16,
+            margin + 16,
+            margin + 16 + badgeW,
+            margin + 16 + badgeH,
+        )
+
+        draw.rounded_rectangle(
+            badgeBox,
+            radius=9,
+            fill=(226, 232, 240),
+            outline=(203, 213, 225),
+            width=1,
+        )
+        draw.text((badgeBox[0] + 12, badgeBox[1] + 8), str(fileType or "PDB"), fill=(15, 23, 42))
+
+        title = "AtomStruct"
+        draw.text((margin + 16, margin + 58), title, fill=(15, 23, 42))
+
+        displayName = self._ellipsizeText(
+            text=fileName or "Unknown file",
+            maxChars=38,
+        )
+        draw.text((margin + 16, margin + 86), displayName, fill=(51, 65, 85))
+
+        y = margin + 122
+
+        stats: List[str] = []
+        if atomCount is not None:
+            stats.append(f"{atomCount} atoms")
+        if lineCount is not None:
+            stats.append(f"{lineCount} lines")
+
+        if not stats:
+            stats.append("Structure file")
+
+        for stat in stats[:2]:
+            draw.rounded_rectangle(
+                (margin + 16, y, margin + 158, y + 28),
+                radius=8,
+                fill=(248, 250, 252),
+                outline=(226, 232, 240),
+                width=1,
+            )
+            draw.text((margin + 28, y + 8), stat, fill=(71, 85, 105))
+            y += 36
+
+        return image
+
+    def _ellipsizeText(self, text: str, maxChars: int) -> str:
+        text = str(text or "")
+        if len(text) <= maxChars:
+            return text
+
+        if maxChars <= 3:
+            return text[:maxChars]
+
+        return text[:maxChars - 3] + "..."
 
     def _renderFscPreview(self, output, size: int) -> Optional[Image.Image]:
         try:
