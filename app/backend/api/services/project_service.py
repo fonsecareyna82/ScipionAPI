@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import base64
 import collections
 import io
 import logging
@@ -5897,6 +5898,95 @@ class ProjectService:
         )
 
         return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+    def renderTiltSeriesImagesBatchService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            indices: Sequence[int],
+            size: int = 512,
+            fmt: str = "webp",
+            applyTransform: bool = True,
+            inline: bool = True,
+            requestHeaders: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        # renderTiltSeriesImagesBatchService
+        cleanIndices: List[int] = []
+        seenIndices: Set[int] = set()
+
+        for rawIndex in indices or []:
+            try:
+                index = int(rawIndex)
+            except (TypeError, ValueError):
+                continue
+
+            if index < 0 or index in seenIndices:
+                continue
+
+            cleanIndices.append(index)
+            seenIndices.add(index)
+
+            if len(cleanIndices) >= 24:
+                break
+
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for index in cleanIndices:
+            try:
+                response = self.renderTiltSeriesImageService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    tiltSeriesId=tiltSeriesId,
+                    index=index,
+                    size=size,
+                    fmt=fmt,
+                    applyTransform=applyTransform,
+                    inline=inline,
+                    requestHeaders=requestHeaders,
+                )
+
+                body = getattr(response, "body", None) or b""
+                mediaType = (
+                        getattr(response, "media_type", None)
+                        or response.headers.get("content-type")
+                        or "image/png"
+                )
+
+                dataUrl = "data:%s;base64,%s" % (
+                    mediaType,
+                    base64.b64encode(body).decode("ascii"),
+                )
+
+                items.append({
+                    "index": index,
+                    "contentType": mediaType,
+                    "dataUrl": dataUrl,
+                    "cache": response.headers.get("X-Preview-Cache"),
+                })
+
+            except HTTPException as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc.detail),
+                })
+            except Exception as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc),
+                })
+
+        return {
+            "tiltSeriesId": str(tiltSeriesId),
+            "size": int(size),
+            "fmt": str(fmt or "webp").lower(),
+            "applyTransform": bool(applyTransform),
+            "items": items,
+            "errors": errors,
+        }
 
     def createNewSetOfTiltSeriesService(
         self,

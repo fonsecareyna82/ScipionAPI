@@ -49,6 +49,7 @@ def getProjectService() -> ProjectService:
 #                           PROJECT WORKFLOWS
 # ======================================================================
 
+
 @router.get(
     "/workflows",
     response_model=Any,
@@ -1591,6 +1592,13 @@ def getVolumeSurfaceMesh(
 #        ANALYZE RESULTS: TILT SERIES (SetOfTiltSeries)
 # ==============================================================================
 
+class TiltSeriesBatchRenderRequest(BaseModel):
+    indices: List[int] = Field(default_factory=list)
+    size: int = Field(512, ge=16, le=4096)
+    fmt: str = "webp"
+    applyTransform: bool = True
+    inline: bool = True
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries",
     response_model=Any,
@@ -1737,6 +1745,56 @@ def renderTiltSeriesImage(
             status_code=500,
             detail=f"Failed to load frames for tiltseries {tiltSeriesId}: {e}",
         )
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/{tiltSeriesId}/tilt/batch",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def renderTiltSeriesImagesBatch(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tiltSeriesId: str,
+    payload: TiltSeriesBatchRenderRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Render several tilt images from the same tilt series in one request.
+    This is intended for smooth slider prefetching in the web viewer.
+    """
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        result = service.renderTiltSeriesImagesBatchService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            indices=payload.indices,
+            size=payload.size,
+            fmt=payload.fmt,
+            applyTransform=payload.applyTransform,
+            inline=payload.inline,
+        )
+
+        resp = JSONResponse(result or {})
+        resp.headers["X-Debug-Auth"] = "ok"
+        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        resp.headers["Vary"] = "Authorization"
+        return resp
+
+    except Exception as e:
+        logger.exception("Error in renderTiltSeriesImagesBatch: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to render tiltseries batch for {tiltSeriesId}: {e}",
+        )
+
 
 @router.post(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/new-set",
