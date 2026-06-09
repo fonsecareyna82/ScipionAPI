@@ -60,6 +60,7 @@ from pwem.objects import (
     SetOfClasses3D,
     SetOfFSCs,
     SetOfMicrographs,
+    SetOfCoordinates,
     SetOfParticles,
     SetOfVolumes,
     SetOfMovies,
@@ -962,6 +963,8 @@ class ThumbnailService:
                 return self._renderMaskPreview(protocol, output, size=size)
             if isinstance(output, (SetOfParticles, SetOfClasses2D)):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
+            if isinstance(output, SetOfCoordinates):
+                return self._renderCoordinates2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
                 return self._renderTomoMasksPreview(protocol, output, size=size)
             if isinstance(output, (SetOfClasses3D, SetOfVolumes)):
@@ -3459,26 +3462,34 @@ class ThumbnailService:
         points: List[Tuple[float, float]] = []
         maxPoints = 1500
 
-        iterMicrographsFn = getattr(output, "iterMicrographs", None)
         iterCoordinatesFn = getattr(output, "iterCoordinates", None)
+        micrographs = self._resolveCoordinatesMicrographs(output)
+        micrographsById = self._buildMicrographsLookup(micrographs)
 
-        if callable(iterMicrographsFn) and callable(iterCoordinatesFn):
+        if callable(iterCoordinatesFn) and micrographs is not None:
             bestMicrograph = None
             bestPoints: List[Tuple[float, float]] = []
 
             try:
                 checkedMicrographs = 0
 
-                for micrograph in iterMicrographsFn():
+                for micrograph in self._iterItemsDirect(micrographs):
                     checkedMicrographs += 1
                     localPoints: List[Tuple[float, float]] = []
 
-                    try:
-                        coordIterator = iterCoordinatesFn(micrograph)
-                    except Exception:
+                    coordinateIterator = None
+
+                    for arg in self._micrographIterationArgs(micrograph):
+                        try:
+                            coordinateIterator = iterCoordinatesFn(arg)
+                            break
+                        except Exception:
+                            coordinateIterator = None
+
+                    if coordinateIterator is None:
                         continue
 
-                    for coord in coordIterator:
+                    for coord in coordinateIterator:
                         try:
                             xValue = self._readCoordinateScalar(coord, "getX")
                             yValue = self._readCoordinateScalar(coord, "getY")
@@ -3489,8 +3500,7 @@ class ThumbnailService:
                             if not np.isfinite(xValue) or not np.isfinite(yValue):
                                 continue
 
-                            point = (float(xValue), float(yValue))
-                            localPoints.append(point)
+                            localPoints.append((float(xValue), float(yValue)))
 
                             if len(localPoints) >= maxPoints:
                                 break
@@ -3549,24 +3559,23 @@ class ThumbnailService:
                         point = (float(xValue), float(yValue))
                         points.append(point)
 
-                        getMicrographFn = getattr(coord, "getMicrograph", None)
-                        if callable(getMicrographFn):
-                            try:
-                                micrograph = getMicrographFn()
-                            except Exception:
-                                micrograph = None
+                        micrograph = self._resolveCoordinateMicrograph(
+                            coord=coord,
+                            micrographs=micrographs,
+                            micrographsById=micrographsById,
+                        )
 
-                            if micrograph is not None:
-                                key = id(micrograph)
-                                entry = groupedPoints.get(key)
-                                if entry is None:
-                                    entry = {
-                                        "micrograph": micrograph,
-                                        "points": [],
-                                    }
-                                    groupedPoints[key] = entry
+                        if micrograph is not None:
+                            key = id(micrograph)
+                            entry = groupedPoints.get(key)
+                            if entry is None:
+                                entry = {
+                                    "micrograph": micrograph,
+                                    "points": [],
+                                }
+                                groupedPoints[key] = entry
 
-                                entry["points"].append(point)
+                            entry["points"].append(point)
 
                         if len(points) >= maxPoints:
                             break
@@ -3612,6 +3621,110 @@ class ThumbnailService:
                 micrographs = self._safeScalarValue(getter())
                 if micrographs is not None:
                     return micrographs
+            except Exception:
+                continue
+
+        return None
+
+    def _buildMicrographsLookup(self, micrographs) -> Dict[Any, Any]:
+        micrographsById: Dict[Any, Any] = {}
+
+        if micrographs is None:
+            return micrographsById
+
+        for micrograph in self._iterItemsDirect(micrographs):
+            try:
+                keys: List[Any] = []
+
+                for getterName in (
+                        "getObjId",
+                        "getMicId",
+                        "getMicName",
+                        "getName",
+                        "getFileName",
+                ):
+                    getter = getattr(micrograph, getterName, None)
+                    if not callable(getter):
+                        continue
+
+                    try:
+                        value = self._safeScalarValue(getter())
+                        if value is not None:
+                            keys.extend(self._micrographLookupKeys(value))
+                    except Exception:
+                        continue
+
+                for key in keys:
+                    micrographsById[key] = micrograph
+                    micrographsById[str(key)] = micrograph
+
+            except Exception:
+                continue
+
+        return micrographsById
+
+    def _micrographIterationArgs(self, micrograph) -> List[Any]:
+        args: List[Any] = [micrograph]
+
+        for getterName in ("getObjId", "getMicId"):
+            getter = getattr(micrograph, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                if value is not None:
+                    args.append(value)
+            except Exception:
+                continue
+
+        result: List[Any] = []
+        seen = set()
+
+        for arg in args:
+            marker = str(arg)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(arg)
+
+        return result
+
+    def _resolveCoordinateMicrograph(
+            self,
+            coord,
+            micrographs,
+            micrographsById: Dict[Any, Any],
+    ) -> Optional[Any]:
+        getMicrographFn = getattr(coord, "getMicrograph", None)
+        if callable(getMicrographFn):
+            try:
+                micrograph = getMicrographFn()
+                if micrograph is not None:
+                    return micrograph
+            except Exception:
+                pass
+
+        for getterName in (
+                "getMicId",
+                "getMicrographId",
+                "getMicName",
+                "getMicrographName",
+                "getFileName",
+        ):
+            getter = getattr(coord, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = self._safeScalarValue(getter())
+                micrograph = self._lookupMicrographByKey(
+                    micrographs=micrographs,
+                    micrographsById=micrographsById,
+                    key=value,
+                )
+                if micrograph is not None:
+                    return micrograph
             except Exception:
                 continue
 
