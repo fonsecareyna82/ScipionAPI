@@ -5782,9 +5782,13 @@ class ProjectService:
     def _storeTiltSeriesPreviewInCache(
             self,
             cacheKey: Tuple[Any, ...],
-            response: Response,
-    ) -> Response:
+            response: Any,
+    ) -> Any:
         # storeTiltSeriesPreviewInCache
+        headersObj = getattr(response, "headers", None)
+        if headersObj is None or not hasattr(headersObj, "update"):
+            return response
+
         body = getattr(response, "body", None)
 
         if body is None:
