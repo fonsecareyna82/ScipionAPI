@@ -382,6 +382,10 @@ class OutputsPreview(FileHandlers):
                 tiles, labels, cols, tileSize, "micrographs_gallery.png", summary
             )
 
+        thumbnailResponse = self._tryThumbnailServicePreview()
+        if thumbnailResponse is not None:
+            return thumbnailResponse
+
         return self._makeNoPreviewImageResponse()
 
     # ------------------------------------------------------------------ #
@@ -1379,6 +1383,76 @@ class OutputsPreview(FileHandlers):
             ]
         )
         return headers
+
+    def _makePngImageResponse(
+            self,
+            image: Image.Image,
+            filename: str = "output_preview.png",
+            note: Optional[str] = None,
+    ) -> Response:
+        if image.mode not in ("RGB", "RGBA", "L"):
+            image = image.convert("RGB")
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        pngBytes = buf.getvalue()
+
+        meta = {
+            "mime": "image/png",
+            "kind": "image",
+            "width": image.width,
+            "height": image.height,
+            "note": note or "Output preview image",
+        }
+
+        previewHeaders = (
+            self._buildPreviewHeaders(meta)
+            if hasattr(self, "_buildPreviewHeaders")
+            else self.buildPreviewHeadersFallback(meta)
+        )
+
+        return Response(
+            content=pngBytes,
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                **previewHeaders,
+            },
+        )
+
+    def _tryThumbnailServicePreview(self) -> Optional[Response]:
+        try:
+            from app.backend.utils.thumbnail_service import ThumbnailService
+
+            outputClassName = type(self.output).__name__
+            outputName = outputClassName
+
+            thumbnailService = ThumbnailService(self.currentProject)
+            image = thumbnailService._renderProtocolPreviewImage(
+                protocol=self.protocol,
+                output=self.output,
+                outputName=outputName,
+                outputClassName=outputClassName,
+                size=maxThumbSize,
+            )
+
+            if image is None:
+                return None
+
+            return self._makePngImageResponse(
+                image=image,
+                filename="output_preview.png",
+                note=f"Thumbnail preview for {outputClassName}",
+            )
+        except Exception:
+            return None
+
+    def renderOutputFallbackPreview(self) -> Response:
+        thumbnailResponse = self._tryThumbnailServicePreview()
+        if thumbnailResponse is not None:
+            return thumbnailResponse
+
+        return self._makeNoPreviewImageResponse()
 
     # ------------------------------------------------------------------ #
     # Fallback "No Image" PNG

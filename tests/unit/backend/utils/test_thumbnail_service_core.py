@@ -171,10 +171,22 @@ def test_ScoreProtocolStatusMapsKnownStates(service):
 def test_ScoreOutputRewardsUsefulOutputs(service):
     particles = FakeOutput(className="SetOfParticles", size=5)
     mask = FakeOutput(className="VolumeMask", size=2)
+    ctf = FakeOutput(className="SetOfCTF", size=4)
+    movie = FakeOutput(className="SetOfMovies", size=3)
+    flex = FakeOutput(className="SetOfParticlesFlex", size=6)
+    sequence = FakeOutput(className="SetOfSequences", size=2)
+    normalModes = FakeOutput(className="SetOfNormalModes", size=8)
+    atomStruct = FakeOutput(className="SetOfAtomStructs", size=1)
     generic = FakeOutput(className="SomethingRenderable", size=1)
 
     assert service._scoreOutput("outputParticles", particles) > 0
     assert service._scoreOutput("outputMask", mask) > 0
+    assert service._scoreOutput("outputCtf", ctf) > 0
+    assert service._scoreOutput("outputMovies", movie) > 0
+    assert service._scoreOutput("outputFlex", flex) > 0
+    assert service._scoreOutput("outputSequences", sequence) > 0
+    assert service._scoreOutput("outputModes", normalModes) > 0
+    assert service._scoreOutput("outputAtomStructs", atomStruct) > 0
     assert service._scoreOutput("tmpDebug", generic) == 0
 
 
@@ -355,6 +367,7 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
                     "outputClassName": "SetOfVolumes",
                     "exists": True,
                     "thumbnailUrl": "/projects/7/protocols/11/outputs/outputVol/thumbnail",
+                    "thumbnailDataUrl": None,
                     "thumbnailRebuildUrl": None,
                 },
                 {
@@ -362,6 +375,7 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
                     "outputClassName": "SetOfParticles",
                     "exists": True,
                     "thumbnailUrl": "/projects/7/protocols/11/outputs/outputParticles/thumbnail",
+                    "thumbnailDataUrl": None,
                     "thumbnailRebuildUrl": None,
                 },
             ],

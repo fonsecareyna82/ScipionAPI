@@ -42,6 +42,7 @@ class UserSettingsOut(BaseModel):
 
     graphMiniMapEnabled: bool = True
     graphFocusModeEnabled: bool = False
+    protocolOutputThumbnailsEnabled: bool = True
     workflowsAutoRefreshSec: int = Field(default=5, ge=0, le=300)
 
 
@@ -61,6 +62,7 @@ class UserSettingsPatch(BaseModel):
 
     graphMiniMapEnabled: Optional[bool] = None
     graphFocusModeEnabled: Optional[bool] = None
+    protocolOutputThumbnailsEnabled: Optional[bool] = None
     workflowsAutoRefreshSec: Optional[int] = Field(default=None, ge=0, le=300)
 
 

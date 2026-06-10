@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import base64
 import collections
 import io
 import logging
@@ -113,6 +114,11 @@ _metadataLock = threading.Lock()
 # Loading several Scipion projects concurrently can mix project state in Pyworkflow internals.
 _thumbnailProjectLock = threading.Lock()
 
+# In-memory cache for rendered tilt-series previews.
+# The key includes file path, mtime and render options, so changed stacks invalidate naturally.
+_tiltSeriesPreviewCacheLock = threading.Lock()
+_tiltSeriesPreviewCache = collections.OrderedDict()
+_TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
 
 def _invalidateProtocolsTreeCacheIfNeeded() -> int:
     # invalidateProtocolsTreeCacheIfNeeded
@@ -4546,15 +4552,9 @@ class ProjectService:
         return fileHandlers.previewProtocolImageFile(protocolId, path, inline)
 
     def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
-        """
-        Return a preview for selected output.
-
-        A fresh ObjectManager is created for every request to keep
-        underlying DAOs (and SQLite connections) thread-safe.
-        """
         protocol = self.currentProject.getProtocol(protocolId)
         output = getattr(protocol, outputName)
-        outputPath = output.getFileName()
+
         outputPreview = OutputsPreview(
             self.currentProject,
             protocol,
@@ -4562,6 +4562,19 @@ class ProjectService:
             requestHeaders=requestHeaders,
             colormapOverride=colormap,
         )
+
+        getFileName = getattr(output, "getFileName", None)
+        if not callable(getFileName):
+            return outputPreview.renderOutputFallbackPreview()
+
+        try:
+            outputPath = getFileName()
+        except Exception:
+            return outputPreview.renderOutputFallbackPreview()
+
+        if not outputPath:
+            return outputPreview.renderOutputFallbackPreview()
+
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
 
@@ -5697,6 +5710,129 @@ class ProjectService:
             "restack": bool(restack),
         }
 
+    def _buildTiltSeriesPreviewCacheKey(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            index: int,
+            size: int,
+            fmt: str,
+            applyTransform: bool,
+            inline: bool,
+            imagePath: str,
+    ) -> Tuple[Any, ...]:
+        # buildTiltSeriesPreviewCacheKey
+        absPath = os.path.abspath(str(imagePath))
+
+        try:
+            stat = os.stat(absPath)
+            fileMtimeNs = int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)))
+            fileSize = int(stat.st_size)
+        except Exception:
+            fileMtimeNs = 0
+            fileSize = 0
+
+        return (
+            int(projectId),
+            int(protocolId),
+            str(outputName),
+            str(tiltSeriesId),
+            int(index),
+            int(size),
+            str(fmt or "png").lower(),
+            bool(applyTransform),
+            bool(inline),
+            absPath,
+            fileMtimeNs,
+            fileSize,
+        )
+
+    def _ensureTiltSeriesPreviewCacheHeader(
+            self,
+            headers: Dict[str, str],
+            cacheState: str,
+    ) -> Dict[str, str]:
+        # ensureTiltSeriesPreviewCacheHeader
+        nextHeaders = dict(headers or {})
+        nextHeaders["X-Preview-Cache"] = cacheState
+
+        exposeRaw = nextHeaders.get("Access-Control-Expose-Headers", "")
+        exposeItems = [h.strip() for h in exposeRaw.split(",") if h.strip()]
+        if "X-Preview-Cache" not in exposeItems:
+            exposeItems.append("X-Preview-Cache")
+        nextHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeItems)
+
+        return nextHeaders
+
+    def _getTiltSeriesPreviewFromCache(self, cacheKey: Tuple[Any, ...]) -> Optional[Response]:
+        # getTiltSeriesPreviewFromCache
+        with _tiltSeriesPreviewCacheLock:
+            cached = _tiltSeriesPreviewCache.get(cacheKey)
+            if not cached:
+                return None
+
+            _tiltSeriesPreviewCache.move_to_end(cacheKey)
+
+            headers = self._ensureTiltSeriesPreviewCacheHeader(
+                cached.get("headers") or {},
+                "HIT",
+            )
+
+            return Response(
+                content=cached.get("body") or b"",
+                media_type=cached.get("mediaType") or "image/png",
+                headers=headers,
+            )
+
+    def _storeTiltSeriesPreviewInCache(
+            self,
+            cacheKey: Tuple[Any, ...],
+            response: Any,
+    ) -> Any:
+        # storeTiltSeriesPreviewInCache
+        headersObj = getattr(response, "headers", None)
+        if headersObj is None or not hasattr(headersObj, "update"):
+            return response
+
+        body = getattr(response, "body", None)
+
+        if body is None:
+            response.headers.update(
+                self._ensureTiltSeriesPreviewCacheHeader(
+                    dict(response.headers),
+                    "SKIP",
+                )
+            )
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type") or "image/png"
+
+        with _tiltSeriesPreviewCacheLock:
+            _tiltSeriesPreviewCache[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _tiltSeriesPreviewCache.move_to_end(cacheKey)
+
+            while len(_tiltSeriesPreviewCache) > _TILT_SERIES_PREVIEW_CACHE_LIMIT:
+                _tiltSeriesPreviewCache.popitem(last=False)
+
+        response.headers.update(
+            self._ensureTiltSeriesPreviewCacheHeader(
+                dict(response.headers),
+                "MISS",
+            )
+        )
+
+        return response
+
     def renderTiltSeriesImageService(
             self,
             projectId: int,
@@ -5712,14 +5848,47 @@ class ProjectService:
     ):
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
         ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
+
+        if ts is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
+            )
+
         ti = ts.getItem('_index', index)
+
+        if ti is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tilt image index '{index}' not found in tiltSeries '{tiltSeriesId}'",
+            )
+
+        imagePath = os.path.abspath(ti.getFileName())
+
+        cacheKey = self._buildTiltSeriesPreviewCacheKey(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            index=index,
+            size=size,
+            fmt=fmt,
+            applyTransform=applyTransform,
+            inline=inline,
+            imagePath=imagePath,
+        )
+
+        cachedResponse = self._getTiltSeriesPreviewFromCache(cacheKey)
+        if cachedResponse is not None:
+            return cachedResponse
+
         rot = shifts = None
         if applyTransform and ti.hasTransform():
             transf = ti.getTransform()
             _, _, rot = transf.getEulerAngles()
             rot = np.rad2deg(-rot)
-            list = transf.getMatrixAsList()
-            shifts = list[2], list[5]
+            matrixValues = transf.getMatrixAsList()
+            shifts = matrixValues[2], matrixValues[5]
 
         preview = OutputsPreview(
             currentProject=self.currentProject,
@@ -5727,14 +5896,108 @@ class ProjectService:
             output=ts,
             requestHeaders=requestHeaders,
         )
-        return preview.renderImageFromFilePath(os.path.abspath(ti.getFileName()),
-                                               size=size,
-                                               fmt=fmt,
-                                               index=index,
-                                               applyTransform=applyTransform,
-                                               inline=inline,
-                                               rot=rot,
-                                               shifts=shifts)
+
+        response = preview.renderImageFromFilePath(
+            imagePath,
+            size=size,
+            fmt=fmt,
+            index=index,
+            applyTransform=applyTransform,
+            inline=inline,
+            rot=rot,
+            shifts=shifts,
+        )
+
+        return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+    def renderTiltSeriesImagesBatchService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            indices: Sequence[int],
+            size: int = 512,
+            fmt: str = "webp",
+            applyTransform: bool = True,
+            inline: bool = True,
+            requestHeaders: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        # renderTiltSeriesImagesBatchService
+        cleanIndices: List[int] = []
+        seenIndices: Set[int] = set()
+
+        for rawIndex in indices or []:
+            try:
+                index = int(rawIndex)
+            except (TypeError, ValueError):
+                continue
+
+            if index < 0 or index in seenIndices:
+                continue
+
+            cleanIndices.append(index)
+            seenIndices.add(index)
+
+            if len(cleanIndices) >= 24:
+                break
+
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for index in cleanIndices:
+            try:
+                response = self.renderTiltSeriesImageService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    tiltSeriesId=tiltSeriesId,
+                    index=index,
+                    size=size,
+                    fmt=fmt,
+                    applyTransform=applyTransform,
+                    inline=inline,
+                    requestHeaders=requestHeaders,
+                )
+
+                body = getattr(response, "body", None) or b""
+                mediaType = (
+                        getattr(response, "media_type", None)
+                        or response.headers.get("content-type")
+                        or "image/png"
+                )
+
+                dataUrl = "data:%s;base64,%s" % (
+                    mediaType,
+                    base64.b64encode(body).decode("ascii"),
+                )
+
+                items.append({
+                    "index": index,
+                    "contentType": mediaType,
+                    "dataUrl": dataUrl,
+                    "cache": response.headers.get("X-Preview-Cache"),
+                })
+
+            except HTTPException as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc.detail),
+                })
+            except Exception as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc),
+                })
+
+        return {
+            "tiltSeriesId": str(tiltSeriesId),
+            "size": int(size),
+            "fmt": str(fmt or "webp").lower(),
+            "applyTransform": bool(applyTransform),
+            "items": items,
+            "errors": errors,
+        }
 
     def createNewSetOfTiltSeriesService(
         self,
