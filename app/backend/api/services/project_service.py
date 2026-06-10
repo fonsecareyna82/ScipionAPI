@@ -4552,15 +4552,9 @@ class ProjectService:
         return fileHandlers.previewProtocolImageFile(protocolId, path, inline)
 
     def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
-        """
-        Return a preview for selected output.
-
-        A fresh ObjectManager is created for every request to keep
-        underlying DAOs (and SQLite connections) thread-safe.
-        """
         protocol = self.currentProject.getProtocol(protocolId)
         output = getattr(protocol, outputName)
-        outputPath = output.getFileName()
+
         outputPreview = OutputsPreview(
             self.currentProject,
             protocol,
@@ -4568,6 +4562,19 @@ class ProjectService:
             requestHeaders=requestHeaders,
             colormapOverride=colormap,
         )
+
+        getFileName = getattr(output, "getFileName", None)
+        if not callable(getFileName):
+            return outputPreview.renderOutputFallbackPreview()
+
+        try:
+            outputPath = getFileName()
+        except Exception:
+            return outputPreview.renderOutputFallbackPreview()
+
+        if not outputPath:
+            return outputPreview.renderOutputFallbackPreview()
+
         objMgr = self._createObjectManager()
         return outputPreview.preview(protocolId, outputPath, objMgr)
 
