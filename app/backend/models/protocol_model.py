@@ -29,7 +29,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, ARRA
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional, List, Dict
 from app.backend.models.project_model import Project
 
@@ -122,3 +122,14 @@ class DuplicatePayload(BaseModel):
 
 class DeletePayload(BaseModel):
     protocolIds: List[str]
+
+
+class ProtocolOutputThumbnailItemIn(BaseModel):
+    protocolId: int
+    outputName: str
+
+
+class ProtocolOutputThumbnailsRequest(BaseModel):
+    size: int = Field(default=128, ge=64, le=512)
+    inlineImages: bool = True
+    outputs: List[ProtocolOutputThumbnailItemIn] = Field(default_factory=list, max_items=200)
