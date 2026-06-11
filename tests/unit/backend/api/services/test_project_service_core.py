@@ -246,6 +246,8 @@ def test_GetContextMenuVisibilityPolicyReturnsAllExpectedFlags(projectService):
         "browse",
         "rename",
         "duplicate",
+        "copyWorkflow",
+        "pasteWorkflow",
         "delete",
         "restart",
         "continue",
