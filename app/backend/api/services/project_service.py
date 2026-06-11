@@ -9072,6 +9072,8 @@ class ProjectService:
                "browse":  True,
                "rename":  True,
                "duplicate":  True,
+               "copyWorkflow": True,
+               "pasteWorkflow": True,
                "delete":  True,
                "restart":  True,
                "continue":  True,
