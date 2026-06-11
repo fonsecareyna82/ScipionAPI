@@ -4707,6 +4707,200 @@ class ProjectService:
                 detail=f"Scipion export failed: {e}",
             )
 
+    def _getCurrentWorkflowProtocolIds(self) -> Set[str]:
+        try:
+            runs = self.currentProject.getRunsGraph(refresh=True, checkPids=False)
+            nodesDict = getattr(runs, "_nodesDict", {}) or {}
+        except Exception:
+            return set()
+
+        return {
+            str(nodeId)
+            for nodeId in nodesDict.keys()
+            if str(nodeId) != "PROJECT"
+        }
+
+    @staticmethod
+    def _sortProtocolIds(protocolIds: Set[str]) -> List[str]:
+        def sortKey(value: str):
+            try:
+                return (0, int(value))
+            except Exception:
+                return (1, str(value))
+
+        return sorted(protocolIds, key=sortKey)
+
+    def _normalizeWorkflowImportErrors(self, result: Any) -> List[str]:
+        if result is None:
+            return []
+
+        if isinstance(result, dict):
+            rawErrors = result.get("errors") or result.get("error") or result.get("detail")
+            if rawErrors is None:
+                return []
+            if isinstance(rawErrors, list):
+                return [str(item) for item in rawErrors if str(item).strip()]
+            return [str(rawErrors)] if str(rawErrors).strip() else []
+
+        if isinstance(result, (list, tuple, set)):
+            return [str(item) for item in result if str(item).strip()]
+
+        text = str(result).strip()
+        return [text] if text else []
+
+    def _unwrapWorkflowImportPayload(self, workflowPayload: Any) -> Any:
+        if workflowPayload is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing workflow",
+            )
+
+        if isinstance(workflowPayload, dict):
+            metadata = workflowPayload.get("scipionWeb")
+            if isinstance(metadata, dict):
+                requiredPluginNames = [
+                    str(name).strip()
+                    for name in metadata.get("requiredPluginNames", []) or []
+                    if str(name).strip()
+                ]
+                self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+            if "workflow" in workflowPayload:
+                return workflowPayload.get("workflow")
+
+            if "content" in workflowPayload:
+                return workflowPayload.get("content")
+
+        return workflowPayload
+
+    def exportWorkflowProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        if bool(getattr(payload, "includeUpstream", False)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="includeUpstream is not supported yet",
+            )
+
+        protocolIds = self._normalizeProtocolIdsForExport(
+            getattr(payload, "protocolIds", None),
+        )
+        if not protocolIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing protocolIds",
+            )
+
+        try:
+            protocolIdInts = [int(pid) for pid in protocolIds]
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="protocolIds must be numeric",
+            )
+
+        protocolList = []
+        missing: List[str] = []
+
+        for protocolId in protocolIdInts:
+            protocol = self.currentProject.getProtocol(protocolId)
+            if protocol is None:
+                missing.append(str(protocolId))
+                continue
+            protocolList.append(protocol)
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol(s) not found: {', '.join(missing)}",
+            )
+
+        rawExport = self.currentProject.getProtocolsJson(protocolList)
+        workflow = self._decodeExportJsonPayload(rawExport)
+        metadata = self._buildWorkflowPluginMetadata(protocolList)
+
+        return {
+            "sourceProjectId": projectId,
+            "protocolIds": protocolIds,
+            "workflow": workflow,
+            "scipionWeb": metadata,
+            "summary": {
+                "protocolCount": len(protocolList),
+                "requiredPluginNames": metadata.get("requiredPluginNames", []),
+            },
+        }
+
+    def importWorkflowProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        mode = str(getattr(payload, "mode", "append") or "append").strip().lower()
+        if mode != "append":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported import mode: {mode}",
+            )
+
+        workflowContent = self._unwrapWorkflowImportPayload(
+            getattr(payload, "workflow", None),
+        )
+
+        if isinstance(workflowContent, str):
+            workflowText = self._extractWorkflowJsonText(workflowContent)
+            try:
+                workflowContent = json.loads(workflowText)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid workflow JSON: {e}",
+                )
+
+        if not isinstance(workflowContent, (list, dict)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Workflow must be a JSON list or object",
+            )
+
+        beforeIds = self._getCurrentWorkflowProtocolIds()
+        workflowJson = json.dumps(workflowContent, ensure_ascii=False)
+
+        try:
+            loadResult = self.currentProject.loadProtocols(jsonStr=workflowJson)
+        except Exception as e:
+            logger.exception("Failed to import workflow protocols. projectId=%s", projectId)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to import workflow protocols: {e}",
+            )
+
+        errors = self._normalizeWorkflowImportErrors(loadResult)
+
+        syncInfo = self.syncProjectProtocolsAndDependencies(
+            mapper,
+            projectId,
+            refresh=True,
+            checkPid=True,
+        )
+
+        afterIds = self._getCurrentWorkflowProtocolIds()
+        createdIds = self._sortProtocolIds(afterIds - beforeIds)
+
+        return {
+            "status": 1 if errors else 0,
+            "errors": errors,
+            "workflow": [],
+            "created": [{"newId": protocolId} for protocolId in createdIds],
+            "protocolsCount": int(syncInfo.get("protocols", 0)),
+            "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+        }
+
     def writeRemoteFileService(
             self,
             protocolId: Union[int, str],
