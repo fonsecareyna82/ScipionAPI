@@ -4748,6 +4748,89 @@ class ProjectService:
         text = str(result).strip()
         return [text] if text else []
 
+    def _getWorkflowImportSourceProjectId(self, payload: Any, workflowPayload: Any) -> Optional[str]:
+        sourceProjectId = getattr(payload, "sourceProjectId", None)
+
+        if sourceProjectId is None and isinstance(workflowPayload, dict):
+            sourceProjectId = workflowPayload.get("sourceProjectId")
+
+            metadata = workflowPayload.get("scipionWeb")
+            if sourceProjectId is None and isinstance(metadata, dict):
+                sourceProjectId = metadata.get("sourceProjectId")
+
+        if sourceProjectId is None:
+            return None
+
+        sourceProjectIdText = str(sourceProjectId).strip()
+        return sourceProjectIdText or None
+
+    def _getWorkflowProtocolItems(self, workflowContent: Any) -> List[Dict[str, Any]]:
+        if isinstance(workflowContent, list):
+            return [item for item in workflowContent if isinstance(item, dict)]
+
+        if isinstance(workflowContent, dict):
+            for key in ("workflow", "content", "protocols"):
+                value = workflowContent.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+
+        return []
+
+    def _getWorkflowProtocolId(self, protocolItem: Dict[str, Any], fallbackIndex: int) -> str:
+        protocolId = (
+            protocolItem.get("object.id")
+            or protocolItem.get("id")
+            or protocolItem.get("_objId")
+            or fallbackIndex
+        )
+
+        return str(protocolId).strip()
+
+    def _collectWorkflowProtocolIds(self, workflowContent: Any) -> Set[str]:
+        protocolIds: Set[str] = set()
+
+        for index, protocolItem in enumerate(self._getWorkflowProtocolItems(workflowContent)):
+            protocolId = self._getWorkflowProtocolId(protocolItem, index)
+            if protocolId:
+                protocolIds.add(protocolId)
+
+        return protocolIds
+
+    def _sanitizeWorkflowExternalReferences(self, workflowContent: Any) -> Any:
+        copiedProtocolIds = self._collectWorkflowProtocolIds(workflowContent)
+        if not copiedProtocolIds:
+            return workflowContent
+
+        dropValue = object()
+        pointerPattern = re.compile(r"^\s*(\d+)\.([A-Za-z_][A-Za-z0-9_\.]*)\s*$")
+
+        def sanitizeValue(value: Any) -> Any:
+            if isinstance(value, str):
+                match = pointerPattern.match(value)
+                if match and match.group(1) not in copiedProtocolIds:
+                    return dropValue
+                return value
+
+            if isinstance(value, list):
+                nextList = []
+                for item in value:
+                    nextItem = sanitizeValue(item)
+                    if nextItem is not dropValue:
+                        nextList.append(nextItem)
+                return nextList
+
+            if isinstance(value, dict):
+                nextDict = {}
+                for key, item in value.items():
+                    nextItem = sanitizeValue(item)
+                    if nextItem is not dropValue:
+                        nextDict[key] = nextItem
+                return nextDict
+
+            return value
+
+        return sanitizeValue(workflowContent)
+
     def _unwrapWorkflowImportPayload(self, workflowPayload: Any) -> Any:
         if workflowPayload is None:
             raise HTTPException(
@@ -4822,16 +4905,14 @@ class ProjectService:
         rawExport = self.currentProject.getProtocolsJson(protocolList)
         workflow = self._decodeExportJsonPayload(rawExport)
         metadata = self._buildWorkflowPluginMetadata(protocolList)
+        metadata["sourceProjectId"] = projectId
+        metadata["sourceProtocolIds"] = protocolIds
 
         return {
             "sourceProjectId": projectId,
             "protocolIds": protocolIds,
             "workflow": workflow,
             "scipionWeb": metadata,
-            "summary": {
-                "protocolCount": len(protocolList),
-                "requiredPluginNames": metadata.get("requiredPluginNames", []),
-            },
         }
 
     def importWorkflowProtocolsService(
@@ -4848,9 +4929,10 @@ class ProjectService:
                 detail=f"Unsupported import mode: {mode}",
             )
 
-        workflowContent = self._unwrapWorkflowImportPayload(
-            getattr(payload, "workflow", None),
-        )
+        rawWorkflowPayload = getattr(payload, "workflow", None)
+        sourceProjectId = self._getWorkflowImportSourceProjectId(payload, rawWorkflowPayload)
+
+        workflowContent = self._unwrapWorkflowImportPayload(rawWorkflowPayload)
 
         if isinstance(workflowContent, str):
             workflowText = self._extractWorkflowJsonText(workflowContent)
@@ -4867,6 +4949,14 @@ class ProjectService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Workflow must be a JSON list or object",
             )
+
+        isSameProjectImport = (
+            sourceProjectId is not None
+            and str(sourceProjectId).strip() == str(projectId).strip()
+        )
+
+        if not isSameProjectImport:
+            workflowContent = self._sanitizeWorkflowExternalReferences(workflowContent)
 
         beforeIds = self._getCurrentWorkflowProtocolIds()
         workflowJson = json.dumps(workflowContent, ensure_ascii=False)
