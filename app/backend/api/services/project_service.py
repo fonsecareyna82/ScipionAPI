@@ -7054,7 +7054,10 @@ class ProjectService:
         if thumb is not None and thumb > 0:
             pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
             pilTmp.thumbnail((thumb, thumb))
-            gray = np.asarray(pilTmp, copy=False)
+            gray = np.asarray(pilTmp)
+
+            if gray.dtype != np.uint8:
+                gray = gray.astype(np.uint8, copy=False)
 
         imgArray = gray.astype(np.uint8, copy=False)
         pilMode = "L"
