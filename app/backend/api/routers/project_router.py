@@ -2348,6 +2348,35 @@ def createCoords3dOutputFromPoints(projectId: int,
         raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
 
 
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/integrated-context",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getIntegratedAnalyzeContext(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payload = service.getIntegratedAnalyzeContextService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+    resp = JSONResponse(payload)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
 # ==============================================================================
 #        ANALYZE RESULTS: FSC (SetOfFSCs)
 # ==============================================================================
