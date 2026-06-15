@@ -45,6 +45,7 @@ from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
 from app.backend.api.routers.settings_router import router as settingsRouter
 from app.backend.api.routers.coords2d_router import router as coords2dRouter
+from app.backend.api.routers.integrated_context_router import router as integratedContextRouter
 from app.backend.api.routers.system_router import router as systemRouter
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
@@ -136,6 +137,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(users)
     apiApp.include_router(settingsRouter)
     apiApp.include_router(coords2dRouter)
+    apiApp.include_router(integratedContextRouter)
     apiApp.include_router(systemRouter)
 
     @apiApp.get("/health")
