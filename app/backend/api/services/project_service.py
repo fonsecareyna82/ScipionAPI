@@ -2266,7 +2266,26 @@ class ProjectService:
 
             return getProtocolInputRefs(sourceProtocol)
 
+        def getProtocolOutputRefs(protocolObj: Any) -> List[Dict[str, Any]]:
+            refs: List[Dict[str, Any]] = []
+
+            for outputAttrName, outputObjRef in protocolObj.iterOutputAttributes():
+                if outputObjRef is None:
+                    continue
+
+                refs.append({
+                    "name": outputAttrName,
+                    "object": outputObjRef,
+                    "protocolId": safeCall(protocolObj, "getObjId", None),
+                    "outputName": outputAttrName,
+                    "label": outputAttrName,
+                })
+
+            return refs
+
         inputRefs = getProtocolInputRefs(protocol)
+        outputRefs = getProtocolOutputRefs(protocol)
+        localRefs = inputRefs + outputRefs
 
         def findInputRef(predicate, tsIds: Optional[Set[str]] = None) -> Optional[Dict[str, Any]]:
             for ref in inputRefs:
@@ -2283,7 +2302,11 @@ class ProjectService:
 
             return None
 
-        def findInputRefForObject(targetObj: Any, refs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        def findInputRefForObject(
+                targetObj: Any,
+                refs: List[Dict[str, Any]],
+                predicate=None,
+        ) -> Optional[Dict[str, Any]]:
             if targetObj is None:
                 return None
 
@@ -2295,11 +2318,11 @@ class ProjectService:
             for ref in refs:
                 obj = ref["object"]
 
+                if predicate is not None and not predicate(obj):
+                    continue
+
                 if obj is targetObj:
                     return ref
-
-                if className(obj) != targetClass:
-                    continue
 
                 objId = getObjId(obj)
                 if targetObjId is not None and objId is not None and str(objId) == str(targetObjId):
@@ -2312,6 +2335,9 @@ class ProjectService:
                 objTsIds = getTsIds(obj)
                 if targetTsIds and objTsIds and targetTsIds == objTsIds:
                     return ref
+
+                if className(obj) != targetClass:
+                    continue
 
             return None
 
@@ -2352,13 +2378,14 @@ class ProjectService:
             links["tomogram"] = buildLink(outputObj, rootSource)
             summaries["tomogram"] = buildSummary(outputObj, outputTsIds)
 
+
         elif isCtfTomoSeriesSet(outputObj):
             links["ctf"] = buildLink(outputObj, rootSource)
             summaries["ctf"] = buildSummary(outputObj, outputTsIds)
 
             tiltSeries = safeCall(outputObj, "getSetOfTiltSeries", None)
-            if tiltSeries is not None:
-                tiltRef = findInputRefForObject(tiltSeries, inputRefs)
+            if tiltSeries is not None and isTiltSeriesSet(tiltSeries):
+                tiltRef = findInputRefForObject(tiltSeries, localRefs, isTiltSeriesSet)
                 links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
                 summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
 
@@ -2374,13 +2401,14 @@ class ProjectService:
                 summaries["ctf"] = buildSummary(ctfSet, outputTsIds)
 
                 tiltSeries = safeCall(ctfSet, "getSetOfTiltSeries", None)
-                if tiltSeries is not None and links["tiltSeries"] is None:
+                if tiltSeries is not None and links["tiltSeries"] is None and isTiltSeriesSet(tiltSeries):
                     ctfInputRefs = getProtocolInputRefsById(ctfRef.get("protocolId"))
                     tiltRef = (
-                            findInputRefForObject(tiltSeries, ctfInputRefs)
-                            or findInputRefForObject(tiltSeries, inputRefs)
+                            findInputRefForObject(tiltSeries, ctfInputRefs, isTiltSeriesSet)
+                            or findInputRefForObject(tiltSeries, inputRefs, isTiltSeriesSet)
                     )
                     links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
+                    summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
 
         if outputTsIds and links["tiltSeries"] is None:
             tiltRef = findInputRef(isTiltSeriesSet, outputTsIds)
