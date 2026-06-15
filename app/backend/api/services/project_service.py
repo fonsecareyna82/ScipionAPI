@@ -2115,6 +2115,238 @@ class ProjectService:
         # buildProtocolOutputThumbnailUrl
         return f"/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail"
 
+    def getIntegratedAnalyzeContextService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol {protocolId} not found: {e}",
+            )
+
+        outputObj = getattr(protocol, outputName, None)
+        if outputObj is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol {protocolId}",
+            )
+
+        def className(obj: Any) -> str:
+            try:
+                return obj.getClassName()
+            except Exception:
+                return obj.__class__.__name__ if obj is not None else ""
+
+        def normalizedClassName(obj: Any) -> str:
+            return className(obj).replace(" ", "").lower()
+
+        def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
+            try:
+                method = getattr(obj, methodName, None)
+                if method is None:
+                    return default
+                return method()
+            except Exception:
+                return default
+
+        def safeList(value: Any) -> List[Any]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return list(value)
+            return [value]
+
+        def getTsIds(obj: Any) -> Set[str]:
+            values = safeCall(obj, "getTSIds", [])
+            return {str(v) for v in safeList(values) if v is not None and str(v)}
+
+        def getObjId(obj: Any) -> Optional[Any]:
+            return safeCall(obj, "getObjId", None)
+
+        def isTiltSeriesSet(obj: Any) -> bool:
+            name = normalizedClassName(obj)
+            return "setoftiltseries" in name and "setoftiltseriesm" not in name
+
+        def isTomogramSet(obj: Any) -> bool:
+            return "setoftomograms" in normalizedClassName(obj)
+
+        def isCoordinates3dSet(obj: Any) -> bool:
+            return "setofcoordinates3d" in normalizedClassName(obj)
+
+        def isCtfTomoSeriesSet(obj: Any) -> bool:
+            return "setofctftomoseries" in normalizedClassName(obj)
+
+        def buildLink(
+                obj: Any,
+                source: Optional[Dict[str, Any]] = None,
+                statusValue: str = "available",
+                label: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            source = source or {}
+            return {
+                "protocolId": source.get("protocolId"),
+                "outputName": source.get("outputName"),
+                "itemId": getObjId(obj),
+                "label": label or source.get("label") or className(obj),
+                "status": statusValue,
+            }
+
+        def buildSummary(obj: Any, tsIds: Optional[Set[str]] = None) -> Dict[str, Any]:
+            summary = {
+                "objectClass": className(obj),
+                "objectId": getObjId(obj),
+                "size": safeCall(obj, "getSize", None),
+                "tsIds": sorted(tsIds if tsIds is not None else getTsIds(obj)),
+                "samplingRate": safeCall(obj, "getSamplingRate", None),
+                "dimensions": safeCall(obj, "getDimensions", safeCall(obj, "getDim", None)),
+                "fileName": safeCall(obj, "getFileName", None),
+            }
+
+            boxSize = safeCall(obj, "getBoxSize", None)
+            if boxSize is not None:
+                summary["boxSize"] = boxSize
+
+            ctfCorrected = safeCall(obj, "ctfCorrected", None)
+            if ctfCorrected is not None:
+                summary["ctfCorrected"] = ctfCorrected
+
+            return self._safeScipionValue(summary)
+
+        inputRefs: List[Dict[str, Any]] = []
+
+        for inputName, pointer in protocol.iterInputAttributes():
+            try:
+                inputObj = pointer.get() if pointer else None
+            except Exception:
+                inputObj = None
+
+            if inputObj is None:
+                continue
+
+            try:
+                inputProtocolId = pointer.getObjValue().getObjId()
+            except Exception:
+                inputProtocolId = None
+
+            try:
+                inputOutputName = pointer.getExtended()
+            except Exception:
+                inputOutputName = None
+
+            inputRefs.append({
+                "name": inputName,
+                "object": inputObj,
+                "protocolId": inputProtocolId,
+                "outputName": inputOutputName,
+                "label": inputName,
+            })
+
+        def findInputRef(predicate, tsIds: Optional[Set[str]] = None) -> Optional[Dict[str, Any]]:
+            for ref in inputRefs:
+                obj = ref["object"]
+                if not predicate(obj):
+                    continue
+
+                if tsIds:
+                    candidateTsIds = getTsIds(obj)
+                    if candidateTsIds and not candidateTsIds.intersection(tsIds):
+                        continue
+
+                return ref
+
+            return None
+
+        links = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        summaries = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+
+        rootSource = {
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "label": outputName,
+        }
+
+        outputTsIds = getTsIds(outputObj)
+
+        if isCoordinates3dSet(outputObj):
+            links["coordinates3d"] = buildLink(outputObj, rootSource)
+            summaries["coordinates3d"] = buildSummary(outputObj, outputTsIds)
+
+            tomograms = safeCall(outputObj, "getPrecedents", None)
+            if tomograms is not None:
+                tomoTsIds = outputTsIds or getTsIds(tomograms)
+                links["tomogram"] = buildLink(tomograms, statusValue="inferred")
+                summaries["tomogram"] = buildSummary(tomograms, tomoTsIds)
+                outputTsIds = tomoTsIds
+
+        elif isTomogramSet(outputObj):
+            links["tomogram"] = buildLink(outputObj, rootSource)
+            summaries["tomogram"] = buildSummary(outputObj, outputTsIds)
+
+        elif isCtfTomoSeriesSet(outputObj):
+            links["ctf"] = buildLink(outputObj, rootSource)
+            summaries["ctf"] = buildSummary(outputObj, outputTsIds)
+
+            tiltSeries = safeCall(outputObj, "getSetOfTiltSeries", None)
+            if tiltSeries is not None:
+                links["tiltSeries"] = buildLink(tiltSeries, statusValue="inferred")
+                summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+
+        elif isTiltSeriesSet(outputObj):
+            links["tiltSeries"] = buildLink(outputObj, rootSource)
+            summaries["tiltSeries"] = buildSummary(outputObj, outputTsIds)
+
+        if outputTsIds and links["ctf"] is None:
+            ctfRef = findInputRef(isCtfTomoSeriesSet, outputTsIds)
+            if ctfRef is not None:
+                ctfSet = ctfRef["object"]
+                links["ctf"] = buildLink(ctfSet, ctfRef)
+                summaries["ctf"] = buildSummary(ctfSet, outputTsIds)
+
+                tiltSeries = safeCall(ctfSet, "getSetOfTiltSeries", None)
+                if tiltSeries is not None and links["tiltSeries"] is None:
+                    links["tiltSeries"] = buildLink(tiltSeries, statusValue="inferred")
+                    summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+
+        if outputTsIds and links["tiltSeries"] is None:
+            tiltRef = findInputRef(isTiltSeriesSet, outputTsIds)
+            if tiltRef is not None:
+                tiltSeries = tiltRef["object"]
+                links["tiltSeries"] = buildLink(tiltSeries, tiltRef)
+                summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+
+        return {
+            "root": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "outputClass": className(outputObj),
+            },
+            "links": links,
+            "summaries": summaries,
+        }
+
+
     def buildProtocolOutputThumbnail(
             self,
             protocolId: int,
