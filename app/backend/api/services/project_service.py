@@ -2167,12 +2167,52 @@ class ProjectService:
                 return list(value)
             return [value]
 
+        def firstNonEmpty(*values: Any) -> Optional[Any]:
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value)
+                if text:
+                    return value
+            return None
+
         def getTsIds(obj: Any) -> Set[str]:
             values = safeCall(obj, "getTSIds", [])
             return {str(v) for v in safeList(values) if v is not None and str(v)}
 
         def getObjId(obj: Any) -> Optional[Any]:
             return safeCall(obj, "getObjId", None)
+
+        def iterItems(obj: Any) -> List[Any]:
+            if obj is None:
+                return []
+
+            try:
+                return list(obj.iterItems())
+            except Exception:
+                pass
+
+            try:
+                return list(obj)
+            except Exception:
+                return []
+
+        def getItemTsId(item: Any) -> Optional[Any]:
+            return firstNonEmpty(
+                safeCall(item, "getTsId", None),
+                safeCall(item, "getTSId", None),
+                safeCall(item, "getTomoId", None),
+                safeCall(item, "getTomogramId", None),
+            )
+
+        def getItemLabel(item: Any, fallback: Any = None) -> Optional[Any]:
+            return firstNonEmpty(
+                safeCall(item, "getTsId", None),
+                safeCall(item, "getTSId", None),
+                safeCall(item, "getObjLabel", None),
+                safeCall(item, "getFileName", None),
+                fallback,
+            )
 
         def isTiltSeriesSet(obj: Any) -> bool:
             name = normalizedClassName(obj)
@@ -2353,6 +2393,75 @@ class ProjectService:
             "tomogram": None,
             "coordinates3d": None,
         }
+        relationObjects = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        relationsByKey: Dict[str, Dict[str, Any]] = {}
+
+        def upsertRelation(keyValue: Any, **values: Any) -> None:
+            key = str(keyValue) if keyValue is not None else ""
+            if not key:
+                return
+
+            relation = relationsByKey.setdefault(key, {
+                "key": key,
+                "label": key,
+            })
+
+            for name, value in values.items():
+                if value is not None:
+                    relation[name] = value
+
+        def addSetRelations(kind: str, obj: Any) -> None:
+            items = iterItems(obj)
+
+            if not items:
+                for tsId in sorted(getTsIds(obj)):
+                    if kind == "tiltSeries":
+                        upsertRelation(tsId, tiltSeriesId=tsId, label=tsId)
+                    elif kind == "ctf":
+                        upsertRelation(tsId, ctfSeriesId=tsId, tiltSeriesId=tsId, label=tsId)
+                    elif kind == "tomogram":
+                        upsertRelation(tsId, tomogramId=tsId, label=tsId)
+                    elif kind == "coordinates3d":
+                        upsertRelation(tsId, coordinatesTomogramId=tsId, label=tsId)
+                return
+
+            for index, item in enumerate(items):
+                tsId = getItemTsId(item)
+                objId = getObjId(item)
+                key = firstNonEmpty(tsId, objId, index)
+                label = getItemLabel(item, key)
+
+                if kind == "tiltSeries":
+                    upsertRelation(
+                        key,
+                        tiltSeriesId=firstNonEmpty(tsId, objId, index),
+                        label=label,
+                    )
+                elif kind == "ctf":
+                    upsertRelation(
+                        key,
+                        ctfSeriesId=firstNonEmpty(tsId, objId, index),
+                        tiltSeriesId=tsId,
+                        label=label,
+                    )
+                elif kind == "tomogram":
+                    upsertRelation(
+                        key,
+                        tomogramId=firstNonEmpty(tsId, objId, index),
+                        tomogramVolumeId=index,
+                        label=label,
+                    )
+                elif kind == "coordinates3d":
+                    upsertRelation(
+                        key,
+                        coordinatesTomogramId=firstNonEmpty(tsId, objId, index),
+                        label=label,
+                    )
 
         rootSource = {
             "protocolId": protocolId,
@@ -2365,6 +2474,7 @@ class ProjectService:
         if isCoordinates3dSet(outputObj):
             links["coordinates3d"] = buildLink(outputObj, rootSource)
             summaries["coordinates3d"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["coordinates3d"] = outputObj
 
             tomograms = safeCall(outputObj, "getPrecedents", None)
             if tomograms is not None:
@@ -2372,26 +2482,30 @@ class ProjectService:
                 tomogramRef = findInputRefForObject(tomograms, inputRefs)
                 links["tomogram"] = buildLink(tomograms, tomogramRef, statusValue="inferred")
                 summaries["tomogram"] = buildSummary(tomograms, tomoTsIds)
+                relationObjects["tomogram"] = tomograms
                 outputTsIds = tomoTsIds
 
         elif isTomogramSet(outputObj):
             links["tomogram"] = buildLink(outputObj, rootSource)
             summaries["tomogram"] = buildSummary(outputObj, outputTsIds)
-
+            relationObjects["tomogram"] = outputObj
 
         elif isCtfTomoSeriesSet(outputObj):
             links["ctf"] = buildLink(outputObj, rootSource)
             summaries["ctf"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["ctf"] = outputObj
 
             tiltSeries = safeCall(outputObj, "getSetOfTiltSeries", None)
             if tiltSeries is not None and isTiltSeriesSet(tiltSeries):
                 tiltRef = findInputRefForObject(tiltSeries, localRefs, isTiltSeriesSet)
                 links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
                 summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                relationObjects["tiltSeries"] = tiltSeries
 
         elif isTiltSeriesSet(outputObj):
             links["tiltSeries"] = buildLink(outputObj, rootSource)
             summaries["tiltSeries"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["tiltSeries"] = outputObj
 
         if outputTsIds and links["ctf"] is None:
             ctfRef = findInputRef(isCtfTomoSeriesSet, outputTsIds)
@@ -2399,6 +2513,7 @@ class ProjectService:
                 ctfSet = ctfRef["object"]
                 links["ctf"] = buildLink(ctfSet, ctfRef)
                 summaries["ctf"] = buildSummary(ctfSet, outputTsIds)
+                relationObjects["ctf"] = ctfSet
 
                 tiltSeries = safeCall(ctfSet, "getSetOfTiltSeries", None)
                 if tiltSeries is not None and links["tiltSeries"] is None and isTiltSeriesSet(tiltSeries):
@@ -2409,6 +2524,7 @@ class ProjectService:
                     )
                     links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
                     summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                    relationObjects["tiltSeries"] = tiltSeries
 
         if outputTsIds and links["tiltSeries"] is None:
             tiltRef = findInputRef(isTiltSeriesSet, outputTsIds)
@@ -2416,6 +2532,20 @@ class ProjectService:
                 tiltSeries = tiltRef["object"]
                 links["tiltSeries"] = buildLink(tiltSeries, tiltRef)
                 summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                relationObjects["tiltSeries"] = tiltSeries
+
+        addSetRelations("tiltSeries", relationObjects["tiltSeries"])
+        addSetRelations("ctf", relationObjects["ctf"])
+        addSetRelations("tomogram", relationObjects["tomogram"])
+
+        if relationObjects["tomogram"] is not None:
+            addSetRelations("coordinates3d", relationObjects["tomogram"])
+        else:
+            addSetRelations("coordinates3d", relationObjects["coordinates3d"])
+
+        relations = self._safeScipionValue({
+            "items": list(relationsByKey.values()),
+        })
 
         return {
             "root": {
@@ -2426,8 +2556,8 @@ class ProjectService:
             },
             "links": links,
             "summaries": summaries,
+            "relations": relations,
         }
-
 
     def buildProtocolOutputThumbnail(
             self,
