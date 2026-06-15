@@ -27,9 +27,12 @@
 from pathlib import Path
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 import numpy as np
 from pwem.emlib.image.image_readers import ImageReadersRegistry
+
+
+MRC_LIKE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".rec", ".ali"}
 
 
 @dataclass(frozen=True)
@@ -44,29 +47,94 @@ def buildVolumeSignature(p: Path) -> VolumeSignature:
     return VolumeSignature(str(p), st.st_mtime_ns, st.st_size)
 
 
-@lru_cache(maxsize=8)
+def _normalizeVolumeArray(data: Any) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.ndim not in (2, 3):
+        arr = np.squeeze(arr)
+        if arr.ndim not in (2, 3):
+            raise ValueError(f"Unsupported dimensionality: {arr.shape}")
+
+    if arr.ndim == 2:
+        arr = arr[None, ...]
+    elif arr.ndim != 3:
+        raise ValueError(f"Unsupported volume shape {arr.shape}")
+
+    return arr.astype(np.float32, copy=False)
+
+
+def _extractMrcVoxelSize(mrc: Any) -> Dict[str, Any]:
+    voxelSize = getattr(mrc, "voxel_size", None)
+    if voxelSize is None:
+        return {}
+
+    try:
+        values = (float(voxelSize.x), float(voxelSize.y), float(voxelSize.z))
+    except Exception:
+        try:
+            rawValues = list(voxelSize)
+            if len(rawValues) < 3:
+                return {}
+            values = (float(rawValues[0]), float(rawValues[1]), float(rawValues[2]))
+        except Exception:
+            return {}
+
+    if not all(np.isfinite(v) and v > 0 for v in values):
+        return {}
+
+    return {"voxelSize": values, "samplingRate": values}
+
+
+def _openMrcMemmap(path: str) -> Optional[Tuple[np.ndarray, Dict[str, Any], Any]]:
+    try:
+        import mrcfile
+    except Exception:
+        return None
+
+    try:
+        mrc = mrcfile.mmap(path, mode="r", permissive=True)
+        arr = _normalizeVolumeArray(mrc.data)
+        props = _extractMrcVoxelSize(mrc)
+        return arr, props, mrc
+    except Exception:
+        try:
+            mrc.close()
+        except Exception:
+            pass
+        return None
+
+
+@lru_cache(maxsize=4)
+def _readMrcVolumeMapped(sig: VolumeSignature) -> Tuple[np.ndarray, Dict[str, Any], Any]:
+    mapped = _openMrcMemmap(sig.path)
+    if mapped is None:
+        raise RuntimeError("Could not open volume as an MRC memory map")
+    return mapped
+
+
+@lru_cache(maxsize=2)
 def _readVolumeCached(sig: VolumeSignature) -> Tuple[np.ndarray, Dict[str, Any]]:
     imgStk = ImageReadersRegistry.open(sig.path)
-    data = np.asarray(imgStk.getImages())
-    if data.ndim not in (2, 3):
-        data = np.squeeze(data)
-        if data.ndim not in (2, 3):
-            raise ValueError(f"Unsupported dimensionality: {data.shape}")
+    data = _normalizeVolumeArray(imgStk.getImages())
     try:
         props = imgStk.getProperties() or {}
     except Exception:
         props = {}
-    return np.asarray(data, dtype=np.float32), props
+    return data, props
 
 
 def readVolumeArray3d(volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     p = Path(volumePath)
     if not p.exists():
         raise FileNotFoundError(volumePath)
+
     sig = buildVolumeSignature(p)
+
+    if p.suffix.lower() in MRC_LIKE_EXTENSIONS:
+        try:
+            arr, props, _mrcHandle = _readMrcVolumeMapped(sig)
+            return arr, props
+        except Exception:
+            pass
+
     arr, props = _readVolumeCached(sig)
-    if arr.ndim == 2:
-        arr = arr[None, ...]  # (1, Y, X)
-    elif arr.ndim != 3:
-        raise ValueError(f"Unsupported volume shape {arr.shape}")
-    return arr.astype(np.float32, copy=False), props
+    return arr, props

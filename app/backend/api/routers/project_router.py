@@ -19,7 +19,12 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.schemas.protocols_schema import ExportProtocolsRequest, RemoteFileWriteRequest
+from app.backend.api.schemas.protocols_schema import (
+    ExportProtocolsRequest,
+    RemoteFileWriteRequest,
+    WorkflowExportRequest,
+    WorkflowImportRequest,
+)
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
 from app.backend.database import getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
@@ -1248,6 +1253,89 @@ def exportProtocols(
             detail=f"Failed to export protocols: {e}",
         )
 
+
+@router.post(
+    "/{projectId}/protocols/export-workflow",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def exportWorkflowProtocols(
+    projectId: int,
+    payload: WorkflowExportRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        return service.exportWorkflowProtocolsService(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in exportWorkflowProtocols: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to export workflow protocols: {e}",
+        )
+
+
+@router.post(
+    "/{projectId}/protocols/import-workflow",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def importWorkflowProtocols(
+    projectId: int,
+    payload: WorkflowImportRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=True,
+        checkPid=False,
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        return service.importWorkflowProtocolsService(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in importWorkflowProtocols: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to import workflow protocols: {e}",
+        )
 
 @router.post(
     "/{projectId}/protocols/{protocolId}/fs/write",

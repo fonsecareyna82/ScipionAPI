@@ -87,3 +87,15 @@ class RemoteFileWriteRequest(BaseModel):
     content: str = ""
     mimeType: Optional[str] = "application/json"
 
+
+class WorkflowExportRequest(BaseModel):
+    protocolIds: List[Union[int, str]] = Field(default_factory=list)
+    includeUpstream: bool = False
+
+
+class WorkflowImportRequest(BaseModel):
+    workflow: Any
+    mode: str = "append"
+    sourceProjectId: Optional[Union[int, str]] = None
+    sourceProjectName: Optional[str] = None
+
