@@ -2223,34 +2223,50 @@ class ProjectService:
 
             return self._safeScipionValue(summary)
 
-        inputRefs: List[Dict[str, Any]] = []
+        def getProtocolInputRefs(protocolObj: Any) -> List[Dict[str, Any]]:
+            refs: List[Dict[str, Any]] = []
 
-        for inputName, pointer in protocol.iterInputAttributes():
+            for inputName, pointer in protocolObj.iterInputAttributes():
+                try:
+                    inputObj = pointer.get() if pointer else None
+                except Exception:
+                    inputObj = None
+
+                if inputObj is None:
+                    continue
+
+                try:
+                    inputProtocolId = pointer.getObjValue().getObjId()
+                except Exception:
+                    inputProtocolId = None
+
+                try:
+                    inputOutputName = pointer.getExtended()
+                except Exception:
+                    inputOutputName = None
+
+                refs.append({
+                    "name": inputName,
+                    "object": inputObj,
+                    "protocolId": inputProtocolId,
+                    "outputName": inputOutputName,
+                    "label": inputName,
+                })
+
+            return refs
+
+        def getProtocolInputRefsById(sourceProtocolId: Any) -> List[Dict[str, Any]]:
+            if sourceProtocolId is None:
+                return []
+
             try:
-                inputObj = pointer.get() if pointer else None
+                sourceProtocol = self.currentProject.getProtocol(int(sourceProtocolId))
             except Exception:
-                inputObj = None
+                return []
 
-            if inputObj is None:
-                continue
+            return getProtocolInputRefs(sourceProtocol)
 
-            try:
-                inputProtocolId = pointer.getObjValue().getObjId()
-            except Exception:
-                inputProtocolId = None
-
-            try:
-                inputOutputName = pointer.getExtended()
-            except Exception:
-                inputOutputName = None
-
-            inputRefs.append({
-                "name": inputName,
-                "object": inputObj,
-                "protocolId": inputProtocolId,
-                "outputName": inputOutputName,
-                "label": inputName,
-            })
+        inputRefs = getProtocolInputRefs(protocol)
 
         def findInputRef(predicate, tsIds: Optional[Set[str]] = None) -> Optional[Dict[str, Any]]:
             for ref in inputRefs:
@@ -2264,6 +2280,38 @@ class ProjectService:
                         continue
 
                 return ref
+
+            return None
+
+        def findInputRefForObject(targetObj: Any, refs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if targetObj is None:
+                return None
+
+            targetClass = className(targetObj)
+            targetObjId = getObjId(targetObj)
+            targetFileName = safeCall(targetObj, "getFileName", None)
+            targetTsIds = getTsIds(targetObj)
+
+            for ref in refs:
+                obj = ref["object"]
+
+                if obj is targetObj:
+                    return ref
+
+                if className(obj) != targetClass:
+                    continue
+
+                objId = getObjId(obj)
+                if targetObjId is not None and objId is not None and str(objId) == str(targetObjId):
+                    return ref
+
+                fileName = safeCall(obj, "getFileName", None)
+                if targetFileName and fileName and str(fileName) == str(targetFileName):
+                    return ref
+
+                objTsIds = getTsIds(obj)
+                if targetTsIds and objTsIds and targetTsIds == objTsIds:
+                    return ref
 
             return None
 
@@ -2295,7 +2343,8 @@ class ProjectService:
             tomograms = safeCall(outputObj, "getPrecedents", None)
             if tomograms is not None:
                 tomoTsIds = outputTsIds or getTsIds(tomograms)
-                links["tomogram"] = buildLink(tomograms, statusValue="inferred")
+                tomogramRef = findInputRefForObject(tomograms, inputRefs)
+                links["tomogram"] = buildLink(tomograms, tomogramRef, statusValue="inferred")
                 summaries["tomogram"] = buildSummary(tomograms, tomoTsIds)
                 outputTsIds = tomoTsIds
 
@@ -2309,7 +2358,8 @@ class ProjectService:
 
             tiltSeries = safeCall(outputObj, "getSetOfTiltSeries", None)
             if tiltSeries is not None:
-                links["tiltSeries"] = buildLink(tiltSeries, statusValue="inferred")
+                tiltRef = findInputRefForObject(tiltSeries, inputRefs)
+                links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
                 summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
 
         elif isTiltSeriesSet(outputObj):
@@ -2325,8 +2375,12 @@ class ProjectService:
 
                 tiltSeries = safeCall(ctfSet, "getSetOfTiltSeries", None)
                 if tiltSeries is not None and links["tiltSeries"] is None:
-                    links["tiltSeries"] = buildLink(tiltSeries, statusValue="inferred")
-                    summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                    ctfInputRefs = getProtocolInputRefsById(ctfRef.get("protocolId"))
+                    tiltRef = (
+                            findInputRefForObject(tiltSeries, ctfInputRefs)
+                            or findInputRefForObject(tiltSeries, inputRefs)
+                    )
+                    links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
 
         if outputTsIds and links["tiltSeries"] is None:
             tiltRef = findInputRef(isTiltSeriesSet, outputTsIds)
