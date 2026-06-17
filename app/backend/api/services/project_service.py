@@ -2227,6 +2227,37 @@ class ProjectService:
         def isCtfTomoSeriesSet(obj: Any) -> bool:
             return "setofctftomoseries" in normalizedClassName(obj)
 
+        def getFirstIteratorItem(value: Any) -> Any:
+            if value is None:
+                return None
+
+            try:
+                iterator = value.iterItems() if hasattr(value, "iterItems") else iter(value)
+                return next(iterator, None)
+            except Exception:
+                return None
+
+        def getCoordinates3dTomograms(coordsSet: Any) -> Any:
+            for methodName in ("getTomograms", "getVolumes", "getPrecedents"):
+                tomograms = safeCall(coordsSet, methodName, None)
+                if tomograms is not None and isTomogramSet(tomograms):
+                    return tomograms
+
+            for methodName in ("iterTomograms", "iterVolumes"):
+                tomogramsIter = safeCall(coordsSet, methodName, None)
+                firstTomogram = getFirstIteratorItem(tomogramsIter)
+                if firstTomogram is None:
+                    continue
+
+                parent = safeCall(firstTomogram, "getObjParent", None)
+                if parent is None:
+                    parent = getattr(firstTomogram, "_objParent", None)
+
+                if parent is not None and isTomogramSet(parent):
+                    return parent
+
+            return None
+
         def buildLink(
                 obj: Any,
                 source: Optional[Dict[str, Any]] = None,
@@ -2476,10 +2507,10 @@ class ProjectService:
             summaries["coordinates3d"] = buildSummary(outputObj, outputTsIds)
             relationObjects["coordinates3d"] = outputObj
 
-            tomograms = safeCall(outputObj, "getPrecedents", None)
+            tomograms = getCoordinates3dTomograms(outputObj)
             if tomograms is not None:
                 tomoTsIds = outputTsIds or getTsIds(tomograms)
-                tomogramRef = findInputRefForObject(tomograms, inputRefs)
+                tomogramRef = findInputRefForObject(tomograms, localRefs, isTomogramSet)
                 links["tomogram"] = buildLink(tomograms, tomogramRef, statusValue="inferred")
                 summaries["tomogram"] = buildSummary(tomograms, tomoTsIds)
                 relationObjects["tomogram"] = tomograms
