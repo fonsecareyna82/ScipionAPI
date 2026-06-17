@@ -3331,6 +3331,9 @@ class ProjectService:
 
         return protocol, errorList
 
+    def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
+        return mapper.listProtocolSteps(projectId, protocolId)
+
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
         """
         Save, validate, and execute a protocol action.
@@ -3405,6 +3408,13 @@ class ProjectService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=errors,
             )
+
+        self.syncProjectProtocolsAndDependencies(
+            mapper,
+            projectId,
+            refresh=True,
+            checkPid=False,
+        )
 
         try:
             if executeMode == "schedule":
