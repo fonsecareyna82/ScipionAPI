@@ -1250,6 +1250,40 @@ class PostgresqlFlatMapper(Mapper):
             (projectId, str(protocolId)),
         )
 
+    def getProjectProtocolStepsByProtocolId(self, projectId: int) -> Dict[str, List[Dict[str, Any]]]:
+        rows = self.db.fetchAll(
+            """
+            SELECT
+                "protocolId",
+                "stepIndex" AS "index",
+                name,
+                status,
+                prerequisites,
+                args,
+                "initTime",
+                "endTime",
+                "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "updatedAt"
+              FROM protocol_steps
+             WHERE "projectId" = %s
+             ORDER BY "protocolId", "stepIndex" ASC
+            """,
+            (projectId,),
+        )
+
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            protocolId = str(row["protocolId"])
+            step = dict(row)
+            step.pop("protocolId", None)
+            result.setdefault(protocolId, []).append(step)
+
+        return result
+
     # -----------------------------
     # Settings Methods
     # -----------------------------
