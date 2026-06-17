@@ -27,3 +27,4 @@ from app.backend.models.user_model import User  # noqa: F401
 from app.backend.models.project_model import Project  # noqa: F401
 from app.backend.models.protocol_model import Protocol  # noqa: F401
 from app.backend.models.settings_models import *  # noqa: F401
+from app.backend.models.protocol_step_model import ProtocolStep  # noqa: F401
