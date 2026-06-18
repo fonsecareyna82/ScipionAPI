@@ -62,7 +62,15 @@ from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pyworkflow.object import PointerList, Pointer, CsvList
-from pyworkflow.protocol import MODE_RESUME, MODE_RESTART, STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED
+from pyworkflow.protocol import (
+    MODE_RESUME,
+    MODE_RESTART,
+    STATUS_FINISHED,
+    STATUS_LAUNCHED,
+    STATUS_NEW,
+    STATUS_RUNNING,
+    STATUS_SCHEDULED,
+)
 from pyworkflow.template import TemplateList
 
 try:
@@ -3333,6 +3341,115 @@ class ProjectService:
 
     def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
         return mapper.listProtocolSteps(projectId, protocolId)
+
+    def updateProtocolStepStatusService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            stepIndex: int,
+            stepStatus: str,
+    ):
+        statusMap = {
+            "new": STATUS_NEW,
+            "finished": STATUS_FINISHED,
+        }
+
+        normalizedStatus = str(stepStatus or "").strip().lower()
+        if normalizedStatus not in statusMap:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid step status. Allowed values: new, finished",
+            )
+
+        targetStatus = statusMap[normalizedStatus]
+
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            protocol = None
+
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found: {protocolId}",
+            )
+
+        try:
+            steps = protocol.loadSteps() or []
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load protocol steps: {e}",
+            )
+
+        targetStep = None
+        for fallbackIndex, step in enumerate(steps, start=1):
+            rawIndex = getattr(step, "_index", None) or fallbackIndex
+            try:
+                if int(rawIndex) == int(stepIndex):
+                    targetStep = step
+                    break
+            except Exception:
+                continue
+
+        if targetStep is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Step not found: {stepIndex}",
+            )
+
+        stepObjId = None
+        try:
+            stepObjId = targetStep.getObjId()
+        except Exception:
+            stepObjId = None
+
+        if stepObjId is None:
+            stepObjId = getattr(targetStep, "_objId", None)
+            try:
+                if hasattr(stepObjId, "get"):
+                    stepObjId = stepObjId.get()
+            except Exception:
+                pass
+
+        if stepObjId is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not resolve object id for step {stepIndex}",
+            )
+
+        try:
+            protocol._updateSteps(
+                lambda step: step.setStatus(targetStatus),
+                where="id='%s'" % stepObjId,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update Scipion step status: {e}",
+            )
+
+        row = mapper.updateProtocolStepStatus(
+            projectId=projectId,
+            protocolId=protocolId,
+            stepIndex=stepIndex,
+            stepStatus=targetStatus,
+        )
+
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol step not found in PostgreSQL: {stepIndex}",
+            )
+
+        return row
 
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
         """
