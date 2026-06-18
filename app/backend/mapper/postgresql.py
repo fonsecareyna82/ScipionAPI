@@ -1250,6 +1250,39 @@ class PostgresqlFlatMapper(Mapper):
             (projectId, str(protocolId)),
         )
 
+    def updateProtocolStepStatus(
+            self,
+            projectId: int,
+            protocolId: int,
+            stepIndex: int,
+            stepStatus: str,
+    ) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            """
+            UPDATE protocol_steps
+               SET status = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+               AND "stepIndex" = %s
+            RETURNING
+                "stepIndex" AS index,
+                name,
+                status,
+                prerequisites,
+                args,
+                "initTime",
+                "endTime",
+                "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "updatedAt"
+            """,
+            (stepStatus, projectId, str(protocolId), stepIndex),
+        )
+
     def getProjectProtocolStepsByProtocolId(self, projectId: int) -> Dict[str, List[Dict[str, Any]]]:
         rows = self.db.fetchAll(
             """
