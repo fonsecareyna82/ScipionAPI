@@ -45,6 +45,7 @@ class FakeSettingsService:
             "graphFocusModeEnabled": False,
             "protocolOutputThumbnailsEnabled": True,
             "workflowsAutoRefreshSec": 5,
+            "workflowViewMode": "treeTb"
         }
         self.instanceSettingsResult = {
             "enableCelery": False,
@@ -312,6 +313,7 @@ def test_PutUserSettingsDelegatesToService(settingsClient, fakeSettingsService):
         "graphFocusModeEnabled": True,
         "workflowsAutoRefreshSec": 10,
         "protocolOutputThumbnailsEnabled": True,
+        "workflowViewMode": "treeTb"
     }
 
 
