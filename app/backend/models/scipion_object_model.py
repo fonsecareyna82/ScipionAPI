@@ -46,7 +46,7 @@ class ScipionObjectType(Base):
     properties = relationship("ScipionObjectTypeProperty", back_populates="type", cascade="all, delete-orphan")
 
     __table_args__ = (
-        CheckConstraint("mapperKind IN ('tree', 'flat_set', 'scalar', 'pointer')", name="ck_scipion_object_types_mapper_kind"),
+        CheckConstraint('"mapperKind" IN (\'tree\', \'flat_set\', \'scalar\', \'pointer\')', name="ck_scipion_object_types_mapper_kind"),
         Index("idx_scipion_object_types_className", "className"),
         Index("idx_scipion_object_types_mapperKind", "mapperKind"),
         Index("idx_scipion_object_types_schema_gin", "schema", postgresql_using="gin"),
