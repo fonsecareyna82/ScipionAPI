@@ -55,6 +55,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if batchSize <= 0:
             raise ValueError("batchSize must be greater than zero")
 
+        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
+
         if registerType:
             self.registerObjectTypeFromObject(
                 scipionSet,
@@ -209,6 +211,36 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
              LIMIT %s OFFSET %s
             """,
             (setId, limit, offset),
+        )
+
+    def _resolveProtocolDbId(self, projectId: int, protocolDbId: int) -> int:
+        byDatabaseId = self.db.fetchOne(
+            """
+            SELECT id
+              FROM protocols
+             WHERE id = %s
+               AND "projectId" = %s
+            """,
+            (protocolDbId, projectId),
+        )
+        if byDatabaseId is not None:
+            return int(byDatabaseId["id"])
+
+        byScipionId = self.db.fetchOne(
+            """
+            SELECT id
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (projectId, str(protocolDbId)),
+        )
+        if byScipionId is not None:
+            return int(byScipionId["id"])
+
+        raise ValueError(
+            "Protocol %s was not found in PostgreSQL protocols table for project %s"
+            % (protocolDbId, projectId)
         )
 
     def _upsertSet(
