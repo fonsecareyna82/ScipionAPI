@@ -456,6 +456,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                         self._jsonParam(itemValues),
                     )
                 )
+
+                self._upsertNestedLogicalTablesForItem(
+                    setId=setId,
+                    parentTableId=tableId,
+                    parentItem=item,
+                    parentItemId=itemId,
+                    batchSize=batchSize,
+                )
+
             itemsCount += 1
 
             if len(rows) >= batchSize:
@@ -473,6 +482,132 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self._flushSetTableItems(tableRows)
 
         return itemsCount, maxItemId
+
+
+    def _upsertNestedLogicalTablesForItem(
+            self,
+            setId: int,
+            parentTableId: int,
+            parentItem: Any,
+            parentItemId: int,
+            batchSize: int,
+    ) -> None:
+        """
+        Persist child logical tables for complex Scipion set items.
+
+        First supported case:
+        - Class2D/Class3D-like items exposing iterItems()
+          -> ClassXXX_Objects table with the class members.
+        """
+        if not self._isClassLikeNestedItem(parentItem):
+            return
+
+        childIterator = iter(self._iterNestedItems(parentItem))
+        firstChild = self._nextOrNone(childIterator)
+        if firstChild is None:
+            return
+
+        childSchema = self._getItemSchema(firstChild)
+        childColumns = self._getSetColumns(childSchema)
+        childItemClassName = self._getItemClassName(firstChild, childSchema)
+
+        tableName = self._getNestedClassTableName(parentItemId)
+        tableAlias = self._getNestedClassTableAlias(tableName, childItemClassName)
+
+        childTableId = self._upsertSetTable(
+            setId=setId,
+            name=tableName,
+            alias=tableAlias,
+            tableKind="child",
+            parentTableId=parentTableId,
+            parentItemId=parentItemId,
+            itemClassName=childItemClassName,
+            properties={
+                "source": "postgresql",
+                "parentItemId": parentItemId,
+                "parentClassName": self._getClassName(parentItem),
+            },
+        )
+
+        self._upsertSetTableColumns(childTableId, childColumns)
+
+        self._upsertLogicalTableItems(
+            tableId=childTableId,
+            parentItemId=parentItemId,
+            firstItem=firstChild,
+            remainingItems=childIterator,
+            batchSize=batchSize,
+        )
+
+    def _isClassLikeNestedItem(self, item: Any) -> bool:
+        className = self._getClassName(item) or item.__class__.__name__
+        if not str(className).startswith("Class"):
+            return False
+
+        iterItems = getattr(item, "iterItems", None)
+        if callable(iterItems):
+            return True
+
+        return False
+
+    def _iterNestedItems(self, item: Any) -> Iterable[Any]:
+        iterItems = getattr(item, "iterItems", None)
+        if callable(iterItems):
+            try:
+                return iterItems(iterate=False)
+            except TypeError:
+                return iterItems()
+
+        return iter(())
+
+    def _getNestedClassTableName(self, parentItemId: int) -> str:
+        try:
+            return "Class%03d_Objects" % int(parentItemId)
+        except Exception:
+            return "Class%s_Objects" % str(parentItemId)
+
+    def _getNestedClassTableAlias(self, tableName: str, childItemClassName: str) -> str:
+        cleanClassName = str(childItemClassName or "Objects")
+        return tableName.replace("_Objects", "_%s" % cleanClassName)
+
+    def _upsertLogicalTableItems(
+            self,
+            tableId: int,
+            parentItemId: Optional[int],
+            firstItem: Any,
+            remainingItems: Iterator[Any],
+            batchSize: int,
+    ) -> int:
+        rows: List[Tuple[Any, ...]] = []
+        itemsCount = 0
+
+        for item in self._chainFirst(firstItem, remainingItems):
+            itemId = self._getSourceObjId(item)
+            if itemId is None:
+                continue
+
+            rows.append(
+                (
+                    tableId,
+                    itemId,
+                    parentItemId,
+                    self._getItemEnabled(item),
+                    self._getObjectLabel(item),
+                    self._getObjectComment(item),
+                    self._getObjectCreation(item),
+                    self._jsonParam(self._getItemValues(item)),
+                )
+            )
+            itemsCount += 1
+
+            if len(rows) >= batchSize:
+                self._flushSetTableItems(rows)
+                rows = []
+
+        if rows:
+            self._flushSetTableItems(rows)
+
+        return itemsCount
 
     def hasStoredSetTables(self, setId: int) -> bool:
         row = self.db.fetchOne(
