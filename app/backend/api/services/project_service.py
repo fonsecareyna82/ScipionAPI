@@ -2632,6 +2632,182 @@ class ProjectService:
             inlineImages=inlineImages,
         )
 
+    def registerOutput(
+            self,
+            projectId: int,
+            protocol: Any,
+            raiseOnError: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Persist all Scipion protocol outputs in PostgreSQL.
+
+        This method does not special-case concrete output classes. It decides
+        how to persist each output by object capabilities:
+
+        - Set-like Scipion outputs -> ScipionSetPostgresqlMapper
+        - Regular Scipion objects -> ScipionObjectPostgresqlMapper
+
+        Protocols are not stored here; only protocol outputs.
+        """
+        from app.backend.database import getMapper
+        from app.backend.mapper import ScipionObjectPostgresqlMapper, ScipionSetPostgresqlMapper
+
+        results: List[Dict[str, Any]] = []
+
+        mapper = getMapper()
+        try:
+            protocolDbId = self._resolveProtocolDbIdForOutputPersistence(
+                mapper.db,
+                projectId,
+                protocol,
+            )
+
+            objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+            setMapper = ScipionSetPostgresqlMapper(mapper.db)
+
+            for outputName, outputObj in protocol.iterOutputAttributes():
+                if outputObj is None:
+                    continue
+
+                try:
+                    if self._isScipionSetOutput(outputObj):
+                        result = setMapper.storeSet(
+                            projectId=projectId,
+                            protocolDbId=protocolDbId,
+                            outputName=outputName,
+                            scipionSet=outputObj,
+                        )
+                        result["mapperKind"] = "flat_set"
+
+                    elif self._isScipionObjectOutput(outputObj):
+                        result = objectMapper.storeObjectTree(
+                            projectId=projectId,
+                            protocolDbId=protocolDbId,
+                            outputName=outputName,
+                            scipionObj=outputObj,
+                            includeNestedProperties=True,
+                        )
+                        result["mapperKind"] = "tree"
+
+                    else:
+                        continue
+
+                    result["outputName"] = outputName
+                    result["outputClassName"] = self._getOutputClassName(outputObj)
+                    results.append(result)
+
+                except Exception as exc:
+                    if raiseOnError:
+                        raise
+
+                    logger.warning(
+                        "Could not persist Scipion output. projectId=%s protocolId=%s outputName=%s outputClass=%s error=%s",
+                        projectId,
+                        self._getScipionObjId(protocol),
+                        outputName,
+                        self._getOutputClassName(outputObj),
+                        exc,
+                        exc_info=True,
+                    )
+
+        finally:
+            mapper.db.close()
+
+        return results
+
+    def _resolveProtocolDbIdForOutputPersistence(self, db, projectId: int, protocol: Any) -> int:
+        scipionProtocolId = self._getScipionObjId(protocol)
+        if scipionProtocolId is None:
+            raise ValueError("Cannot persist Scipion outputs without protocol getObjId()/getId()")
+
+        row = db.fetchOne(
+            """
+            SELECT id
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (projectId, str(scipionProtocolId)),
+        )
+        if row is not None:
+            return int(row["id"])
+
+        row = db.fetchOne(
+            """
+            SELECT id
+              FROM protocols
+             WHERE id = %s
+               AND "projectId" = %s
+            """,
+            (scipionProtocolId, projectId),
+        )
+        if row is not None:
+            return int(row["id"])
+
+        raise ValueError(
+            "Protocol %s was not found in PostgreSQL protocols table for project %s"
+            % (scipionProtocolId, projectId)
+        )
+
+    def _isScipionSetOutput(self, outputObj: Any) -> bool:
+        className = self._getOutputClassName(outputObj)
+
+        if className.startswith("SetOf"):
+            return True
+
+        iterItems = getattr(outputObj, "iterItems", None)
+        if callable(iterItems):
+            return True
+
+        return False
+
+    def _isScipionObjectOutput(self, outputObj: Any) -> bool:
+        if outputObj is None:
+            return False
+
+        getClassName = getattr(outputObj, "getClassName", None)
+        if callable(getClassName):
+            return True
+
+        getAttributesToStore = getattr(outputObj, "getAttributesToStore", None)
+        if callable(getAttributesToStore):
+            return True
+
+        return False
+
+    def _getOutputClassName(self, outputObj: Any) -> str:
+        getClassName = getattr(outputObj, "getClassName", None)
+        if callable(getClassName):
+            try:
+                className = getClassName()
+                if className:
+                    return str(className)
+            except Exception:
+                pass
+
+        return outputObj.__class__.__name__ if outputObj is not None else ""
+
+    def _getScipionObjId(self, obj: Any) -> Optional[int]:
+        for getterName in ("getObjId", "getId"):
+            getter = getattr(obj, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = getter()
+            except Exception:
+                continue
+
+            if value is None:
+                continue
+
+            try:
+                return int(value)
+            except Exception:
+                continue
+
+        return None
+
     def _buildProtocolContext(self, projectId, protocol) -> dict:
         """
         Build the common context dictionary for a protocol,
