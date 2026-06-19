@@ -204,7 +204,7 @@ class PostgresqlDAO(IDAO):
 
     def fillTable(self, table, objectManager):
         tableName = table.getName()
-        if tableName != OBJECT_TABLE:
+        if tableName != OBJECT_TABLE and not self._useLogicalTables:
             return
 
         firstRow = self.getTableRow(tableName, 0)
@@ -460,19 +460,6 @@ class PostgresqlDAO(IDAO):
 
         for row in rows:
             yield row
-
-    def getTableRow(self, tableName, rowIndex):
-        rows = self._getRows(
-            start=max(0, int(rowIndex or 0)),
-            limit=1,
-            orderBy="id",
-            orderAsc=True,
-        )
-
-        if rows:
-            return rows[0]
-
-        return self._emptyRow()
 
     def composeImageFilename(self, row, values):
         if len(values) < 2:
