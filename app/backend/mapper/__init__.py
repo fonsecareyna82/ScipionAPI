@@ -24,3 +24,4 @@
 # *
 # ******************************************************************************
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper  # noqa: F401
+from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper  # noqa: F401
