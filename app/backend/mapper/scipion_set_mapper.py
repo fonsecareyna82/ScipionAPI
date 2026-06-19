@@ -2,7 +2,7 @@
 # *
 # * Authors:     Yunior C. Fonseca Reyna
 # *
-# * Unidad de  Bioinformatica of Centro Nacional de Bioinformatica , CSIC
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
 # *
 # * This program is free software; you can redistribute it and/or modify
 # * it under the terms of the GNU General Public License as published by
