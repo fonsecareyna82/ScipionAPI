@@ -142,6 +142,10 @@ class PostgresqlDAO(IDAO):
         self._columns: List[Dict[str, Any]] = []
         self._storedSet: Optional[Dict[str, Any]] = None
 
+        self._logicalTables: Dict[str, Dict[str, Any]] = {}
+        self._tableColumns: Dict[str, List[Dict[str, Any]]] = {}
+        self._useLogicalTables = False
+
     # -------------------------------------------------------------------------
     # metadata-viewer DAO API
     # -------------------------------------------------------------------------
@@ -163,6 +167,32 @@ class PostgresqlDAO(IDAO):
             return self._tables
 
         storedSet = self._requireStoredSet(limit=0, offset=0)
+        setId = int(storedSet["id"])
+
+        logicalTables = []
+        try:
+            logicalTables = self.setMapper.listStoredSetTables(setId) or []
+        except Exception:
+            logicalTables = []
+
+        if logicalTables:
+            self._useLogicalTables = True
+
+            for logicalTable in logicalTables:
+                tableName = logicalTable.get("name")
+                if not tableName:
+                    continue
+
+                table = Table(tableName)
+                table.setAlias(logicalTable.get("alias") or tableName)
+
+                self._tables[tableName] = table
+                self._logicalTables[tableName] = logicalTable
+                self._tableColumns[tableName] = self.setMapper.getStoredSetTableColumns(
+                    int(logicalTable["id"])
+                )
+
+            return self._tables
 
         table = Table(OBJECT_TABLE)
         table.setAlias(storedSet.get("setClassName") or self.outputName)
@@ -178,6 +208,7 @@ class PostgresqlDAO(IDAO):
             return
 
         firstRow = self.getTableRow(tableName, 0)
+        columns = self._getColumnsForTable(tableName)
 
         if "id" not in firstRow:
             table.setHasColumnId(False)
@@ -285,6 +316,16 @@ class PostgresqlDAO(IDAO):
         if table.getColumns():
             table.setSortingColumn(table.getColumns()[0].getName())
 
+    def _getColumnsForTable(self, tableName: str) -> List[Dict[str, Any]]:
+        if self._useLogicalTables:
+            return self._normalizeColumns(self._tableColumns.get(tableName) or [])
+        return self._columns
+
+    def _getLogicalTable(self, tableName: str) -> Optional[Dict[str, Any]]:
+        if not self._useLogicalTables:
+            return None
+        return self._logicalTables.get(tableName)
+
     def fillPage(self, page, actualColumn: str, orderAsc=True):
         table = page.getTable()
         tableName = table.getName()
@@ -316,10 +357,19 @@ class PostgresqlDAO(IDAO):
             idValue = row.get("id", firstRow + rowCount + 1)
             page.addRow((int(idValue), values))
 
-    def getTableRowCount(self, tableName):
-        if tableName not in self._tableCount:
-            self._tableCount[tableName] = self._getStoredSetItemsCount()
-        return self._tableCount[tableName]
+    def getTableRow(self, tableName, rowIndex):
+        rows = self._getRows(
+            tableName=tableName,
+            start=max(0, int(rowIndex or 0)),
+            limit=1,
+            orderBy="id",
+            orderAsc=True,
+        )
+
+        if rows:
+            return rows[0]
+
+        return self._emptyRow(tableName)
 
     def getSelectedRangeRowsIds(
             self,
@@ -392,9 +442,6 @@ class PostgresqlDAO(IDAO):
     # -------------------------------------------------------------------------
 
     def iterTable(self, tableName, **kwargs):
-        if tableName != OBJECT_TABLE:
-            return
-
         start = max(0, int(kwargs.get("start", 0) or 0))
         limit = kwargs.get("limit", None)
         limit = int(limit) if limit is not None else None
@@ -404,6 +451,7 @@ class PostgresqlDAO(IDAO):
         orderAsc = mode != "DESC"
 
         rows = self._getRows(
+            tableName=tableName,
             start=start,
             limit=limit,
             orderBy=orderBy,
@@ -501,6 +549,7 @@ class PostgresqlDAO(IDAO):
 
     def _getRows(
             self,
+            tableName: str,
             start: int,
             limit: Optional[int],
             orderBy: str,
@@ -508,19 +557,53 @@ class PostgresqlDAO(IDAO):
     ) -> List[Dict[str, Any]]:
         orderBy = str(orderBy or "id")
 
+        if self._useLogicalTables:
+            logicalTable = self._getLogicalTable(tableName)
+            if logicalTable is None:
+                return []
+
+            tableId = int(logicalTable["id"])
+            columns = self._getColumnsForTable(tableName)
+
+            canUsePagedRead = orderAsc and orderBy in ("id", "_objId", "SCIPION_OBJECT_ID")
+
+            if canUsePagedRead:
+                items = self.setMapper.getStoredSetTableItems(
+                    tableId=tableId,
+                    limit=limit,
+                    offset=start,
+                )
+                return [self._itemToRow(item, columns) for item in items]
+
+            items = self.setMapper.getStoredSetTableItems(
+                tableId=tableId,
+                limit=None,
+                offset=0,
+            )
+            rows = [self._itemToRow(item, columns) for item in items]
+            rows.sort(
+                key=lambda row: self._sortValue(row.get(orderBy)),
+                reverse=not orderAsc,
+            )
+
+            if limit is None:
+                return rows[start:]
+
+            return rows[start:start + limit]
+
         canUsePagedRead = orderAsc and orderBy in ("id", "_objId", "SCIPION_OBJECT_ID")
 
         if canUsePagedRead:
             storedSet = self._requireStoredSet(limit=limit, offset=start)
             items = storedSet.get("items") or []
             self._columns = self._normalizeColumns(storedSet.get("columns") or self._columns)
-            return [self._itemToRow(item) for item in items]
+            return [self._itemToRow(item, self._columns) for item in items]
 
         storedSet = self._requireStoredSet(limit=None, offset=0)
         items = storedSet.get("items") or []
         self._columns = self._normalizeColumns(storedSet.get("columns") or self._columns)
 
-        rows = [self._itemToRow(item) for item in items]
+        rows = [self._itemToRow(item, self._columns) for item in items]
         rows.sort(
             key=lambda row: self._sortValue(row.get(orderBy)),
             reverse=not orderAsc,
@@ -531,7 +614,11 @@ class PostgresqlDAO(IDAO):
 
         return rows[start:start + limit]
 
-    def _itemToRow(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _itemToRow(
+            self,
+            item: Dict[str, Any],
+            columns: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         values = item.get("values") or {}
         if not isinstance(values, dict):
             values = {}
@@ -545,7 +632,7 @@ class PostgresqlDAO(IDAO):
             "enabled": bool(item.get("enabled", True)),
         }
 
-        for column in self._columns:
+        for column in columns:
             label = column.get("labelProperty")
             if not label:
                 continue
@@ -558,18 +645,46 @@ class PostgresqlDAO(IDAO):
 
         return row
 
-    def _emptyRow(self) -> Dict[str, Any]:
+    def _emptyRow(self, tableName: str) -> Dict[str, Any]:
         row = {
             "id": 0,
             "enabled": True,
         }
 
-        for column in self._columns:
+        for column in self._getColumnsForTable(tableName):
             label = column.get("labelProperty")
             if label:
                 row[str(label)] = None
 
         return row
+
+    def getTableRowCount(self, tableName):
+        if tableName not in self._tableCount:
+            if self._useLogicalTables:
+                logicalTable = self._getLogicalTable(tableName)
+                if logicalTable is None:
+                    self._tableCount[tableName] = 0
+                else:
+                    self._tableCount[tableName] = self._getStoredSetTableItemsCount(
+                        int(logicalTable["id"])
+                    )
+            else:
+                self._tableCount[tableName] = self._getStoredSetItemsCount()
+
+        return self._tableCount[tableName]
+
+    def _getStoredSetTableItemsCount(self, tableId: int) -> int:
+        row = self.db.fetchOne(
+            """
+            SELECT COUNT(*) AS count
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+            """,
+            (tableId,),
+        )
+        if not row:
+            return 0
+        return int(row.get("count") or 0)
 
     # -------------------------------------------------------------------------
     # Metadata helpers
