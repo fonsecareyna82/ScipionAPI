@@ -23,7 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -38,8 +38,8 @@ class ScipionObjectType(Base):
     className = Column(Text, nullable=False, unique=True)
     moduleName = Column(Text, nullable=True)
     baseClassName = Column(Text, nullable=True)
-    mapperKind = Column(Text, nullable=False, default="tree")
-    classSchema = Column("schema", JSONB, nullable=False, server_default="{}")
+    mapperKind = Column(Text, nullable=False, default="tree", server_default="tree")
+    classSchema = Column("schema", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
@@ -61,9 +61,9 @@ class ScipionObjectTypeProperty(Base):
     propertyPath = Column(Text, nullable=False)
     className = Column(Text, nullable=True)
     valueKind = Column(Text, nullable=True)
-    isPointer = Column(Boolean, nullable=False, default=False)
-    isNested = Column(Boolean, nullable=False, default=False)
-    propertySchema = Column("schema", JSONB, nullable=False, server_default="{}")
+    isPointer = Column(Boolean, nullable=False, default=False, server_default="false")
+    isNested = Column(Boolean, nullable=False, default=False, server_default="false")
+    propertySchema = Column("schema", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
@@ -91,7 +91,7 @@ class ScipionObject(Base):
     label = Column(Text, nullable=True)
     comment = Column(Text, nullable=True)
     creation = Column(DateTime(timezone=True), nullable=True)
-    objectMetadata = Column("metadata", JSONB, nullable=False, server_default="{}")
+    objectMetadata = Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
@@ -119,7 +119,7 @@ class ScipionObjectRelation(Base):
     name = Column(Text, nullable=False)
     parentExtended = Column(Text, nullable=True)
     childExtended = Column(Text, nullable=True)
-    relationMetadata = Column("metadata", JSONB, nullable=False, server_default="{}")
+    relationMetadata = Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     creation = Column(DateTime(timezone=True), nullable=True)
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -141,7 +141,7 @@ class ScipionSet(Base):
     outputName = Column(Text, nullable=False)
     setClassName = Column(Text, nullable=False)
     itemClassName = Column(Text, nullable=False)
-    properties = Column(JSONB, nullable=False, server_default="{}")
+    properties = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
@@ -166,7 +166,7 @@ class ScipionSetColumn(Base):
     className = Column(Text, nullable=True)
     valueType = Column(Text, nullable=True)
     position = Column(Integer, nullable=False)
-    indexed = Column(Boolean, nullable=False, default=False)
+    indexed = Column(Boolean, nullable=False, default=False, server_default="false")
 
     set = relationship("ScipionSet", back_populates="columns")
 
@@ -199,11 +199,11 @@ class ScipionSetItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     setId = Column(Integer, ForeignKey("scipion_sets.id", ondelete="CASCADE"), nullable=False)
     scipionItemId = Column(Integer, nullable=False)
-    enabled = Column(Boolean, nullable=False, default=True)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
     label = Column(Text, nullable=True)
     comment = Column(Text, nullable=True)
     creation = Column(DateTime(timezone=True), nullable=True)
-    values = Column(JSONB, nullable=False, server_default="{}")
+    values = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
