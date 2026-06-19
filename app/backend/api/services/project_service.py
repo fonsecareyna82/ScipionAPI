@@ -1303,6 +1303,116 @@ class ProjectService:
 
         return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
+    def _loadPersistedOutputsByProtocolId(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        def toOptionalInt(value: Any) -> Optional[int]:
+            if value is None or value == "":
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+             WHERE s."projectId" = %s
+             ORDER BY p."protocolId", s."outputName"
+            """,
+            (projectId,),
+        )
+
+        for row in setRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("outputName") or "")
+            if not protocolId or not outputName:
+                continue
+
+            properties = row.get("properties") or {}
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "flat_set",
+                "setId": row.get("id"),
+                "rootObjectId": row.get("objectId"),
+                "className": row.get("setClassName"),
+                "itemClassName": row.get("itemClassName"),
+                "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
+                "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
+                "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                o.id,
+                o."scipionObjId",
+                o.name,
+                o.path,
+                o."className",
+                o.value,
+                o.label,
+                o.comment,
+                o.metadata,
+                o."createdAt",
+                o."updatedAt"
+              FROM scipion_objects o
+              JOIN protocols p
+                ON p.id = o."protocolDbId"
+             WHERE o."projectId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+             ORDER BY p."protocolId", o.path
+            """,
+            (projectId,),
+        )
+
+        for row in treeRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("path") or row.get("name") or "")
+            if not protocolId or not outputName:
+                continue
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "tree",
+                "rootObjectId": row.get("id"),
+                "scipionObjId": row.get("scipionObjId"),
+                "className": row.get("className"),
+                "value": row.get("value"),
+                "label": row.get("label"),
+                "comment": row.get("comment"),
+                "metadata": row.get("metadata") or {},
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        return result
+
     def buildProtocolsGraph(
             self,
             projectId: int,
@@ -1310,11 +1420,13 @@ class ProjectService:
             tags: Dict[str, List[str]],
             dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
             runMap: Optional[Dict[str, Any]] = None,
+            persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
         graphData: Dict[str, Any] = {}
         adjacency = dependencyMap or {}
         liveRuns = runMap or {}
+        persistedOutputsByProtocolId = persistedOutputsByProtocolId or {}
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -1371,6 +1483,7 @@ class ProjectService:
                 continue
 
             nodeId = str(rawNodeId)
+            persistedOutputsByName = persistedOutputsByProtocolId.get(nodeId, {})
             nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
             childrenIds = list(nodeDeps.get("children") or [])
             parentIds = list(nodeDeps.get("parents") or [])
@@ -1491,7 +1604,12 @@ class ProjectService:
                     inputs = []
 
                 try:
+                    seenOutputNames = set()
+
                     for key, attr in protocol.iterOutputAttributes():
+                        outputName = str(key)
+                        seenOutputNames.add(outputName)
+
                         outputItem = {}
                         outputItem["name"] = key
                         outputItem["paramClass"] = "PointerParam"
@@ -1509,7 +1627,27 @@ class ProjectService:
                             outputItem["value"] = ""
                             outputItem["parentId"] = None
 
+                        persistedOutput = persistedOutputsByName.get(outputName)
+                        outputItem["persisted"] = bool(persistedOutput)
+                        outputItem["persistence"] = persistedOutput
+
                         outputs.append(outputItem)
+
+                    for outputName, persistedOutput in persistedOutputsByName.items():
+                        if outputName in seenOutputNames:
+                            continue
+
+                        outputs.append({
+                            "name": outputName,
+                            "paramClass": "PointerParam",
+                            "pointerClass": persistedOutput.get("className") or "",
+                            "info": "",
+                            "value": "%s.%s" % (nodeId, outputName),
+                            "parentId": nodeId,
+                            "persisted": True,
+                            "persistence": persistedOutput,
+                        })
+
                 except Exception:
                     outputs = []
             else:
@@ -1690,12 +1828,27 @@ class ProjectService:
                         dbProj['id'],
                     )
 
+        persistedOutputsByProtocolId = {}
+        if mapper is not None:
+            try:
+                persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
+                    mapper,
+                    dbProj['id'],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load persisted Scipion outputs for graph. projectId=%s",
+                    dbProj['id'],
+                )
+                persistedOutputsByProtocolId = {}
+
         graphData = self.buildProtocolsGraph(
             dbProj['id'],
             protocolRows,
             tags,
             dependencyMap=dependencyMap,
             runMap=runMap,
+            persistedOutputsByProtocolId=persistedOutputsByProtocolId,
         )
 
         stats = projPath.stat()
