@@ -133,6 +133,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         limit: Optional[int] = None,
         offset: int = 0,
     ) -> Optional[Dict[str, Any]]:
+        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
+
         storedSet = self.db.fetchOne(
             """
             SELECT id, "projectId", "protocolDbId", "objectId", "outputName",
@@ -153,6 +155,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return storedSet
 
     def listProtocolStoredSets(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
+        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
+
         return self.db.fetchAll(
             """
             SELECT id, "projectId", "protocolDbId", "objectId", "outputName",
