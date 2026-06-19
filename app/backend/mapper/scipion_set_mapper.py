@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import psycopg2.extras
@@ -71,6 +72,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         itemClassName = self._getItemClassName(firstItem, itemSchema)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
+        syncTimestamp = datetime.now(timezone.utc).isoformat()
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -98,8 +100,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self._upsertSetColumns(setId, columns)
 
             itemsCount = 0
+            maxItemId = None
             if firstItem is not None:
-                itemsCount = self._upsertSetItems(
+                itemsCount, maxItemId = self._upsertSetItems(
                     setId=setId,
                     firstItem=firstItem,
                     remainingItems=itemIterator,
@@ -109,6 +112,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             finalProperties = dict(initialProperties)
             finalProperties["columnsCount"] = len(columns)
             finalProperties["itemsCount"] = itemsCount
+            finalProperties["maxItemId"] = maxItemId
+            finalProperties["lastSyncAt"] = syncTimestamp
+            finalProperties["incremental"] = True
             self._updateSetProperties(setId, finalProperties)
             self._upsertSetProperties(setId, finalProperties)
 
@@ -122,6 +128,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "itemClassName": itemClassName,
             "columnsCount": len(columns),
             "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+            "lastSyncAt": syncTimestamp,
         }
 
     def getStoredSet(
@@ -333,15 +341,17 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         firstItem: Any,
         remainingItems: Iterator[Any],
         batchSize: int,
-    ) -> int:
+    ) -> Tuple[int, Optional[int]]:
         rows: List[Tuple[Any, ...]] = []
         itemsCount = 0
+        maxItemId: Optional[int] = None
 
         for item in self._chainFirst(firstItem, remainingItems):
             itemId = self._getSourceObjId(item)
             if itemId is None:
                 raise ValueError("Cannot store a Scipion set item without getObjId()/getId()")
 
+            maxItemId = itemId if maxItemId is None else max(maxItemId, itemId)
             rows.append(
                 (
                     setId,
@@ -362,7 +372,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if rows:
             self._flushSetItems(rows)
 
-        return itemsCount
+        return itemsCount, maxItemId
 
     def _flushSetItems(self, rows: List[Tuple[Any, ...]]) -> None:
         psycopg2.extras.execute_values(
