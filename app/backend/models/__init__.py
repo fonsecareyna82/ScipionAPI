@@ -28,3 +28,13 @@ from app.backend.models.project_model import Project  # noqa: F401
 from app.backend.models.protocol_model import Protocol  # noqa: F401
 from app.backend.models.settings_models import *  # noqa: F401
 from app.backend.models.protocol_step_model import ProtocolStep  # noqa: F401
+from app.backend.models.scipion_object_model import (  # noqa: F401
+    ScipionObject,
+    ScipionObjectRelation,
+    ScipionObjectType,
+    ScipionObjectTypeProperty,
+    ScipionSet,
+    ScipionSetColumn,
+    ScipionSetItem,
+    ScipionSetProperty,
+)
