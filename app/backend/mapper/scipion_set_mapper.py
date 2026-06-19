@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -57,6 +58,42 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             raise ValueError("batchSize must be greater than zero")
 
         protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
+        syncTimestamp = datetime.now(timezone.utc).isoformat()
+        itemsCountHint = self._getSetItemsCountHint(scipionSet)
+        maxItemIdHint = self._getSetMaxItemIdHint(scipionSet)
+        sourceMTime = self._getSetSourceMTime(scipionSet)
+        existingSet = self._getExistingSet(projectId, protocolDbId, outputName)
+
+        if existingSet is not None:
+            existingProperties = self._normalizeProperties(existingSet.get("properties"))
+            if self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime):
+                skippedProperties = dict(existingProperties)
+                skippedProperties["lastCheckedAt"] = syncTimestamp
+                skippedProperties["lastSkipReason"] = "unchanged_signature"
+                skippedProperties["skippedLastSync"] = True
+                skippedProperties["incremental"] = True
+                if sourceMTime is not None:
+                    skippedProperties["sourceMTime"] = sourceMTime
+
+                with self.db.transaction():
+                    self._updateSetProperties(int(existingSet["id"]), skippedProperties)
+                    self._upsertSetProperties(int(existingSet["id"]), skippedProperties)
+
+                return {
+                    "setId": int(existingSet["id"]),
+                    "rootObjectId": existingSet.get("objectId"),
+                    "projectId": projectId,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "setClassName": existingSet.get("setClassName"),
+                    "itemClassName": existingSet.get("itemClassName"),
+                    "columnsCount": self._toOptionalInt(existingProperties.get("columnsCount")),
+                    "itemsCount": self._toOptionalInt(existingProperties.get("itemsCount")),
+                    "maxItemId": self._toOptionalInt(existingProperties.get("maxItemId")),
+                    "lastSyncAt": existingProperties.get("lastSyncAt"),
+                    "lastCheckedAt": syncTimestamp,
+                    "skipped": True,
+                }
 
         if registerType:
             self.registerObjectTypeFromObject(
@@ -72,7 +109,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         itemClassName = self._getItemClassName(firstItem, itemSchema)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
-        syncTimestamp = datetime.now(timezone.utc).isoformat()
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -114,7 +150,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             finalProperties["itemsCount"] = itemsCount
             finalProperties["maxItemId"] = maxItemId
             finalProperties["lastSyncAt"] = syncTimestamp
+            finalProperties["lastCheckedAt"] = syncTimestamp
+            finalProperties["lastSkipReason"] = None
+            finalProperties["skippedLastSync"] = False
             finalProperties["incremental"] = True
+            if sourceMTime is not None:
+                finalProperties["sourceMTime"] = sourceMTime
             self._updateSetProperties(setId, finalProperties)
             self._upsertSetProperties(setId, finalProperties)
 
@@ -130,6 +171,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "itemsCount": itemsCount,
             "maxItemId": maxItemId,
             "lastSyncAt": syncTimestamp,
+            "lastCheckedAt": syncTimestamp,
+            "skipped": False,
         }
 
     def getStoredSet(
@@ -252,6 +295,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         raise ValueError(
             "Protocol %s was not found in PostgreSQL protocols table for project %s"
             % (protocolDbId, projectId)
+        )
+
+    def _getExistingSet(self, projectId: int, protocolDbId: int, outputName: str) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            """
+            SELECT id, "objectId", "setClassName", "itemClassName", properties
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "outputName" = %s
+            """,
+            (projectId, protocolDbId, outputName),
         )
 
     def _upsertSet(
@@ -407,6 +462,113 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (self._jsonParam(properties), setId),
             commit=False,
         )
+
+    def _shouldSkipSetSync(
+        self,
+        existingProperties: Dict[str, Any],
+        itemsCountHint: Optional[int],
+        maxItemIdHint: Optional[int],
+        sourceMTime: Optional[float],
+    ) -> bool:
+        if not existingProperties or not existingProperties.get("incremental"):
+            return False
+
+        if itemsCountHint is None:
+            return False
+
+        storedItemsCount = self._toOptionalInt(existingProperties.get("itemsCount"))
+        if storedItemsCount != itemsCountHint:
+            return False
+
+        storedMaxItemId = self._toOptionalInt(existingProperties.get("maxItemId"))
+        if maxItemIdHint is not None and storedMaxItemId is not None and storedMaxItemId != maxItemIdHint:
+            return False
+
+        storedSourceMTime = self._toOptionalFloat(existingProperties.get("sourceMTime"))
+        if sourceMTime is not None and storedSourceMTime is not None and abs(storedSourceMTime - sourceMTime) > 0.000001:
+            return False
+
+        return True
+
+    def _getSetItemsCountHint(self, scipionSet: Any) -> Optional[int]:
+        for methodName in ("getSize", "count"):
+            getter = getattr(scipionSet, methodName, None)
+            if not callable(getter):
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            countValue = self._toOptionalInt(value)
+            if countValue is not None:
+                return countValue
+
+        try:
+            return int(len(scipionSet))
+        except Exception:
+            return None
+
+    def _getSetMaxItemIdHint(self, scipionSet: Any) -> Optional[int]:
+        for methodName in ("getMaxId", "maxId", "getLastId"):
+            getter = getattr(scipionSet, methodName, None)
+            if not callable(getter):
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            maxValue = self._toOptionalInt(value)
+            if maxValue is not None:
+                return maxValue
+
+        getter = getattr(scipionSet, "getLastItem", None)
+        if callable(getter):
+            try:
+                return self._getSourceObjId(getter())
+            except Exception:
+                return None
+
+        return None
+
+    def _getSetSourceMTime(self, scipionSet: Any) -> Optional[float]:
+        fileName = self._callOptionalGetter(scipionSet, "getFileName")
+        if not fileName:
+            return None
+
+        try:
+            filePath = str(fileName)
+            if not os.path.exists(filePath):
+                return None
+            return float(os.path.getmtime(filePath))
+        except Exception:
+            return None
+
+    def _normalizeProperties(self, properties: Any) -> Dict[str, Any]:
+        if isinstance(properties, dict):
+            return dict(properties)
+        if isinstance(properties, str):
+            try:
+                parsed = json.loads(properties)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _toOptionalInt(self, value: Any) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _toOptionalFloat(self, value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
 
     def _iterSetItems(self, scipionSet: Any) -> Iterable[Any]:
         iterItems = getattr(scipionSet, "iterItems", None)
