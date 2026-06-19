@@ -9114,17 +9114,18 @@ class ProjectService:
         from pathlib import Path as LocalPath
 
         # Resolve metadata root path for relative image paths
-        try:
-            _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
-            metaDir = LocalPath(metaPath).parent
-        except HTTPException:
-            # If the output / metadata file is really missing, that is a real error
-            raise
-        except Exception:
-            metaDir = None
-
         objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
         columns = list(table.getColumns())
+
+        metaDir = None
+        objMgrFileName = str(getattr(objMgr, "_fileName", "") or "")
+
+        if not objMgrFileName.startswith("postgresql://"):
+            try:
+                _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+                metaDir = LocalPath(metaPath).parent
+            except Exception:
+                metaDir = None
 
         # Resolve column index
         colIndex = table.getColumnIndexFromLabel(columnName)
