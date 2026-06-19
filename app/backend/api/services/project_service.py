@@ -8541,6 +8541,18 @@ class ProjectService:
         """
         List logical metadata tables associated with an output.
         """
+        pgDao = self._getPersistedMetadataDAOIfAvailable(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+        if pgDao is not None:
+            return pgDao.listTables(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
         with _metadataLock:
             _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
             objMgr = self._getMetadataObjectManager(metaPath)
@@ -8567,6 +8579,24 @@ class ProjectService:
 
             return items
 
+    def _getPostgresqlMetadataDAO(self):
+        from app.backend.database import getMapper
+        from app.backend.viewers.postgresql_dao import PostgresqlMetadataDAO
+
+        mapper = getMapper()
+        return PostgresqlMetadataDAO(mapper.db)
+
+    def _getPersistedMetadataDAOIfAvailable(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        dao = self._getPostgresqlMetadataDAO()
+        if dao.hasOutput(projectId, protocolId, outputName):
+            return dao
+        return None
+
     def getMetadataTableSchemaService(self, projectId: int,
                                       protocolId: int,
                                       outputName: str,
@@ -8574,6 +8604,18 @@ class ProjectService:
         """
         Return logical schema for one metadata table: columns, renderers, flags.
         """
+        pgDao = self._getPersistedMetadataDAOIfAvailable(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+        if pgDao is not None and pgDao.canServeTable(tableName):
+            return pgDao.getSchema(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                tableName=tableName,
+            )
         with _metadataLock:
             objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
 
@@ -9324,6 +9366,23 @@ class ProjectService:
             - full table if selectionOnly == False
             - number of selected rows if selectionOnly == True
         """
+        pgDao = self._getPersistedMetadataDAOIfAvailable(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+        if pgDao is not None and pgDao.canServeTable(tableName):
+            return pgDao.getWindow(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                tableName=tableName,
+                offset=offset,
+                limit=limit,
+                selectionOnly=selectionOnly,
+                sortBy=sortBy,
+                asc=asc,
+            )
         with _metadataLock:
             objMgr, table = self._openMetadataTable(protocolId, outputName, tableName)
             columns = list(table.getColumns())
