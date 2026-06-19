@@ -1555,6 +1555,18 @@ class ProjectService:
         scipionProtocolCount = 0
         scipionEdgeCount = 0
 
+        liveProtocolStatusById: Dict[str, str] = {}
+        activeOutputProtocolIds: Set[str] = set()
+
+        def normalizeStatus(value: Any) -> str:
+            return str(value or "").strip().lower()
+
+        activeOutputStatuses = {
+            normalizeStatus(STATUS_LAUNCHED),
+            normalizeStatus(STATUS_RUNNING),
+            normalizeStatus(STATUS_SCHEDULED),
+        }
+
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
             nodesDict = getattr(runs, "_nodesDict", {}) or {}
@@ -1564,7 +1576,24 @@ class ProjectService:
                     continue
 
                 scipionProtocolCount += 1
-                runMap[str(nodeId)] = getattr(nodeObj, "run", None)
+                protocol = getattr(nodeObj, "run", None)
+                runMap[str(nodeId)] = protocol
+
+                if protocol is not None:
+                    try:
+                        liveStatus = protocol.getStatus()
+                        liveProtocolStatusById[str(nodeId)] = normalizeStatus(liveStatus)
+                    except Exception:
+                        liveStatus = None
+
+                    try:
+                        if (
+                                normalizeStatus(liveStatus) in activeOutputStatuses
+                                and self._shouldRegisterProtocolOutputs(protocol)
+                        ):
+                            activeOutputProtocolIds.add(str(nodeId))
+                    except Exception:
+                        pass
 
                 for parent in getattr(nodeObj, "_parents", []) or []:
                     parentNodeId = str(parent.getName())
@@ -1615,9 +1644,23 @@ class ProjectService:
             dbProtocolCount = len(protocolRows)
             dbEdgeCount = sum(len(v.get("parents") or []) for v in dependencyMap.values())
 
+            dbStatusByProtocolId = {
+                str(row.get("protocolId")): normalizeStatus(row.get("status"))
+                for row in protocolRows
+                if row.get("protocolId") is not None
+            }
+
+            statusChangedProtocolIds = [
+                protocolId
+                for protocolId, liveStatus in liveProtocolStatusById.items()
+                if dbStatusByProtocolId.get(protocolId) != liveStatus
+            ]
+
             shouldResyncGraph = (
                     scipionProtocolCount != dbProtocolCount or
-                    scipionEdgeCount != dbEdgeCount
+                    scipionEdgeCount != dbEdgeCount or
+                    bool(statusChangedProtocolIds) or
+                    bool(activeOutputProtocolIds)
             )
 
             if shouldResyncGraph:
