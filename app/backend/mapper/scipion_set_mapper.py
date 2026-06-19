@@ -95,12 +95,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 itemClassName=itemClassName,
                 properties=initialProperties,
             )
-            self._clearSetRows(setId)
-            self._insertSetColumns(setId, columns)
+            self._upsertSetColumns(setId, columns)
 
             itemsCount = 0
             if firstItem is not None:
-                itemsCount = self._insertSetItems(
+                itemsCount = self._upsertSetItems(
                     setId=setId,
                     firstItem=firstItem,
                     remainingItems=itemIterator,
@@ -111,7 +110,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             finalProperties["columnsCount"] = len(columns)
             finalProperties["itemsCount"] = itemsCount
             self._updateSetProperties(setId, finalProperties)
-            self._insertSetProperties(setId, finalProperties)
+            self._upsertSetProperties(setId, finalProperties)
 
         return {
             "setId": setId,
@@ -286,15 +285,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
         return int(cur.fetchone()["id"])
 
-    def _clearSetRows(self, setId: int) -> None:
-        for tableName in ("scipion_set_items", "scipion_set_properties", "scipion_set_columns"):
-            self.db.execute(
-                f'DELETE FROM {tableName} WHERE "setId" = %s',
-                (setId,),
-                commit=False,
-            )
-
-    def _insertSetColumns(self, setId: int, columns: List[Dict[str, Any]]) -> None:
+    def _upsertSetColumns(self, setId: int, columns: List[Dict[str, Any]]) -> None:
         for column in columns:
             self.db.execute(
                 """
@@ -302,6 +293,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     "setId", "labelProperty", "columnName", "className", "valueType", position, indexed
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT ON CONSTRAINT ux_scipion_set_columns_set_label
+                DO UPDATE SET
+                    "columnName" = EXCLUDED."columnName",
+                    "className" = EXCLUDED."className",
+                    "valueType" = EXCLUDED."valueType",
+                    position = EXCLUDED.position,
+                    indexed = EXCLUDED.indexed
                 """,
                 (
                     setId,
@@ -315,18 +313,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 commit=False,
             )
 
-    def _insertSetProperties(self, setId: int, properties: Dict[str, Any]) -> None:
+    def _upsertSetProperties(self, setId: int, properties: Dict[str, Any]) -> None:
         for key, value in sorted(properties.items()):
             self.db.execute(
                 """
                 INSERT INTO scipion_set_properties ("setId", key, value)
                 VALUES (%s, %s, %s)
+                ON CONFLICT ON CONSTRAINT ux_scipion_set_properties_set_key
+                DO UPDATE SET
+                    value = EXCLUDED.value
                 """,
                 (setId, str(key), self._stringifyPropertyValue(value)),
                 commit=False,
             )
 
-    def _insertSetItems(
+    def _upsertSetItems(
         self,
         setId: int,
         firstItem: Any,
