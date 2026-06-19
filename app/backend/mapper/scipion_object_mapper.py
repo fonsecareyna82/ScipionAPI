@@ -46,14 +46,12 @@ class ScipionObjectPostgresqlMapper:
     ) -> Dict[str, Any]:
         typeId = self.registerObjectType(scipionObj, mapperKind=mapperKind, classSchema=classSchema)
         propertiesCount = 0
-
         if includeProperties:
             propertiesCount = self.registerObjectTypeProperties(
                 typeId,
                 scipionObj,
                 includeNestedProperties=includeNestedProperties,
             )
-
         return {
             "typeId": typeId,
             "className": self._getClassName(scipionObj),
@@ -70,19 +68,10 @@ class ScipionObjectPostgresqlMapper:
         if not className:
             raise ValueError("Cannot register a Scipion object type without className")
 
-        moduleName = self._getModuleName(scipionObj)
-        baseClassName = self._getBaseClassName(scipionObj)
-        resolvedMapperKind = mapperKind or self._guessMapperKind(scipionObj)
-        schema = classSchema or {}
-
         cur = self.db.execute(
             """
             INSERT INTO scipion_object_types (
-                "className",
-                "moduleName",
-                "baseClassName",
-                "mapperKind",
-                "schema"
+                "className", "moduleName", "baseClassName", "mapperKind", "schema"
             )
             VALUES (%s, %s, %s, %s, %s::jsonb)
             ON CONFLICT ("className")
@@ -96,14 +85,13 @@ class ScipionObjectPostgresqlMapper:
             """,
             (
                 className,
-                moduleName,
-                baseClassName,
-                resolvedMapperKind,
-                self._jsonParam(schema),
+                self._getModuleName(scipionObj),
+                self._getBaseClassName(scipionObj),
+                mapperKind or self._guessMapperKind(scipionObj),
+                self._jsonParam(classSchema or {}),
             ),
         )
-        row = cur.fetchone()
-        return int(row["id"])
+        return int(cur.fetchone()["id"])
 
     def registerObjectTypeProperties(
         self,
@@ -120,13 +108,8 @@ class ScipionObjectPostgresqlMapper:
                 self.db.execute(
                     """
                     INSERT INTO scipion_object_type_properties (
-                        "typeId",
-                        "propertyPath",
-                        "className",
-                        "valueKind",
-                        "isPointer",
-                        "isNested",
-                        "schema"
+                        "typeId", "propertyPath", "className", "valueKind",
+                        "isPointer", "isNested", "schema"
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT ("typeId", "propertyPath")
@@ -149,7 +132,6 @@ class ScipionObjectPostgresqlMapper:
                     ),
                     commit=False,
                 )
-
         return len(properties)
 
     def storeObjectTree(
@@ -169,10 +151,7 @@ class ScipionObjectPostgresqlMapper:
             raise ValueError("outputName is required")
 
         if registerType:
-            self.registerObjectTypeFromObject(
-                scipionObj,
-                includeNestedProperties=includeNestedProperties,
-            )
+            self.registerObjectTypeFromObject(scipionObj, includeNestedProperties=includeNestedProperties)
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -201,21 +180,9 @@ class ScipionObjectPostgresqlMapper:
         rootPath = str(outputName)
         return self.db.fetchAll(
             """
-            SELECT id,
-                   "projectId",
-                   "protocolDbId",
-                   "scipionObjId",
-                   "parentObjectId",
-                   name,
-                   path,
-                   "className",
-                   value,
-                   label,
-                   comment,
-                   creation,
-                   metadata,
-                   "createdAt",
-                   "updatedAt"
+            SELECT id, "projectId", "protocolDbId", "scipionObjId", "parentObjectId",
+                   name, path, "className", value, label, comment, creation,
+                   metadata, "createdAt", "updatedAt"
               FROM scipion_objects
              WHERE "projectId" = %s
                AND "protocolDbId" = %s
@@ -228,21 +195,9 @@ class ScipionObjectPostgresqlMapper:
     def listProtocolStoredObjects(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
-            SELECT id,
-                   "projectId",
-                   "protocolDbId",
-                   "scipionObjId",
-                   "parentObjectId",
-                   name,
-                   path,
-                   "className",
-                   value,
-                   label,
-                   comment,
-                   creation,
-                   metadata,
-                   "createdAt",
-                   "updatedAt"
+            SELECT id, "projectId", "protocolDbId", "scipionObjId", "parentObjectId",
+                   name, path, "className", value, label, comment, creation,
+                   metadata, "createdAt", "updatedAt"
               FROM scipion_objects
              WHERE "projectId" = %s
                AND "protocolDbId" = %s
@@ -264,16 +219,8 @@ class ScipionObjectPostgresqlMapper:
     def listObjectTypeProperties(self, className: str) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
-            SELECT p.id,
-                   p."typeId",
-                   p."propertyPath",
-                   p."className",
-                   p."valueKind",
-                   p."isPointer",
-                   p."isNested",
-                   p."schema",
-                   p."createdAt",
-                   p."updatedAt"
+            SELECT p.id, p."typeId", p."propertyPath", p."className", p."valueKind",
+                   p."isPointer", p."isNested", p."schema", p."createdAt", p."updatedAt"
               FROM scipion_object_type_properties p
               JOIN scipion_object_types t
                 ON t.id = p."typeId"
@@ -301,31 +248,19 @@ class ScipionObjectPostgresqlMapper:
         visited.add(objIdentity)
 
         attributes = self._getAttributesToStore(scipionObj)
-        isPointer = self._isPointer(scipionObj)
-        isNested = bool(attributes)
         metadata = {
             "moduleName": self._getModuleName(scipionObj),
             "baseClassName": self._getBaseClassName(scipionObj),
-            "isPointer": isPointer,
-            "isNested": isNested,
+            "isPointer": self._isPointer(scipionObj),
+            "isNested": bool(attributes),
             "hasSourceObjId": self._getSourceObjId(scipionObj) is not None,
         }
 
         cur = self.db.execute(
             """
             INSERT INTO scipion_objects (
-                "projectId",
-                "protocolDbId",
-                "scipionObjId",
-                "parentObjectId",
-                name,
-                path,
-                "className",
-                value,
-                label,
-                comment,
-                creation,
-                metadata
+                "projectId", "protocolDbId", "scipionObjId", "parentObjectId",
+                name, path, "className", value, label, comment, creation, metadata
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             ON CONFLICT ON CONSTRAINT ux_scipion_objects_project_protocol_path
@@ -358,19 +293,17 @@ class ScipionObjectPostgresqlMapper:
             ),
             commit=False,
         )
-        row = cur.fetchone()
-        objectId = int(row["id"])
+        objectId = int(cur.fetchone()["id"])
         storedPaths.append(path)
 
         if includeNestedProperties:
             for attrName, attrValue in attributes:
-                childPath = f"{path}.{attrName}"
                 self._storeObjectNode(
                     projectId=projectId,
                     protocolDbId=protocolDbId,
                     scipionObj=attrValue,
                     name=attrName,
-                    path=childPath,
+                    path=f"{path}.{attrName}",
                     parentObjectId=objectId,
                     storedPaths=storedPaths,
                     includeNestedProperties=includeNestedProperties,
@@ -397,7 +330,6 @@ class ScipionObjectPostgresqlMapper:
             childAttributes = self._getAttributesToStore(attrValue)
             isPointer = self._isPointer(attrValue)
             isNested = bool(childAttributes)
-
             yield {
                 "propertyPath": propertyPath,
                 "className": self._getClassName(attrValue),
@@ -409,7 +341,6 @@ class ScipionObjectPostgresqlMapper:
                     "baseClassName": self._getBaseClassName(attrValue),
                 },
             }
-
             if includeNestedProperties and isNested:
                 yield from self._iterProperties(
                     attrValue,
@@ -422,7 +353,6 @@ class ScipionObjectPostgresqlMapper:
         getter = getattr(scipionObj, "getAttributesToStore", None)
         if not callable(getter):
             return []
-
         try:
             return [(str(name), value) for name, value in getter()]
         except Exception:
@@ -437,7 +367,6 @@ class ScipionObjectPostgresqlMapper:
                     return str(className)
             except Exception:
                 pass
-
         if scipionObj is None:
             return None
         return scipionObj.__class__.__name__
@@ -452,9 +381,7 @@ class ScipionObjectPostgresqlMapper:
         if scipionObj is None:
             return None
         bases = getattr(scipionObj.__class__, "__bases__", None) or []
-        if not bases:
-            return None
-        return bases[0].__name__
+        return bases[0].__name__ if bases else None
 
     def _guessMapperKind(self, scipionObj: Any) -> str:
         className = self._getClassName(scipionObj) or ""
@@ -471,14 +398,11 @@ class ScipionObjectPostgresqlMapper:
             return "pointer"
         if isNested:
             return "object"
-        className = self._getClassName(scipionObj)
-        if className:
-            return className
-        return "scalar"
+        return self._getClassName(scipionObj) or "scalar"
 
     def _getSourceObjId(self, scipionObj: Any) -> Optional[int]:
-        getters = [getattr(scipionObj, "getObjId", None), getattr(scipionObj, "getId", None)]
-        for getter in getters:
+        for getterName in ("getObjId", "getId"):
+            getter = getattr(scipionObj, getterName, None)
             if not callable(getter):
                 continue
             try:
@@ -497,13 +421,10 @@ class ScipionObjectPostgresqlMapper:
         sourceObjId = self._getSourceObjId(scipionObj)
         if sourceObjId is not None:
             return sourceObjId
-
-        digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:8]
-        return -int(digest, 16)
+        digest = hashlib.sha1(path.encode("utf-8")).hexdigest()
+        return -(int(digest, 16) % 2147483647)
 
     def _getObjectValueText(self, scipionObj: Any) -> Optional[str]:
-        value = None
-
         if self._isPointer(scipionObj):
             pointedObj = self._getPointerValue(scipionObj)
             pointedId = self._getSourceObjId(pointedObj)
@@ -512,6 +433,7 @@ class ScipionObjectPostgresqlMapper:
             if pointedObj is not None:
                 return str(pointedObj)
 
+        value = None
         for methodName in ("getObjValue", "get"):
             getter = getattr(scipionObj, methodName, None)
             if not callable(getter):
@@ -536,7 +458,6 @@ class ScipionObjectPostgresqlMapper:
                     return None
             except Exception:
                 return None
-
         getter = getattr(scipionObj, "get", None)
         if not callable(getter):
             return None
@@ -568,7 +489,6 @@ class ScipionObjectPostgresqlMapper:
                 return str(value) if value else None
             except Exception:
                 pass
-
         value = getattr(scipionObj, attributeName, None)
         return str(value) if value else None
 
