@@ -16,14 +16,13 @@
 # *
 # * You should have received a copy of the GNU General Public License
 # * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * Foundation, Inc., 59 Temple Place, Suite 330, MA
 # * 02111-1307  USA
 # *
 # *  All comments concerning this program package may be sent to the
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -417,12 +416,8 @@ class ScipionObjectPostgresqlMapper:
                 continue
         return None
 
-    def _getScipionObjId(self, scipionObj: Any, path: str) -> int:
-        sourceObjId = self._getSourceObjId(scipionObj)
-        if sourceObjId is not None:
-            return sourceObjId
-        digest = hashlib.sha1(path.encode("utf-8")).hexdigest()
-        return -(int(digest, 16) % 2147483647)
+    def _getScipionObjId(self, scipionObj: Any, path: str) -> Optional[int]:
+        return self._getSourceObjId(scipionObj)
 
     def _getObjectValueText(self, scipionObj: Any) -> Optional[str]:
         if self._isPointer(scipionObj):
