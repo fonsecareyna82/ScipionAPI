@@ -65,8 +65,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         existingSet = self._getExistingSet(projectId, protocolDbId, outputName)
 
         if existingSet is not None:
+            existingSetId = int(existingSet["id"])
             existingProperties = self._normalizeProperties(existingSet.get("properties"))
-            if self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime):
+            if (
+                    self.hasStoredSetTables(existingSetId)
+                    and self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime)
+            ):
                 skippedProperties = dict(existingProperties)
                 skippedProperties["lastCheckedAt"] = syncTimestamp
                 skippedProperties["lastSkipReason"] = "unchanged_signature"
@@ -135,11 +139,27 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
             self._upsertSetColumns(setId, columns)
 
+            rootTableId = self._upsertSetTable(
+                setId=setId,
+                name="objects",
+                alias=self._getClassName(scipionSet) or outputName,
+                tableKind="root",
+                parentTableId=None,
+                parentItemId=None,
+                itemClassName=itemClassName,
+                properties={
+                    "source": "postgresql",
+                    "legacySetTable": True,
+                },
+            )
+            self._upsertSetTableColumns(rootTableId, columns)
+
             itemsCount = 0
             maxItemId = None
             if firstItem is not None:
                 itemsCount, maxItemId = self._upsertSetItems(
                     setId=setId,
+                    tableId=rootTableId,
                     firstItem=firstItem,
                     remainingItems=itemIterator,
                     batchSize=batchSize,
@@ -391,13 +411,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
 
     def _upsertSetItems(
-        self,
-        setId: int,
-        firstItem: Any,
-        remainingItems: Iterator[Any],
-        batchSize: int,
+            self,
+            setId: int,
+            tableId: Optional[int],
+            firstItem: Any,
+            remainingItems: Iterator[Any],
+            batchSize: int,
     ) -> Tuple[int, Optional[int]]:
         rows: List[Tuple[Any, ...]] = []
+        tableRows: List[Tuple[Any, ...]] = []
         itemsCount = 0
         maxItemId: Optional[int] = None
 
@@ -407,6 +429,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 raise ValueError("Cannot store a Scipion set item without getObjId()/getId()")
 
             maxItemId = itemId if maxItemId is None else max(maxItemId, itemId)
+            itemValues = self._getItemValues(item)
+
             rows.append(
                 (
                     setId,
@@ -415,19 +439,206 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     self._getObjectLabel(item),
                     self._getObjectComment(item),
                     self._getObjectCreation(item),
-                    self._jsonParam(self._getItemValues(item)),
+                    self._jsonParam(itemValues),
                 )
             )
+
+            if tableId is not None:
+                tableRows.append(
+                    (
+                        tableId,
+                        itemId,
+                        None,
+                        self._getItemEnabled(item),
+                        self._getObjectLabel(item),
+                        self._getObjectComment(item),
+                        self._getObjectCreation(item),
+                        self._jsonParam(itemValues),
+                    )
+                )
             itemsCount += 1
 
             if len(rows) >= batchSize:
                 self._flushSetItems(rows)
                 rows = []
 
+                if tableRows:
+                    self._flushSetTableItems(tableRows)
+                    tableRows = []
+
         if rows:
             self._flushSetItems(rows)
 
+        if tableRows:
+            self._flushSetTableItems(tableRows)
+
         return itemsCount, maxItemId
+
+    def hasStoredSetTables(self, setId: int) -> bool:
+        row = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_set_tables
+             WHERE "setId" = %s
+             LIMIT 1
+            """,
+            (setId,),
+        )
+        return row is not None
+
+    def listStoredSetTables(self, setId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT id, "setId", name, alias, "tableKind", "parentTableId",
+                   "parentItemId", "itemClassName", properties, "createdAt", "updatedAt"
+              FROM scipion_set_tables
+             WHERE "setId" = %s
+             ORDER BY
+                   CASE WHEN "tableKind" = 'root' THEN 0 ELSE 1 END,
+                   name ASC
+            """,
+            (setId,),
+        )
+
+    def getStoredSetTableColumns(self, tableId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT id, "tableId", "labelProperty", "columnName", "className",
+                   "valueType", position, indexed, properties
+              FROM scipion_set_table_columns
+             WHERE "tableId" = %s
+             ORDER BY position ASC
+            """,
+            (tableId,),
+        )
+
+    def getStoredSetTableItems(
+        self,
+        tableId: int,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        if limit is None:
+            return self.db.fetchAll(
+                """
+                SELECT id, "tableId", "scipionItemId", "parentItemId", enabled,
+                       label, comment, creation, "values", "createdAt", "updatedAt"
+                  FROM scipion_set_table_items
+                 WHERE "tableId" = %s
+                 ORDER BY "scipionItemId" ASC
+                """,
+                (tableId,),
+            )
+
+        return self.db.fetchAll(
+            """
+            SELECT id, "tableId", "scipionItemId", "parentItemId", enabled,
+                   label, comment, creation, "values", "createdAt", "updatedAt"
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+             ORDER BY "scipionItemId" ASC
+             LIMIT %s OFFSET %s
+            """,
+            (tableId, limit, offset),
+        )
+
+    def _upsertSetTable(
+        self,
+        setId: int,
+        name: str,
+        alias: Optional[str],
+        tableKind: str,
+        parentTableId: Optional[int],
+        parentItemId: Optional[int],
+        itemClassName: Optional[str],
+        properties: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        cur = self.db.execute(
+            """
+            INSERT INTO scipion_set_tables (
+                "setId", name, alias, "tableKind", "parentTableId",
+                "parentItemId", "itemClassName", properties
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT ON CONSTRAINT ux_scipion_set_tables_set_name
+            DO UPDATE SET
+                alias = EXCLUDED.alias,
+                "tableKind" = EXCLUDED."tableKind",
+                "parentTableId" = EXCLUDED."parentTableId",
+                "parentItemId" = EXCLUDED."parentItemId",
+                "itemClassName" = EXCLUDED."itemClassName",
+                properties = EXCLUDED.properties,
+                "updatedAt" = NOW()
+            RETURNING id
+            """,
+            (
+                setId,
+                name,
+                alias,
+                tableKind,
+                parentTableId,
+                parentItemId,
+                itemClassName,
+                self._jsonParam(properties or {}),
+            ),
+            commit=False,
+        )
+        return int(cur.fetchone()["id"])
+
+    def _upsertSetTableColumns(self, tableId: int, columns: List[Dict[str, Any]]) -> None:
+        for column in columns:
+            self.db.execute(
+                """
+                INSERT INTO scipion_set_table_columns (
+                    "tableId", "labelProperty", "columnName", "className",
+                    "valueType", position, indexed, properties
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT ON CONSTRAINT ux_scipion_set_table_columns_table_label
+                DO UPDATE SET
+                    "columnName" = EXCLUDED."columnName",
+                    "className" = EXCLUDED."className",
+                    "valueType" = EXCLUDED."valueType",
+                    position = EXCLUDED.position,
+                    indexed = EXCLUDED.indexed,
+                    properties = EXCLUDED.properties
+                """,
+                (
+                    tableId,
+                    column["labelProperty"],
+                    column["columnName"],
+                    column["className"],
+                    column["valueType"],
+                    column["position"],
+                    column["indexed"],
+                    self._jsonParam(column.get("properties") or {}),
+                ),
+                commit=False,
+            )
+
+    def _flushSetTableItems(self, rows: List[Tuple[Any, ...]]) -> None:
+        psycopg2.extras.execute_values(
+            self.db.cursor,
+            """
+            INSERT INTO scipion_set_table_items (
+                "tableId", "scipionItemId", "parentItemId", enabled,
+                label, comment, creation, "values"
+            )
+            VALUES %s
+            ON CONFLICT ON CONSTRAINT ux_scipion_set_table_items_table_item
+            DO UPDATE SET
+                "parentItemId" = EXCLUDED."parentItemId",
+                enabled = EXCLUDED.enabled,
+                label = EXCLUDED.label,
+                comment = EXCLUDED.comment,
+                creation = EXCLUDED.creation,
+                "values" = EXCLUDED."values",
+                "updatedAt" = NOW()
+            """,
+            rows,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            page_size=len(rows),
+        )
 
     def _flushSetItems(self, rows: List[Tuple[Any, ...]]) -> None:
         psycopg2.extras.execute_values(
