@@ -191,7 +191,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return self.db.fetchAll(
                 """
                 SELECT id, "setId", "scipionItemId", enabled, label, comment,
-                       creation, values, "createdAt", "updatedAt"
+                       creation, "values", "createdAt", "updatedAt"
                   FROM scipion_set_items
                  WHERE "setId" = %s
                  ORDER BY "scipionItemId" ASC
@@ -202,7 +202,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return self.db.fetchAll(
             """
             SELECT id, "setId", "scipionItemId", enabled, label, comment,
-                   creation, values, "createdAt", "updatedAt"
+                   creation, "values", "createdAt", "updatedAt"
               FROM scipion_set_items
              WHERE "setId" = %s
              ORDER BY "scipionItemId" ASC
@@ -332,7 +332,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self.db.cursor,
             """
             INSERT INTO scipion_set_items (
-                "setId", "scipionItemId", enabled, label, comment, creation, values
+                "setId", "scipionItemId", enabled, label, comment, creation, "values"
             )
             VALUES %s
             ON CONFLICT ON CONSTRAINT ux_scipion_set_items_set_item
@@ -341,7 +341,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 label = EXCLUDED.label,
                 comment = EXCLUDED.comment,
                 creation = EXCLUDED.creation,
-                values = EXCLUDED.values,
+                "values" = EXCLUDED."values",
                 "updatedAt" = NOW()
             """,
             rows,
