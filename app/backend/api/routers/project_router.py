@@ -348,6 +348,48 @@ async def loadProtocol(
     return service.getProtocolParams(projectId, protocolId)
 
 
+class ProtocolStepStatusUpdate(BaseModel):
+    status: Literal["new", "finished"] = Field(..., description="New status for the selected protocol step")
+
+
+@router.get("/{projectId}/protocols/{protocolId}/steps", response_model=Any)
+def listProtocolSteps(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.listProtocolStepsService(mapper, projectId, protocolId)
+
+
+@router.patch("/{projectId}/protocols/{protocolId}/steps/{stepIndex}/status", response_model=Any)
+def updateProtocolStepStatus(
+    projectId: int,
+    protocolId: int,
+    stepIndex: int,
+    payload: ProtocolStepStatusUpdate,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.updateProtocolStepStatusService(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+        stepIndex=stepIndex,
+        stepStatus=payload.status,
+    )
+
+
 @router.get("/{projectId}/protclass/{protClassName}", response_model=Any)
 async def loadNewProtocol(
     projectId: int,
@@ -2347,6 +2389,35 @@ def createCoords3dOutputFromPoints(projectId: int,
         logger.exception("Error in createCoords3dOutputFromPoints: %s", e)
         raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
 
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/integrated-context",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getIntegratedAnalyzeContext(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payload = service.getIntegratedAnalyzeContextService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+    resp = JSONResponse(payload)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
 
 # ==============================================================================
 #        ANALYZE RESULTS: FSC (SetOfFSCs)
