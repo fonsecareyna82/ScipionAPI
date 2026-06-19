@@ -99,3 +99,19 @@ class WorkflowImportRequest(BaseModel):
     sourceProjectId: Optional[Union[int, str]] = None
     sourceProjectName: Optional[str] = None
 
+
+class ProtocolStepOut(BaseModel):
+    index: int
+    name: str
+    status: str
+    prerequisites: List[int] = []
+    args: Optional[Any] = None
+    initTime: Optional[datetime] = None
+    endTime: Optional[datetime] = None
+    elapsedSeconds: Optional[float] = None
+    error: Optional[str] = None
+    interactive: bool = False
+    needsGpu: bool = True
+    event: Optional[str] = None
+    updatedAt: Optional[datetime] = None
+

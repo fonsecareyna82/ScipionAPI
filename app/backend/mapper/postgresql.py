@@ -164,6 +164,33 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS protocol_steps (
+                id SERIAL PRIMARY KEY,
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                "protocolDbId" INTEGER NOT NULL REFERENCES protocols(id) ON DELETE CASCADE,
+                "protocolId" TEXT NOT NULL,
+                "stepIndex" INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prerequisites JSONB NOT NULL DEFAULT '[]'::jsonb,
+                args JSONB,
+                "initTime" TIMESTAMPTZ,
+                "endTime" TIMESTAMPTZ,
+                "elapsedSeconds" DOUBLE PRECISION,
+                error TEXT,
+                interactive BOOLEAN NOT NULL DEFAULT FALSE,
+                "needsGpu" BOOLEAN NOT NULL DEFAULT TRUE,
+                event TEXT,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE ("projectId", "protocolDbId", "stepIndex")
+            );
+
+            CREATE INDEX IF NOT EXISTS protocol_steps_by_protocol
+              ON protocol_steps("projectId", "protocolDbId", "stepIndex");
+        """)
+
         # CreateProjectSharesTable (requires users and projects)
         self.db.execute(
             """
@@ -1151,6 +1178,144 @@ class PostgresqlFlatMapper(Mapper):
         )
 
         return len(staleDbIds)
+
+    def resolveProtocolStepTarget(self, projectPath: str, protocolId: int) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            """
+            SELECT p."projectId", p.id AS "protocolDbId", p."protocolId"
+              FROM protocols p
+              JOIN projects pr ON pr.id = p."projectId"
+             WHERE p."protocolId" = %s
+               AND pr.name = %s
+             LIMIT 1
+            """,
+            (str(protocolId), str(projectPath)),
+        )
+
+    def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int, steps: List[Dict[str, Any]]) -> None:
+        self.db.execute(
+            'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
+            (projectId, protocolDbId),
+        )
+        for step in steps or []:
+            self.upsertProtocolStep(projectId, protocolDbId, protocolId, step)
+
+    def upsertProtocolStep(self, projectId: int, protocolDbId: int, protocolId: int, step: Dict[str, Any]) -> None:
+        self.db.execute(
+            """
+            INSERT INTO protocol_steps (
+                "projectId", "protocolDbId", "protocolId", "stepIndex",
+                name, status, prerequisites, args, "initTime", "endTime",
+                "elapsedSeconds", error, interactive, "needsGpu", event
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT ("projectId", "protocolDbId", "stepIndex")
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                status = EXCLUDED.status,
+                prerequisites = EXCLUDED.prerequisites,
+                args = EXCLUDED.args,
+                "initTime" = EXCLUDED."initTime",
+                "endTime" = EXCLUDED."endTime",
+                "elapsedSeconds" = EXCLUDED."elapsedSeconds",
+                error = EXCLUDED.error,
+                interactive = EXCLUDED.interactive,
+                "needsGpu" = EXCLUDED."needsGpu",
+                event = EXCLUDED.event,
+                "updatedAt" = NOW()
+            """,
+            (
+                projectId, protocolDbId, str(protocolId), step["index"],
+                step["name"], step["status"],
+                json.dumps(step.get("prerequisites") or []),
+                json.dumps(step.get("args")),
+                step.get("initTime"), step.get("endTime"),
+                step.get("elapsedSeconds"), step.get("error"),
+                bool(step.get("interactive")), bool(step.get("needsGpu", True)),
+                step.get("event"),
+            ),
+        )
+
+    def listProtocolSteps(self, projectId: int, protocolId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT "stepIndex" AS index, name, status, prerequisites, args,
+                   "initTime", "endTime", "elapsedSeconds", error,
+                   interactive, "needsGpu", event, "updatedAt"
+              FROM protocol_steps
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+             ORDER BY "stepIndex" ASC
+            """,
+            (projectId, str(protocolId)),
+        )
+
+    def updateProtocolStepStatus(
+            self,
+            projectId: int,
+            protocolId: int,
+            stepIndex: int,
+            stepStatus: str,
+    ) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            """
+            UPDATE protocol_steps
+               SET status = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+               AND "stepIndex" = %s
+            RETURNING
+                "stepIndex" AS index,
+                name,
+                status,
+                prerequisites,
+                args,
+                "initTime",
+                "endTime",
+                "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "updatedAt"
+            """,
+            (stepStatus, projectId, str(protocolId), stepIndex),
+        )
+
+    def getProjectProtocolStepsByProtocolId(self, projectId: int) -> Dict[str, List[Dict[str, Any]]]:
+        rows = self.db.fetchAll(
+            """
+            SELECT
+                "protocolId",
+                "stepIndex" AS "index",
+                name,
+                status,
+                prerequisites,
+                args,
+                "initTime",
+                "endTime",
+                "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "updatedAt"
+              FROM protocol_steps
+             WHERE "projectId" = %s
+             ORDER BY "protocolId", "stepIndex" ASC
+            """,
+            (projectId,),
+        )
+
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            protocolId = str(row["protocolId"])
+            step = dict(row)
+            step.pop("protocolId", None)
+            result.setdefault(protocolId, []).append(step)
+
+        return result
 
     # -----------------------------
     # Settings Methods

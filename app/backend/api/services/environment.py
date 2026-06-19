@@ -52,3 +52,7 @@ def prepareEnvironment():
     scipionHome = variables.get(pyworkflow.SCIPION_HOME_VAR) or os.environ.get(pyworkflow.SCIPION_HOME_VAR)
     if scipionHome:
         os.chdir(scipionHome)
+        os.environ.setdefault(
+            "SCIPION_PROTOCOL_STEPS_NOTIFIER",
+            "app.backend.api.services.protocol_steps_sync:syncProtocolStepsEvent",
+        )
