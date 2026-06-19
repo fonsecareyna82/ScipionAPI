@@ -580,6 +580,25 @@ class ProjectService:
             "status": statusValue or "active",
         }
 
+    def _shouldRegisterProtocolOutputs(self, protocol: Any) -> bool:
+        try:
+            outputs = list(protocol.iterOutputAttributes())
+        except Exception:
+            return False
+
+        if not outputs:
+            return False
+
+        status = protocol.getStatus()
+
+        if status == STATUS_FINISHED:
+            return True
+
+        if status in (STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED):
+            return True
+
+        return False
+
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -617,6 +636,9 @@ class ProjectService:
 
             protocolContext = self._buildProtocolContext(projectId, protocol)
             protocolDbId = mapper.saveProtocol(protocolContext)
+
+            if self._shouldRegisterProtocolOutputs(protocol):
+                self.registerOutput(projectId, protocol)
 
             currentProtocolIds.add(nodeIdText)
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
