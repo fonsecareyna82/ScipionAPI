@@ -2,7 +2,7 @@
 # *
 # * Authors:     Yunior C. Fonseca Reyna
 # *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# * Unidad de  Bioinformatica of Centro Nacional de Bioinformatica , CSIC
 # *
 # * This program is free software; you can redistribute it and/or modify
 # * it under the terms of the GNU General Public License as published by
@@ -481,12 +481,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return False
 
         storedMaxItemId = self._toOptionalInt(existingProperties.get("maxItemId"))
-        if maxItemIdHint is not None and storedMaxItemId is not None and storedMaxItemId != maxItemIdHint:
-            return False
+        if maxItemIdHint is not None:
+            if storedMaxItemId is None:
+                return False
+            if storedMaxItemId != maxItemIdHint:
+                return False
 
         storedSourceMTime = self._toOptionalFloat(existingProperties.get("sourceMTime"))
-        if sourceMTime is not None and storedSourceMTime is not None and abs(storedSourceMTime - sourceMTime) > 0.000001:
-            return False
+        if sourceMTime is not None:
+            if storedSourceMTime is None:
+                return False
+            if abs(storedSourceMTime - sourceMTime) > 0.000001:
+                return False
 
         return True
 
