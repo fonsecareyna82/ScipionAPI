@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -30,7 +31,7 @@ import psycopg2.extras
 
 
 class ScipionObjectPostgresqlMapper:
-    """Register Scipion object classes and their persistent attributes in PostgreSQL."""
+    """Register and store Scipion data objects in PostgreSQL."""
 
     def __init__(self, db):
         self.db = db
@@ -151,6 +152,105 @@ class ScipionObjectPostgresqlMapper:
 
         return len(properties)
 
+    def storeObjectTree(
+        self,
+        projectId: int,
+        protocolDbId: int,
+        outputName: str,
+        scipionObj: Any,
+        registerType: bool = True,
+        includeNestedProperties: bool = True,
+    ) -> Dict[str, Any]:
+        if not projectId:
+            raise ValueError("projectId is required")
+        if not protocolDbId:
+            raise ValueError("protocolDbId is required")
+        if not outputName:
+            raise ValueError("outputName is required")
+
+        if registerType:
+            self.registerObjectTypeFromObject(
+                scipionObj,
+                includeNestedProperties=includeNestedProperties,
+            )
+
+        storedPaths: List[str] = []
+        with self.db.transaction():
+            rootObjectId = self._storeObjectNode(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                scipionObj=scipionObj,
+                name=outputName,
+                path=outputName,
+                parentObjectId=None,
+                storedPaths=storedPaths,
+                includeNestedProperties=includeNestedProperties,
+                visited=set(),
+            )
+
+        return {
+            "rootObjectId": rootObjectId,
+            "projectId": projectId,
+            "protocolDbId": protocolDbId,
+            "outputName": outputName,
+            "storedObjectsCount": len(storedPaths),
+            "storedPaths": storedPaths,
+        }
+
+    def getStoredObjectTree(self, projectId: int, protocolDbId: int, outputName: str) -> List[Dict[str, Any]]:
+        rootPath = str(outputName)
+        return self.db.fetchAll(
+            """
+            SELECT id,
+                   "projectId",
+                   "protocolDbId",
+                   "scipionObjId",
+                   "parentObjectId",
+                   name,
+                   path,
+                   "className",
+                   value,
+                   label,
+                   comment,
+                   creation,
+                   metadata,
+                   "createdAt",
+                   "updatedAt"
+              FROM scipion_objects
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND (path = %s OR path LIKE %s)
+             ORDER BY path ASC
+            """,
+            (projectId, protocolDbId, rootPath, f"{rootPath}.%"),
+        )
+
+    def listProtocolStoredObjects(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT id,
+                   "projectId",
+                   "protocolDbId",
+                   "scipionObjId",
+                   "parentObjectId",
+                   name,
+                   path,
+                   "className",
+                   value,
+                   label,
+                   comment,
+                   creation,
+                   metadata,
+                   "createdAt",
+                   "updatedAt"
+              FROM scipion_objects
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY path ASC
+            """,
+            (projectId, protocolDbId),
+        )
+
     def getObjectType(self, className: str) -> Optional[Dict[str, Any]]:
         return self.db.fetchOne(
             """
@@ -182,6 +282,102 @@ class ScipionObjectPostgresqlMapper:
             """,
             (className,),
         )
+
+    def _storeObjectNode(
+        self,
+        projectId: int,
+        protocolDbId: int,
+        scipionObj: Any,
+        name: str,
+        path: str,
+        parentObjectId: Optional[int],
+        storedPaths: List[str],
+        includeNestedProperties: bool,
+        visited: Set[int],
+    ) -> int:
+        objIdentity = id(scipionObj)
+        if objIdentity in visited:
+            return parentObjectId or 0
+        visited.add(objIdentity)
+
+        attributes = self._getAttributesToStore(scipionObj)
+        isPointer = self._isPointer(scipionObj)
+        isNested = bool(attributes)
+        metadata = {
+            "moduleName": self._getModuleName(scipionObj),
+            "baseClassName": self._getBaseClassName(scipionObj),
+            "isPointer": isPointer,
+            "isNested": isNested,
+            "hasSourceObjId": self._getSourceObjId(scipionObj) is not None,
+        }
+
+        cur = self.db.execute(
+            """
+            INSERT INTO scipion_objects (
+                "projectId",
+                "protocolDbId",
+                "scipionObjId",
+                "parentObjectId",
+                name,
+                path,
+                "className",
+                value,
+                label,
+                comment,
+                creation,
+                metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT ON CONSTRAINT ux_scipion_objects_project_protocol_path
+            DO UPDATE SET
+                "scipionObjId" = EXCLUDED."scipionObjId",
+                "parentObjectId" = EXCLUDED."parentObjectId",
+                name = EXCLUDED.name,
+                "className" = EXCLUDED."className",
+                value = EXCLUDED.value,
+                label = EXCLUDED.label,
+                comment = EXCLUDED.comment,
+                creation = EXCLUDED.creation,
+                metadata = scipion_objects.metadata || EXCLUDED.metadata,
+                "updatedAt" = NOW()
+            RETURNING id
+            """,
+            (
+                projectId,
+                protocolDbId,
+                self._getScipionObjId(scipionObj, path),
+                parentObjectId,
+                name,
+                path,
+                self._getClassName(scipionObj),
+                self._getObjectValueText(scipionObj),
+                self._getObjectLabel(scipionObj),
+                self._getObjectComment(scipionObj),
+                self._getObjectCreation(scipionObj),
+                self._jsonParam(metadata),
+            ),
+            commit=False,
+        )
+        row = cur.fetchone()
+        objectId = int(row["id"])
+        storedPaths.append(path)
+
+        if includeNestedProperties:
+            for attrName, attrValue in attributes:
+                childPath = f"{path}.{attrName}"
+                self._storeObjectNode(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    scipionObj=attrValue,
+                    name=attrName,
+                    path=childPath,
+                    parentObjectId=objectId,
+                    storedPaths=storedPaths,
+                    includeNestedProperties=includeNestedProperties,
+                    visited=visited,
+                )
+
+        return objectId
 
     def _iterProperties(
         self,
@@ -279,6 +475,102 @@ class ScipionObjectPostgresqlMapper:
         if className:
             return className
         return "scalar"
+
+    def _getSourceObjId(self, scipionObj: Any) -> Optional[int]:
+        getters = [getattr(scipionObj, "getObjId", None), getattr(scipionObj, "getId", None)]
+        for getter in getters:
+            if not callable(getter):
+                continue
+            try:
+                value = getter()
+            except Exception:
+                continue
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except Exception:
+                continue
+        return None
+
+    def _getScipionObjId(self, scipionObj: Any, path: str) -> int:
+        sourceObjId = self._getSourceObjId(scipionObj)
+        if sourceObjId is not None:
+            return sourceObjId
+
+        digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:8]
+        return -int(digest, 16)
+
+    def _getObjectValueText(self, scipionObj: Any) -> Optional[str]:
+        value = None
+
+        if self._isPointer(scipionObj):
+            pointedObj = self._getPointerValue(scipionObj)
+            pointedId = self._getSourceObjId(pointedObj)
+            if pointedId is not None:
+                return str(pointedId)
+            if pointedObj is not None:
+                return str(pointedObj)
+
+        for methodName in ("getObjValue", "get"):
+            getter = getattr(scipionObj, methodName, None)
+            if not callable(getter):
+                continue
+            try:
+                value = getter()
+                break
+            except Exception:
+                continue
+
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    def _getPointerValue(self, scipionObj: Any) -> Any:
+        hasValue = getattr(scipionObj, "hasValue", None)
+        if callable(hasValue):
+            try:
+                if not hasValue():
+                    return None
+            except Exception:
+                return None
+
+        getter = getattr(scipionObj, "get", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _getObjectLabel(self, scipionObj: Any) -> Optional[str]:
+        return self._getOptionalObjectText(scipionObj, "getObjLabel", "_objLabel")
+
+    def _getObjectComment(self, scipionObj: Any) -> Optional[str]:
+        return self._getOptionalObjectText(scipionObj, "getObjComment", "_objComment")
+
+    def _getObjectCreation(self, scipionObj: Any) -> Any:
+        getter = getattr(scipionObj, "getObjCreation", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                pass
+        return getattr(scipionObj, "_objCreation", None)
+
+    def _getOptionalObjectText(self, scipionObj: Any, getterName: str, attributeName: str) -> Optional[str]:
+        getter = getattr(scipionObj, getterName, None)
+        if callable(getter):
+            try:
+                value = getter()
+                return str(value) if value else None
+            except Exception:
+                pass
+
+        value = getattr(scipionObj, attributeName, None)
+        return str(value) if value else None
 
     def _isPointer(self, scipionObj: Any) -> bool:
         checker = getattr(scipionObj, "isPointer", None)
