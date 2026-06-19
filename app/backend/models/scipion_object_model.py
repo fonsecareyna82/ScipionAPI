@@ -82,7 +82,7 @@ class ScipionObject(Base):
     id = Column(Integer, primary_key=True, index=True)
     projectId = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     protocolDbId = Column(Integer, ForeignKey("protocols.id", ondelete="CASCADE"), nullable=True)
-    scipionObjId = Column(Integer, nullable=False)
+    scipionObjId = Column(Integer, nullable=True)
     parentObjectId = Column(Integer, ForeignKey("scipion_objects.id", ondelete="CASCADE"), nullable=True)
     name = Column(Text, nullable=True)
     path = Column(Text, nullable=False)
