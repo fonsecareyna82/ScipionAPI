@@ -6047,6 +6047,39 @@ class ProjectService:
 
         return protocol, output
 
+    def _getPostgresqlTiltSeriesReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
+
+            reader = PostgresqlTiltSeriesReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL TiltSeries reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
     # ======================================================================
     # Analyze Results: Resolve viewer
     # ======================================================================
@@ -6748,6 +6781,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ):
         """
         List all tilt series in a SetOfTiltSeries-like output.
@@ -6765,6 +6799,16 @@ class ProjectService:
           ...
         ]
         """
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            return pgReader.listTiltSeries()
+
         _, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
 
         seriesList: List[Dict[str, Any]] = []
