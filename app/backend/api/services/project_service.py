@@ -6827,6 +6827,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             tiltSeriesId: Union[int, str],
+            mapper=None,
     ):
         """
         Return metadata for all tilt images in a given tilt series.
@@ -6853,6 +6854,18 @@ class ProjectService:
           ]
         }
         """
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getTiltSeriesFrames(tiltSeriesId)
+            if payload is not None:
+                return payload
+
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
         targetKey = str(tiltSeriesId)
         selectedSummary: Optional[Dict[str, Any]] = None
