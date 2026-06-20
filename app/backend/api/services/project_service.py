@@ -6237,6 +6237,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ):
         """
         List all CTFTomoSeries in a CTFTomo output.
@@ -6254,6 +6255,16 @@ class ProjectService:
           ...
         ]
         """
+        pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            return pgReader.listCtftomoSeries()
+
         protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
 
         seriesList: List[Dict[str, Any]] = []
@@ -6434,6 +6445,39 @@ class ProjectService:
             item["tiltAxisAngle"] = tiltAxisAngle
 
         return item
+
+    def _getPostgresqlCtftomoReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_ctftomo_reader import PostgresqlCtftomoReader
+
+            reader = PostgresqlCtftomoReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL CTFTomo reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
 
     # ======================================================================
     # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
