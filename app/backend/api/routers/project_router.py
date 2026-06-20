@@ -2348,6 +2348,7 @@ def renderCoords3dTomogramSlice(
         thumb=thumb,
         fast=fast,
         quality=quality,
+        mapper=mapper
     )
 
     resp.headers["X-Debug-Auth"] = "ok"
