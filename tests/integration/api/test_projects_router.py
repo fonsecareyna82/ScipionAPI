@@ -181,6 +181,60 @@ def test_ResolveAnalyzeViewerReturnsHandledFalseOnUnexpectedError(projectClient,
     }
 
 
+def test_ListMetadataTablesDelegatesMapperToService(projectClient, fakeProjectService):
+    fakeProjectService.metadataTablesResult = [
+        {
+            "name": "objects",
+            "alias": "Particles",
+            "rowCount": 3,
+            "hasColumnId": True,
+        },
+        {
+            "name": "Properties",
+            "alias": "Properties",
+            "rowCount": 2,
+            "hasColumnId": False,
+        },
+    ]
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.metadataTablesResult
+    assert fakeProjectService.lastListOutputMetadataTablesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastListOutputMetadataTablesCall["mapper"],
+    }
+
+
+def test_GetMetadataTableSchemaDelegatesMapperToService(projectClient, fakeProjectService):
+    fakeProjectService.metadataTableSchemaResult = {
+        "name": "objects",
+        "alias": "Particles",
+        "hasColumnId": True,
+        "actions": ["Particle"],
+        "columns": [],
+    }
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/schema"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.metadataTableSchemaResult
+    assert fakeProjectService.lastGetMetadataTableSchemaCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tableName": "objects",
+        "mapper": fakeProjectService.lastGetMetadataTableSchemaCall["mapper"],
+    }
+
+
 def test_RunMetadataTableActionRejectsMissingIds(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
@@ -229,6 +283,35 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
     }
 
 
+def test_GetMetadataTablePageDelegatesMapperToService(projectClient, fakeProjectService):
+    fakeProjectService.metadataTablePageResult = {
+        "pageNumber": 2,
+        "pageSize": 50,
+        "totalRows": 1,
+        "rows": [{"id": 1, "values": ["row-1"]}],
+    }
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/page"
+        "?page=2&pageSize=50&sortBy=id&asc=false&selectionOnly=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.metadataTablePageResult
+    assert fakeProjectService.lastGetMetadataTablePageCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tableName": "objects",
+        "page": 2,
+        "pageSize": 50,
+        "sortBy": "id",
+        "asc": False,
+        "selectionOnly": True,
+        "mapper": fakeProjectService.lastGetMetadataTablePageCall["mapper"],
+    }
+
+
 def test_ExportMetadataTableRejectsInvalidIds(projectClient):
     response = projectClient.get(
         "/projects/1/protocols/2/outputs/out/metadata/tables/table/export?ids=1,abc,3"
@@ -254,4 +337,33 @@ def test_ExportMetadataTableParsesIdsAndDelegatesToService(projectClient, fakePr
         "fmt": "csv",
         "selectionOnly": False,
         "ids": [1, 2, 3],
+        "mapper": fakeProjectService.lastExportMetadataTableCall["mapper"],
+    }
+
+
+def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image"
+        "?rowId=7&rowIndex=3&column=stack&size=128"
+        "&applyTransform=true&inline=false&fmt=jpeg"
+    )
+
+    assert response.status_code == 200
+    assert response.text == "image-bytes"
+
+    call = fakeProjectService.lastRenderMetadataImageCellCall
+    assert str(call["rowId"]) == "7"
+    assert call == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tableName": "objects",
+        "rowId": call["rowId"],
+        "rowIndex": 3,
+        "columnName": "stack",
+        "size": 128,
+        "applyTransform": True,
+        "inline": False,
+        "fmt": "jpeg",
+        "mapper": call["mapper"],
     }
