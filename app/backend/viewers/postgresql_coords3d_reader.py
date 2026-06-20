@@ -87,6 +87,48 @@ class PostgresqlCoords3dReader:
 
         return None
 
+    def getPoints(self, tomogramId: Any) -> Optional[List[Dict[str, Any]]]:
+        self.lastSkipReason = None
+
+        storedSet = self._getStoredSet()
+        if storedSet is None:
+            self.lastSkipReason = "stored_set_not_found"
+            return None
+
+        targetKeys = self._resolveTomogramTargetKeys(storedSet, tomogramId)
+        if not targetKeys:
+            self.lastSkipReason = "tomogram_target_keys_not_resolved tomogramId=%s" % str(tomogramId)
+            return None
+
+        boxSize = self._extractBoxSize(storedSet)
+        points: List[Dict[str, Any]] = []
+
+        for item in storedSet.get("items") or []:
+            values = item.get("values") or {}
+            coordinateKeys = set(self._extractCoordinateTomogramKeys(values))
+
+            if not coordinateKeys.intersection(targetKeys):
+                continue
+
+            point = self._buildCoordinatePoint(
+                item=item,
+                values=values,
+                tomogramId=tomogramId,
+                boxSize=boxSize,
+            )
+
+            if point is not None:
+                points.append(point)
+
+        if not points:
+            self.lastSkipReason = (
+                "coordinates_not_found_for_tomogram "
+                "tomogramId=%s targetKeys=%s"
+            ) % (str(tomogramId), sorted(targetKeys))
+            return None
+
+        return points
+
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:
             self._storedSet = self.setMapper.getStoredSet(
@@ -773,3 +815,182 @@ class PostgresqlCoords3dReader:
         if isinstance(parsed, dict):
             return parsed
         return {}
+
+    def _resolveTomogramTargetKeys(
+            self,
+            storedSet: Dict[str, Any],
+            tomogramId: Any,
+    ) -> Set[str]:
+        requested = self._toTextCandidate(tomogramId)
+        if not requested:
+            return set()
+
+        targetKeys = {requested}
+
+        linkedTomograms = self._getLinkedTomogramsFromProperties(storedSet)
+        for item in linkedTomograms:
+            normalized = self._normalizeLinkedTomogramItem(item)
+            if normalized is None:
+                continue
+
+            matchKeys = self._getTomogramMatchKeys(normalized)
+            if requested in matchKeys:
+                targetKeys.update(matchKeys)
+
+        countsByKey = self._countCoordinatesByTomogramKey(storedSet)
+        coordinateKeys = set(countsByKey.keys())
+
+        payload = self._buildTomogramPayloadFromProjectSets(
+            coordinateKeys=coordinateKeys,
+            countsByKey=countsByKey,
+        )
+
+        for item in payload or []:
+            matchKeys = self._getTomogramMatchKeys(item)
+            if requested in matchKeys:
+                targetKeys.update(matchKeys)
+
+        return {
+            str(value)
+            for value in targetKeys
+            if value is not None and str(value).strip()
+        }
+
+    def _buildCoordinatePoint(
+            self,
+            item: Dict[str, Any],
+            values: Dict[str, Any],
+            tomogramId: Any,
+            boxSize: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        x = self._getCoordinateValue(values, "x")
+        y = self._getCoordinateValue(values, "y")
+        z = self._getCoordinateValue(values, "z")
+
+        if x is None or y is None or z is None:
+            return None
+
+        point: Dict[str, Any] = {
+            "x": float(x),
+            "y": float(y),
+            "z": float(z),
+            "tomoId": tomogramId,
+        }
+
+        objId = item.get("scipionItemId")
+        if objId is not None:
+            point["id"] = objId
+
+        classId = self._extractPointClassId(values)
+        if classId is not None:
+            point["classId"] = classId
+
+        score = self._extractPointScore(values)
+        if score is not None:
+            point["score"] = score
+
+        label = item.get("label") or self._firstValueBySuffix(values, ["objlabel", "label"])
+        if label not in (None, ""):
+            point["label"] = str(label)
+
+        matrix = self._extractPointMatrix(values)
+        if matrix is not None:
+            point["matrix"] = matrix
+        else:
+            point["matrix"] = []
+
+        if boxSize is not None:
+            point["radius"] = float(boxSize)
+
+        return point
+
+    def _getCoordinateValue(self, values: Dict[str, Any], axis: str) -> Optional[float]:
+        normalizedAxis = self._normalizeKey(axis)
+
+        preferredKeys = {
+            "x": "bottomleftx",
+            "y": "bottomlefty",
+            "z": "bottomleftz",
+        }
+
+        preferredKey = preferredKeys.get(normalizedAxis)
+        if preferredKey is None:
+            return None
+
+        for key, value in values.items():
+            if self._normalizeKey(key) == preferredKey:
+                return self._toOptionalFloat(value)
+
+        return None
+
+    def _extractPointClassId(self, values: Dict[str, Any]) -> Optional[Any]:
+        return self._firstValueBySuffix(
+            values,
+            [
+                "classid",
+                "class",
+                "groupid",
+                "group",
+            ],
+        )
+
+    def _extractPointScore(self, values: Dict[str, Any]) -> Optional[float]:
+        raw = self._firstValueBySuffix(
+            values,
+            [
+                "score",
+                "weight",
+                "prob",
+                "probability",
+                "confidence",
+            ],
+        )
+
+        return self._toOptionalFloat(raw)
+
+    def _extractPointMatrix(self, values: Dict[str, Any]) -> Optional[Any]:
+        raw = self._firstValueBySuffix(
+            values,
+            [
+                "matrix",
+                "transform",
+                "transformmatrix",
+                "transformationmatrix",
+            ],
+        )
+
+        if raw is None:
+            return None
+
+        parsed = self._parseJsonValue(raw)
+        if isinstance(parsed, list):
+            return parsed
+
+        return None
+
+    def _extractBoxSize(self, storedSet: Dict[str, Any]) -> Optional[float]:
+        properties = self._normalizeJsonObject(storedSet.get("properties"))
+
+        raw = self._firstValueBySuffix(
+            properties,
+            [
+                "boxsize",
+                "box_size",
+                "radius",
+            ],
+        )
+
+        value = self._toOptionalFloat(raw)
+        if value is not None:
+            return value
+
+        for item in storedSet.get("setProperties") or []:
+            key = item.get("key")
+            if self._normalizeKey(key) not in {"boxsize", "radius"}:
+                continue
+
+            value = self._toOptionalFloat(item.get("value"))
+            if value is not None:
+                return value
+
+        return None

@@ -7958,6 +7958,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             tomogramId: Union[int, str],
+            mapper=None,
     ):
         """
         Return a flat list of 3D points for one tomogram.
@@ -7981,6 +7982,27 @@ class ProjectService:
           ...
         ]
         """
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getPoints(tomogramId)
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D points reader. projectId=%s protocolId=%s outputName=%s tomogramId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tomogramId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
