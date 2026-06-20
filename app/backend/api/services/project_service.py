@@ -6080,6 +6080,30 @@ class ProjectService:
 
         return None
 
+    def _parseTiltSeriesFramePath(
+            self,
+            framePath: Any,
+            fallbackIndex: int,
+    ) -> Tuple[str, int]:
+        pathText = str(framePath or "").strip()
+        if not pathText:
+            raise HTTPException(
+                status_code=404,
+                detail="Tilt image path not found in PostgreSQL metadata",
+            )
+
+        imageIndex = int(fallbackIndex)
+        imagePath = pathText
+
+        if "@" in pathText:
+            indexText, imagePath = pathText.split("@", 1)
+            try:
+                imageIndex = int(float(indexText))
+            except Exception:
+                imageIndex = int(fallbackIndex)
+
+        return os.path.abspath(imagePath), imageIndex
+
     # ======================================================================
     # Analyze Results: Resolve viewer
     # ======================================================================
@@ -7182,7 +7206,82 @@ class ProjectService:
             applyTransform: bool = True,
             inline: bool = True,
             requestHeaders: Optional[Dict[str, str]] = None,
+            mapper=None,
     ):
+
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            frame = pgReader.getTiltImageFrame(tiltSeriesId, index)
+            if frame is not None:
+                try:
+                    imagePath, imageIndex = self._parseTiltSeriesFramePath(
+                        frame.get("path"),
+                        fallbackIndex=int(index),
+                    )
+
+                    cacheKey = self._buildTiltSeriesPreviewCacheKey(
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        tiltSeriesId=tiltSeriesId,
+                        index=imageIndex,
+                        size=size,
+                        fmt=fmt,
+                        applyTransform=applyTransform,
+                        inline=inline,
+                        imagePath=imagePath,
+                    )
+
+                    cachedResponse = self._getTiltSeriesPreviewFromCache(cacheKey)
+                    if cachedResponse is not None:
+                        return cachedResponse
+
+                    rot = None
+                    shifts = None
+
+                    if applyTransform:
+                        rot = frame.get("rot")
+                        shiftX = frame.get("shiftX")
+                        shiftY = frame.get("shiftY")
+                        if shiftX is not None and shiftY is not None:
+                            shifts = (shiftX, shiftY)
+
+                    preview = OutputsPreview(
+                        currentProject=self.currentProject,
+                        protocol=None,
+                        output=None,
+                        requestHeaders=requestHeaders,
+                    )
+
+                    response = preview.renderImageFromFilePath(
+                        imagePath,
+                        size=size,
+                        fmt=fmt,
+                        index=imageIndex,
+                        applyTransform=applyTransform,
+                        inline=inline,
+                        rot=rot,
+                        shifts=shifts,
+                    )
+
+                    return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+                except Exception:
+                    logger.exception(
+                        "Failed to render TiltSeries image from PostgreSQL. projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s index=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        tiltSeriesId,
+                        index,
+                    )
+
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
         ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
 
