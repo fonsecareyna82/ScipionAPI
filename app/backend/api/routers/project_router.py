@@ -2398,7 +2398,8 @@ def createCoords3dOutputFromPoints(projectId: int,
         result = service.createCoords3dOutputFromPointsService(projectId=projectId,
                                                                protocolId=protocolId,
                                                                outputName=outputName,
-                                                               payload=payload)
+                                                               payload=payload,
+                                                               mapper=mapper,)
         resp = JSONResponse(result or {"success": True, "outputName": result['outputName']})
         resp.headers["X-Debug-Auth"] = "ok"
         resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
