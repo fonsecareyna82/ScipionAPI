@@ -6374,6 +6374,7 @@ class ProjectService:
             applyTransform: bool = False,
             rot=None,
             shifts=None,
+            mapper=None,
     ) -> Response:
         """
             Render a single CTFtomo PSD image using the OutputsPreview pipeline.
@@ -6384,6 +6385,50 @@ class ProjectService:
             - index is used when the PSD is stored in a stack file.
             - applyTransform/rot/shifts are optional alignment parameters.
             """
+        if mapper is not None and psdPath:
+            try:
+                splitPath = str(psdPath).split("@")
+                imageIndex = int(index)
+
+                if len(splitPath) > 1:
+                    try:
+                        imageIndex = int(float(splitPath[0]))
+                    except Exception:
+                        imageIndex = int(index)
+
+                candidatePath = Path(splitPath[-1]).expanduser()
+
+                if candidatePath.is_absolute():
+                    absPath = candidatePath.resolve()
+
+                    if absPath.exists() and absPath.is_file():
+                        preview = OutputsPreview(
+                            currentProject=self.currentProject,
+                            protocol=None,
+                            output=None,
+                        )
+
+                        return preview.renderImageFromFilePath(
+                            filePath=str(absPath),
+                            size=size,
+                            fmt=fmt,
+                            index=imageIndex,
+                            inline=inline,
+                            quality=quality,
+                            applyTransform=applyTransform and rot is not None and shifts is not None,
+                            rot=rot,
+                            shifts=shifts,
+                        )
+
+            except Exception:
+                logger.exception(
+                    "Failed to render CTFTomo PSD from PostgreSQL metadata. projectId=%s protocolId=%s outputName=%s psdPath=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    psdPath,
+                )
+
         protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
         if protocol is None:
             raise HTTPException(
