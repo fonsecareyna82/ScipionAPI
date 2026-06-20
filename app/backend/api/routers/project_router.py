@@ -1792,6 +1792,7 @@ def getTiltSeriesFrames(
             protocolId=protocolId,
             outputName=outputName,
             tiltSeriesId=tiltSeriesId,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
