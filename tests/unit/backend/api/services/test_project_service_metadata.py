@@ -25,7 +25,6 @@
 # ******************************************************************************
 
 import importlib
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -192,8 +191,9 @@ class FakeTable:
 
 class FakeDao:
     # fakeDao
-    def __init__(self):
-        self._objectsType = {"create subset": "SetOfParticles"}
+    def __init__(self, objectsType=None, actionAliases=None):
+        self._objectsType = objectsType or {"create subset": "SetOfParticles"}
+        self._actionAliases = actionAliases or {}
         self.fillTableCalls = []
 
     def fillTable(self, table, objMgr):
@@ -204,14 +204,18 @@ class FakeDao:
             }
         )
 
+    def _getActionAliasForTableName(self, tableName):
+        return self._actionAliases.get(tableName, "")
+
 
 class FakeObjectManager:
     # fakeObjectManager
-    def __init__(self, tables, rowsByTable, rowCounts=None, dao=None):
+    def __init__(self, tables, rowsByTable, rowCounts=None, dao=None, fileName=""):
         self._tables = tables
         self._rowsByTable = rowsByTable
         self._rowCounts = rowCounts or {}
         self._dao = dao or FakeDao()
+        self._fileName = fileName
 
     def getTables(self):
         return self._tables
@@ -260,12 +264,18 @@ class FakeProtocol:
 
 class FakeCurrentProject:
     # fakeCurrentProject
-    def __init__(self, protocol):
+    def __init__(self, protocol, projectPath=None):
         self._protocol = protocol
+        self._projectPath = projectPath
         self.launchedProtocols = []
 
     def getProtocol(self, protocolId):
         return self._protocol
+
+    def getPath(self):
+        if self._projectPath is None:
+            raise AttributeError("Project path is not set")
+        return str(self._projectPath)
 
     def newProtocol(self, *args, **kwargs):
         return self._protocol.newProtocol(*args, **kwargs)
@@ -290,9 +300,48 @@ def service(projectServiceModule, tmp_path):
     protocol = FakeProtocol("outputParticles", output)
 
     instance = object.__new__(projectServiceModule.ProjectService)
-    instance.currentProject = FakeCurrentProject(protocol)
+    instance.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
     instance.tomoList = {}
     return instance
+
+
+def patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=None):
+    # patchOpenMetadataTable
+    def openMetadataTable(projectId, protocolId, outputName, tableName, mapper=None):
+        if calls is not None:
+            calls.append(
+                {
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "tableName": tableName,
+                    "mapper": mapper,
+                }
+            )
+        return objMgr, table
+
+    monkeypatch.setattr(service, "_openMetadataTable", openMetadataTable)
+
+
+def patchObjectManagerForOutput(service, monkeypatch, objMgr, calls=None):
+    # patchObjectManagerForOutput
+    def getMetadataObjectManagerForOutput(projectId, protocolId, outputName, mapper=None):
+        if calls is not None:
+            calls.append(
+                {
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "mapper": mapper,
+                }
+            )
+        return objMgr
+
+    monkeypatch.setattr(
+        service,
+        "_getMetadataObjectManagerForOutput",
+        getMetadataObjectManagerForOutput,
+    )
 
 
 def test_ListOutputMetadataTablesServiceReturnsSummaries(service, monkeypatch):
@@ -315,20 +364,26 @@ def test_ListOutputMetadataTablesServiceReturnsSummaries(service, monkeypatch):
         rowsByTable={"objects": [], "classes": []},
         rowCounts={"objects": 11, "classes": 3},
     )
+    mapper = object()
+    calls = []
 
-    monkeypatch.setattr(
-        service,
-        "_resolveOutputForMetadata",
-        lambda protocolId, outputName: (None, None, "/tmp/fake.sqlite"),
-    )
-    monkeypatch.setattr(service, "_getMetadataObjectManager", lambda metaPath: objMgr)
+    patchObjectManagerForOutput(service, monkeypatch, objMgr, calls=calls)
 
     result = service.listOutputMetadataTablesService(
         projectId=1,
         protocolId=10,
         outputName="outputParticles",
+        mapper=mapper,
     )
 
+    assert calls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "outputName": "outputParticles",
+            "mapper": mapper,
+        }
+    ]
     assert result == [
         {
             "name": "objects",
@@ -358,16 +413,32 @@ def test_GetMetadataTableSchemaServiceBuildsColumns(service, monkeypatch):
         columns=columns,
         hasColumnId=True,
     )
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": []},
+    )
+    mapper = object()
+    calls = []
 
-    monkeypatch.setattr(service, "_openMetadataTable", lambda protocolId, outputName, tableName: (object(), table))
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
 
     result = service.getMetadataTableSchemaService(
         projectId=1,
         protocolId=10,
         outputName="outputParticles",
         tableName="objects",
+        mapper=mapper,
     )
 
+    assert calls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "outputName": "outputParticles",
+            "tableName": "objects",
+            "mapper": mapper,
+        }
+    ]
     assert result["name"] == "objects"
     assert result["alias"] == "Particles"
     assert result["hasColumnId"] is True
@@ -416,6 +487,120 @@ def test_GetMetadataTableSchemaServiceBuildsColumns(service, monkeypatch):
     ]
 
 
+def test_GetMetadataTableSchemaServiceReturnsActionsForChildTables(service, monkeypatch):
+    table = FakeTable(
+        name="Class001_Objects",
+        alias="Class001_Particle",
+        columns=[],
+        actions=[FakeAction("Particle"), FakeAction("Particle")],
+    )
+    objMgr = FakeObjectManager(
+        tables={"Class001_Objects": table},
+        rowsByTable={"Class001_Objects": []},
+    )
+
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    result = service.getMetadataTableSchemaService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="Class001_Objects",
+        mapper=object(),
+    )
+
+    assert result["name"] == "Class001_Objects"
+    assert result["alias"] == "Class001_Particle"
+    assert result["actions"] == ["Particle"]
+
+
+def test_GetMetadataTableSchemaServiceDoesNotReturnActionsForProperties(service, monkeypatch):
+    table = FakeTable(
+        name="Properties",
+        alias="Properties",
+        columns=[FakeColumn("key", "key", StrRenderer())],
+        actions=[FakeAction("Particle")],
+    )
+    objMgr = FakeObjectManager(
+        tables={"Properties": table},
+        rowsByTable={"Properties": []},
+    )
+
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    result = service.getMetadataTableSchemaService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="Properties",
+        mapper=object(),
+    )
+
+    assert result["name"] == "Properties"
+    assert result["alias"] == "Properties"
+    assert result["actions"] == []
+
+
+def test_ResolveMetadataActionOutputClassNameReturnsSetOfVolumesForClass3D(service):
+    table = FakeTable(
+        name="objects",
+        alias="SetOfClasses3D",
+        columns=[],
+        actions=[FakeAction("Volumes")],
+    )
+    dao = FakeDao(
+        objectsType={},
+        actionAliases={"objects": "Class3D"},
+    )
+
+    result = service._resolveMetadataActionOutputClassName(
+        dao=dao,
+        table=table,
+        action="Volumes",
+    )
+
+    assert result == "SetOfVolumes"
+
+
+def test_ResolveMetadataActionOutputClassNameReturnsSetOfAveragesForClass2D(service):
+    table = FakeTable(
+        name="objects",
+        alias="SetOfClasses2D",
+        columns=[],
+        actions=[FakeAction("Averages")],
+    )
+    dao = FakeDao(
+        objectsType={},
+        actionAliases={"objects": "Class2D"},
+    )
+
+    result = service._resolveMetadataActionOutputClassName(
+        dao=dao,
+        table=table,
+        action="Averages",
+    )
+
+    assert result == "SetOfAverages"
+
+
+def test_ResolveMetadataActionOutputClassNameUsesDaoObjectsType(service):
+    table = FakeTable(
+        name="objects",
+        alias="Particles",
+        columns=[],
+        actions=[FakeAction("Particle")],
+    )
+    dao = FakeDao(objectsType={"Particle": "SetOfParticles"})
+
+    result = service._resolveMetadataActionOutputClassName(
+        dao=dao,
+        table=table,
+        action="Particle",
+    )
+
+    assert result == "SetOfParticles"
+
+
 def test_GetMetadataTablePageServiceConvertsCells(service, monkeypatch):
     columns = [
         FakeColumn("id", "Id", IntRenderer()),
@@ -431,7 +616,7 @@ def test_GetMetadataTablePageServiceConvertsCells(service, monkeypatch):
         rowCounts={"objects": 1},
     )
 
-    monkeypatch.setattr(service, "_openMetadataTable", lambda protocolId, outputName, tableName: (objMgr, table))
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
 
     result = service.getMetadataTablePageService(
         projectId=1,
@@ -443,6 +628,7 @@ def test_GetMetadataTablePageServiceConvertsCells(service, monkeypatch):
         sortBy="id",
         asc=True,
         selectionOnly=False,
+        mapper=object(),
     )
 
     assert result == {
@@ -480,7 +666,7 @@ def test_GetMetadataTableWindowServiceReturnsOffsetWindow(service, monkeypatch):
         rowCounts={"objects": 3},
     )
 
-    monkeypatch.setattr(service, "_openMetadataTable", lambda protocolId, outputName, tableName: (objMgr, table))
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
 
     result = service.getMetadataTableWindowService(
         projectId=1,
@@ -492,6 +678,7 @@ def test_GetMetadataTableWindowServiceReturnsOffsetWindow(service, monkeypatch):
         selectionOnly=False,
         sortBy="label",
         asc=False,
+        mapper=object(),
     )
 
     assert table.sortBy == "label"
@@ -533,7 +720,7 @@ def test_ExportMetadataTableServiceReturnsCsv(service, monkeypatch):
         rowCounts={"objects": 2},
     )
 
-    monkeypatch.setattr(service, "_openMetadataTable", lambda protocolId, outputName, tableName: (objMgr, table))
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
 
     response = service.exportMetadataTableService(
         projectId=1,
@@ -543,6 +730,7 @@ def test_ExportMetadataTableServiceReturnsCsv(service, monkeypatch):
         fmt="csv",
         selectionOnly=False,
         ids=None,
+        mapper=object(),
     )
 
     text = response.body.decode("utf-8")
@@ -560,14 +748,10 @@ def test_RenderMetadataImageCellServiceReturnsPlaceholderWhenRowMissing(service,
         tables={"objects": table},
         rowsByTable={"objects": []},
         rowCounts={"objects": 0},
+        fileName="postgresql://project/1/protocol/10/output/outputParticles",
     )
 
-    monkeypatch.setattr(
-        service,
-        "_resolveOutputForMetadata",
-        lambda protocolId, outputName: (None, None, "/tmp/fake.sqlite"),
-    )
-    monkeypatch.setattr(service, "_openMetadataTable", lambda protocolId, outputName, tableName: (objMgr, table))
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
 
     response = service.renderMetadataImageCellService(
         projectId=1,
@@ -581,6 +765,7 @@ def test_RenderMetadataImageCellServiceReturnsPlaceholderWhenRowMissing(service,
         applyTransform=False,
         inline=True,
         fmt="png",
+        mapper=object(),
     )
 
     assert response.status_code == 200
@@ -599,7 +784,7 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
 
     output = FakeOutput(str(outputFile))
     protocol = FakeProtocol("outputParticles", output)
-    service.currentProject = FakeCurrentProject(protocol)
+    service.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
 
     table = FakeTable(
         name="objects",
@@ -607,21 +792,18 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         columns=[],
         actions=[FakeAction("create subset")],
     )
-    dao = FakeDao()
+    dao = FakeDao(objectsType={"create subset": "SetOfParticles"})
     objMgr = FakeObjectManager(
         tables={"objects": table},
         rowsByTable={"objects": []},
         dao=dao,
     )
+    mapper = object()
+    calls = []
 
-    monkeypatch.setattr(service, "_getMetadataObjectManager", lambda metaPath: objMgr)
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-
-    oldCwd = Path.cwd()
-    monkeypatch.chdir(tmp_path)
-    logsDir = tmp_path / "Logs"
-    logsDir.mkdir(parents=True, exist_ok=True)
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -632,15 +814,86 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         subsetName="subset A",
         ids=[3, 5, 7],
         currentUser={"id": 1},
-        mapper=object(),
+        mapper=mapper,
     )
 
-    assert result is True
+    assert result == {
+        "success": True,
+        "message": "Subset protocol was launched successfully",
+    }
+    assert calls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "outputName": "outputParticles",
+            "tableName": "objects",
+            "mapper": mapper,
+        }
+    ]
     assert len(protocol.newProtocolCalls) == 1
     call = protocol.newProtocolCalls[0]
     assert call["kwargs"]["inputObject"] is output
     assert call["kwargs"]["outputClassName"] == "SetOfParticles"
     assert call["kwargs"]["label"] == "subset A"
+    assert call["kwargs"]["sqliteFile"].startswith("Logs/selection_")
+    assert call["kwargs"]["sqliteFile"].endswith(".txt,")
     assert service.currentProject.launchedProtocols == [
         {"batchProtocol": True, "kwargs": call["kwargs"]}
     ]
+
+    selectionFiles = list((tmp_path / "Logs").glob("selection_*.txt"))
+    assert len(selectionFiles) == 1
+    assert selectionFiles[0].read_text(encoding="utf-8") == "3 5 7 "
+
+
+def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    outputFile = tmp_path / "metadata.sqlite"
+    outputFile.write_text("placeholder", encoding="utf-8")
+
+    output = FakeOutput(str(outputFile))
+    protocol = FakeProtocol("outputParticles", output)
+    service.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
+
+    table = FakeTable(
+        name="Class001_Objects",
+        alias="Class001_Particle",
+        columns=[],
+        actions=[FakeAction("Particle")],
+    )
+    dao = FakeDao(
+        objectsType={"Particle": "SetOfParticles"},
+        actionAliases={"Class001_Objects": "Class001_Particle"},
+    )
+    objMgr = FakeObjectManager(
+        tables={"Class001_Objects": table},
+        rowsByTable={"Class001_Objects": []},
+        dao=dao,
+    )
+
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
+    monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+
+    result = service.runMetadataTableActionService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="Class001_Objects",
+        action="Particle",
+        subsetName="class particles",
+        ids=[1, 2],
+        currentUser={"id": 1},
+        mapper=object(),
+    )
+
+    assert result["success"] is True
+    assert len(protocol.newProtocolCalls) == 1
+    call = protocol.newProtocolCalls[0]
+    assert call["kwargs"]["outputClassName"] == "SetOfParticles"
+    assert call["kwargs"]["sqliteFile"].startswith("Logs/selection_")
+    assert call["kwargs"]["sqliteFile"].endswith(".txt,Class001")
