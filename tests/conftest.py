@@ -308,6 +308,7 @@ class FakeProjectService:
             fmt,
             selectionOnly,
             ids,
+            mapper,
     ):
         self.lastExportMetadataTableCall = {
             "projectId": projectId,
