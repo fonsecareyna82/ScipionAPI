@@ -149,6 +149,46 @@ class FakeProjectService:
         )
         self.lastExportMetadataTableCall = None
 
+
+        self.metadataTablesResult = [
+            {
+                "name": "objects",
+                "alias": "Particles",
+                "rowCount": 1,
+                "hasColumnId": True,
+            }
+        ]
+
+        self.lastListOutputMetadataTablesCall = None
+
+        self.metadataTableSchemaResult = {
+            "name": "objects",
+            "alias": "Particles",
+            "hasColumnId": True,
+            "actions": ["Particle"],
+            "columns": [],
+        }
+        self.lastGetMetadataTableSchemaCall = None
+
+        self.metadataTablePageResult = {
+            "pageNumber": 1,
+            "pageSize": 20,
+            "totalRows": 1,
+            "rows": [
+                {
+                    "id": 1,
+                    "values": ["row-1"],
+                }
+            ],
+        }
+        self.lastGetMetadataTablePageCall = None
+
+        self.renderMetadataImageCellResponse = PlainTextResponse(
+            "image-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderMetadataImageCellCall = None
+
         self.listProjectsResult = [makeProjectOut()]
         self.lastListProjectsCall = None
 
@@ -274,6 +314,96 @@ class FakeProjectService:
             raise self.resolveViewerError
         return self.resolveViewerResult
 
+    def listOutputMetadataTablesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper,
+    ):
+        self.lastListOutputMetadataTablesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.metadataTablesResult
+
+    def getMetadataTableSchemaService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            mapper,
+    ):
+        self.lastGetMetadataTableSchemaCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "mapper": mapper,
+        }
+        return self.metadataTableSchemaResult
+
+    def getMetadataTablePageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            page,
+            pageSize,
+            sortBy,
+            asc,
+            selectionOnly,
+            mapper,
+    ):
+        self.lastGetMetadataTablePageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "page": page,
+            "pageSize": pageSize,
+            "sortBy": sortBy,
+            "asc": asc,
+            "selectionOnly": selectionOnly,
+            "mapper": mapper,
+        }
+        return self.metadataTablePageResult
+
+    def renderMetadataImageCellService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            rowId,
+            rowIndex,
+            columnName,
+            size,
+            applyTransform,
+            inline,
+            fmt,
+            mapper,
+    ):
+        self.lastRenderMetadataImageCellCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "rowId": rowId,
+            "rowIndex": rowIndex,
+            "columnName": columnName,
+            "size": size,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "fmt": fmt,
+            "mapper": mapper,
+        }
+        return self.renderMetadataImageCellResponse
+
     def runMetadataTableActionService(
             self,
             projectId,
@@ -318,6 +448,7 @@ class FakeProjectService:
             "fmt": fmt,
             "selectionOnly": selectionOnly,
             "ids": ids,
+            "mapper": mapper,
         }
         return self.exportMetadataTableResponse
 
