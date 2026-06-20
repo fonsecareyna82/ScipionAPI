@@ -7358,6 +7358,7 @@ class ProjectService:
             applyTransform: bool = True,
             inline: bool = True,
             requestHeaders: Optional[Dict[str, str]] = None,
+            mapper=None,
     ) -> Dict[str, Any]:
         # renderTiltSeriesImagesBatchService
         cleanIndices: List[int] = []
@@ -7394,6 +7395,7 @@ class ProjectService:
                     applyTransform=applyTransform,
                     inline=inline,
                     requestHeaders=requestHeaders,
+                    mapper=mapper,
                 )
 
                 body = getattr(response, "body", None) or b""

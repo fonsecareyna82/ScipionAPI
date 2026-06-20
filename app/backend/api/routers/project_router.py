@@ -1913,6 +1913,7 @@ def renderTiltSeriesImagesBatch(
             fmt=payload.fmt,
             applyTransform=payload.applyTransform,
             inline=payload.inline,
+            mapper=mapper
         )
 
         resp = JSONResponse(result or {})
