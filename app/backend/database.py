@@ -66,8 +66,8 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
-def getMapper():
-    # getPostgresqlMapper
+def _createMapper():
+    # createPostgresqlMapper
     from app.backend.mapper.postgresql import PostgresqlFlatMapper, PostgresqlDb
 
     dbName = _requireEnv("DATABASE_NAME")
@@ -76,3 +76,20 @@ def getMapper():
 
     db = PostgresqlDb(dbName=dbName, user=dbUser, password=dbPass)
     return PostgresqlFlatMapper(db)
+
+
+def getMapper():
+    # keepDirectMapperFactory
+    return _createMapper()
+
+
+def getMapperDependency():
+    # requestScopedMapperDependency
+    mapper = _createMapper()
+    try:
+        yield mapper
+    finally:
+        try:
+            mapper.db.close()
+        except Exception:
+            pass
