@@ -8794,6 +8794,122 @@ class ProjectService:
 
             return schema
 
+    def _normalizeMetadataSelectionIds(self, ids: List[int]) -> List[int]:
+        normalizedIds: List[int] = []
+
+        for rowId in ids or []:
+            try:
+                normalizedIds.append(int(rowId))
+            except Exception:
+                continue
+
+        if not normalizedIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing ids",
+            )
+
+        return normalizedIds
+
+    def _writeMetadataSelectionFile(self, ids: List[int]) -> str:
+        timeFormat = "%Y%m%d%H%M%S"
+        timestamp = datetime.now().strftime(timeFormat)
+        relativePath = "Logs/selection_%s.txt" % timestamp
+
+        projectPath = None
+        try:
+            projectPath = self.currentProject.getPath()
+        except Exception:
+            projectPath = None
+
+        if projectPath:
+            absolutePath = os.path.join(projectPath, relativePath)
+        else:
+            absolutePath = relativePath
+
+        directoryPath = os.path.dirname(absolutePath)
+        if directoryPath:
+            os.makedirs(directoryPath, exist_ok=True)
+
+        try:
+            with open(absolutePath, "w") as file:
+                for rowId in ids:
+                    file.write(str(rowId) + " ")
+
+            logger.debug("Metadata selection file was created: %s", absolutePath)
+        except Exception as e:
+            logger.exception("Error creating metadata selection file: %s", absolutePath)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating selection file: {e}",
+            )
+
+        return relativePath
+
+    def _buildMetadataSelectionArgument(self, selectionPath: str, tableName: str) -> str:
+        selectionArg = selectionPath + ","
+
+        if tableName != OBJECT_TABLE:
+            selectionArg += tableName.split("_Objects")[0]
+
+        return selectionArg
+
+    def _getMetadataActionAliasForTable(self, dao, table) -> str:
+        getActionAliasFn = getattr(dao, "_getActionAliasForTableName", None)
+        if callable(getActionAliasFn):
+            try:
+                actionAlias = str(getActionAliasFn(table.getName()) or "").strip()
+                if actionAlias:
+                    return actionAlias
+            except Exception:
+                pass
+
+        try:
+            return str(table.getAlias() or "").strip()
+        except Exception:
+            return ""
+
+    def _resolveMetadataActionOutputClassName(self, dao, table, action: str) -> str:
+        actionName = str(action or "").strip()
+        if not actionName:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing action",
+            )
+
+        validActions = self._getMetadataTableActionNames(table)
+        if actionName not in validActions:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported action '{actionName}' for table '{table.getName()}'",
+            )
+
+        actionAlias = self._getMetadataActionAliasForTable(dao, table)
+
+        if actionAlias == "Class2D" and actionName == "Averages":
+            return "SetOfAverages"
+
+        if actionAlias == "Class3D" and actionName == "Volumes":
+            return "SetOfVolumes"
+
+        objectsType = getattr(dao, "_objectsType", {}) or {}
+
+        if actionAlias == "Class2D":
+            objectsType.setdefault("Averages", "SetOfAverages")
+
+        if actionAlias == "Class3D":
+            objectsType.setdefault("Volumes", "SetOfVolumes")
+
+        outputClassName = objectsType.get(actionName)
+
+        if outputClassName:
+            return str(outputClassName)
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not resolve output class for action '{actionName}'",
+        )
+
     def runMetadataTableActionService(
             self,
             projectId: int,
@@ -8806,21 +8922,7 @@ class ProjectService:
             currentUser: Any,
             mapper: Any,
     ) -> Any:
-        timeFormat = '%Y%m%d%H%M%S'
-        now = datetime.now()
-        timestamp = now.strftime(timeFormat)
-        path = 'Logs/selection_%s.txt' % timestamp
-        try:
-            with open(path, 'w') as file:
-                for rowId in ids:
-                    file.write(str(rowId) + ' ')
-                file.close()
-            logger.debug(f"The file: {path} was created correctly.")
-        except Exception as e:
-            logger.error(f"Error creating the file: {e}")
-        path += ","  # Always add a comma, it is expected by the user subset protocol
-        if tableName != OBJECT_TABLE:
-            path += tableName.split('_Objects')[0]
+        selectionIds = self._normalizeMetadataSelectionIds(ids)
 
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
@@ -8830,45 +8932,68 @@ class ProjectService:
         if not hasattr(protocol, outputName):
             raise HTTPException(
                 status_code=404,
-                detail=f"Output '{outputName}' not found in protocol"
+                detail=f"Output '{outputName}' not found in protocol",
             )
 
         output = getattr(protocol, outputName)
         if output is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Output '{outputName}' is None"
+                detail=f"Output '{outputName}' is None",
             )
 
-        getFileNameFn = getattr(output, "getFileName", None)
-        if not callable(getFileNameFn):
-            raise HTTPException(
-                status_code=404,
-                detail="Output has no metadata file (getFileName not available)"
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                tableName=tableName,
+                mapper=mapper,
             )
 
-        objMgr = self._getMetadataObjectManager(str(output.getFileName()))
+            dao = objMgr.getDAO()
+            outputClassName = self._resolveMetadataActionOutputClassName(
+                dao=dao,
+                table=table,
+                action=action,
+            )
 
-        dao = objMgr.getDAO()
-        table = objMgr.getTable(tableName)
-        dao.fillTable(table, objMgr)
-        if table.getAlias() == 'Class2D':
-            dao._objectsType['Averages'] = 'SetOfAverages'
-        elif table.getAlias() == 'Class3D':
-            dao._objectsType['Volumes'] = 'SetOfVolumes'
-        outputClassName = dao._objectsType[action]
+        selectionPath = self._writeMetadataSelectionFile(selectionIds)
+        selectionArg = self._buildMetadataSelectionArgument(
+            selectionPath=selectionPath,
+            tableName=tableName,
+        )
 
         try:
-            batchProt = self.currentProject.newProtocol(ProtUserSubSet,
-                                                        inputObject=output,
-                                                        sqliteFile=path,
-                                                        outputClassName=outputClassName,
-                                                        other='',
-                                                        label=subsetName)
+            batchProt = self.currentProject.newProtocol(
+                ProtUserSubSet,
+                inputObject=output,
+                sqliteFile=selectionArg,
+                outputClassName=outputClassName,
+                other="",
+                label=subsetName,
+            )
+
             self.currentProject.launchProtocol(batchProt)
-            return True
+
+            return {
+                "success": True,
+                "message": "Subset protocol was launched successfully",
+            }
+
         except Exception as e:
-            return False
+            logger.exception(
+                "Failed to launch metadata table action. projectId=%s protocolId=%s outputName=%s tableName=%s action=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                action,
+            )
+            return {
+                "success": False,
+                "errors": [str(e)],
+            }
 
     def getMetadataTablePageService(
             self,
