@@ -71,6 +71,9 @@ class PostgresqlCtftomoReader:
         summary["tiltSeriesId"] = summary.get("tiltSeriesId") or str(tiltSeriesId)
         summary["nViews"] = len(frames)
 
+        if not self._hasCtftomoViewerContract(summary):
+            return None
+
         return summary
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
@@ -122,7 +125,7 @@ class PostgresqlCtftomoReader:
             childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
             summary["nViews"] = len(childItems)
 
-        dims = self._firstValueBySuffix(values, ["dim", "dims", "dimensions"])
+        dims = self._firstValueBySuffix(values, ["dim", "dims", "dimensions", "getDim"])
         if dims is not None:
             summary["dims"] = dims
 
@@ -167,10 +170,12 @@ class PostgresqlCtftomoReader:
 
     def _buildCtftomoMeasurementFrame(self, item: Dict[str, Any], position: int) -> Dict[str, Any]:
         values = item.get("values") or {}
+        viewId = item.get("scipionItemId") or position
 
         frame: Dict[str, Any] = {
-            "index": item.get("scipionItemId") or position,
-            "viewIndex": item.get("scipionItemId") or position,
+            "viewId": viewId,
+            "index": position,
+            "viewIndex": position,
         }
 
         tiltAngle = self._firstValueBySuffix(values, ["tiltangle"])
@@ -300,3 +305,30 @@ class PostgresqlCtftomoReader:
             return False
 
         return None
+
+    def _hasCtftomoViewerContract(self, payload: Dict[str, Any]) -> bool:
+        frames = payload.get("frames") or []
+        if not frames:
+            return False
+
+        if not payload.get("dims"):
+            return False
+
+        requiredNumericKeys = (
+            "tiltAngle",
+            "defocusU",
+            "defocusV",
+            "defocusAngle",
+            "resolution",
+            "order",
+        )
+
+        for frame in frames:
+            for key in requiredNumericKeys:
+                if self._toOptionalFloat(frame.get(key)) is None:
+                    return False
+
+            if not frame.get("psdFile"):
+                return False
+
+        return True
