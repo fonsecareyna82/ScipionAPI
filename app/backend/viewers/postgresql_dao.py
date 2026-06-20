@@ -152,6 +152,8 @@ class PostgresqlDAO(IDAO):
         self._tableColumns: Dict[str, List[Dict[str, Any]]] = {}
         self._useLogicalTables = False
         self._tableWithAdditionalInfo = None
+        self._aliases: Dict[str, str] = {}
+        self._objectsType: Dict[str, str] = {}
 
     # -------------------------------------------------------------------------
     # metadata-viewer DAO API
@@ -190,25 +192,33 @@ class PostgresqlDAO(IDAO):
                 if not tableName:
                     continue
 
+                tableAlias = logicalTable.get("alias") or tableName
+
                 table = Table(tableName)
-                table.setAlias(logicalTable.get("alias") or tableName)
+                table.setAlias(tableAlias)
 
                 self._tables[tableName] = table
+                self._aliases[tableName] = tableAlias
                 self._logicalTables[tableName] = logicalTable
                 self._tableColumns[tableName] = self.setMapper.getStoredSetTableColumns(
                     int(logicalTable["id"])
                 )
 
             self._addPropertiesTable()
+            self.composeObjectType()
             return self._tables
 
+        tableAlias = storedSet.get("setClassName") or self.outputName
+
         table = Table(OBJECT_TABLE)
-        table.setAlias(storedSet.get("setClassName") or self.outputName)
+        table.setAlias(tableAlias)
 
         self._tables[OBJECT_TABLE] = table
+        self._aliases[OBJECT_TABLE] = tableAlias
         self._columns = self._normalizeColumns(storedSet.get("columns") or [])
 
         self._addPropertiesTable()
+        self.composeObjectType()
         return self._tables
 
     def _addPropertiesTable(self) -> None:
@@ -218,6 +228,7 @@ class PostgresqlDAO(IDAO):
         table = Table(PROPERTIES_TABLE)
         table.setAlias(PROPERTIES_TABLE)
         self._tables[PROPERTIES_TABLE] = table
+        self._aliases[PROPERTIES_TABLE] = PROPERTIES_TABLE
 
     def fillTable(self, table, objectManager):
         tableName = table.getName()
@@ -330,8 +341,169 @@ class PostgresqlDAO(IDAO):
                 addShiftColumn(colNamePrefix + "_shiftY", -5, 1)
                 computedColsCount += 1
 
+        self.generateTableActions(table, objectManager)
+
         if table.getColumns():
             table.setSortingColumn(table.getColumns()[0].getName())
+
+    def composeObjectType(self) -> Dict[str, str]:
+        self._objectsType = {}
+
+        rootAlias = self._getActionAliasForTableName(OBJECT_TABLE)
+        rootObjectType = self._getRootObjectType()
+
+        if rootAlias and rootObjectType:
+            self._objectsType[rootAlias] = rootObjectType
+
+        for tableName in list(self._tables.keys()):
+            if tableName == PROPERTIES_TABLE:
+                continue
+
+            aliasText = self._getActionAliasForTableName(tableName)
+            if not aliasText:
+                continue
+
+            aliasParts = aliasText.split("_")
+            if len(aliasParts) != 2:
+                continue
+
+            objectName = aliasParts[1].strip()
+            if not objectName:
+                continue
+
+            objectType = self._composeSetObjectTypeFromAliasPart(objectName)
+            if objectName not in self._objectsType:
+                self._objectsType[objectName] = objectType
+
+        return self._objectsType
+
+    def _getRootObjectType(self) -> str:
+        try:
+            storedSet = self._getStoredSetHeader()
+        except Exception:
+            return self.outputName
+
+        setClassName = storedSet.get("setClassName")
+        if setClassName:
+            return str(setClassName)
+
+        return self.outputName
+
+    def _getActionAliasForTableName(self, tableName: str) -> str:
+        if tableName == PROPERTIES_TABLE:
+            return PROPERTIES_TABLE
+
+        logicalTable = self._logicalTables.get(tableName)
+        if logicalTable:
+            itemClassName = str(logicalTable.get("itemClassName") or "").strip()
+            if itemClassName:
+                if tableName == OBJECT_TABLE:
+                    return itemClassName
+
+                if tableName.endswith("_Objects"):
+                    prefix = tableName[: -len("_Objects")]
+                    return "%s_%s" % (prefix, itemClassName)
+
+        if tableName == OBJECT_TABLE:
+            try:
+                storedSet = self._getStoredSetHeader()
+                itemClassName = str(storedSet.get("itemClassName") or "").strip()
+                if itemClassName:
+                    return itemClassName
+            except Exception:
+                pass
+
+        return str(self._aliases.get(tableName) or tableName)
+
+    def _composeSetObjectTypeFromAliasPart(self, objectName: str) -> str:
+        objectName = str(objectName or "").strip()
+        if not objectName:
+            return ""
+
+        normalizedName = "ParticlesFlex" if objectName == "ParticleFlex" else objectName
+        lastChar = normalizedName[-1]
+
+        suffix = (
+            "s"
+            if lastChar in "aeiouAEIOU" or (lastChar != "s" and lastChar != "x")
+            else ""
+        )
+
+        return "SetOf%s%s" % (normalizedName, suffix)
+
+    def generateTableActions(self, table, objectManager) -> None:
+        if table.getName() == PROPERTIES_TABLE:
+            return
+
+        self.composeObjectType()
+
+        alias = self._getActionAliasForTableName(table.getName())
+        if not alias:
+            return
+
+        aliasParts = alias.split("_")
+
+        if alias.startswith("Class") and len(aliasParts) == 1:
+            rootObjectType = self._objectsType.get(alias)
+            if rootObjectType:
+                self._addTableAction(table, alias, rootObjectType, objectManager)
+
+            for actionName, objectType in self._objectsType.items():
+                if actionName == alias:
+                    continue
+
+                self._addTableAction(table, actionName, objectType, objectManager)
+                break
+
+            if alias == "Class2D":
+                self._addTableAction(table, "Averages", "SetOfAverages", objectManager)
+            elif alias == "Class3D":
+                self._addTableAction(table, "Volumes", "SetOfVolumes", objectManager)
+
+        elif alias.startswith("Class") and len(aliasParts) > 1:
+            actionName = aliasParts[1]
+            objectType = self._objectsType.get(actionName)
+            if objectType:
+                self._addTableAction(table, actionName, objectType, objectManager)
+
+        elif alias in self._objectsType and str(self._objectsType[alias]).startswith("SetOf"):
+            self._addTableAction(table, alias, self._objectsType[alias], objectManager)
+
+    def _addTableAction(self, table, actionName: str, objectType: str, objectManager) -> None:
+        actionName = str(actionName or "").strip()
+        objectType = str(objectType or "").strip()
+
+        if not actionName or not objectType:
+            return
+
+        try:
+            for action in table.getActions() or []:
+                if action.getName() == actionName:
+                    return
+        except Exception:
+            pass
+
+        try:
+            table.addAction(
+                actionName,
+                lambda table=table, objectType=objectType, objectManager=objectManager:
+                self.createSubsetCallback(table, objectType, objectManager),
+            )
+        except Exception:
+            logger.debug(
+                "Could not add PostgreSQL metadata action '%s' for object type '%s'",
+                actionName,
+                objectType,
+                exc_info=True,
+            )
+
+    def createSubsetCallback(self, table: Table, objectType: str, objectManager) -> bool:
+        logger.info(
+            "PostgreSQL metadata subset action requested. table=%s objectType=%s",
+            table.getName(),
+            objectType,
+        )
+        return False
 
     def _getColumnsForTable(self, tableName: str) -> List[Dict[str, Any]]:
         if tableName == PROPERTIES_TABLE:
