@@ -34,6 +34,7 @@ from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapp
 
 
 SELF_LABEL = "self"
+NESTED_LOGICAL_TABLES_VERSION = 2
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -76,6 +77,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 skippedProperties["lastSkipReason"] = "unchanged_signature"
                 skippedProperties["skippedLastSync"] = True
                 skippedProperties["incremental"] = True
+                skippedProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
                 if sourceMTime is not None:
                     skippedProperties["sourceMTime"] = sourceMTime
 
@@ -113,6 +115,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         itemClassName = self._getItemClassName(firstItem, itemSchema)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
+        initialProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -174,6 +177,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             finalProperties["lastSkipReason"] = None
             finalProperties["skippedLastSync"] = False
             finalProperties["incremental"] = True
+            finalProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
             if sourceMTime is not None:
                 finalProperties["sourceMTime"] = sourceMTime
             self._updateSetProperties(setId, finalProperties)
@@ -495,11 +499,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         """
         Persist child logical tables for complex Scipion set items.
 
-        First supported case:
-        - Class2D/Class3D-like items exposing iterItems()
-          -> ClassXXX_Objects table with the class members.
+        Supported examples:
+        - Class2D/Class3D items expose class members.
+        - TiltSeries items expose tilt images.
+        - Any item exposing iterItems() can expose a child logical table.
         """
-        if not self._isClassLikeNestedItem(parentItem):
+        if not self._hasNestedLogicalItems(parentItem):
             return
 
         childIterator = iter(self._iterNestedItems(parentItem))
@@ -511,8 +516,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         childColumns = self._getSetColumns(childSchema)
         childItemClassName = self._getItemClassName(firstChild, childSchema)
 
-        tableName = self._getNestedClassTableName(parentItemId)
-        tableAlias = self._getNestedClassTableAlias(tableName, childItemClassName)
+        tableName = self._getNestedLogicalTableName(parentItem, parentItemId)
+        tableAlias = self._getNestedLogicalTableAlias(tableName, childItemClassName)
 
         childTableId = self._upsertSetTable(
             setId=setId,
@@ -539,16 +544,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             batchSize=batchSize,
         )
 
-    def _isClassLikeNestedItem(self, item: Any) -> bool:
-        className = self._getClassName(item) or item.__class__.__name__
-        if not str(className).startswith("Class"):
+    def _hasNestedLogicalItems(self, item: Any) -> bool:
+        if item is None:
             return False
 
         iterItems = getattr(item, "iterItems", None)
-        if callable(iterItems):
-            return True
-
-        return False
+        return callable(iterItems)
 
     def _iterNestedItems(self, item: Any) -> Iterable[Any]:
         iterItems = getattr(item, "iterItems", None)
@@ -560,15 +561,70 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return iter(())
 
+    def _getNestedLogicalTableName(self, parentItem: Any, parentItemId: int) -> str:
+        className = self._getClassName(parentItem) or parentItem.__class__.__name__
+
+        if str(className).startswith("Class"):
+            return self._getNestedClassTableName(parentItemId)
+
+        stableName = self._getNestedItemStableName(
+            parentItem=parentItem,
+            parentItemId=parentItemId,
+            className=className,
+        )
+        return "%s_Objects" % self._sanitizeLogicalTableNamePart(stableName)
+
+    def _getNestedItemStableName(
+            self,
+            parentItem: Any,
+            parentItemId: int,
+            className: str,
+    ) -> str:
+        for getterName in ("getTsId", "getTomoId", "getObjLabel", "getName"):
+            value = self._callOptionalGetter(parentItem, getterName)
+            valueText = str(value or "").strip()
+            if valueText:
+                return valueText
+
+        try:
+            return "%s%03d" % (className or "Item", int(parentItemId))
+        except Exception:
+            return "%s%s" % (className or "Item", str(parentItemId))
+
+    def _sanitizeLogicalTableNamePart(self, value: Any) -> str:
+        text = str(value or "").strip()
+        chars = []
+        previousWasUnderscore = False
+
+        for char in text:
+            if char.isalnum():
+                chars.append(char)
+                previousWasUnderscore = False
+                continue
+
+            if char == "_" and not previousWasUnderscore:
+                chars.append("_")
+                previousWasUnderscore = True
+                continue
+
+            if not previousWasUnderscore:
+                chars.append("_")
+                previousWasUnderscore = True
+
+        cleanText = "".join(chars).strip("_")
+        return cleanText or "Item"
+
     def _getNestedClassTableName(self, parentItemId: int) -> str:
         try:
             return "Class%03d_Objects" % int(parentItemId)
         except Exception:
             return "Class%s_Objects" % str(parentItemId)
 
-    def _getNestedClassTableAlias(self, tableName: str, childItemClassName: str) -> str:
-        cleanClassName = str(childItemClassName or "Objects")
-        return tableName.replace("_Objects", "_%s" % cleanClassName)
+    def _getNestedLogicalTableAlias(self, tableName: str, childItemClassName: str) -> str:
+        cleanClassName = str(childItemClassName or "Objects").strip() or "Objects"
+        if tableName.endswith("_Objects"):
+            return "%s_%s" % (tableName[: -len("_Objects")], cleanClassName)
+        return "%s_%s" % (tableName, cleanClassName)
 
     def _upsertLogicalTableItems(
             self,
@@ -817,6 +873,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         sourceMTime: Optional[float],
     ) -> bool:
         if not existingProperties or not existingProperties.get("incremental"):
+            return False
+
+        storedNestedTablesVersion = self._toOptionalInt(
+            existingProperties.get("nestedTablesVersion")
+        )
+        if storedNestedTablesVersion != NESTED_LOGICAL_TABLES_VERSION:
             return False
 
         if itemsCountHint is None:
