@@ -1753,6 +1753,7 @@ def listOutputTiltSeries(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
