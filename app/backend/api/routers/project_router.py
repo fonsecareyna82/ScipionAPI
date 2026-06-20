@@ -2171,6 +2171,7 @@ def renderCtftomoPsdImage(
             fmt=fmt,
             applyTransform=applyTransform,
             inline=inline,
+            mapper=mapper,
         )
         resp.headers["X-Debug-Auth"] = "ok"
         resp.headers["X-Debug-UserId"] = str(
