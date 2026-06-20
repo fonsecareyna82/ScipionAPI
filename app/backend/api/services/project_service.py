@@ -7096,6 +7096,7 @@ class ProjectService:
         outputName: str,
         exclusions: Dict[str, Any],
         restack: bool,
+        mapper=None,
     ) -> Dict[str, Any]:
         """
         Create a new SetOfCTFTomoSeries applying per-series and per-tilt exclusions.
@@ -7157,20 +7158,47 @@ class ProjectService:
                 "restack": bool(restack),
                 "message": "No output was generated because it cannot be empty",
             }
+        postgresqlSync = None
+
         try:
             protocol._defineOutputs(**{newOutputName: outputSet})
             protocol._store()
+
+            if mapper is not None:
+                try:
+                    from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+                    setMapper = ScipionSetPostgresqlMapper(mapper.db)
+                    postgresqlSync = setMapper.storeSet(
+                        projectId=projectId,
+                        protocolDbId=protocolId,
+                        outputName=newOutputName,
+                        scipionSet=outputSet,
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "Failed to persist created CTFTomo output to PostgreSQL. projectId=%s protocolId=%s outputName=%s",
+                        projectId,
+                        protocolId,
+                        newOutputName,
+                    )
+
         except Exception:
-            logger.exception("Error attaching Ctftomo filtered set '%s' to protocol", newOutputName,)
+            logger.exception("Error attaching Ctftomo filtered set '%s' to protocol", newOutputName)
 
         logger.info(
-            "The new Ctftomo set (%s) has been created successfully with %d series", newOutputName, createdCount,)
+            "The new Ctftomo set (%s) has been created successfully with %d series",
+            newOutputName,
+            createdCount,
+        )
 
         return {
             "status": 0,
             "outputName": newOutputName,
             "createdSeries": createdCount,
             "restack": bool(restack),
+            "postgresqlSync": postgresqlSync,
         }
 
     def _buildTiltSeriesPreviewCacheKey(

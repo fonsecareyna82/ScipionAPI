@@ -2091,6 +2091,7 @@ def createNewSetOfCtftomoSeries(
             outputName=outputName,
             exclusions=payload.exclusions,
             restack=payload.restack,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
