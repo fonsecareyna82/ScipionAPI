@@ -8544,6 +8544,45 @@ class ProjectService:
 
         return objMgr, table
 
+    def _isPropertiesMetadataTable(self, table) -> bool:
+        try:
+            tableName = str(table.getName() or "").strip()
+        except Exception:
+            tableName = ""
+
+        try:
+            tableAlias = str(table.getAlias() or "").strip()
+        except Exception:
+            tableAlias = ""
+
+        return tableName == "Properties" or tableAlias == "Properties"
+
+    def _getMetadataTableActionNames(self, table) -> List[str]:
+        if self._isPropertiesMetadataTable(table):
+            return []
+
+        try:
+            tableActions = table.getActions() or []
+        except Exception:
+            return []
+
+        actionNames: List[str] = []
+        seen = set()
+
+        for action in tableActions:
+            try:
+                actionName = str(action.getName() or "").strip()
+            except Exception:
+                actionName = ""
+
+            if not actionName or actionName in seen:
+                continue
+
+            seen.add(actionName)
+            actionNames.append(actionName)
+
+        return actionNames
+
     def _rendererTypeFromInstance(self, renderer) -> str:
         """
         Map renderer class name to a simple type label for the API.
@@ -8663,7 +8702,6 @@ class ProjectService:
             visibleLabels = []
             orderLabels = []
             renderLabels = []
-            actions = []
 
             if table.getName() == SQLITE_OBJECT_TABLE:
                 from pwem.viewers.viewers_data import RegistryViewerConfig
@@ -8689,8 +8727,8 @@ class ProjectService:
                 visibleLabels = visibleLabelsStr.split()
                 orderLabels = orderLabelsStr.split()
                 renderLabels = renderLabelsStr.split()
-                for action in table.getActions():
-                    actions.append(action.getName())
+
+            actions = self._getMetadataTableActionNames(table)
 
             try:
                 hasColumnId = table.hasColumnId()
