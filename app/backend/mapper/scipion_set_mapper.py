@@ -27,10 +27,12 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+import logging
 
 import psycopg2.extras
 
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
+logger = logging.getLogger(__name__)
 
 try:
     from tomo.constants import BOTTOM_LEFT_CORNER
@@ -39,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 6
+NESTED_LOGICAL_TABLES_VERSION = 7
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -171,6 +173,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     firstItem=firstItem,
                     remainingItems=itemIterator,
                     batchSize=batchSize,
+                    scipionSet=scipionSet,
                 )
 
             finalProperties = dict(initialProperties)
@@ -426,6 +429,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             firstItem: Any,
             remainingItems: Iterator[Any],
             batchSize: int,
+            scipionSet: Optional[Any] = None,
     ) -> Tuple[int, Optional[int]]:
         rows: List[Tuple[Any, ...]] = []
         tableRows: List[Tuple[Any, ...]] = []
@@ -438,7 +442,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 raise ValueError("Cannot store a Scipion set item without getObjId()/getId()")
 
             maxItemId = itemId if maxItemId is None else max(maxItemId, itemId)
-            itemValues = self._getItemValues(item)
+            itemValues = self._getItemValues(item, scipionSet=scipionSet)
 
             rows.append(
                 (
@@ -1002,7 +1006,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     def _getItemSchema(self, item: Any) -> Dict[str, Any]:
         return self._getObjDict(item, includeClass=True)
 
-    def _getItemValues(self, item: Any) -> Dict[str, Any]:
+    def _getItemValues(self, item: Any, scipionSet: Optional[Any] = None) -> Dict[str, Any]:
         rawValues = self._getObjDict(item, includeClass=False)
 
         values = {
@@ -1011,21 +1015,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if str(label) != SELF_LABEL
         }
 
-        self._addCoordinate3dBottomLeftCoordinates(item, values)
+        self._addCoordinate3dBottomLeftCoordinates(
+            item=item,
+            values=values,
+            scipionSet=scipionSet,
+        )
 
         return values
 
-    def _addCoordinate3dBottomLeftCoordinates(self, item: Any, values: Dict[str, Any]) -> None:
-        coords = self._getCoordinate3dBottomLeftCoordinates(item)
+    def _addCoordinate3dBottomLeftCoordinates(
+            self,
+            item: Any,
+            values: Dict[str, Any],
+            scipionSet: Optional[Any] = None,
+    ) -> None:
+        coords = self._getCoordinate3dBottomLeftCoordinates(
+            item=item,
+            values=values,
+            scipionSet=scipionSet,
+        )
         if coords is None:
             return
 
         x, y, z = coords
-
-        values["bottomLeftX"] = x
-        values["bottomLeftY"] = y
-        values["bottomLeftZ"] = z
-        values["coordinateConvention"] = "BOTTOM_LEFT_CORNER"
 
         if "_x" in values and "rawX" not in values:
             values["rawX"] = values.get("_x")
@@ -1034,10 +1046,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if "_z" in values and "rawZ" not in values:
             values["rawZ"] = values.get("_z")
 
-    def _getCoordinate3dBottomLeftCoordinates(self, item: Any) -> Optional[Tuple[float, float, float]]:
+        values["bottomLeftX"] = x
+        values["bottomLeftY"] = y
+        values["bottomLeftZ"] = z
+        values["coordinateConvention"] = "BOTTOM_LEFT_CORNER"
+
+    def _getCoordinate3dBottomLeftCoordinates(
+            self,
+            item: Any,
+            values: Optional[Dict[str, Any]] = None,
+            scipionSet: Optional[Any] = None,
+    ) -> Optional[Tuple[float, float, float]]:
         if BOTTOM_LEFT_CORNER is None:
             return None
 
+        self._attachCoordinate3dTomogram(
+            item=item,
+            values=values or {},
+            scipionSet=scipionSet,
+        )
+
+        return self._readCoordinate3dBottomLeftCoordinates(item)
+
+    def _readCoordinate3dBottomLeftCoordinates(self, item: Any) -> Optional[Tuple[float, float, float]]:
         getX = getattr(item, "getX", None)
         getY = getattr(item, "getY", None)
         getZ = getattr(item, "getZ", None)
@@ -1053,6 +1084,147 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
         except Exception:
             return None
+
+    def _attachCoordinate3dTomogram(
+            self,
+            item: Any,
+            values: Dict[str, Any],
+            scipionSet: Optional[Any],
+    ) -> bool:
+        if scipionSet is None:
+            return False
+
+        tomogram = self._resolveCoordinate3dTomogram(
+            item=item,
+            values=values,
+            scipionSet=scipionSet,
+        )
+        if tomogram is None:
+            return False
+
+        setVolume = getattr(item, "setVolume", None)
+        if callable(setVolume):
+            try:
+                setVolume(tomogram)
+                return True
+            except Exception:
+                pass
+
+        return False
+
+    def _resolveCoordinate3dTomogram(
+            self,
+            item: Any,
+            values: Dict[str, Any],
+            scipionSet: Any,
+    ) -> Optional[Any]:
+        candidateKeys = self._getCoordinate3dTomogramCandidateKeys(item, values)
+        if not candidateKeys:
+            return None
+
+        getTomogram = getattr(scipionSet, "_getTomogram", None)
+        if callable(getTomogram):
+            for key in candidateKeys:
+                for candidate in self._expandTomogramLookupKey(key):
+                    try:
+                        tomogram = getTomogram(candidate)
+                    except Exception:
+                        tomogram = None
+
+                    if tomogram is not None:
+                        return tomogram
+
+        for tomogram in self._iterLinkedTomograms(scipionSet):
+            tomogramKeys = self._getTomogramObjectMatchKeys(tomogram)
+            if tomogramKeys.intersection(candidateKeys):
+                return tomogram
+
+        return None
+
+    def _getCoordinate3dTomogramCandidateKeys(
+            self,
+            item: Any,
+            values: Dict[str, Any],
+    ) -> set:
+        candidates = []
+
+        for keyName in (
+            "_tomoId",
+            "_volId",
+            "_volumeId",
+            "tomoId",
+            "tomogramId",
+            "volId",
+            "volumeId",
+            "tsId",
+            "tiltSeriesId",
+        ):
+            value = self._getValueByNormalizedKey(values, keyName)
+            text = self._toMatchText(value)
+            if text:
+                candidates.append(text)
+
+        for getterName in ("getTomoId", "getVolId", "getVolumeId", "getTsId"):
+            value = self._callOptionalGetter(item, getterName)
+            text = self._toMatchText(value)
+            if text:
+                candidates.append(text)
+
+        return {
+            str(value)
+            for value in candidates
+            if value is not None and str(value).strip()
+        }
+
+    def _getTomogramObjectMatchKeys(self, tomogram: Any) -> set:
+        candidates = []
+
+        for getterName in ("getObjId", "getTsId", "getTomoId", "getNameId", "getObjLabel"):
+            value = self._callOptionalGetter(tomogram, getterName)
+            text = self._toMatchText(value)
+            if text:
+                candidates.append(text)
+
+        return {
+            str(value)
+            for value in candidates
+            if value is not None and str(value).strip()
+        }
+
+    def _expandTomogramLookupKey(self, key: Any) -> List[Any]:
+        values = [key]
+
+        intValue = self._toOptionalInt(key)
+        if intValue is not None:
+            values.append(intValue)
+
+        return values
+
+    def _getValueByNormalizedKey(self, values: Dict[str, Any], keyName: str) -> Any:
+        targetKey = self._normalizeMatchKey(keyName)
+
+        for key, value in values.items():
+            if self._normalizeMatchKey(key) == targetKey:
+                return value
+
+        return None
+
+    def _normalizeMatchKey(self, value: Any) -> str:
+        return str(value).replace("_", "").replace(".", "").replace("-", "").lower()
+
+    def _toMatchText(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        getter = getattr(value, "get", None)
+        if callable(getter):
+            try:
+                value = getter()
+            except Exception:
+                return None
+
+        text = str(value).strip()
+        return text or None
 
     def _callCoordinateGetter(self, item: Any, getterName: str) -> Optional[float]:
         getter = getattr(item, getterName, None)
@@ -1336,42 +1508,3 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         yield firstItem
         for item in remainingItems:
             yield item
-
-    def _addCoordinate3dBottomLeftCoordinates(self, item: Any, values: Dict[str, Any]) -> None:
-        coords = self._getCoordinate3dBottomLeftCoordinates(item)
-        if coords is None:
-            return
-
-        x, y, z = coords
-
-        if "_x" in values and "rawX" not in values:
-            values["rawX"] = values.get("_x")
-        if "_y" in values and "rawY" not in values:
-            values["rawY"] = values.get("_y")
-        if "_z" in values and "rawZ" not in values:
-            values["rawZ"] = values.get("_z")
-
-        values["bottomLeftX"] = x
-        values["bottomLeftY"] = y
-        values["bottomLeftZ"] = z
-        values["coordinateConvention"] = "BOTTOM_LEFT_CORNER"
-
-    def _getCoordinate3dBottomLeftCoordinates(self, item: Any) -> Optional[Tuple[float, float, float]]:
-        if BOTTOM_LEFT_CORNER is None:
-            return None
-
-        getX = getattr(item, "getX", None)
-        getY = getattr(item, "getY", None)
-        getZ = getattr(item, "getZ", None)
-
-        if not callable(getX) or not callable(getY) or not callable(getZ):
-            return None
-
-        try:
-            x = float(getX(BOTTOM_LEFT_CORNER))
-            y = float(getY(BOTTOM_LEFT_CORNER))
-            z = float(getZ(BOTTOM_LEFT_CORNER))
-        except Exception:
-            return None
-
-        return x, y, z
