@@ -32,8 +32,10 @@
 # *
 # ******************************************************************************
 
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional
+
 
 import numpy
 
@@ -67,8 +69,12 @@ EXCLUDED_COLUMNS = ["label", "comment", "creation", "_streamState"]
 PERMANENT_COLUMNS = ["id", "enabled"]
 
 OBJECT_TABLE = "objects"
+PROPERTIES_TABLE = "Properties"
 ENABLED_COLUMN = "enabled"
 EXTENDED_COLUMN_NAME = "stack"
+PROPERTY_KEY_COLUMN = "key"
+PROPERTY_VALUE_COLUMN = "value"
+ADITIONAL_INFO_DISPLAY_COLUMN_LIST = ["_size", "id"]
 
 
 def _guessType(value):
@@ -145,6 +151,7 @@ class PostgresqlDAO(IDAO):
         self._logicalTables: Dict[str, Dict[str, Any]] = {}
         self._tableColumns: Dict[str, List[Dict[str, Any]]] = {}
         self._useLogicalTables = False
+        self._tableWithAdditionalInfo = None
 
     # -------------------------------------------------------------------------
     # metadata-viewer DAO API
@@ -192,6 +199,7 @@ class PostgresqlDAO(IDAO):
                     int(logicalTable["id"])
                 )
 
+            self._addPropertiesTable()
             return self._tables
 
         table = Table(OBJECT_TABLE)
@@ -200,7 +208,16 @@ class PostgresqlDAO(IDAO):
         self._tables[OBJECT_TABLE] = table
         self._columns = self._normalizeColumns(storedSet.get("columns") or [])
 
+        self._addPropertiesTable()
         return self._tables
+
+    def _addPropertiesTable(self) -> None:
+        if PROPERTIES_TABLE in self._tables:
+            return
+
+        table = Table(PROPERTIES_TABLE)
+        table.setAlias(PROPERTIES_TABLE)
+        self._tables[PROPERTIES_TABLE] = table
 
     def fillTable(self, table, objectManager):
         tableName = table.getName()
@@ -317,9 +334,27 @@ class PostgresqlDAO(IDAO):
             table.setSortingColumn(table.getColumns()[0].getName())
 
     def _getColumnsForTable(self, tableName: str) -> List[Dict[str, Any]]:
+        if tableName == PROPERTIES_TABLE:
+            return self._getPropertiesColumns()
+
         if self._useLogicalTables:
             return self._normalizeColumns(self._tableColumns.get(tableName) or [])
+
         return self._columns
+
+    def _getPropertiesColumns(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "labelProperty": PROPERTY_KEY_COLUMN,
+                "position": 0,
+                "className": "String",
+            },
+            {
+                "labelProperty": PROPERTY_VALUE_COLUMN,
+                "position": 1,
+                "className": "String",
+            },
+        ]
 
     def _getLogicalTable(self, tableName: str) -> Optional[Dict[str, Any]]:
         if not self._useLogicalTables:
@@ -431,7 +466,7 @@ class PostgresqlDAO(IDAO):
         return values
 
     def getTableWithAdditionalInfo(self):
-        return None
+        return self._tableWithAdditionalInfo, ADITIONAL_INFO_DISPLAY_COLUMN_LIST
 
     def close(self):
         # Do not close the shared PostgreSQL connection here.
@@ -544,6 +579,18 @@ class PostgresqlDAO(IDAO):
     ) -> List[Dict[str, Any]]:
         orderBy = str(orderBy or "id")
 
+        if tableName == PROPERTIES_TABLE:
+            rows = self._getPropertiesRows()
+            rows.sort(
+                key=lambda row: self._sortValue(row.get(orderBy)),
+                reverse=not orderAsc,
+            )
+
+            if limit is None:
+                return rows[start:]
+
+            return rows[start:start + limit]
+
         if self._useLogicalTables:
             logicalTable = self._getLogicalTable(tableName)
             if logicalTable is None:
@@ -633,6 +680,12 @@ class PostgresqlDAO(IDAO):
         return row
 
     def _emptyRow(self, tableName: str) -> Dict[str, Any]:
+        if tableName == PROPERTIES_TABLE:
+            return {
+                PROPERTY_KEY_COLUMN: "",
+                PROPERTY_VALUE_COLUMN: "",
+            }
+
         row = {
             "id": 0,
             "enabled": True,
@@ -647,7 +700,9 @@ class PostgresqlDAO(IDAO):
 
     def getTableRowCount(self, tableName):
         if tableName not in self._tableCount:
-            if self._useLogicalTables:
+            if tableName == PROPERTIES_TABLE:
+                self._tableCount[tableName] = len(self._getPropertiesRows())
+            elif self._useLogicalTables:
                 logicalTable = self._getLogicalTable(tableName)
                 if logicalTable is None:
                     self._tableCount[tableName] = 0
@@ -676,6 +731,83 @@ class PostgresqlDAO(IDAO):
     # -------------------------------------------------------------------------
     # Metadata helpers
     # -------------------------------------------------------------------------
+
+    def _getPropertiesRows(self) -> List[Dict[str, Any]]:
+        storedSet = self._getStoredSetHeader()
+
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+
+        self._addPropertyRow(
+            rows,
+            seen,
+            "self",
+            storedSet.get("setClassName") or self.outputName,
+        )
+
+        self._addPropertyRow(
+            rows,
+            seen,
+            "_size",
+            self._getStoredSetItemsCount(),
+        )
+
+        for prop in storedSet.get("setProperties") or []:
+            if not isinstance(prop, dict):
+                continue
+
+            self._addPropertyRow(
+                rows,
+                seen,
+                prop.get("key"),
+                prop.get("value"),
+            )
+
+        properties = storedSet.get("properties") or {}
+        if isinstance(properties, dict):
+            for key in sorted(properties.keys()):
+                self._addPropertyRow(
+                    rows,
+                    seen,
+                    key,
+                    properties.get(key),
+                )
+
+        return rows
+
+    def _addPropertyRow(
+            self,
+            rows: List[Dict[str, Any]],
+            seen: set,
+            key: Any,
+            value: Any,
+    ) -> None:
+        keyText = str(key or "").strip()
+        if not keyText or keyText in seen:
+            return
+
+        seen.add(keyText)
+        rows.append(
+            {
+                PROPERTY_KEY_COLUMN: keyText,
+                PROPERTY_VALUE_COLUMN: self._normalizePropertyValue(value),
+            }
+        )
+
+    def _normalizePropertyValue(self, value: Any) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, numpy.ndarray):
+            value = value.tolist()
+
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                return json.dumps(value, sort_keys=True, default=str)
+            except Exception:
+                return str(value)
+
+        return str(value)
 
     def _normalizeColumns(self, columns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sortKey(column: Dict[str, Any]):
