@@ -363,7 +363,7 @@ class PostgresqlDAO(IDAO):
             if not aliasText:
                 continue
 
-            aliasParts = aliasText.split("_")
+            aliasParts = aliasText.rsplit("_", 1)
             if len(aliasParts) != 2:
                 continue
 
@@ -441,7 +441,7 @@ class PostgresqlDAO(IDAO):
         if not alias:
             return
 
-        aliasParts = alias.split("_")
+        aliasParts = alias.rsplit("_", 1)
 
         if alias.startswith("Class") and len(aliasParts) == 1:
             rootObjectType = self._objectsType.get(alias)
@@ -461,6 +461,11 @@ class PostgresqlDAO(IDAO):
                 self._addTableAction(table, "Volumes", "SetOfVolumes", objectManager)
 
         elif alias.startswith("Class") and len(aliasParts) > 1:
+            actionName = aliasParts[1]
+            objectType = self._objectsType.get(actionName)
+            if objectType:
+                self._addTableAction(table, actionName, objectType, objectManager)
+        elif len(aliasParts) > 1:
             actionName = aliasParts[1]
             objectType = self._objectsType.get(actionName)
             if objectType:
