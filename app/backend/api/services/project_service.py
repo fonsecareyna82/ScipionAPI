@@ -6285,6 +6285,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             tiltSeriesId: Union[int, str],
+            mapper=None,
     ):
         """
         Return all CTF measurements for one tilt series inside a CTFTomo output.
@@ -6318,6 +6319,18 @@ class ProjectService:
           ]
         }
         """
+        pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getCtftomoSeriesViews(tiltSeriesId)
+            if payload is not None:
+                return payload
+
         protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
 
         targetKey = str(tiltSeriesId)

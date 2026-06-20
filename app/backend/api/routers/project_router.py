@@ -2046,7 +2046,13 @@ def getCtftomoSeriesViews(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return service.getCtftomoSeriesViewsService(projectId, protocolId, outputName, tiltSeriesId)
+    return service.getCtftomoSeriesViewsService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tiltSeriesId=tiltSeriesId,
+        mapper=mapper,
+    )
 
 
 @router.post(
