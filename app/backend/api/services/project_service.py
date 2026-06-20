@@ -8234,6 +8234,7 @@ class ProjectService:
             thumb: Optional[int] = 128,
             fast: bool = True,
             quality: int = 75,
+            mapper=None,
     ) -> Response:
         """
         Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
@@ -8248,6 +8249,42 @@ class ProjectService:
           - Uses cached readVolumeArray3d to avoid reloading on each request.
         """
         from PIL import Image as PILImage
+
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            tomogramInfo = pgReader.getTomogramFile(tomogramId)
+            if tomogramInfo is not None:
+                volumePath = tomogramInfo.get("fileName")
+                if volumePath and os.path.exists(volumePath):
+                    return self._renderCoords3dTomogramSliceFromPath(
+                        volumePath=volumePath,
+                        tomogramId=tomogramId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize,
+                        scale=scale,
+                        inline=inline,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D tomogram slice reader. projectId=%s protocolId=%s outputName=%s tomogramId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tomogramId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
 
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
@@ -8477,6 +8514,214 @@ class ProjectService:
         }
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def _renderCoords3dTomogramSliceFromPath(
+            self,
+            volumePath: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str = "z",
+            colormap: Optional[str] = None,
+            normalize: Optional[str] = "minmax",
+            scale: float = 1.0,
+            inline: bool = True,
+            fmt: str = "webp",
+            thumb: Optional[int] = 128,
+            fast: bool = True,
+            quality: int = 75,
+    ) -> Response:
+
+        from PIL import Image as PILImage
+
+        axis = (axis or "z").lower()
+        if axis not in ("x", "y", "z"):
+            axis = "z"
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        usedColormap = colormap
+        gray: Optional[np.ndarray] = None
+        depth = 1
+
+        try:
+            requestedIndex = int(sliceIndex or 0)
+        except Exception:
+            requestedIndex = 0
+        requestedIndex = max(0, requestedIndex)
+
+        sliceUsed = requestedIndex
+        if axis == "z" and fast:
+            try:
+                reader = ImageReadersRegistry.open(volumePath)
+
+                try:
+                    images = reader.getImages()
+                    if hasattr(images, "ndim") and images.ndim == 3:
+                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+                    elif hasattr(images, "ndim") and images.ndim == 2:
+                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
+                    else:
+                        zdim, ydim, xdim = 1, 0, 0
+                except Exception:
+                    zdim, ydim, xdim = 1, 0, 0
+
+                depth = max(zdim, 1)
+
+                k = requestedIndex
+                if zdim > 0:
+                    k = max(0, min(k, zdim - 1))
+
+                try:
+                    pilImg = reader.getImage(index=k, pilImage=True)
+                except Exception:
+                    try:
+                        pilImg = reader.getCentralImage(pilImage=True)
+                        if zdim > 0:
+                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
+                        else:
+                            k = 0
+                    except Exception:
+                        pilImg = reader.getImage(index=0, pilImage=True)
+                        k = 0
+
+                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
+                if arr2d is None:
+                    arrRaw = np.asarray(pilImg)
+                    if arrRaw.ndim == 3:
+                        arr2d = arrRaw.mean(axis=-1)
+                    else:
+                        arr2d = arrRaw.astype(np.float32, copy=False)
+
+                gray = self._normalize2dSlice(arr2d, mode=normalize)
+                sliceUsed = k
+            except Exception:
+                gray = None
+
+        if gray is None:
+            try:
+                vol3d, _props = readVolumeArray3d(str(volumePath))  # Z, Y, X
+            except HTTPException:
+                raise
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Tomogram file not found on disk",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read tomogram volume: {e}",
+                )
+
+            if vol3d.ndim != 3:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid tomogram volume shape {vol3d.shape}",
+                )
+
+            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
+            depth = max(zdim, 1)
+
+            if axis == "z":
+                dim = zdim
+            elif axis == "y":
+                dim = ydim
+            else:
+                dim = xdim
+
+            if dim <= 0:
+                raise HTTPException(status_code=500, detail="Empty tomogram volume")
+
+            k = max(0, min(requestedIndex, dim - 1))
+
+            if axis == "z":
+                slice2d = vol3d[k, :, :]
+            elif axis == "y":
+                slice2d = vol3d[:, k, :]
+            else:
+                slice2d = vol3d[:, :, k]
+
+            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            sliceUsed = k
+
+        if thumb is not None and thumb > 0:
+            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.asarray(pilTmp)
+
+            if gray.dtype != np.uint8:
+                gray = gray.astype(np.uint8, copy=False)
+
+        imgArray = gray.astype(np.uint8, copy=False)
+        pilMode = "L"
+
+        if usedColormap:
+            try:
+                import matplotlib.cm as cm
+                sliceNorm = imgArray.astype(np.float32) / 255.0
+                cmapObj = cm.get_cmap(usedColormap)
+                rgba = cmapObj(sliceNorm)
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                usedColormap = None
+                imgArray = gray.astype(np.uint8, copy=False)
+                pilMode = "L"
+
+        if scale is not None and scale != 1.0:
+            try:
+                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
+                newW = max(1, int(round(pilScale.width * float(scale))))
+                newH = max(1, int(round(pilScale.height * float(scale))))
+                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
+                imgArray = np.asarray(pilScale, copy=False)
+            except Exception:
+                pass
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        disp = "inline" if inline else "attachment"
+        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, "
+                "X-Preview-Mime, "
+                "X-Preview-Width, "
+                "X-Preview-Height, "
+                "X-Preview-Depth, "
+                "X-Preview-Colormap, "
+                "X-Preview-Format, "
+                "X-Preview-TomogramId"
+            ),
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": str(depth),
+            "X-Preview-Colormap": usedColormap or "",
+            "X-Preview-Format": pilFormat,
+            "X-Preview-TomogramId": str(tomogramId),
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
 
     def createCoords3dOutputFromPointsService(
             self,

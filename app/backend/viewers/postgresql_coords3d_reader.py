@@ -994,3 +994,68 @@ class PostgresqlCoords3dReader:
                 return value
 
         return None
+
+    def getTomogramFile(self, tomogramId: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
+
+        storedSet = self._getStoredSet()
+        if storedSet is None:
+            self.lastSkipReason = "stored_set_not_found"
+            return None
+
+        requested = self._toTextCandidate(tomogramId)
+        if not requested:
+            self.lastSkipReason = "empty_tomogram_id"
+            return None
+
+        linkedTomograms = self._getLinkedTomogramsFromProperties(storedSet)
+        for item in linkedTomograms:
+            normalized = self._normalizeLinkedTomogramItem(item)
+            if normalized is None:
+                continue
+
+            matchKeys = self._getTomogramMatchKeys(normalized)
+            if requested not in matchKeys:
+                continue
+
+            fileName = normalized.get("fileName")
+            if not fileName:
+                self.lastSkipReason = "tomogram_file_not_found_in_linked_metadata tomogramId=%s" % requested
+                return None
+
+            return {
+                "id": normalized.get("id"),
+                "tomoId": normalized.get("tomoId"),
+                "label": normalized.get("label"),
+                "name": normalized.get("name"),
+                "fileName": str(fileName),
+                "dims": normalized.get("dims"),
+                "voxelSize": normalized.get("voxelSize"),
+            }
+
+        payload = self._buildTomogramPayloadFromProjectSets(
+            coordinateKeys={requested},
+            countsByKey={},
+        )
+
+        for item in payload or []:
+            matchKeys = self._getTomogramMatchKeys(item)
+            if requested not in matchKeys:
+                continue
+
+            fileName = item.get("fileName")
+            if not fileName:
+                continue
+
+            return {
+                "id": item.get("id"),
+                "tomoId": item.get("tomoId"),
+                "label": item.get("label"),
+                "name": item.get("name"),
+                "fileName": str(fileName),
+                "dims": item.get("dims"),
+                "voxelSize": item.get("voxelSize"),
+            }
+
+        self.lastSkipReason = "tomogram_file_not_resolved tomogramId=%s" % requested
+        return None
