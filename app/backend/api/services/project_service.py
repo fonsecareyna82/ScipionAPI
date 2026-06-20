@@ -8722,13 +8722,13 @@ class ProjectService:
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
-
     def createCoords3dOutputFromPointsService(
             self,
             projectId: int,
             protocolId: int,
             outputName: str,
             payload: Any,
+            mapper=None
     ) -> Dict[str, Any]:
 
         tomograms = payload['tomograms']
@@ -8815,6 +8815,30 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(500, f"Failed to attach new coords3d output: {e}")
 
+        postgresqlStored = False
+        postgresqlError = None
+
+        if mapper is not None:
+            try:
+                from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+                setMapper = ScipionSetPostgresqlMapper(mapper.db)
+                setMapper.storeSet(
+                    projectId=projectId,
+                    protocolDbId=protocolId,
+                    outputName=outName,
+                    scipionSet=dstSet,
+                )
+                postgresqlStored = True
+            except Exception as e:
+                postgresqlError = str(e)
+                logger.exception(
+                    "Failed to store new Coordinates3D output in PostgreSQL. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outName,
+                )
+
         return {
             "success": True,
             "outputName": outName,
@@ -8823,6 +8847,8 @@ class ProjectService:
                 "sourceOutputName": outputName,
                 "replacedPoints": replaced,
                 "copiedPoints": copied,
+                "postgresqlStored": postgresqlStored,
+                "postgresqlError": postgresqlError,
             },
         }
 
