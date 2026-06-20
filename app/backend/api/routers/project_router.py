@@ -2256,6 +2256,7 @@ def getCoordinates3dPoints(
         protocolId=protocolId,
         outputName=outputName,
         tomogramId=tomogramId,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse

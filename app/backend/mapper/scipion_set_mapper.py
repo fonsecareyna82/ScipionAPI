@@ -32,9 +32,14 @@ import psycopg2.extras
 
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
 
+try:
+    from tomo.constants import BOTTOM_LEFT_CORNER
+except Exception:
+    BOTTOM_LEFT_CORNER = None
+
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 3
+NESTED_LOGICAL_TABLES_VERSION = 6
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -998,15 +1003,66 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return self._getObjDict(item, includeClass=True)
 
     def _getItemValues(self, item: Any) -> Dict[str, Any]:
-        values = self._getObjDict(item, includeClass=False)
-        if not values:
-            return {}
+        rawValues = self._getObjDict(item, includeClass=False)
 
-        return {
+        values = {
             str(label): self._toJsonValue(value)
-            for label, value in values.items()
+            for label, value in (rawValues or {}).items()
             if str(label) != SELF_LABEL
         }
+
+        self._addCoordinate3dBottomLeftCoordinates(item, values)
+
+        return values
+
+    def _addCoordinate3dBottomLeftCoordinates(self, item: Any, values: Dict[str, Any]) -> None:
+        coords = self._getCoordinate3dBottomLeftCoordinates(item)
+        if coords is None:
+            return
+
+        x, y, z = coords
+
+        values["bottomLeftX"] = x
+        values["bottomLeftY"] = y
+        values["bottomLeftZ"] = z
+        values["coordinateConvention"] = "BOTTOM_LEFT_CORNER"
+
+        if "_x" in values and "rawX" not in values:
+            values["rawX"] = values.get("_x")
+        if "_y" in values and "rawY" not in values:
+            values["rawY"] = values.get("_y")
+        if "_z" in values and "rawZ" not in values:
+            values["rawZ"] = values.get("_z")
+
+    def _getCoordinate3dBottomLeftCoordinates(self, item: Any) -> Optional[Tuple[float, float, float]]:
+        if BOTTOM_LEFT_CORNER is None:
+            return None
+
+        getX = getattr(item, "getX", None)
+        getY = getattr(item, "getY", None)
+        getZ = getattr(item, "getZ", None)
+
+        if not callable(getX) or not callable(getY) or not callable(getZ):
+            return None
+
+        try:
+            return (
+                float(getX(BOTTOM_LEFT_CORNER)),
+                float(getY(BOTTOM_LEFT_CORNER)),
+                float(getZ(BOTTOM_LEFT_CORNER)),
+            )
+        except Exception:
+            return None
+
+    def _callCoordinateGetter(self, item: Any, getterName: str) -> Optional[float]:
+        getter = getattr(item, getterName, None)
+        if not callable(getter):
+            return None
+
+        try:
+            return float(getter(BOTTOM_LEFT_CORNER))
+        except Exception:
+            return None
 
     def _getObjDict(self, scipionObj: Any, includeClass: bool) -> Dict[str, Any]:
         getter = getattr(scipionObj, "getObjDict", None)
@@ -1280,3 +1336,42 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         yield firstItem
         for item in remainingItems:
             yield item
+
+    def _addCoordinate3dBottomLeftCoordinates(self, item: Any, values: Dict[str, Any]) -> None:
+        coords = self._getCoordinate3dBottomLeftCoordinates(item)
+        if coords is None:
+            return
+
+        x, y, z = coords
+
+        if "_x" in values and "rawX" not in values:
+            values["rawX"] = values.get("_x")
+        if "_y" in values and "rawY" not in values:
+            values["rawY"] = values.get("_y")
+        if "_z" in values and "rawZ" not in values:
+            values["rawZ"] = values.get("_z")
+
+        values["bottomLeftX"] = x
+        values["bottomLeftY"] = y
+        values["bottomLeftZ"] = z
+        values["coordinateConvention"] = "BOTTOM_LEFT_CORNER"
+
+    def _getCoordinate3dBottomLeftCoordinates(self, item: Any) -> Optional[Tuple[float, float, float]]:
+        if BOTTOM_LEFT_CORNER is None:
+            return None
+
+        getX = getattr(item, "getX", None)
+        getY = getattr(item, "getY", None)
+        getZ = getattr(item, "getZ", None)
+
+        if not callable(getX) or not callable(getY) or not callable(getZ):
+            return None
+
+        try:
+            x = float(getX(BOTTOM_LEFT_CORNER))
+            y = float(getY(BOTTOM_LEFT_CORNER))
+            z = float(getZ(BOTTOM_LEFT_CORNER))
+        except Exception:
+            return None
+
+        return x, y, z
