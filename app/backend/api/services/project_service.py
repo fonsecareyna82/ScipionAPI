@@ -8466,11 +8466,13 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ):
-        from app.backend.database import getMapper
         from app.backend.viewers.postgresql_dao import PostgresqlDAO
 
-        mapper = getMapper()
+        if mapper is None:
+            return None
+
         dao = PostgresqlDAO(
             db=mapper.db,
             projectId=projectId,
@@ -8488,11 +8490,13 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ) -> ObjectManager:
         pgDao = self._getPostgresqlDAOIfAvailable(
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
         )
 
         if pgDao is not None:
@@ -8516,6 +8520,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             tableName: str,
+            mapper=None,
     ):
         """
         Resolve (ObjectManager, Table) for a given output + tableName.
@@ -8527,6 +8532,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
         )
 
         table = objMgr.getTable(tableName)
@@ -8600,7 +8606,8 @@ class ProjectService:
 
     def listOutputMetadataTablesService(self, projectId: int,
                                         protocolId: int,
-                                        outputName: str):
+                                        outputName: str,
+                                        mapper=None):
         """
         List logical metadata tables associated with an output.
         """
@@ -8609,6 +8616,7 @@ class ProjectService:
                 projectId=projectId,
                 protocolId=protocolId,
                 outputName=outputName,
+                mapper=mapper,
             )
 
             tables = objMgr.getTables() or {}
@@ -8638,12 +8646,19 @@ class ProjectService:
     def getMetadataTableSchemaService(self, projectId: int,
                                       protocolId: int,
                                       outputName: str,
-                                      tableName: str):
+                                      tableName: str,
+                                      mapper=None):
         """
         Return logical schema for one metadata table: columns, renderers, flags.
         """
         with _metadataLock:
-            objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
 
             visibleLabels = []
             orderLabels = []
@@ -8818,23 +8833,30 @@ class ProjectService:
             return False
 
     def getMetadataTablePageService(
-        self,
-        projectId: int,
-        protocolId: int,
-        outputName: str,
-        tableName: str,
-        page: int,
-        pageSize: int,
-        sortBy: str,
-        asc: bool,
-        selectionOnly: bool,
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            page: int,
+            pageSize: int,
+            sortBy: str,
+            asc: bool,
+            selectionOnly: bool,
+            mapper=None,
     ):
         """
         Return one logical page of rows for a metadata table.
         Sorting is currently delegated to the underlying DAO default order.
         """
         with _metadataLock:
-            objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
             columns = list(table.getColumns())
 
             if selectionOnly:
@@ -8904,14 +8926,15 @@ class ProjectService:
             }
 
     def exportMetadataTableService(
-        self,
-        projectId: int,
-        protocolId: int,
-        outputName: str,
-        tableName: str,
-        fmt: str,
-        selectionOnly: bool,
-        ids: Optional[List[int]],
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            fmt: str,
+            selectionOnly: bool,
+            ids: Optional[List[int]],
+            mapper=None,
     ) -> Response:
         """
         Export metadata table as CSV or XLSX.
@@ -8923,7 +8946,13 @@ class ProjectService:
         import csv
 
         with _metadataLock:
-            objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
             columns = list(table.getColumns())
             colNames = [c.getName() for c in columns]
 
@@ -9101,6 +9130,7 @@ class ProjectService:
             inline: bool,
             fmt: str,
             rowIndex: Optional[int] = None,
+            mapper=None,
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
@@ -9114,7 +9144,13 @@ class ProjectService:
         from pathlib import Path as LocalPath
 
         # Resolve metadata root path for relative image paths
-        objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
+        objMgr, table = self._openMetadataTable(
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            mapper=mapper,
+        )
         columns = list(table.getColumns())
 
         metaDir = None
@@ -9380,6 +9416,7 @@ class ProjectService:
             selectionOnly: bool,
             sortBy: str,
             asc: bool,
+            mapper=None,
     ):
         """
         Return a window of rows for a metadata table using offset + limit.
@@ -9394,7 +9431,13 @@ class ProjectService:
             - number of selected rows if selectionOnly == True
         """
         with _metadataLock:
-            objMgr, table = self._openMetadataTable(projectId, protocolId, outputName, tableName)
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
             columns = list(table.getColumns())
             table.setSortingColumn(sortBy)
             table.setSortingAsc(asc)

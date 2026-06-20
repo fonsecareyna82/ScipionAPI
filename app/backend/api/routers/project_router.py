@@ -26,7 +26,7 @@ from app.backend.api.schemas.protocols_schema import (
     WorkflowImportRequest,
 )
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
-from app.backend.database import getMapper
+from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
@@ -2528,6 +2528,7 @@ def listOutputMetadataTables(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2565,6 +2566,7 @@ def getMetadataTableSchema(
         protocolId=protocolId,
         outputName=outputName,
         tableName=tableName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2698,6 +2700,7 @@ def getMetadataTablePage(
         sortBy=sortBy,
         asc=asc,
         selectionOnly=selectionOnly,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2764,6 +2767,7 @@ def exportMetadataTable(
         fmt=fmt,
         selectionOnly=selectionOnly,
         ids=idList,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2843,6 +2847,7 @@ def renderMetadataImageCell(
         applyTransform=applyTransform,
         inline=inline,
         fmt=fmt,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2903,6 +2908,7 @@ def getMetadataTableWindow(
         selectionOnly=selectionOnly,
         sortBy=sortBy,
         asc=asc,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
