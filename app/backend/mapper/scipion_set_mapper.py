@@ -34,7 +34,7 @@ from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapp
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 2
+NESTED_LOGICAL_TABLES_VERSION = 3
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1089,12 +1089,128 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if streamState is not None:
             properties["streamState"] = self._toJsonValue(streamState)
 
+        linkedTomograms = self._getLinkedTomogramsSummary(scipionSet)
+        if linkedTomograms:
+            properties["linkedTomograms"] = linkedTomograms
+
         for attrName, attrValue in self._getAttributesToStore(scipionSet):
             if self._getAttributesToStore(attrValue):
                 continue
             properties[str(attrName)] = self._toJsonValue(self._getObjectValueText(attrValue))
 
         return {key: value for key, value in properties.items() if value is not None}
+
+    def _getLinkedTomogramsSummary(self, scipionSet: Any) -> List[Dict[str, Any]]:
+        tomograms = []
+
+        for index, tomogram in enumerate(self._iterLinkedTomograms(scipionSet)):
+            item = self._buildLinkedTomogramSummary(tomogram, index)
+            if item is not None:
+                tomograms.append(item)
+
+        return tomograms
+
+    def _iterLinkedTomograms(self, scipionSet: Any) -> Iterable[Any]:
+        for methodName in ("iterTomograms", "iterVolumes"):
+            iteratorGetter = getattr(scipionSet, methodName, None)
+            if not callable(iteratorGetter):
+                continue
+
+            try:
+                return iteratorGetter()
+            except Exception:
+                continue
+
+        getTomograms = getattr(scipionSet, "getTomograms", None)
+        if callable(getTomograms):
+            try:
+                tomograms = getTomograms()
+                iterItems = getattr(tomograms, "iterItems", None)
+                if callable(iterItems):
+                    try:
+                        return iterItems(iterate=False)
+                    except TypeError:
+                        return iterItems()
+                return iter(tomograms)
+            except Exception:
+                pass
+
+        return iter(())
+
+    def _buildLinkedTomogramSummary(self, tomogram: Any, index: int) -> Optional[Dict[str, Any]]:
+        objectId = self._callOptionalGetter(tomogram, "getObjId")
+        tsId = self._callOptionalGetter(tomogram, "getTsId")
+        tomoId = self._callOptionalGetter(tomogram, "getTomoId")
+
+        stableId = tsId or tomoId or objectId or index
+        if stableId is None:
+            return None
+
+        name = None
+        for methodName in ("getObjLabel", "getNameId", "getFileName"):
+            value = self._callOptionalGetter(tomogram, methodName)
+            if value:
+                name = value
+                break
+
+        if not name:
+            name = stableId
+
+        dims = self._normalizeLinkedTomogramDims(
+            self._callOptionalGetter(tomogram, "getDim")
+        )
+
+        samplingRate = self._toOptionalFloat(
+            self._callOptionalGetter(tomogram, "getSamplingRate")
+        )
+
+        item: Dict[str, Any] = {
+            "id": str(stableId),
+            "tomoId": str(stableId),
+            "label": str(stableId),
+            "name": str(name),
+        }
+
+        if objectId is not None:
+            item["objectId"] = str(objectId)
+            item["volumeId"] = str(objectId)
+
+        if tsId is not None:
+            item["tsId"] = str(tsId)
+            item["tiltSeriesId"] = str(tsId)
+
+        fileName = self._callOptionalGetter(tomogram, "getFileName")
+        if fileName:
+            item["fileName"] = str(fileName)
+
+        if dims is not None:
+            item["dims"] = dims
+
+        if samplingRate is not None:
+            item["voxelSize"] = [samplingRate, samplingRate, samplingRate]
+
+        return item
+
+    def _normalizeLinkedTomogramDims(self, dims: Any) -> Optional[List[int]]:
+        if dims is None:
+            return None
+
+        try:
+            values = list(dims)
+        except Exception:
+            return None
+
+        if len(values) < 3:
+            return None
+
+        out = []
+        for value in values[:3]:
+            intValue = self._toOptionalInt(value)
+            if intValue is None or intValue <= 0:
+                return None
+            out.append(intValue)
+
+        return out
 
     def _getItemEnabled(self, item: Any) -> bool:
         isEnabled = getattr(item, "isEnabled", None)

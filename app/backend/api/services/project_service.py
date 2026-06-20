@@ -7791,11 +7791,45 @@ class ProjectService:
     # ----------------------------------------------------------------------
     # Analyze Results: Coordinates3D
     # ----------------------------------------------------------------------
+    def _getPostgresqlCoords3dReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
+
+            reader = PostgresqlCoords3dReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL Coordinates3D reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
     def listCoordinates3dTomogramsService(
             self,
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ):
         """
         Return a list of tomograms referenced by the SetOfCoordinates3D output.
@@ -7806,6 +7840,27 @@ class ProjectService:
           ...
         ]
         """
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listTomograms()
+            if payload is not None:
+                self.tomoList = {}
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D tomograms reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
