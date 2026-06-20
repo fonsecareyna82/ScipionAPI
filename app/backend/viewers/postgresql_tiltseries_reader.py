@@ -81,6 +81,25 @@ class PostgresqlTiltSeriesReader:
 
         return payload
 
+    def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
+        payload = self.getTiltSeriesFrames(tiltSeriesId)
+        if not payload:
+            return None
+
+        frames = payload.get("frames") or []
+        targetIndex = self._toOptionalInt(index)
+
+        if targetIndex is not None:
+            for frame in frames:
+                frameIndex = self._toOptionalInt(frame.get("index"))
+                if frameIndex == targetIndex:
+                    return frame
+
+            if 0 <= targetIndex < len(frames):
+                return frames[targetIndex]
+
+        return None
+
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:
             self._storedSet = self.setMapper.getStoredSet(

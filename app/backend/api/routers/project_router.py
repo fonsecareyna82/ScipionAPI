@@ -1865,6 +1865,7 @@ def renderTiltSeriesImage(
             fmt=fmt,
             applyTransform=applyTransform,
             inline=inline,
+            mapper=mapper,
         )
 
         resp.headers["X-Debug-Auth"] = "ok"
