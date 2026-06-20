@@ -2018,7 +2018,12 @@ def listCtftomoSeries(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return service.listOutputCtftomoSeriesService(projectId, protocolId, outputName)
+    return service.listOutputCtftomoSeriesService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        mapper=mapper,
+    )
 
 
 @router.get(
