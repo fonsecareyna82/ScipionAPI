@@ -163,10 +163,15 @@ class PostgresqlVolumeReader:
         fileName, locationIndex = self._extractVolumeFile(values)
         scipionItemId = item.get("scipionItemId")
 
-        label = (
-            item.get("label")
-            or self._firstValueBySuffix(values, ["objLabel", "label", "name", "volName"])
-            or self._makeVolumeLabel(fileName, index)
+        rawLabel = (
+                item.get("label")
+                or self._firstValueBySuffix(values, ["objLabel", "label", "name", "volName"])
+        )
+
+        label = self._normalizeVolumeDisplayName(
+            label=rawLabel,
+            fileName=fileName,
+            index=index,
         )
 
         volume: Dict[str, Any] = {
@@ -174,6 +179,7 @@ class PostgresqlVolumeReader:
             "index": int(index),
             "name": str(label),
             "label": str(label),
+            "relPath": str(label),
         }
 
         if scipionItemId is not None:
@@ -222,13 +228,19 @@ class PostgresqlVolumeReader:
             return None
 
         fileName, locationIndex = self._extractVolumeFile(valuesByPath)
-        label = root.get("label") or root.get("name") or self.outputName
+        rawLabel = root.get("label") or root.get("name") or self.outputName
+        label = self._normalizeVolumeDisplayName(
+            label=rawLabel,
+            fileName=fileName,
+            index=0,
+        )
 
         volume: Dict[str, Any] = {
             "id": 0,
             "index": 0,
             "name": str(label),
             "label": str(label),
+            "relPath": str(label),
         }
 
         objectId = root.get("scipionObjId")
@@ -307,9 +319,10 @@ class PostgresqlVolumeReader:
         except Exception:
             return
 
-        if "dims" not in volume and getattr(array, "ndim", None) == 3:
+        if getattr(array, "ndim", None) == 3:
             zDim, yDim, xDim = array.shape
-            volume["dims"] = [int(xDim), int(yDim), int(zDim)]
+            volume["dims"] = [int(zDim), int(yDim), int(xDim)]
+            volume["xyzDims"] = [int(xDim), int(yDim), int(zDim)]
 
         if "samplingRate" not in volume:
             samplingRate = self._extractSamplingRate(props if isinstance(props, dict) else {})
@@ -580,6 +593,44 @@ class PostgresqlVolumeReader:
                 continue
 
         return None
+
+    def _normalizeVolumeDisplayName(
+            self,
+            label: Any,
+            fileName: Optional[str],
+            index: int,
+    ) -> str:
+        labelText = self._toText(label)
+
+        if labelText:
+            if self._looksLikePath(labelText):
+                return Path(labelText).name
+            return labelText
+
+        if fileName:
+            return Path(str(fileName)).name
+
+        return "Volume %s" % (int(index) + 1)
+
+    def _looksLikePath(self, value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+
+        if "/" in text or "\\" in text:
+            return True
+
+        suffix = Path(text).suffix.lower()
+        return suffix in {
+            ".mrc",
+            ".map",
+            ".mrcs",
+            ".rec",
+            ".ali",
+            ".vol",
+            ".spi",
+            ".stk",
+        }
 
     def _makeVolumeLabel(self, fileName: Optional[str], index: int) -> str:
         if fileName:

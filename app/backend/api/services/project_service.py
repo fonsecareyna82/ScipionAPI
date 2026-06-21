@@ -6570,12 +6570,247 @@ class ProjectService:
 
         raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol (tried {candidates})")
 
-    def listOutputVolumesService(self, projectId: int, protocolId: int, outputName: str):
+    def _getPostgresqlVolumeReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_volume_reader import PostgresqlVolumeReader
+
+            reader = PostgresqlVolumeReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL volume reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def _renderVolumeSliceFromArray(
+            self,
+            volume: np.ndarray,
+            volumeId: Union[int, str],
+            volumeName: Optional[str],
+            sliceIndex: int,
+            axis: str,
+            colormap: Optional[str],
+            normalize: Optional[str],
+            scale: float,
+            inline: bool,
+            fmt: str = "webp",
+            thumb: Optional[int] = None,
+            quality: int = 75,
+    ) -> Response:
+        from PIL import Image as PILImage
+
+        volume = np.asarray(volume, dtype=np.float32)
+
+        if volume.ndim == 2:
+            volume = volume[None, :, :]
+
+        if volume.ndim != 3:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid volume shape: {volume.shape}",
+            )
+
+        axis = (axis or "z").lower()
+        if axis not in ("x", "y", "z"):
+            axis = "z"
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        zdim, ydim, xdim = int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])
+        depth = max(zdim, 1)
+
+        try:
+            requestedIndex = int(sliceIndex or 0)
+        except Exception:
+            requestedIndex = 0
+        requestedIndex = max(0, requestedIndex)
+
+        if axis == "z":
+            dim = zdim
+        elif axis == "y":
+            dim = ydim
+        else:
+            dim = xdim
+
+        if dim <= 0:
+            raise HTTPException(status_code=500, detail="Empty volume")
+
+        sliceUsed = max(0, min(requestedIndex, dim - 1))
+
+        if axis == "z":
+            slice2d = volume[sliceUsed, :, :]
+        elif axis == "y":
+            slice2d = volume[:, sliceUsed, :]
+        else:
+            slice2d = volume[:, :, sliceUsed]
+
+        gray = self._normalize2dSlice(slice2d, mode=normalize or "minmax")
+
+        if thumb is not None and thumb > 0:
+            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.asarray(pilTmp)
+
+            if gray.dtype != np.uint8:
+                gray = gray.astype(np.uint8, copy=False)
+
+        usedColormap = colormap
+        imgArray = gray.astype(np.uint8, copy=False)
+        pilMode = "L"
+
+        if usedColormap:
+            try:
+                import matplotlib.cm as cm
+
+                sliceNorm = imgArray.astype(np.float32) / 255.0
+                cmapObj = cm.get_cmap(usedColormap)
+                rgba = cmapObj(sliceNorm)
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                usedColormap = None
+                imgArray = gray.astype(np.uint8, copy=False)
+                pilMode = "L"
+
+        if scale is not None and scale != 1.0:
+            try:
+                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
+                newW = max(1, int(round(pilScale.width * float(scale))))
+                newH = max(1, int(round(pilScale.height * float(scale))))
+                pilScale = pilScale.resize(
+                    (newW, newH),
+                    resample=PILImage.Resampling.BILINEAR,
+                )
+                imgArray = np.asarray(pilScale, copy=False)
+            except Exception:
+                pass
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        disp = "inline" if inline else "attachment"
+        safeName = str(volumeName or f"volume_{volumeId}").replace("/", "_").replace("\\", "_")
+        filename = f"{safeName}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, "
+                "X-Preview-Mime, "
+                "X-Preview-Width, "
+                "X-Preview-Height, "
+                "X-Preview-Depth, "
+                "X-Preview-Colormap, "
+                "X-Preview-Format, "
+                "X-Preview-VolumeId"
+            ),
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": str(depth),
+            "X-Preview-Colormap": usedColormap or "",
+            "X-Preview-Format": pilFormat,
+            "X-Preview-VolumeId": str(volumeId),
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def listOutputVolumesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listVolumes()
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL volume list reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.listOutputVolumes()
 
-    def getVolumeInfoService(self, projectId: int, protocolId: int, outputName: str, volumeId: int):
+    def getVolumeInfoService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getVolumeInfo(volumeId)
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL volume info reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.getVolumeInfo(volumeId)
@@ -6587,24 +6822,39 @@ class ProjectService:
             outputName: str,
             volumeId: Union[int, str],
             bins: int = 128,
+            mapper=None,
     ):
-        """
-        Compute or retrieve an intensity histogram for a single volume.
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
 
-        It delegates to OutputsPreview so all volume handling stays in one place.
-        The result is normalized to always expose:
-        {
-          "binEdges": [...],
-          "counts":   [...]
-        }
-        """
+        if pgReader is not None:
+            payload = pgReader.getHistogram(volumeId=volumeId, bins=bins)
+            if payload is not None:
+                return {
+                    "binEdges": payload.get("binEdges") or [],
+                    "counts": payload.get("counts") or [],
+                }
+
+            logger.info(
+                "Skipping PostgreSQL volume histogram reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
 
         if isinstance(output, SetOfVolumes):
-            output = output.getItem('_objId', volumeId + 1)
-        raw = op.getVolumeHistogram(volumePath=output.getFileName(), bins=bins)
+            output = output.getItem('_objId', int(volumeId) + 1)
 
+        raw = op.getVolumeHistogram(volumePath=output.getFileName(), bins=bins)
         if not raw:
             return {"binEdges": [], "counts": []}
 
@@ -6615,6 +6865,7 @@ class ProjectService:
             binEdges = list(binEdges)
         except Exception:
             binEdges = []
+
         try:
             counts = list(counts)
         except Exception:
@@ -6626,11 +6877,59 @@ class ProjectService:
         }
 
     def renderVolumeSliceService(
-            self, projectId: int, protocolId: int, outputName: str, volumeId: int,
-            sliceIndex: int, axis: str, colormap: Optional[str], normalize: Optional[str],
-            scale: float, inline: bool, fmt: str = "webp",
-            thumb: Optional[int] = None, fast: bool = True, quality: int = 75,
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            sliceIndex: int,
+            axis: str,
+            colormap: Optional[str],
+            normalize: Optional[str],
+            scale: float,
+            inline: bool,
+            fmt: str = "webp",
+            thumb: Optional[int] = None,
+            fast: bool = True,
+            quality: int = 75,
+            mapper=None,
     ) -> Response:
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            result = pgReader.getVolumeArray(volumeId)
+            if result is not None:
+                volume, _props, info = result
+
+                return self._renderVolumeSliceFromArray(
+                    volume=volume,
+                    volumeId=volumeId,
+                    volumeName=info.get("name") or info.get("label"),
+                    sliceIndex=sliceIndex,
+                    axis=axis,
+                    colormap=colormap,
+                    normalize=normalize or "minmax",
+                    scale=scale,
+                    inline=inline,
+                    fmt=fmt,
+                    thumb=thumb,
+                    quality=quality,
+                )
+
+            logger.info(
+                "Skipping PostgreSQL volume slice reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.renderVolumeSlice(
@@ -6655,12 +6954,49 @@ class ProjectService:
             volumeId: Union[int, str],
             maxDim: int = 160,
             method: str = "binning",
+            mapper=None,
     ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            result = pgReader.getVolumeArray(volumeId)
+            if result is not None:
+                volume, _props, _info = result
+
+                if (method or "").lower() == "none":
+                    volumeSmall = np.asarray(volume, dtype=np.float32)
+                else:
+                    volumeSmall = self._downsampleVolumePreview(
+                        np.asarray(volume, dtype=np.float32),
+                        maxDim=maxDim,
+                        method=method,
+                    )
+
+                z, y, x = volumeSmall.shape
+                return {
+                    "dims": [int(z), int(y), int(x)],
+                    "values": volumeSmall.ravel(order="C").astype(np.float32).tolist(),
+                }
+
+            logger.info(
+                "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
         protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
         try:
-            vol, _props = readVolumeArray3d(volumePath)  # Z, Y, X
+            vol, _props = readVolumeArray3d(volumePath)
         except HTTPException:
             raise
         except FileNotFoundError:
@@ -6668,7 +7004,10 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
 
-        volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
+        if (method or "").lower() == "none":
+            volSmall = np.asarray(vol, dtype=np.float32)
+        else:
+            volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
 
         z, y, x = volSmall.shape
         return {
@@ -6860,8 +7199,62 @@ class ProjectService:
                                              maxDim=maxDim,
                                              method=methodLower)
 
-    def getVolumeSurfaceMesh(self, protocolId, outputName, volumeId, level,
-                             maxDim, method, maxTriangles, currentUser):
+    def getVolumeSurfaceMesh(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            level,
+            maxDim,
+            method,
+            maxTriangles,
+            currentUser,
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            result = pgReader.getVolumeArray(volumeId)
+            if result is not None:
+                volume, _props, _info = result
+                volumeSmall = self._downsampleVolumeForSurface(
+                    np.asarray(volume, dtype=np.float32),
+                    maxDim=maxDim,
+                    method=method,
+                )
+
+                mesh = buildVolumeSurfaceMesh(
+                    volumeSmall,
+                    level=level,
+                    maxTriangles=maxTriangles,
+                )
+
+                mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
+                mesh["maxDim"] = int(maxDim)
+                mesh["method"] = method
+                mesh["volumeId"] = str(volumeId)
+                mesh["outputName"] = outputName
+
+                response = JSONResponse(mesh)
+                response.headers["X-Debug-Auth"] = "ok"
+                response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+                response.headers["Vary"] = "Authorization"
+                return response
+
+            logger.info(
+                "Skipping PostgreSQL volume surface reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
 
         _protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
         volumePath = self._getVolumePathFromOutput(output, volumeId)
