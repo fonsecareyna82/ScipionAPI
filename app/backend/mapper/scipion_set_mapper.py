@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 7
+NESTED_LOGICAL_TABLES_VERSION = 8
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1015,6 +1015,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if str(label) != SELF_LABEL
         }
 
+        classSize = self._getClassItemSize(item)
+        if classSize is not None and "_size" not in values:
+            values["_size"] = classSize
+
         self._addCoordinate3dBottomLeftCoordinates(
             item=item,
             values=values,
@@ -1022,6 +1026,30 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         return values
+
+    def _getClassItemSize(self, item: Any) -> Optional[int]:
+        className = self._getClassName(item) or item.__class__.__name__
+        if not str(className or "").startswith("Class"):
+            return None
+
+        for methodName in ("getSize", "getObjSize", "count"):
+            getter = getattr(item, methodName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = getter()
+            except Exception:
+                continue
+
+            sizeValue = self._toOptionalInt(value)
+            if sizeValue is not None:
+                return sizeValue
+
+        try:
+            return int(len(item))
+        except Exception:
+            return None
 
     def _addCoordinate3dBottomLeftCoordinates(
             self,
@@ -1275,6 +1303,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
             position += 1
 
+        if self._schemaIsClassItem(itemSchema) and not any(
+                column.get("labelProperty") == "_size"
+                for column in columns
+        ):
+            columns.append(
+                {
+                    "labelProperty": "_size",
+                    "columnName": "c%02d" % position,
+                    "className": "Integer",
+                    "valueType": "integer",
+                    "position": position,
+                    "indexed": True,
+                }
+            )
+
         return columns
 
     def _getItemClassName(self, item: Any, itemSchema: Dict[str, Any]) -> str:
@@ -1283,6 +1326,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if schemaClassName:
             return schemaClassName
         return self._getClassName(item) or item.__class__.__name__ if item is not None else "Unknown"
+
+    def _schemaIsClassItem(self, itemSchema: Dict[str, Any]) -> bool:
+        selfSchema = itemSchema.get(SELF_LABEL)
+        className = self._getSchemaClassName(selfSchema)
+        return str(className or "").startswith("Class")
 
     def _getSchemaClassName(self, schemaValue: Any) -> Optional[str]:
         if isinstance(schemaValue, (tuple, list)) and schemaValue:
