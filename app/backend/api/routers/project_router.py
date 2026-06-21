@@ -1510,7 +1510,10 @@ def listOutputVolumes(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    items = service.listOutputVolumesService(projectId, protocolId, outputName)
+    items = service.listOutputVolumesService(projectId,
+                                             protocolId,
+                                             outputName,
+                                             mapper=mapper)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(items)
@@ -1539,7 +1542,11 @@ def getVolumeInfo(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    info = service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
+    info = service.getVolumeInfoService(projectId,
+                                        protocolId,
+                                        outputName,
+                                        volumeId,
+                                        mapper=mapper,)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(info)
@@ -1582,6 +1589,7 @@ def getVolumeHistogram(
         outputName=outputName,
         volumeId=volumeId,
         bins=bins,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -1608,7 +1616,7 @@ def renderVolumeSlice(
     colormapParam: Optional[str] = Query(None, alias="colormap"),
     formatParam: Optional[str] = Query(None, alias="format"),
     fmtParam: Optional[str] = Query(None, alias="fmt"),
-    normalize: Optional[str] = Query(None),
+    normalize: Optional[str] = Query("minmax"),
     scale: float = Query(1.0, gt=0),
     inline: bool = Query(True),
     thumb: Optional[int] = Query(None, ge=32, le=2048),
@@ -1622,7 +1630,7 @@ def renderVolumeSlice(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    cmap = cmapParam or colormapParam or "viridis"
+    cmap = cmapParam or colormapParam
     fmt = fmtParam or formatParam or "webp"
 
     resp = service.renderVolumeSliceService(
@@ -1640,6 +1648,7 @@ def renderVolumeSlice(
         thumb=thumb,
         fast=fast,
         quality=quality,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -1673,6 +1682,7 @@ def getVolumeData3d(
         volumeId=volumeId,
         maxDim=maxDim,
         method=method,
+        mapper=mapper,
     )
 
 @router.get(
@@ -1707,7 +1717,8 @@ def getVolumeSurfaceMesh(
                                             maxDim=maxDim,
                                             method=method,
                                             maxTriangles=maxTriangles,
-                                            currentUser=currentUser)
+                                            currentUser=currentUser,
+                                            mapper=mapper,)
 
     except HTTPException:
         raise
