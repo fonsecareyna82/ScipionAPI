@@ -9617,11 +9617,44 @@ class ProjectService:
                 hasColumnId = True
 
             columns = list(table.getColumns())
+            columnNames = {str(col.getName()) for col in columns}
+
+            additionalInfoColumns = []
+            try:
+                dao = objMgr.getDAO()
+                getAdditionalInfoFn = getattr(dao, "getTableWithAdditionalInfo", None)
+
+                if callable(getAdditionalInfoFn):
+                    additionalTable, additionalColumns = getAdditionalInfoFn()
+
+                    if hasattr(additionalTable, "getName"):
+                        additionalTableName = str(additionalTable.getName() or "")
+                    else:
+                        additionalTableName = "" if additionalTable is None else str(additionalTable)
+
+                    currentTableNames = {
+                        str(tableName or ""),
+                        str(table.getName() or ""),
+                        str(table.getAlias() or ""),
+                    }
+
+                    appliesToTable = not additionalTableName or additionalTableName in currentTableNames
+
+                    if appliesToTable:
+                        additionalInfoColumns = [
+                            str(columnName)
+                            for columnName in (additionalColumns or [])
+                            if str(columnName) in columnNames
+                        ]
+            except Exception:
+                additionalInfoColumns = []
+
             schema = {
                 "name": tableName,
                 "alias": table.getAlias(),
                 "hasColumnId": bool(hasColumnId),
                 "actions": actions,
+                "additionalInfoColumns": additionalInfoColumns,
                 # "renderLabels": renderLabels,
                 # "orderLabels": orderLabels,
                 "columns": [],
