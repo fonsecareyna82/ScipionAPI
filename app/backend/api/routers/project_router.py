@@ -1710,7 +1710,8 @@ def getVolumeSurfaceMesh(
 
     try:
 
-        return service.getVolumeSurfaceMesh(protocolId=protocolId,
+        return service.getVolumeSurfaceMesh(projectId=projectId,
+                                            protocolId=protocolId,
                                             outputName=outputName,
                                             volumeId=volumeId,
                                             level=level,

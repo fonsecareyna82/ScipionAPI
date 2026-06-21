@@ -6603,154 +6603,6 @@ class ProjectService:
 
         return None
 
-    def _renderVolumeSliceFromArray(
-            self,
-            volume: np.ndarray,
-            volumeId: Union[int, str],
-            volumeName: Optional[str],
-            sliceIndex: int,
-            axis: str,
-            colormap: Optional[str],
-            normalize: Optional[str],
-            scale: float,
-            inline: bool,
-            fmt: str = "webp",
-            thumb: Optional[int] = None,
-            quality: int = 75,
-    ) -> Response:
-        from PIL import Image as PILImage
-
-        volume = np.asarray(volume, dtype=np.float32)
-
-        if volume.ndim == 2:
-            volume = volume[None, :, :]
-
-        if volume.ndim != 3:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Invalid volume shape: {volume.shape}",
-            )
-
-        axis = (axis or "z").lower()
-        if axis not in ("x", "y", "z"):
-            axis = "z"
-
-        fmtLower = (fmt or "png").lower()
-        if fmtLower in ("jpg", "jpeg"):
-            pilFormat = "JPEG"
-            mediaType = "image/jpeg"
-            saveKw = {"quality": int(quality or 75)}
-        elif fmtLower == "webp":
-            pilFormat = "WEBP"
-            mediaType = "image/webp"
-            saveKw = {"quality": int(quality or 75)}
-        else:
-            pilFormat = "PNG"
-            mediaType = "image/png"
-            saveKw = {}
-
-        zdim, ydim, xdim = int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])
-        depth = max(zdim, 1)
-
-        try:
-            requestedIndex = int(sliceIndex or 0)
-        except Exception:
-            requestedIndex = 0
-        requestedIndex = max(0, requestedIndex)
-
-        if axis == "z":
-            dim = zdim
-        elif axis == "y":
-            dim = ydim
-        else:
-            dim = xdim
-
-        if dim <= 0:
-            raise HTTPException(status_code=500, detail="Empty volume")
-
-        sliceUsed = max(0, min(requestedIndex, dim - 1))
-
-        if axis == "z":
-            slice2d = volume[sliceUsed, :, :]
-        elif axis == "y":
-            slice2d = volume[:, sliceUsed, :]
-        else:
-            slice2d = volume[:, :, sliceUsed]
-
-        gray = self._normalize2dSlice(slice2d, mode=normalize or "minmax")
-
-        if thumb is not None and thumb > 0:
-            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
-            pilTmp.thumbnail((thumb, thumb))
-            gray = np.asarray(pilTmp)
-
-            if gray.dtype != np.uint8:
-                gray = gray.astype(np.uint8, copy=False)
-
-        usedColormap = colormap
-        imgArray = gray.astype(np.uint8, copy=False)
-        pilMode = "L"
-
-        if usedColormap:
-            try:
-                import matplotlib.cm as cm
-
-                sliceNorm = imgArray.astype(np.float32) / 255.0
-                cmapObj = cm.get_cmap(usedColormap)
-                rgba = cmapObj(sliceNorm)
-                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
-                imgArray = rgb
-                pilMode = "RGB"
-            except Exception:
-                usedColormap = None
-                imgArray = gray.astype(np.uint8, copy=False)
-                pilMode = "L"
-
-        if scale is not None and scale != 1.0:
-            try:
-                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
-                newW = max(1, int(round(pilScale.width * float(scale))))
-                newH = max(1, int(round(pilScale.height * float(scale))))
-                pilScale = pilScale.resize(
-                    (newW, newH),
-                    resample=PILImage.Resampling.BILINEAR,
-                )
-                imgArray = np.asarray(pilScale, copy=False)
-            except Exception:
-                pass
-
-        img = PILImage.fromarray(imgArray, mode=pilMode)
-
-        buf = io.BytesIO()
-        img.save(buf, format=pilFormat, **saveKw)
-
-        disp = "inline" if inline else "attachment"
-        safeName = str(volumeName or f"volume_{volumeId}").replace("/", "_").replace("\\", "_")
-        filename = f"{safeName}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
-
-        headers = {
-            "Content-Disposition": f'{disp}; filename="{filename}"',
-            "Access-Control-Expose-Headers": (
-                "Content-Disposition, "
-                "X-Preview-Mime, "
-                "X-Preview-Width, "
-                "X-Preview-Height, "
-                "X-Preview-Depth, "
-                "X-Preview-Colormap, "
-                "X-Preview-Format, "
-                "X-Preview-VolumeId"
-            ),
-            "X-Preview-Mime": mediaType,
-            "X-Preview-Width": str(img.width),
-            "X-Preview-Height": str(img.height),
-            "X-Preview-Depth": str(depth),
-            "X-Preview-Colormap": usedColormap or "",
-            "X-Preview-Format": pilFormat,
-            "X-Preview-VolumeId": str(volumeId),
-        }
-
-        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
-
     def listOutputVolumesService(
             self,
             projectId: int,
@@ -6902,24 +6754,24 @@ class ProjectService:
         )
 
         if pgReader is not None:
-            result = pgReader.getVolumeArray(volumeId)
-            if result is not None:
-                volume, _props, info = result
-
-                return self._renderVolumeSliceFromArray(
-                    volume=volume,
-                    volumeId=volumeId,
-                    volumeName=info.get("name") or info.get("label"),
-                    sliceIndex=sliceIndex,
-                    axis=axis,
-                    colormap=colormap,
-                    normalize=normalize or "minmax",
-                    scale=scale,
-                    inline=inline,
-                    fmt=fmt,
-                    thumb=thumb,
-                    quality=quality,
-                )
+            info = pgReader.getVolumeFile(volumeId)
+            if info is not None:
+                volumePath = info.get("fileName") or info.get("path")
+                if volumePath and os.path.exists(str(volumePath)):
+                    return self._renderTomogramSliceFromPath(
+                        volumePath=str(volumePath),
+                        tomogramId=volumeId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize or "minmax",
+                        scale=scale,
+                        inline=inline,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
 
             logger.info(
                 "Skipping PostgreSQL volume slice reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
@@ -8655,7 +8507,7 @@ class ProjectService:
             if tomogramInfo is not None:
                 volumePath = tomogramInfo.get("fileName")
                 if volumePath and os.path.exists(volumePath):
-                    return self._renderCoords3dTomogramSliceFromPath(
+                    return self._renderTomogramSliceFromPath(
                         volumePath=volumePath,
                         tomogramId=tomogramId,
                         sliceIndex=sliceIndex,
@@ -8908,7 +8760,7 @@ class ProjectService:
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
-    def _renderCoords3dTomogramSliceFromPath(
+    def _renderTomogramSliceFromPath(
             self,
             volumePath: str,
             tomogramId: Union[int, str],
