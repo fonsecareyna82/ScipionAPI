@@ -93,6 +93,14 @@ class PostgresqlIntegratedContextReader:
             summaries=summaries,
         )
 
+        self._mergeExactInputRefs(
+            rootKind=rootKind,
+            rootStoredSet=storedSet,
+            links=links,
+            summaries=summaries,
+            relationsByKey=relationsByKey,
+        )
+
         self._mergeRelatedStoredSets(
             rootStoredSet=storedSet,
             links=links,
@@ -144,18 +152,22 @@ class PostgresqlIntegratedContextReader:
             storedSet.get("setClassName") or "",
             storedSet.get("itemClassName") or "",
         )
-        classText = classText.replace(" ", "").lower()
 
-        if "setofcoordinates3d" in classText or "coordinate3d" in classText:
+        return self._getIntegratedKindFromText(classText)
+
+    def _getIntegratedKindFromText(self, classText: Any) -> Optional[str]:
+        text = str(classText or "").replace(" ", "").lower()
+
+        if "setofcoordinates3d" in text or "coordinate3d" in text:
             return "coordinates3d"
 
-        if "setofctftomoseries" in classText or "ctftomoseries" in classText:
+        if "setofctftomoseries" in text or "ctftomoseries" in text:
             return "ctf"
 
-        if "setoftiltseries" in classText or "tiltseries" in classText:
+        if "setoftiltseries" in text or "tiltseries" in text:
             return "tiltSeries"
 
-        if "setoftomograms" in classText or "tomogram" in classText:
+        if "setoftomograms" in text or "tomogram" in text:
             return "tomogram"
 
         return None
@@ -222,6 +234,340 @@ class PostgresqlIntegratedContextReader:
             summary.update(extra)
 
         return summary
+
+    def _listProtocolInputRefs(self, protocolDbId: Any) -> List[Dict[str, Any]]:
+        if protocolDbId is None:
+            return []
+
+        try:
+            rows = self.db.fetchAll(
+                """
+                SELECT
+                    "projectId",
+                    "protocolDbId",
+                    "protocolId",
+                    "inputName",
+                    "itemIndex",
+                    "parentProtocolDbId",
+                    "parentProtocolId",
+                    "parentOutputName",
+                    "objectClassName",
+                    "objectId",
+                    "createdAt",
+                    "updatedAt"
+                  FROM protocol_input_refs
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                 ORDER BY "inputName", "itemIndex"
+                """,
+                (self.projectId, int(protocolDbId)),
+            )
+        except Exception:
+            logger.debug(
+                "Could not list protocol input refs. projectId=%s protocolDbId=%s",
+                self.projectId,
+                protocolDbId,
+                exc_info=True,
+            )
+            return []
+
+        return [dict(row) for row in rows or []]
+
+    def _getInputRefKind(self, inputRef: Dict[str, Any]) -> Optional[str]:
+        return self._getIntegratedKindFromText(inputRef.get("objectClassName"))
+
+    def _findInputRefByKind(
+            self,
+            inputRefs: List[Dict[str, Any]],
+            kind: str,
+    ) -> Optional[Dict[str, Any]]:
+        for inputRef in inputRefs or []:
+            if self._getInputRefKind(inputRef) == kind:
+                return inputRef
+
+        return None
+
+    def _expandInputRefOutputNames(self, outputName: Any) -> List[str]:
+        outputNameText = str(outputName or "").strip()
+        if not outputNameText:
+            return []
+
+        outputNames = [outputNameText]
+
+        if "." in outputNameText:
+            outputNames.append(outputNameText.split(".", 1)[0])
+
+        result = []
+        seen = set()
+
+        for item in outputNames:
+            if item in seen:
+                continue
+
+            seen.add(item)
+            result.append(item)
+
+        return result
+
+    def _getStoredSetFromInputRef(self, inputRef: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        parentProtocolDbId = inputRef.get("parentProtocolDbId")
+        if parentProtocolDbId is None:
+            return None
+
+        for outputName in self._expandInputRefOutputNames(inputRef.get("parentOutputName")):
+            storedSet = self.setMapper.getStoredSet(
+                projectId=self.projectId,
+                protocolDbId=parentProtocolDbId,
+                outputName=outputName,
+                limit=None,
+                offset=0,
+            )
+
+            if storedSet is not None:
+                return storedSet
+
+        return None
+
+    def _buildInputRefLink(
+            self,
+            inputRef: Dict[str, Any],
+            storedSet: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "protocolId": inputRef.get("parentProtocolId") or inputRef.get("parentProtocolDbId"),
+            "outputName": storedSet.get("outputName") or inputRef.get("parentOutputName"),
+            "itemId": storedSet.get("objectId") or storedSet.get("id") or inputRef.get("objectId"),
+            "label": inputRef.get("inputName") or inputRef.get("parentOutputName"),
+            "status": "inferred",
+            "source": "inputRef",
+        }
+
+    def _getRelationKeySet(self, relationsByKey: Dict[str, Dict[str, Any]]) -> Optional[set]:
+        keys = set()
+
+        for key, relation in (relationsByKey or {}).items():
+            candidates = [
+                key,
+                relation.get("key"),
+                relation.get("label"),
+                relation.get("tiltSeriesId"),
+                relation.get("tsId"),
+                relation.get("ctfSeriesId"),
+                relation.get("tomogramId"),
+                relation.get("coordinatesTomogramId"),
+            ]
+
+            for value in candidates:
+                text = str(value).strip() if value is not None else ""
+                if text:
+                    keys.add(text)
+
+        return keys or None
+
+    def _mergeInputRefRelations(
+            self,
+            kind: str,
+            inputRef: Dict[str, Any],
+            storedSet: Dict[str, Any],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> None:
+        protocolDbId = storedSet.get("protocolDbId") or inputRef.get("parentProtocolDbId")
+        outputName = storedSet.get("outputName") or inputRef.get("parentOutputName")
+
+        if protocolDbId is None or not outputName:
+            return
+
+        allowedRelationKeys = self._getRelationKeySet(relationsByKey)
+
+        if kind == "tiltSeries":
+            reader = PostgresqlTiltSeriesReader(
+                db=self.db,
+                projectId=self.projectId,
+                protocolId=protocolDbId,
+                outputName=outputName,
+            )
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listTiltSeries(),
+                allowedRelationKeys,
+            )
+            self._addTiltSeriesRelations(relationsByKey, items)
+            return
+
+        if kind == "ctf":
+            reader = PostgresqlCtftomoReader(
+                db=self.db,
+                projectId=self.projectId,
+                protocolId=protocolDbId,
+                outputName=outputName,
+            )
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listCtftomoSeries(),
+                allowedRelationKeys,
+            )
+            self._addCtftomoRelations(relationsByKey, items)
+            return
+
+        if kind == "tomogram":
+            items = self._filterIntegratedItemsByAllowedKeys(
+                self._buildTomogramItemsFromStoredSet(storedSet),
+                allowedRelationKeys,
+            )
+            self._addTomogramRelations(relationsByKey, items)
+            return
+
+        if kind == "coordinates3d":
+            reader = PostgresqlCoords3dReader(
+                db=self.db,
+                projectId=self.projectId,
+                protocolId=protocolDbId,
+                outputName=outputName,
+            )
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listTomograms() or [],
+                allowedRelationKeys,
+            )
+            self._addCoordinates3dRelations(relationsByKey, items)
+
+    def _mergeKindFromInputRefs(
+            self,
+            kind: str,
+            inputRefs: List[Dict[str, Any]],
+            links: Dict[str, Optional[Dict[str, Any]]],
+            summaries: Dict[str, Optional[Dict[str, Any]]],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if links.get(kind) is not None:
+            return None
+
+        inputRef = self._findInputRefByKind(inputRefs, kind)
+        if inputRef is None:
+            return None
+
+        storedSet = self._getStoredSetFromInputRef(inputRef)
+        if storedSet is None:
+            return None
+
+        links[kind] = self._buildInputRefLink(inputRef, storedSet)
+        summaries[kind] = self._buildSummary(
+            storedSet,
+            extra={
+                "source": "inputRef",
+                "inputName": inputRef.get("inputName"),
+            },
+        )
+
+        self._mergeInputRefRelations(
+            kind=kind,
+            inputRef=inputRef,
+            storedSet=storedSet,
+            relationsByKey=relationsByKey,
+        )
+
+        return inputRef
+
+    def _mergeExactInputRefs(
+            self,
+            rootKind: str,
+            rootStoredSet: Dict[str, Any],
+            links: Dict[str, Optional[Dict[str, Any]]],
+            summaries: Dict[str, Optional[Dict[str, Any]]],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> None:
+        rootProtocolDbId = rootStoredSet.get("protocolDbId")
+        inputRefs = self._listProtocolInputRefs(rootProtocolDbId)
+
+        if not inputRefs:
+            return
+
+        if rootKind == "ctf":
+            self._mergeKindFromInputRefs(
+                kind="tiltSeries",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+            return
+
+        if rootKind == "tomogram":
+            ctfRef = self._mergeKindFromInputRefs(
+                kind="ctf",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
+            tiltRef = self._mergeKindFromInputRefs(
+                kind="tiltSeries",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
+            if tiltRef is None and ctfRef is not None:
+                ctfInputRefs = self._listProtocolInputRefs(ctfRef.get("parentProtocolDbId"))
+                self._mergeKindFromInputRefs(
+                    kind="tiltSeries",
+                    inputRefs=ctfInputRefs,
+                    links=links,
+                    summaries=summaries,
+                    relationsByKey=relationsByKey,
+                )
+
+            return
+
+        if rootKind == "coordinates3d":
+            ctfRef = self._mergeKindFromInputRefs(
+                kind="ctf",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
+            tiltRef = self._mergeKindFromInputRefs(
+                kind="tiltSeries",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
+            tomogramRef = self._findInputRefByKind(inputRefs, "tomogram")
+            if tomogramRef is not None:
+                tomogramInputRefs = self._listProtocolInputRefs(
+                    tomogramRef.get("parentProtocolDbId")
+                )
+
+                if ctfRef is None:
+                    ctfRef = self._mergeKindFromInputRefs(
+                        kind="ctf",
+                        inputRefs=tomogramInputRefs,
+                        links=links,
+                        summaries=summaries,
+                        relationsByKey=relationsByKey,
+                    )
+
+                if tiltRef is None:
+                    tiltRef = self._mergeKindFromInputRefs(
+                        kind="tiltSeries",
+                        inputRefs=tomogramInputRefs,
+                        links=links,
+                        summaries=summaries,
+                        relationsByKey=relationsByKey,
+                    )
+
+            if tiltRef is None and ctfRef is not None:
+                ctfInputRefs = self._listProtocolInputRefs(ctfRef.get("parentProtocolDbId"))
+                self._mergeKindFromInputRefs(
+                    kind="tiltSeries",
+                    inputRefs=ctfInputRefs,
+                    links=links,
+                    summaries=summaries,
+                    relationsByKey=relationsByKey,
+                )
 
     def _firstValueByName(
             self,
@@ -415,26 +761,38 @@ class PostgresqlIntegratedContextReader:
         for index, item in enumerate(storedSet.get("items") or []):
             values = item.get("values") or {}
 
-            tomogramId = self._firstValueByName(
+            tsId = self._firstValueByName(
                 values,
-                ["_tomoId", "tomoId", "tomogramId", "_tsId", "tsId"],
+                ["_tsId", "tsId", "tiltSeriesId", "tilt_series_id"],
+            )
+
+            tomoId = self._firstValueByName(
+                values,
+                ["_tomoId", "tomoId", "tomogramId", "tomo_id", "tomogram_id"],
             )
 
             label = self._firstValueByName(
                 values,
-                ["_objLabel", "label", "_tsId", "tsId", "tomoId"],
+                ["_objLabel", "label", "name", "_tsId", "tsId", "tomoId"],
             )
 
-            publicId = tomogramId or item.get("scipionItemId") or index
+            publicId = tsId or tomoId or item.get("scipionItemId") or index
 
-            items.append(
-                {
-                    "id": publicId,
-                    "tomoId": publicId,
-                    "label": label or publicId,
-                    "volumeId": index,
-                }
-            )
+            row = {
+                "id": publicId,
+                "tomoId": publicId,
+                "label": label or publicId,
+                "volumeId": index,
+            }
+
+            if tsId is not None:
+                row["tsId"] = tsId
+                row["tiltSeriesId"] = tsId
+
+            if tomoId is not None:
+                row["sourceTomoId"] = tomoId
+
+            items.append(row)
 
         return items
 
@@ -562,7 +920,7 @@ class PostgresqlIntegratedContextReader:
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
                 continue
 
-            if rootKind in {"coordinates3d", "tomogram"} and candidateKind == "tiltSeries":
+            if rootKind in {"coordinates3d", "tomogram"} and candidateKind in {"tiltSeries", "ctf"}:
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):
