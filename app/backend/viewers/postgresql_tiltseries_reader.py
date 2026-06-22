@@ -134,7 +134,6 @@ class PostgresqlTiltSeriesReader:
         summary: Dict[str, Any] = {
             "tiltSeriesId": str(tiltSeriesId),
             "label": "TiltSeries %s" % str(tiltSeriesId),
-            "index": index,
         }
 
         childTable = self._findChildTableForParentItem(itemId)
