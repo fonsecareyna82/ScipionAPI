@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 9
+NESTED_LOGICAL_TABLES_VERSION = 10
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1484,16 +1484,126 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if samplingRate is not None:
             item["pixelSize"] = samplingRate
 
+        acquisition = self._callOptionalGetter(tiltSeries, "getAcquisition")
         tiltAxisAngle = self._toOptionalFloat(
-            self._callOptionalGetter(
-                self._callOptionalGetter(tiltSeries, "getAcquisition"),
-                "getTiltAxisAngle",
-            )
+            self._callOptionalGetter(acquisition, "getTiltAxisAngle")
         )
         if tiltAxisAngle is not None:
             item["tiltAxisAngle"] = tiltAxisAngle
 
+        frames = self._buildLinkedTiltSeriesFramesSummary(tiltSeries)
+        if frames:
+            item["frames"] = frames
+            item["nViews"] = len(frames)
+        else:
+            size = self._toOptionalInt(self._callOptionalGetter(tiltSeries, "getSize"))
+            if size is not None:
+                item["nViews"] = size
+
         return item
+
+    def _buildLinkedTiltSeriesFramesSummary(self, tiltSeries: Any) -> List[Dict[str, Any]]:
+        frames = []
+
+        for position, tiltImage in enumerate(self._iterTiltSeriesImages(tiltSeries)):
+            frame = self._buildLinkedTiltImageFrameSummary(tiltImage, position)
+            if frame is not None:
+                frames.append(frame)
+
+        return frames
+
+    def _iterTiltSeriesImages(self, tiltSeries: Any) -> Iterable[Any]:
+        iterItems = getattr(tiltSeries, "iterItems", None)
+        if callable(iterItems):
+            try:
+                return iterItems(iterate=False)
+            except TypeError:
+                return iterItems()
+            except Exception:
+                pass
+
+        try:
+            return iter(tiltSeries)
+        except Exception:
+            return iter(())
+
+    def _buildLinkedTiltImageFrameSummary(self, tiltImage: Any, position: int) -> Optional[Dict[str, Any]]:
+        viewId = self._callOptionalGetter(tiltImage, "getObjId") or position
+        imageIndex = self._toOptionalInt(self._callOptionalGetter(tiltImage, "getIndex"))
+
+        if imageIndex is None:
+            imageIndex = position
+
+        frame: Dict[str, Any] = {
+            "viewId": viewId,
+            "index": imageIndex,
+        }
+
+        order = self._toOptionalInt(self._callOptionalGetter(tiltImage, "getAcquisitionOrder"))
+        if order is not None:
+            frame["order"] = order
+
+        tiltAngle = self._toOptionalFloat(self._callOptionalGetter(tiltImage, "getTiltAngle"))
+        if tiltAngle is not None:
+            frame["tiltAngle"] = tiltAngle
+
+        excluded = self._getLinkedTiltImageExcluded(tiltImage)
+        frame["excluded"] = excluded
+
+        acquisition = self._callOptionalGetter(tiltImage, "getAcquisition")
+        dose = self._toOptionalFloat(self._callOptionalGetter(acquisition, "getAccumDose"))
+        if dose is not None:
+            frame["dose"] = dose
+
+        fileName = self._callOptionalGetter(tiltImage, "getFileName")
+        if fileName:
+            frame["path"] = "%s@%s" % (str(imageIndex), str(fileName))
+
+        transform = self._getLinkedTiltImageTransform(tiltImage)
+        frame.update(transform)
+
+        return frame
+
+    def _getLinkedTiltImageExcluded(self, tiltImage: Any) -> bool:
+        for methodName in ("isExcluded", "getIsExcluded"):
+            value = self._callOptionalGetter(tiltImage, methodName)
+            if value is not None:
+                return bool(value)
+
+        for methodName in ("isEnabled", "getEnabled"):
+            value = self._callOptionalGetter(tiltImage, methodName)
+            if value is not None:
+                return not bool(value)
+
+        return False
+
+    def _getLinkedTiltImageTransform(self, tiltImage: Any) -> Dict[str, Any]:
+        output = {}
+
+        hasTransform = self._callOptionalGetter(tiltImage, "hasTransform")
+        if hasTransform is False:
+            return output
+
+        transform = self._callOptionalGetter(tiltImage, "getTransform")
+        if transform is None:
+            return output
+
+        try:
+            import math
+
+            _alpha, _beta, gamma = transform.getEulerAngles()
+            output["rot"] = math.degrees(-gamma)
+        except Exception:
+            pass
+
+        try:
+            matrix = transform.getMatrixAsList()
+            output["shiftX"] = matrix[2]
+            output["shiftY"] = matrix[5]
+        except Exception:
+            pass
+
+        return output
 
     def _uniqueTextValues(self, values: Iterable[Any]) -> List[str]:
         result = []
