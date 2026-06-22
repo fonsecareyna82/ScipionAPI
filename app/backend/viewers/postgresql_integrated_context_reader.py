@@ -549,6 +549,8 @@ class PostgresqlIntegratedContextReader:
             summaries: Dict[str, Optional[Dict[str, Any]]],
             relationsByKey: Dict[str, Dict[str, Any]],
     ) -> None:
+        rootKind = self._getIntegratedKind(rootStoredSet)
+
         for candidate in self._listRelatedStoredSets():
             if self._isSameStoredSet(candidate, rootStoredSet):
                 continue
@@ -556,8 +558,6 @@ class PostgresqlIntegratedContextReader:
             candidateKind = self._getIntegratedKind(candidate)
             if candidateKind is None or candidateKind not in links:
                 continue
-
-            rootKind = self._getIntegratedKind(rootStoredSet)
 
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
                 continue
@@ -572,8 +572,6 @@ class PostgresqlIntegratedContextReader:
                 summaries[candidateKind] = self._buildSummary(candidate)
 
             allowedRelationKeys = None
-            rootKind = self._getIntegratedKind(rootStoredSet)
-
             if rootKind == "coordinates3d":
                 allowedRelationKeys = set(relationsByKey.keys())
 
@@ -636,7 +634,6 @@ class PostgresqlIntegratedContextReader:
                 allowedRelationKeys,
             )
             self._addTiltSeriesRelations(relationsByKey, items)
-            self._addTiltSeriesRelations(relationsByKey, reader.listTiltSeries())
             return
 
         if candidateKind == "ctf":
