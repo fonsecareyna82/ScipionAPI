@@ -43,11 +43,12 @@ class PostgresqlTiltSeriesReader:
         self._logicalTables = None
 
     def hasOutput(self) -> bool:
-        return self._getStoredSet() is not None
+        storedSet = self._getStoredSet()
+        return storedSet is not None and self._isTiltSeriesStoredSet(storedSet)
 
     def listTiltSeries(self) -> List[Dict[str, Any]]:
         storedSet = self._getStoredSet()
-        if storedSet is None:
+        if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
             return []
 
         result = []
@@ -57,9 +58,11 @@ class PostgresqlTiltSeriesReader:
         return result
 
     def getTiltSeriesFrames(self, tiltSeriesId: Any) -> Optional[Dict[str, Any]]:
-        seriesItem = self._findTiltSeriesItem(tiltSeriesId)
-        if seriesItem is None:
+        storedSet = self._getStoredSet()
+        if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
             return None
+
+        seriesItem = self._findTiltSeriesItem(tiltSeriesId)
 
         seriesSummary = self._buildTiltSeriesSummary(seriesItem, 0)
         childTable = self._findChildTableForParentItem(seriesItem.get("scipionItemId"))
@@ -108,6 +111,16 @@ class PostgresqlTiltSeriesReader:
                 outputName=self.outputName,
             )
         return self._storedSet
+
+    def _isTiltSeriesStoredSet(self, storedSet: Dict[str, Any]) -> bool:
+        classText = self._getStoredSetClassText(storedSet)
+        return "tiltseries" in classText and "ctftomo" not in classText
+
+    def _getStoredSetClassText(self, storedSet: Dict[str, Any]) -> str:
+        return ("%s %s" % (
+            storedSet.get("setClassName") or "",
+            storedSet.get("itemClassName") or "",
+        )).replace(" ", "").lower()
 
     def _getLogicalTables(self) -> List[Dict[str, Any]]:
         if self._logicalTables is None:

@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 10
+NESTED_LOGICAL_TABLES_VERSION = 11
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):

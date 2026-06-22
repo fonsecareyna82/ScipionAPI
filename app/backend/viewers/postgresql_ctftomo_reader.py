@@ -26,6 +26,7 @@
 from typing import Any, Dict, List, Optional
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
 
 
 class PostgresqlCtftomoReader:
@@ -37,6 +38,7 @@ class PostgresqlCtftomoReader:
         self.setMapper = ScipionSetPostgresqlMapper(db)
         self._storedSet = None
         self._logicalTables = None
+        self._associatedTiltSeriesFramesBySeriesId = {}
 
     def hasOutput(self) -> bool:
         return self._getStoredSet() is not None
@@ -61,11 +63,22 @@ class PostgresqlCtftomoReader:
         summary = self._buildCtftomoSeriesSummary(seriesItem, 0)
         childTable = self._findChildTableForParentItem(seriesItem.get("scipionItemId"))
 
+        associatedTiltFrames = self._getAssociatedTiltSeriesFrames(
+            summary.get("tiltSeriesId") or tiltSeriesId
+        )
+
         frames: List[Dict[str, Any]] = []
         if childTable is not None:
             childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
             for index, item in enumerate(childItems):
-                frames.append(self._buildCtftomoMeasurementFrame(item, index))
+                frame = self._buildCtftomoMeasurementFrame(item, index)
+                tiltFrame = self._findAssociatedTiltSeriesFrame(
+                    ctfFrame=frame,
+                    position=index,
+                    tiltFrames=associatedTiltFrames,
+                )
+                self._mergeTiltSeriesFrameIntoCtftomoFrame(frame, tiltFrame)
+                frames.append(frame)
 
         summary["frames"] = frames
         summary["tiltSeriesId"] = summary.get("tiltSeriesId") or str(tiltSeriesId)
@@ -97,6 +110,204 @@ class PostgresqlCtftomoReader:
                     int(storedSet["id"])
                 )
         return self._logicalTables
+
+    def _getAssociatedTiltSeriesFrames(self, tiltSeriesId: Any) -> List[Dict[str, Any]]:
+        seriesKey = str(tiltSeriesId)
+        if seriesKey in self._associatedTiltSeriesFramesBySeriesId:
+            return self._associatedTiltSeriesFramesBySeriesId[seriesKey]
+
+        frames = self._loadAssociatedTiltSeriesFrames(tiltSeriesId)
+        self._associatedTiltSeriesFramesBySeriesId[seriesKey] = frames
+        return frames
+
+    def _loadAssociatedTiltSeriesFrames(self, tiltSeriesId: Any) -> List[Dict[str, Any]]:
+        storedSet = self._getStoredSet()
+        rootProtocolDbId = storedSet.get("protocolDbId") if storedSet else self.protocolId
+
+        tiltRef = self._findTiltSeriesInputRefForProtocol(rootProtocolDbId)
+        if tiltRef is None:
+            return []
+
+        tiltStoredSet = self._getStoredSetFromInputRef(tiltRef)
+        if tiltStoredSet is None:
+            return []
+
+        protocolDbId = tiltStoredSet.get("protocolDbId") or tiltRef.get("parentProtocolDbId")
+        outputName = tiltStoredSet.get("outputName") or tiltRef.get("parentOutputName")
+
+        if protocolDbId is None or not outputName:
+            return []
+
+        reader = PostgresqlTiltSeriesReader(
+            db=self.db,
+            projectId=self.projectId,
+            protocolId=protocolDbId,
+            outputName=outputName,
+        )
+
+        payload = reader.getTiltSeriesFrames(tiltSeriesId)
+        if not payload:
+            return []
+
+        return payload.get("frames") or []
+
+    def _findTiltSeriesInputRefForProtocol(
+            self,
+            protocolDbId: Any,
+            visited: Optional[set] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if protocolDbId is None:
+            return None
+
+        if visited is None:
+            visited = set()
+
+        protocolKey = str(protocolDbId)
+        if protocolKey in visited:
+            return None
+
+        visited.add(protocolKey)
+
+        inputRefs = self._listProtocolInputRefs(protocolDbId)
+        for inputRef in inputRefs:
+            if self._getInputRefKind(inputRef) == "tiltSeries":
+                return inputRef
+
+        for inputRef in inputRefs:
+            if self._getInputRefKind(inputRef) != "ctf":
+                continue
+
+            parentProtocolDbId = inputRef.get("parentProtocolDbId")
+            tiltRef = self._findTiltSeriesInputRefForProtocol(
+                parentProtocolDbId,
+                visited=visited,
+            )
+
+            if tiltRef is not None:
+                return tiltRef
+
+        return None
+
+    def _listProtocolInputRefs(self, protocolDbId: Any) -> List[Dict[str, Any]]:
+        if protocolDbId is None:
+            return []
+
+        try:
+            rows = self.db.fetchAll(
+                """
+                SELECT
+                    "projectId",
+                    "protocolDbId",
+                    "protocolId",
+                    "inputName",
+                    "itemIndex",
+                    "parentProtocolDbId",
+                    "parentProtocolId",
+                    "parentOutputName",
+                    "objectClassName",
+                    "objectId"
+                  FROM protocol_input_refs
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                 ORDER BY "inputName", "itemIndex"
+                """,
+                (self.projectId, int(protocolDbId)),
+            )
+        except Exception:
+            return []
+
+        return [dict(row) for row in rows or []]
+
+    def _getInputRefKind(self, inputRef: Dict[str, Any]) -> Optional[str]:
+        text = str(inputRef.get("objectClassName") or "").replace(" ", "").lower()
+
+        if "ctftomo" in text:
+            return "ctf"
+
+        if "tiltseries" in text:
+            return "tiltSeries"
+
+        return None
+
+    def _getStoredSetFromInputRef(self, inputRef: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        parentProtocolDbId = inputRef.get("parentProtocolDbId")
+        if parentProtocolDbId is None:
+            return None
+
+        for outputName in self._expandInputRefOutputNames(inputRef.get("parentOutputName")):
+            storedSet = self.setMapper.getStoredSet(
+                projectId=self.projectId,
+                protocolDbId=parentProtocolDbId,
+                outputName=outputName,
+                limit=None,
+                offset=0,
+            )
+
+            if storedSet is not None:
+                return storedSet
+
+        return None
+
+    def _expandInputRefOutputNames(self, outputName: Any) -> List[str]:
+        outputNameText = str(outputName or "").strip()
+        if not outputNameText:
+            return []
+
+        outputNames = [outputNameText]
+
+        if "." in outputNameText:
+            outputNames.append(outputNameText.split(".", 1)[0])
+
+        result = []
+        seen = set()
+
+        for item in outputNames:
+            if item in seen:
+                continue
+
+            seen.add(item)
+            result.append(item)
+
+        return result
+
+    def _findAssociatedTiltSeriesFrame(
+            self,
+            ctfFrame: Dict[str, Any],
+            position: int,
+            tiltFrames: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not tiltFrames:
+            return None
+
+        orderKey = self._toTextKey(ctfFrame.get("order"))
+        if orderKey:
+            for tiltFrame in tiltFrames:
+                if self._toTextKey(tiltFrame.get("order")) == orderKey:
+                    return tiltFrame
+
+        if 0 <= position < len(tiltFrames):
+            return tiltFrames[position]
+
+        return None
+
+    def _mergeTiltSeriesFrameIntoCtftomoFrame(
+            self,
+            ctfFrame: Dict[str, Any],
+            tiltFrame: Optional[Dict[str, Any]],
+    ) -> None:
+        if tiltFrame is None:
+            return
+
+        for key in ("tiltAngle", "dose", "order"):
+            if ctfFrame.get(key) is None and tiltFrame.get(key) is not None:
+                ctfFrame[key] = tiltFrame.get(key)
+
+    def _toTextKey(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
 
     def _buildCtftomoSeriesSummary(self, item: Dict[str, Any], index: int) -> Dict[str, Any]:
         values = item.get("values") or {}
