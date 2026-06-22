@@ -6338,6 +6338,28 @@ class ProjectService:
             return None
 
         try:
+            from app.backend.viewers.postgresql_tomogram_tiltseries_reader import PostgresqlTomogramTiltSeriesReader
+
+            reader = PostgresqlTomogramTiltSeriesReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.debug(
+                "PostgreSQL Tomogram-derived tilt-series reader is not available. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+
+        try:
             from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
 
             reader = PostgresqlTiltSeriesReader(
