@@ -900,6 +900,19 @@ class PostgresqlIntegratedContextReader:
         )
         return result
 
+    def _shouldSkipDependencyCandidate(
+            self,
+            rootKind: Optional[str],
+            candidateKind: str,
+    ) -> bool:
+        if rootKind == "coordinates3d" and candidateKind == "tomogram":
+            return True
+
+        if rootKind in {"coordinates3d", "tomogram"} and candidateKind in {"tiltSeries", "ctf"}:
+            return True
+
+        return False
+
     def _mergeRelatedStoredSets(
             self,
             rootStoredSet: Dict[str, Any],
@@ -917,10 +930,7 @@ class PostgresqlIntegratedContextReader:
             if candidateKind is None or candidateKind not in links:
                 continue
 
-            if rootKind == "coordinates3d" and candidateKind == "tomogram":
-                continue
-
-            if rootKind in {"coordinates3d", "tomogram"} and candidateKind in {"tiltSeries", "ctf"}:
+            if self._shouldSkipDependencyCandidate(rootKind, candidateKind):
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):
