@@ -599,6 +599,130 @@ class ProjectService:
 
         return False
 
+    def _safeCall(self, obj: Any, methodName: str, default: Any = None) -> Any:
+        try:
+            method = getattr(obj, methodName, None)
+            if method is None:
+                return default
+            return method()
+        except Exception:
+            return default
+
+    def _getScipionClassName(self, obj: Any) -> Optional[str]:
+        if obj is None:
+            return None
+
+        className = self._safeCall(obj, "getClassName", None)
+        if className:
+            return str(className)
+
+        return obj.__class__.__name__
+
+    def _getScipionObjectId(self, obj: Any) -> Optional[Any]:
+        return self._safeCall(obj, "getObjId", None)
+
+    def _iterProtocolInputPointers(self, pointer: Any) -> List[Any]:
+        if pointer is None:
+            return []
+
+        if isinstance(pointer, (list, tuple, set)):
+            return list(pointer)
+
+        try:
+            if not isinstance(pointer, (str, bytes, dict)):
+                items = list(pointer)
+                if items:
+                    return items
+        except Exception:
+            pass
+
+        return [pointer]
+
+    def _getPointerTargetObject(self, pointer: Any) -> Any:
+        if pointer is None:
+            return None
+
+        target = self._safeCall(pointer, "get", None)
+        if target is not None:
+            return target
+
+        return pointer
+
+    def _getPointerParentProtocolId(self, pointer: Any, targetObj: Any) -> Optional[Any]:
+        pointerObj = self._safeCall(pointer, "getObjValue", None)
+        parentProtocolId = self._safeCall(pointerObj, "getObjId", None)
+        if parentProtocolId is not None:
+            return parentProtocolId
+
+        parentObj = self._safeCall(targetObj, "getObjParent", None)
+        parentProtocolId = self._safeCall(parentObj, "getObjId", None)
+        if parentProtocolId is not None:
+            return parentProtocolId
+
+        return None
+
+    def _getPointerOutputName(self, pointer: Any) -> Optional[str]:
+        outputName = self._safeCall(pointer, "getExtended", None)
+        if outputName is None:
+            return None
+
+        outputNameText = str(outputName).strip()
+        return outputNameText or None
+
+    def _buildProtocolInputRefsForPostgresql(
+            self,
+            projectId: int,
+            protocol: Any,
+            protocolDbIdByScipionId: Dict[str, int],
+    ) -> List[Dict[str, Any]]:
+        protocolId = self._getScipionObjectId(protocol)
+        if protocolId is None:
+            return []
+
+        protocolIdText = str(protocolId)
+        protocolDbId = protocolDbIdByScipionId.get(protocolIdText)
+        if protocolDbId is None:
+            return []
+
+        try:
+            inputAttributes = list(protocol.iterInputAttributes())
+        except Exception:
+            return []
+
+        refs: List[Dict[str, Any]] = []
+
+        for inputName, pointer in inputAttributes:
+            pointerItems = self._iterProtocolInputPointers(pointer)
+
+            for itemIndex, pointerItem in enumerate(pointerItems):
+                targetObj = self._getPointerTargetObject(pointerItem)
+                if targetObj is None:
+                    continue
+
+                parentProtocolId = self._getPointerParentProtocolId(pointerItem, targetObj)
+                parentProtocolIdText = str(parentProtocolId) if parentProtocolId is not None else None
+                parentProtocolDbId = (
+                    protocolDbIdByScipionId.get(parentProtocolIdText)
+                    if parentProtocolIdText is not None
+                    else None
+                )
+
+                refs.append({
+                    "projectId": int(projectId),
+                    "protocolDbId": int(protocolDbId),
+                    "protocolId": protocolIdText,
+                    "inputName": str(inputName),
+                    "itemIndex": int(itemIndex),
+                    "parentProtocolDbId": parentProtocolDbId,
+                    "parentProtocolId": parentProtocolIdText,
+                    "parentOutputName": self._getPointerOutputName(pointerItem),
+                    "objectClassName": self._getScipionClassName(targetObj),
+                    "objectId": str(self._getScipionObjectId(targetObj))
+                    if self._getScipionObjectId(targetObj) is not None else None,
+                })
+
+        return refs
+
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -617,6 +741,7 @@ class ProjectService:
 
         protocolDbIdByScipionId: Dict[str, int] = {}
         currentProtocolIds: Set[str] = set()
+        protocolsByScipionId: Dict[str, Any] = {}
 
         # 1) Save all protocol nodes that are currently present in the real Scipion graph
         for nodeId, nodeObj in nodesDict.items():
@@ -642,6 +767,7 @@ class ProjectService:
 
             currentProtocolIds.add(nodeIdText)
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
+            protocolsByScipionId[nodeIdText] = protocol
 
         # 2) Purge stale protocol rows that are no longer present in the real graph
         mapper.deleteProjectProtocolsNotInProtocolIds(
@@ -670,9 +796,26 @@ class ProjectService:
 
         savedEdges = mapper.replaceProjectProtocolDependencies(projectId, edges)
 
+        inputRefs: List[Dict[str, Any]] = []
+
+        for protocolIdText, protocol in protocolsByScipionId.items():
+            inputRefs.extend(
+                self._buildProtocolInputRefsForPostgresql(
+                    projectId=projectId,
+                    protocol=protocol,
+                    protocolDbIdByScipionId=protocolDbIdByScipionId,
+                )
+            )
+
+        savedInputRefs = 0
+        replaceInputRefs = getattr(mapper, "replaceProjectProtocolInputRefs", None)
+        if callable(replaceInputRefs):
+            savedInputRefs = replaceInputRefs(projectId, inputRefs)
+
         return {
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
+            "inputRefs": int(savedInputRefs),
         }
 
     def syncProjectGraphAfterMutation(

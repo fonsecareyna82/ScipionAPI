@@ -164,6 +164,44 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_input_refs (
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                "protocolDbId" INTEGER NOT NULL,
+                "protocolId" TEXT NOT NULL,
+                "inputName" TEXT NOT NULL,
+                "itemIndex" INTEGER NOT NULL DEFAULT 0,
+                "parentProtocolDbId" INTEGER,
+                "parentProtocolId" TEXT,
+                "parentOutputName" TEXT,
+                "objectClassName" TEXT,
+                "objectId" TEXT,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                PRIMARY KEY ("projectId", "protocolDbId", "inputName", "itemIndex"),
+
+                FOREIGN KEY ("projectId", "protocolDbId")
+                  REFERENCES protocols("projectId", id)
+                  ON DELETE CASCADE,
+
+                FOREIGN KEY ("projectId", "parentProtocolDbId")
+                  REFERENCES protocols("projectId", id)
+                  ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_protocol_input_refs_protocol
+              ON protocol_input_refs("projectId", "protocolDbId");
+
+            CREATE INDEX IF NOT EXISTS idx_protocol_input_refs_parent
+              ON protocol_input_refs("projectId", "parentProtocolDbId", "parentOutputName");
+
+            CREATE INDEX IF NOT EXISTS idx_protocol_input_refs_parent_protocol_id
+              ON protocol_input_refs("projectId", "parentProtocolId", "parentOutputName");
+            """
+        )
+
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS protocol_steps (
                 id SERIAL PRIMARY KEY,
@@ -964,6 +1002,155 @@ class PostgresqlFlatMapper(Mapper):
             for row in rows
             if row.get("protocolId") is not None and row.get("id") is not None
         }
+
+    def replaceProjectProtocolInputRefs(
+            self,
+            projectId: int,
+            refs: List[Dict[str, Any]],
+    ) -> int:
+        def toOptionalInt(value: Any) -> Optional[int]:
+            if value is None or value == "":
+                return None
+
+            try:
+                return int(value)
+            except Exception:
+                try:
+                    return int(float(value))
+                except Exception:
+                    return None
+
+        self.db.execute(
+            """
+            DELETE FROM protocol_input_refs
+             WHERE "projectId" = %s
+            """,
+            (projectId,),
+        )
+
+        cleanRefs: List[Dict[str, Any]] = []
+        seen = set()
+
+        for ref in refs or []:
+            protocolDbId = toOptionalInt(ref.get("protocolDbId"))
+            if protocolDbId is None or protocolDbId <= 0:
+                continue
+
+            inputName = str(ref.get("inputName") or "").strip()
+            if not inputName:
+                continue
+
+            itemIndex = toOptionalInt(ref.get("itemIndex"))
+            if itemIndex is None or itemIndex < 0:
+                itemIndex = 0
+
+            protocolId = str(ref.get("protocolId") or "").strip()
+            if not protocolId:
+                continue
+
+            key = (protocolDbId, inputName, itemIndex)
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            parentProtocolDbId = toOptionalInt(ref.get("parentProtocolDbId"))
+            if parentProtocolDbId is not None and parentProtocolDbId <= 0:
+                parentProtocolDbId = None
+
+            cleanRefs.append({
+                "projectId": int(projectId),
+                "protocolDbId": protocolDbId,
+                "protocolId": protocolId,
+                "inputName": inputName,
+                "itemIndex": itemIndex,
+                "parentProtocolDbId": parentProtocolDbId,
+                "parentProtocolId": str(ref.get("parentProtocolId")).strip()
+                if ref.get("parentProtocolId") not in (None, "") else None,
+                "parentOutputName": str(ref.get("parentOutputName")).strip()
+                if ref.get("parentOutputName") not in (None, "") else None,
+                "objectClassName": str(ref.get("objectClassName")).strip()
+                if ref.get("objectClassName") not in (None, "") else None,
+                "objectId": str(ref.get("objectId")).strip()
+                if ref.get("objectId") not in (None, "") else None,
+            })
+
+        if not cleanRefs:
+            return 0
+
+        valuesSql = ",".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(cleanRefs))
+        params: List[Any] = []
+
+        for ref in cleanRefs:
+            params.extend([
+                ref["projectId"],
+                ref["protocolDbId"],
+                ref["protocolId"],
+                ref["inputName"],
+                ref["itemIndex"],
+                ref["parentProtocolDbId"],
+                ref["parentProtocolId"],
+                ref["parentOutputName"],
+                ref["objectClassName"],
+                ref["objectId"],
+            ])
+
+        self.db.execute(
+            f"""
+            INSERT INTO protocol_input_refs (
+                "projectId",
+                "protocolDbId",
+                "protocolId",
+                "inputName",
+                "itemIndex",
+                "parentProtocolDbId",
+                "parentProtocolId",
+                "parentOutputName",
+                "objectClassName",
+                "objectId"
+            )
+            VALUES {valuesSql}
+            ON CONFLICT ("projectId", "protocolDbId", "inputName", "itemIndex")
+            DO UPDATE SET
+                "protocolId" = EXCLUDED."protocolId",
+                "parentProtocolDbId" = EXCLUDED."parentProtocolDbId",
+                "parentProtocolId" = EXCLUDED."parentProtocolId",
+                "parentOutputName" = EXCLUDED."parentOutputName",
+                "objectClassName" = EXCLUDED."objectClassName",
+                "objectId" = EXCLUDED."objectId",
+                "updatedAt" = NOW()
+            """,
+            tuple(params),
+        )
+
+        return len(cleanRefs)
+
+    def listProtocolInputRefs(
+            self,
+            projectId: int,
+            protocolDbId: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        if protocolDbId is None:
+            return self.db.fetchAll(
+                """
+                SELECT *
+                  FROM protocol_input_refs
+                 WHERE "projectId" = %s
+                 ORDER BY "protocolDbId", "inputName", "itemIndex"
+                """,
+                (projectId,),
+            )
+
+        return self.db.fetchAll(
+            """
+            SELECT *
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "inputName", "itemIndex"
+            """,
+            (projectId, protocolDbId),
+        )
 
     def replaceProjectProtocolDependencies(
             self,
