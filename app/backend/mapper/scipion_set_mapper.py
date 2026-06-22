@@ -41,11 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-<<<<<<< HEAD
-NESTED_LOGICAL_TABLES_VERSION = 8
-=======
 NESTED_LOGICAL_TABLES_VERSION = 9
->>>>>>> parent of 8045c89 (serve integrated tilt series from tomogram context)
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1373,6 +1369,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if linkedTomograms:
             properties["linkedTomograms"] = linkedTomograms
 
+        linkedTiltSeries = self._getLinkedTiltSeriesSummary(scipionSet)
+        if linkedTiltSeries:
+            properties["linkedTiltSeries"] = linkedTiltSeries
+
         for attrName, attrValue in self._getAttributesToStore(scipionSet):
             if self._getAttributesToStore(attrValue):
                 continue
@@ -1390,8 +1390,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return tomograms
 
-<<<<<<< HEAD
-=======
     def _getLinkedTiltSeriesSummary(self, scipionSet: Any) -> Optional[Dict[str, Any]]:
         tiltSeriesSet = self._callOptionalGetter(scipionSet, "getSetOfTiltSeries")
         if tiltSeriesSet is None:
@@ -1511,7 +1509,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return result
 
->>>>>>> parent of 8045c89 (serve integrated tilt series from tomogram context)
     def _iterLinkedTomograms(self, scipionSet: Any) -> Iterable[Any]:
         for methodName in ("iterTomograms", "iterVolumes"):
             iteratorGetter = getattr(scipionSet, methodName, None)
