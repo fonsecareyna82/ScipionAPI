@@ -415,38 +415,26 @@ class PostgresqlIntegratedContextReader:
         for index, item in enumerate(storedSet.get("items") or []):
             values = item.get("values") or {}
 
-            tsId = self._firstValueByName(
+            tomogramId = self._firstValueByName(
                 values,
-                ["_tsId", "tsId", "tiltSeriesId", "tilt_series_id"],
-            )
-
-            tomoId = self._firstValueByName(
-                values,
-                ["_tomoId", "tomoId", "tomogramId", "tomo_id", "tomogram_id"],
+                ["_tomoId", "tomoId", "tomogramId", "_tsId", "tsId"],
             )
 
             label = self._firstValueByName(
                 values,
-                ["_objLabel", "label", "name", "_tsId", "tsId", "tomoId"],
+                ["_objLabel", "label", "_tsId", "tsId", "tomoId"],
             )
 
-            publicId = tsId or tomoId or item.get("scipionItemId") or index
+            publicId = tomogramId or item.get("scipionItemId") or index
 
-            row = {
-                "id": publicId,
-                "tomoId": publicId,
-                "label": label or publicId,
-                "volumeId": index,
-            }
-
-            if tsId is not None:
-                row["tsId"] = tsId
-                row["tiltSeriesId"] = tsId
-
-            if tomoId is not None:
-                row["sourceTomoId"] = tomoId
-
-            items.append(row)
+            items.append(
+                {
+                    "id": publicId,
+                    "tomoId": publicId,
+                    "label": label or publicId,
+                    "volumeId": index,
+                }
+            )
 
         return items
 
@@ -547,50 +535,12 @@ class PostgresqlIntegratedContextReader:
         result.sort(
             key=lambda item: (
                 int(item.get("distance") or 0),
-                self._relationRoleRank(item.get("relationRole")),
+                str(item.get("relationRole") or ""),
                 int(item.get("protocolDbId") or 0),
                 str(item.get("outputName") or ""),
             )
         )
         return result
-
-    def _relationRoleRank(self, relationRole: Any) -> int:
-        role = str(relationRole or "")
-        return {
-            "root": 0,
-            "parent": 1,
-            "child": 2,
-        }.get(role, 9)
-
-    def _getAllowedRelationKeysForRoot(
-            self,
-            rootKind: Optional[str],
-            relationsByKey: Dict[str, Dict[str, Any]],
-    ) -> Optional[set]:
-        if rootKind not in {"coordinates3d", "tomogram", "ctf"}:
-            return None
-
-        keys = set()
-
-        for key, relation in relationsByKey.items():
-            candidates = [
-                key,
-                relation.get("key"),
-                relation.get("label"),
-                relation.get("tiltSeriesId"),
-                relation.get("tsId"),
-                relation.get("tomogramId"),
-                relation.get("coordinatesTomogramId"),
-                relation.get("ctfSeriesId"),
-                relation.get("sourceTomoId"),
-            ]
-
-            for value in candidates:
-                text = str(value).strip() if value is not None else ""
-                if text:
-                    keys.add(text)
-
-        return keys or None
 
     def _mergeRelatedStoredSets(
             self,
@@ -609,27 +559,7 @@ class PostgresqlIntegratedContextReader:
             if candidateKind is None or candidateKind not in links:
                 continue
 
-            relationRole = str(candidate.get("relationRole") or "")
-
-            if rootKind in {"coordinates3d", "tomogram", "ctf"} and relationRole == "child":
-                continue
-
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
-                continue
-
-            allowedRelationKeys = self._getAllowedRelationKeysForRoot(
-                rootKind=rootKind,
-                relationsByKey=relationsByKey,
-            )
-
-            mergedRelations = self._mergeRelationsForCandidate(
-                candidate=candidate,
-                candidateKind=candidateKind,
-                relationsByKey=relationsByKey,
-                allowedRelationKeys=allowedRelationKeys,
-            )
-
-            if not mergedRelations:
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):
@@ -641,6 +571,17 @@ class PostgresqlIntegratedContextReader:
                 )
                 summaries[candidateKind] = self._buildSummary(candidate)
 
+            allowedRelationKeys = None
+            if rootKind == "coordinates3d":
+                allowedRelationKeys = set(relationsByKey.keys())
+
+            self._mergeRelationsForCandidate(
+                candidate=candidate,
+                candidateKind=candidateKind,
+                relationsByKey=relationsByKey,
+                allowedRelationKeys=allowedRelationKeys,
+            )
+
     def _filterIntegratedItemsByAllowedKeys(
             self,
             items: List[Dict[str, Any]],
@@ -648,12 +589,6 @@ class PostgresqlIntegratedContextReader:
     ) -> List[Dict[str, Any]]:
         if not allowedRelationKeys:
             return items or []
-
-        allowedTextKeys = {
-            str(value).strip()
-            for value in allowedRelationKeys
-            if value is not None and str(value).strip()
-        }
 
         filteredItems = []
 
@@ -664,18 +599,12 @@ class PostgresqlIntegratedContextReader:
                 item.get("id"),
                 item.get("tomoId"),
                 item.get("tomogramId"),
-                item.get("sourceTomoId"),
-                item.get("tsId"),
                 item.get("tiltSeriesId"),
                 item.get("ctfSeriesId"),
                 item.get("coordinatesTomogramId"),
             ]
 
-            if any(
-                    str(value).strip() in allowedTextKeys
-                    for value in candidates
-                    if value is not None and str(value).strip()
-            ):
+            if any(str(value) in allowedRelationKeys for value in candidates if value is not None):
                 filteredItems.append(item)
 
         return filteredItems
@@ -686,12 +615,12 @@ class PostgresqlIntegratedContextReader:
             candidateKind: str,
             relationsByKey: Dict[str, Dict[str, Any]],
             allowedRelationKeys: Optional[set] = None,
-    ) -> bool:
+    ) -> None:
         protocolDbId = candidate.get("protocolDbId")
         outputName = candidate.get("outputName")
 
         if protocolDbId is None or not outputName:
-            return False
+            return
 
         if candidateKind == "tiltSeries":
             reader = PostgresqlTiltSeriesReader(
@@ -704,12 +633,8 @@ class PostgresqlIntegratedContextReader:
                 reader.listTiltSeries(),
                 allowedRelationKeys,
             )
-
-            if not items:
-                return False
-
             self._addTiltSeriesRelations(relationsByKey, items)
-            return True
+            return
 
         if candidateKind == "ctf":
             reader = PostgresqlCtftomoReader(
@@ -722,12 +647,8 @@ class PostgresqlIntegratedContextReader:
                 reader.listCtftomoSeries(),
                 allowedRelationKeys,
             )
-
-            if not items:
-                return False
-
             self._addCtftomoRelations(relationsByKey, items)
-            return True
+            return
 
         if candidateKind == "coordinates3d":
             reader = PostgresqlCoords3dReader(
@@ -740,12 +661,8 @@ class PostgresqlIntegratedContextReader:
                 reader.listTomograms() or [],
                 allowedRelationKeys,
             )
-
-            if not items:
-                return False
-
             self._addCoordinates3dRelations(relationsByKey, items)
-            return True
+            return
 
         if candidateKind == "tomogram":
             storedSet = self.setMapper.getStoredSet(
@@ -757,20 +674,13 @@ class PostgresqlIntegratedContextReader:
             )
 
             if storedSet is None:
-                return False
+                return
 
             items = self._filterIntegratedItemsByAllowedKeys(
                 self._buildTomogramItemsFromStoredSet(storedSet),
                 allowedRelationKeys,
             )
-
-            if not items:
-                return False
-
             self._addTomogramRelations(relationsByKey, items)
-            return True
-
-        return False
 
     def _isSameStoredSet(
             self,
