@@ -423,7 +423,6 @@ class PostgresqlIntegratedContextReader:
                 relation.get("ctfSeriesId"),
                 relation.get("tomogramId"),
                 relation.get("sourceTomoId"),
-                relation.get("tomogramVolumeId"),
                 relation.get("coordinatesTomogramId"),
             ]
 
@@ -557,6 +556,81 @@ class PostgresqlIntegratedContextReader:
 
         return reader.listTiltSeries() or []
 
+    def _getItemMatchKeys(
+            self,
+            item: Dict[str, Any],
+            fields: List[str],
+    ) -> List[str]:
+        result = []
+        seen = set()
+
+        for field in fields:
+            text = self._toRelationMatchText((item or {}).get(field))
+            if not text or text in seen:
+                continue
+
+            seen.add(text)
+            result.append(text)
+
+        return result
+
+    def _getTiltSeriesItemMatchKeys(self, item: Dict[str, Any]) -> List[str]:
+        return self._getItemMatchKeys(
+            item,
+            [
+                "tiltSeriesId",
+                "tsId",
+                "id",
+                "label",
+                "name",
+            ],
+        )
+
+    def _getTomogramItemMatchKeys(self, item: Dict[str, Any]) -> List[str]:
+        return self._getItemMatchKeys(
+            item,
+            [
+                "tiltSeriesId",
+                "tsId",
+                "label",
+                "name",
+                "tomoId",
+                "tomogramId",
+                "sourceTomoId",
+                "id",
+            ],
+        )
+
+    def _buildItemMapByMatchKeys(
+            self,
+            items: List[Dict[str, Any]],
+            keyGetter,
+    ) -> Dict[str, Dict[str, Any]]:
+        result = {}
+
+        for item in items or []:
+            for key in keyGetter(item):
+                result.setdefault(key, item)
+
+        return result
+
+    def _findTiltSeriesItemForTomogram(
+            self,
+            tomogramItem: Dict[str, Any],
+            tiltSeriesByKey: Dict[str, Dict[str, Any]],
+            tiltSeriesItems: List[Dict[str, Any]],
+            index: int,
+    ) -> Optional[Dict[str, Any]]:
+        for key in self._getTomogramItemMatchKeys(tomogramItem):
+            match = tiltSeriesByKey.get(key)
+            if match is not None:
+                return match
+
+        if 0 <= index < len(tiltSeriesItems):
+            return tiltSeriesItems[index]
+
+        return None
+
     def _mergeRootTomogramRelationsFromInputRefs(
             self,
             rootStoredSet: Dict[str, Any],
@@ -570,17 +644,29 @@ class PostgresqlIntegratedContextReader:
         if not tiltSeriesItems:
             return
 
+        tiltSeriesByKey = self._buildItemMapByMatchKeys(
+            tiltSeriesItems,
+            self._getTiltSeriesItemMatchKeys,
+        )
+
         tomogramItems = self._buildTomogramItemsFromStoredSet(rootStoredSet)
 
         for index, tomogramItem in enumerate(tomogramItems):
-            if index >= len(tiltSeriesItems):
-                break
+            tiltSeriesItem = self._findTiltSeriesItemForTomogram(
+                tomogramItem=tomogramItem,
+                tiltSeriesByKey=tiltSeriesByKey,
+                tiltSeriesItems=tiltSeriesItems,
+                index=index,
+            )
 
-            tiltSeriesItem = tiltSeriesItems[index]
+            if tiltSeriesItem is None:
+                continue
+
             tiltSeriesId = (
                     tiltSeriesItem.get("tiltSeriesId")
                     or tiltSeriesItem.get("tsId")
                     or tiltSeriesItem.get("id")
+                    or tiltSeriesItem.get("label")
             )
 
             if tiltSeriesId is None:
@@ -595,10 +681,13 @@ class PostgresqlIntegratedContextReader:
             )
 
             volumeId = (
-                    tomogramItem.get("tomogramVolumeId")
-                    or tomogramItem.get("volumeId")
-                    or index
+                tomogramItem.get("tomogramVolumeId")
+                if tomogramItem.get("tomogramVolumeId") is not None
+                else tomogramItem.get("volumeId")
             )
+
+            if volumeId is None:
+                volumeId = index
 
             label = (
                     tomogramItem.get("label")
@@ -900,7 +989,6 @@ class PostgresqlIntegratedContextReader:
             values.get("ctfSeriesId"),
             values.get("tomogramId"),
             values.get("sourceTomoId"),
-            values.get("tomogramVolumeId"),
             values.get("coordinatesTomogramId"),
         ]
 
@@ -1289,7 +1377,10 @@ class PostgresqlIntegratedContextReader:
         if rootKind == "coordinates3d" and candidateKind == "tomogram":
             return True
 
-        if rootKind in {"coordinates3d", "tomogram"} and candidateKind in {"tiltSeries", "ctf"}:
+        if rootKind == "coordinates3d" and candidateKind in {"tiltSeries", "ctf"}:
+            return True
+
+        if rootKind == "tomogram" and candidateKind == "tiltSeries":
             return True
 
         return False
@@ -1324,8 +1415,8 @@ class PostgresqlIntegratedContextReader:
                 summaries[candidateKind] = self._buildSummary(candidate)
 
             allowedRelationKeys = None
-            if rootKind == "coordinates3d":
-                allowedRelationKeys = set(relationsByKey.keys())
+            if rootKind in {"coordinates3d", "tomogram"}:
+                allowedRelationKeys = self._getRelationKeySet(relationsByKey)
 
             self._mergeRelationsForCandidate(
                 candidate=candidate,
@@ -1348,6 +1439,7 @@ class PostgresqlIntegratedContextReader:
             candidates = [
                 item.get("key"),
                 item.get("label"),
+                item.get("name"),
                 item.get("id"),
                 item.get("tomoId"),
                 item.get("tomogramId"),
@@ -1356,7 +1448,6 @@ class PostgresqlIntegratedContextReader:
                 item.get("coordinatesTomogramId"),
                 item.get("tsId"),
                 item.get("sourceTomoId"),
-                item.get("tomogramVolumeId"),
             ]
 
             if any(
