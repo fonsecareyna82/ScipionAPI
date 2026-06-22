@@ -564,17 +564,52 @@ class PostgresqlIntegratedContextReader:
                 )
                 summaries[candidateKind] = self._buildSummary(candidate)
 
+            allowedRelationKeys = None
+            rootKind = self._getIntegratedKind(rootStoredSet)
+
+            if rootKind == "coordinates3d":
+                allowedRelationKeys = set(relationsByKey.keys())
+
             self._mergeRelationsForCandidate(
                 candidate=candidate,
                 candidateKind=candidateKind,
                 relationsByKey=relationsByKey,
+                allowedRelationKeys=allowedRelationKeys,
             )
+
+    def _filterIntegratedItemsByAllowedKeys(
+            self,
+            items: List[Dict[str, Any]],
+            allowedRelationKeys: Optional[set],
+    ) -> List[Dict[str, Any]]:
+        if not allowedRelationKeys:
+            return items or []
+
+        filteredItems = []
+
+        for item in items or []:
+            candidates = [
+                item.get("key"),
+                item.get("label"),
+                item.get("id"),
+                item.get("tomoId"),
+                item.get("tomogramId"),
+                item.get("tiltSeriesId"),
+                item.get("ctfSeriesId"),
+                item.get("coordinatesTomogramId"),
+            ]
+
+            if any(str(value) in allowedRelationKeys for value in candidates if value is not None):
+                filteredItems.append(item)
+
+        return filteredItems
 
     def _mergeRelationsForCandidate(
             self,
             candidate: Dict[str, Any],
             candidateKind: str,
             relationsByKey: Dict[str, Dict[str, Any]],
+            allowedRelationKeys: Optional[set] = None,
     ) -> None:
         protocolDbId = candidate.get("protocolDbId")
         outputName = candidate.get("outputName")
@@ -589,6 +624,11 @@ class PostgresqlIntegratedContextReader:
                 protocolId=protocolDbId,
                 outputName=outputName,
             )
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listTiltSeries(),
+                allowedRelationKeys,
+            )
+            self._addTiltSeriesRelations(relationsByKey, items)
             self._addTiltSeriesRelations(relationsByKey, reader.listTiltSeries())
             return
 
@@ -599,7 +639,11 @@ class PostgresqlIntegratedContextReader:
                 protocolId=protocolDbId,
                 outputName=outputName,
             )
-            self._addCtftomoRelations(relationsByKey, reader.listCtftomoSeries())
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listCtftomoSeries(),
+                allowedRelationKeys,
+            )
+            self._addCtftomoRelations(relationsByKey, items)
             return
 
         if candidateKind == "coordinates3d":
@@ -609,7 +653,11 @@ class PostgresqlIntegratedContextReader:
                 protocolId=protocolDbId,
                 outputName=outputName,
             )
-            self._addCoordinates3dRelations(relationsByKey, reader.listTomograms() or [])
+            items = self._filterIntegratedItemsByAllowedKeys(
+                reader.listTomograms() or [],
+                allowedRelationKeys,
+            )
+            self._addCoordinates3dRelations(relationsByKey, items)
             return
 
         if candidateKind == "tomogram":
@@ -624,7 +672,10 @@ class PostgresqlIntegratedContextReader:
             if storedSet is None:
                 return
 
-            items = self._buildTomogramItemsFromStoredSet(storedSet)
+            items = self._filterIntegratedItemsByAllowedKeys(
+                self._buildTomogramItemsFromStoredSet(storedSet),
+                allowedRelationKeys,
+            )
             self._addTomogramRelations(relationsByKey, items)
 
     def _isSameStoredSet(
