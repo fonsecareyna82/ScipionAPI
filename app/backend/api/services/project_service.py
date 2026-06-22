@@ -6861,6 +6861,29 @@ class ProjectService:
             return None
 
         try:
+            from app.backend.viewers.postgresql_coords3d_tomogram_volume_reader import \
+                PostgresqlCoords3dTomogramVolumeReader
+
+            reader = PostgresqlCoords3dTomogramVolumeReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.debug(
+                "PostgreSQL Coords3D-derived tomogram volume reader is not available. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+
+        try:
             from app.backend.viewers.postgresql_volume_reader import PostgresqlVolumeReader
 
             reader = PostgresqlVolumeReader(
