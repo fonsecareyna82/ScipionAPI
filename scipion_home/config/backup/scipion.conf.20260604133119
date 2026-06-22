@@ -1,0 +1,21 @@
+[PYWORKFLOW]
+CONDA_ACTIVATION_CMD=eval "$(/home/yunior/miniconda3/bin/conda shell.bash hook)"
+CUDA_BIN=/usr/local/cuda-11.8/bin
+CUDA_LIB=/usr/local/cuda-11.8/lib64
+JAVA_HOME=/home/yunior/miniconda3/envs/scipion3Web/lib/jvm
+SCIPION_DOMAIN=pwem
+SCIPION_HOME=/home/yunior/Yunior/Projects/ScipionWeb/ScipionAPI/scipion_home
+SCIPION_LOCAL_CONFIG=/home/yunior/.config/scipion/scipion.conf
+SCIPION_PRIORITY_PACKAGE_LIST=pwem tomo pwchem
+SCIPION_USER_DATA=/home/yunior/ScipionUserData
+
+[PLUGINS]
+NEXTPYP_HOME=/home/yunior/Yunior/Projects/nextPYP/nextPYP_0.7.3/config.toml
+NEXTPYP_CONFIG=/home/yunior/Yunior/Projects/nextPYP/nextPYP_0.7.3
+IMOD_HOME=/home/yunior/Yunior/Projects/ScipionWeb/scipion/software/em/imod-5.1.3/IMOD
+BRT_ENV_ACTIVATION=conda activate teamtomoBRT-0.1.3
+CRYOSPARC_HOME=/home/yunior/Yunior/Projects/cryoSPARC
+CRYOSPARC_PASSWORD=12345
+CRYOSPARC_USER=cfonseca@cnb.csic.es
+RELIONTOMO_HOME=/home/yunior/Yunior/Projects/relion5/relion/relion-5.0
+RELION_HOME=/home/yunior/Yunior/Projects/relion5/relion/relion-5.0
