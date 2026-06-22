@@ -2444,6 +2444,7 @@ def getIntegratedAnalyzeContext(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     resp = JSONResponse(payload)

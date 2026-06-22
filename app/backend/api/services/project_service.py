@@ -2341,17 +2341,399 @@ class ProjectService:
         # buildProtocolOutputThumbnailUrl
         return f"/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail"
 
+    def _getPostgresqlStoredSetForIntegratedContext(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+            setMapper = ScipionSetPostgresqlMapper(mapper.db)
+            return setMapper.getStoredSet(
+                projectId=projectId,
+                protocolDbId=protocolId,
+                outputName=outputName,
+                limit=None,
+                offset=0,
+            )
+        except Exception:
+            logger.debug(
+                "Could not load PostgreSQL stored set for integrated context. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+            return None
+
+    def _getPostgresqlIntegratedKind(self, storedSet: Dict[str, Any]) -> Optional[str]:
+        classText = "%s %s" % (
+            storedSet.get("setClassName") or "",
+            storedSet.get("itemClassName") or "",
+        )
+        classText = classText.replace(" ", "").lower()
+
+        if "setofcoordinates3d" in classText or "coordinate3d" in classText:
+            return "coordinates3d"
+
+        if "setofctftomoseries" in classText or "ctftomoseries" in classText:
+            return "ctf"
+
+        if "setoftiltseries" in classText or "tiltseries" in classText:
+            return "tiltSeries"
+
+        if "setoftomograms" in classText or "tomogram" in classText:
+            return "tomogram"
+
+        return None
+
+    def _getPostgresqlStoredSetProperty(
+            self,
+            storedSet: Dict[str, Any],
+            key: str,
+            default=None,
+    ):
+        properties = storedSet.get("properties") or {}
+
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        if isinstance(properties, dict) and key in properties:
+            return properties.get(key)
+
+        for item in storedSet.get("setProperties") or []:
+            if str(item.get("key")) == str(key):
+                return item.get("value")
+
+        return default
+
+    def _buildPostgresqlIntegratedLink(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            storedSet: Dict[str, Any],
+            label: Optional[str] = None,
+            statusValue: str = "available",
+    ) -> Dict[str, Any]:
+        return {
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "itemId": storedSet.get("objectId") or storedSet.get("id"),
+            "label": label or outputName,
+            "status": statusValue,
+        }
+
+    def _buildPostgresqlIntegratedSummary(
+            self,
+            storedSet: Dict[str, Any],
+            extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        items = storedSet.get("items") or []
+        itemsCount = self._getPostgresqlStoredSetProperty(storedSet, "itemsCount", None)
+
+        if itemsCount is None:
+            itemsCount = len(items)
+
+        summary = {
+            "objectClass": storedSet.get("setClassName") or storedSet.get("itemClassName"),
+            "objectId": storedSet.get("objectId") or storedSet.get("id"),
+            "size": itemsCount,
+            "fileName": self._getPostgresqlStoredSetProperty(storedSet, "fileName", None),
+            "samplingRate": self._getPostgresqlStoredSetProperty(storedSet, "samplingRate", None),
+        }
+
+        if extra:
+            summary.update(extra)
+
+        return self._safeScipionValue(summary)
+
+    def _firstPostgresqlValueByName(
+            self,
+            values: Dict[str, Any],
+            names: List[str],
+    ):
+        normalizedNames = {
+            str(name).replace("_", "").replace(".", "").replace("-", "").lower()
+            for name in names
+        }
+
+        for key, value in (values or {}).items():
+            normalizedKey = str(key).replace("_", "").replace(".", "").replace("-", "").lower()
+            if normalizedKey in normalizedNames:
+                return value
+
+        return None
+
+    def _addPostgresqlIntegratedRelation(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            keyValue: Any,
+            **values: Any,
+    ) -> None:
+        key = str(keyValue) if keyValue is not None else ""
+        if not key:
+            return
+
+        relation = relationsByKey.setdefault(
+            key,
+            {
+                "key": key,
+                "label": key,
+            },
+        )
+
+        for name, value in values.items():
+            if value is not None:
+                relation[name] = value
+
+    def _addPostgresqlTiltSeriesRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tiltSeriesId = item.get("tiltSeriesId") or item.get("id") or index
+            label = item.get("label") or str(tiltSeriesId)
+
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tiltSeriesId,
+                tiltSeriesId=tiltSeriesId,
+                label=label,
+            )
+
+    def _addPostgresqlCtftomoRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tiltSeriesId = item.get("tiltSeriesId") or item.get("id") or index
+            label = item.get("label") or str(tiltSeriesId)
+
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tiltSeriesId,
+                ctfSeriesId=tiltSeriesId,
+                tiltSeriesId=tiltSeriesId,
+                label=label,
+            )
+
+    def _addPostgresqlTomogramRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tomogramId = (
+                    item.get("tomoId")
+                    or item.get("tomogramId")
+                    or item.get("id")
+                    or item.get("label")
+                    or index
+            )
+
+            label = item.get("label") or item.get("name") or str(tomogramId)
+            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
+
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tomogramId,
+                tomogramId=tomogramId,
+                tomogramVolumeId=volumeId,
+                label=label,
+            )
+
+    def _addPostgresqlCoordinates3dRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tomogramId = (
+                    item.get("tomoId")
+                    or item.get("tomogramId")
+                    or item.get("id")
+                    or item.get("label")
+                    or index
+            )
+
+            label = item.get("label") or item.get("name") or str(tomogramId)
+            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
+
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tomogramId,
+                coordinatesTomogramId=tomogramId,
+                tomogramId=tomogramId,
+                tomogramVolumeId=volumeId,
+                label=label,
+            )
+
+    def _getPostgresqlIntegratedAnalyzeContextIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        storedSet = self._getPostgresqlStoredSetForIntegratedContext(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if storedSet is None:
+            return None
+
+        rootKind = self._getPostgresqlIntegratedKind(storedSet)
+        if rootKind is None:
+            return None
+
+        links = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        summaries = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        relationsByKey: Dict[str, Dict[str, Any]] = {}
+
+        rootLink = self._buildPostgresqlIntegratedLink(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            storedSet=storedSet,
+        )
+
+        links[rootKind] = rootLink
+        summaries[rootKind] = self._buildPostgresqlIntegratedSummary(storedSet)
+
+        if rootKind == "tiltSeries":
+            pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+            items = pgReader.listTiltSeries() if pgReader is not None else []
+            self._addPostgresqlTiltSeriesRelations(relationsByKey, items)
+
+        elif rootKind == "ctf":
+            pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+            items = pgReader.listCtftomoSeries() if pgReader is not None else []
+            self._addPostgresqlCtftomoRelations(relationsByKey, items)
+
+        elif rootKind == "coordinates3d":
+            pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+            tomograms = pgReader.listTomograms() if pgReader is not None else []
+            self._addPostgresqlCoordinates3dRelations(relationsByKey, tomograms)
+
+            if tomograms:
+                links["tomogram"] = {
+                    "protocolId": None,
+                    "outputName": None,
+                    "itemId": None,
+                    "label": "Tomograms",
+                    "status": "inferred",
+                }
+                summaries["tomogram"] = self._safeScipionValue(
+                    {
+                        "objectClass": "SetOfTomograms",
+                        "size": len(tomograms),
+                    }
+                )
+
+        elif rootKind == "tomogram":
+            items = []
+            for index, item in enumerate(storedSet.get("items") or []):
+                values = item.get("values") or {}
+
+                tomogramId = self._firstPostgresqlValueByName(
+                    values,
+                    ["_tomoId", "tomoId", "tomogramId", "_tsId", "tsId"],
+                )
+
+                label = self._firstPostgresqlValueByName(
+                    values,
+                    ["_objLabel", "label", "_tsId", "tsId", "tomoId"],
+                )
+
+                items.append(
+                    {
+                        "id": tomogramId or item.get("scipionItemId") or index,
+                        "tomoId": tomogramId or item.get("scipionItemId") or index,
+                        "label": label or tomogramId or item.get("scipionItemId") or index,
+                        "volumeId": index,
+                    }
+                )
+
+            self._addPostgresqlTomogramRelations(relationsByKey, items)
+
+        return {
+            "root": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "outputClass": storedSet.get("setClassName") or storedSet.get("itemClassName"),
+            },
+            "links": links,
+            "summaries": summaries,
+            "relations": self._safeScipionValue(
+                {
+                    "items": list(relationsByKey.values()),
+                }
+            ),
+        }
+
     def getIntegratedAnalyzeContextService(
             self,
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="No current project loaded",
             )
+
+        pgContext = self._getPostgresqlIntegratedAnalyzeContextIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgContext is not None:
+            return pgContext
 
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
