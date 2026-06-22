@@ -348,6 +348,220 @@ class PostgresqlIntegratedContextReader:
                 label=label,
             )
 
+    def _getLinkedTiltSeriesFromProperties(self, storedSet: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        properties = storedSet.get("properties") or {}
+
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        linkedTiltSeries = properties.get("linkedTiltSeries") if isinstance(properties, dict) else None
+        if isinstance(linkedTiltSeries, dict):
+            return linkedTiltSeries
+
+        for item in storedSet.get("setProperties") or []:
+            if str(item.get("key")) != "linkedTiltSeries":
+                continue
+
+            value = item.get("value")
+            if isinstance(value, dict):
+                return value
+
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except Exception:
+                    parsed = None
+
+                if isinstance(parsed, dict):
+                    return parsed
+
+        return None
+
+    def _listTiltSeriesStoredSetCandidates(self) -> List[Dict[str, Any]]:
+        try:
+            rows = self.db.fetchAll(
+                """
+                SELECT
+                    s.id,
+                    s."projectId",
+                    s."protocolDbId",
+                    s."objectId",
+                    s."outputName",
+                    s."setClassName",
+                    s."itemClassName",
+                    s.properties,
+                    s."createdAt",
+                    s."updatedAt",
+                    p."protocolId" AS "publicProtocolId",
+                    p."protocolClassName"
+                  FROM scipion_sets s
+                  JOIN protocols p
+                    ON p.id = s."protocolDbId"
+                   AND p."projectId" = s."projectId"
+                 WHERE s."projectId" = %s
+                   AND (
+                        LOWER(COALESCE(s."setClassName", '')) LIKE '%%setoftiltseries%%'
+                     OR LOWER(COALESCE(s."itemClassName", '')) LIKE '%%tiltseries%%'
+                   )
+                 ORDER BY s."protocolDbId" ASC, s."outputName" ASC
+                """,
+                (self.projectId,),
+            )
+        except Exception:
+            logger.debug(
+                "Could not list PostgreSQL tilt-series candidates for integrated context. projectId=%s",
+                self.projectId,
+                exc_info=True,
+            )
+            return []
+
+        return [dict(row) for row in rows or []]
+
+    def _getStoredSetPropertiesDict(self, storedSet: Dict[str, Any]) -> Dict[str, Any]:
+        properties = storedSet.get("properties") or {}
+
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        return properties if isinstance(properties, dict) else {}
+
+    def _scoreLinkedTiltSeriesCandidate(
+            self,
+            candidate: Dict[str, Any],
+            linkedTiltSeries: Dict[str, Any],
+            relationKeys: Optional[set],
+    ) -> int:
+        score = 0
+        candidateProperties = self._getStoredSetPropertiesDict(candidate)
+
+        linkedObjectId = linkedTiltSeries.get("objectId")
+        candidateObjectIds = [
+            candidate.get("objectId"),
+            candidateProperties.get("scipionObjId"),
+            candidateProperties.get("objectId"),
+        ]
+
+        if linkedObjectId is not None and any(str(value) == str(linkedObjectId) for value in candidateObjectIds if value is not None):
+            score += 1000
+
+        linkedFileName = linkedTiltSeries.get("fileName")
+        candidateFileName = candidateProperties.get("fileName")
+        if linkedFileName and candidateFileName and str(linkedFileName) == str(candidateFileName):
+            score += 300
+
+        linkedTsIds = {
+            str(value).strip()
+            for value in linkedTiltSeries.get("tsIds") or []
+            if value is not None and str(value).strip()
+        }
+
+        if relationKeys:
+            linkedTsIds.update(
+                str(value).strip()
+                for value in relationKeys
+                if value is not None and str(value).strip()
+            )
+
+        if linkedTsIds:
+            reader = PostgresqlTiltSeriesReader(
+                db=self.db,
+                projectId=self.projectId,
+                protocolId=candidate.get("protocolDbId"),
+                outputName=candidate.get("outputName"),
+            )
+            candidateItems = reader.listTiltSeries()
+            candidateTsIds = {
+                str(item.get("tiltSeriesId") or item.get("tsId") or item.get("id")).strip()
+                for item in candidateItems or []
+                if str(item.get("tiltSeriesId") or item.get("tsId") or item.get("id") or "").strip()
+            }
+
+            intersection = candidateTsIds.intersection(linkedTsIds)
+            if intersection:
+                score += 10 * len(intersection)
+
+        return score
+
+    def _resolveLinkedTiltSeriesStoredSet(
+            self,
+            linkedTiltSeries: Optional[Dict[str, Any]],
+            relationKeys: Optional[set],
+    ) -> Optional[Dict[str, Any]]:
+        if not linkedTiltSeries:
+            return None
+
+        bestCandidate = None
+        bestScore = 0
+
+        for candidate in self._listTiltSeriesStoredSetCandidates():
+            score = self._scoreLinkedTiltSeriesCandidate(
+                candidate=candidate,
+                linkedTiltSeries=linkedTiltSeries,
+                relationKeys=relationKeys,
+            )
+
+            if score > bestScore:
+                bestScore = score
+                bestCandidate = candidate
+
+        return bestCandidate
+
+    def _mergeTomogramLinkedTiltSeries(
+            self,
+            storedSet: Dict[str, Any],
+            links: Dict[str, Optional[Dict[str, Any]]],
+            summaries: Dict[str, Optional[Dict[str, Any]]],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> None:
+        linkedTiltSeries = self._getLinkedTiltSeriesFromProperties(storedSet)
+        relationKeys = set(relationsByKey.keys())
+
+        candidate = self._resolveLinkedTiltSeriesStoredSet(
+            linkedTiltSeries=linkedTiltSeries,
+            relationKeys=relationKeys,
+        )
+
+        if candidate is None:
+            return
+
+        reader = PostgresqlTiltSeriesReader(
+            db=self.db,
+            projectId=self.projectId,
+            protocolId=candidate.get("protocolDbId"),
+            outputName=candidate.get("outputName"),
+        )
+
+        items = self._filterIntegratedItemsByAllowedKeys(
+            reader.listTiltSeries(),
+            relationKeys,
+        )
+
+        if not items:
+            return
+
+        self._addTiltSeriesRelations(relationsByKey, items)
+
+        links["tiltSeries"] = self._buildLink(
+            protocolId=self._getCandidateProtocolId(candidate),
+            outputName=candidate.get("outputName"),
+            storedSet=candidate,
+            statusValue="derived",
+        )
+        links["tiltSeries"]["source"] = "tomogram"
+
+        summaries["tiltSeries"] = self._buildSummary(
+            candidate,
+            extra={
+                "source": "tomogram",
+            },
+        )
+
     def _mergeRootRelations(
             self,
             rootKind: str,
@@ -405,6 +619,13 @@ class PostgresqlIntegratedContextReader:
         if rootKind == "tomogram":
             items = self._buildTomogramItemsFromStoredSet(storedSet)
             self._addTomogramRelations(relationsByKey, items)
+
+            self._mergeTomogramLinkedTiltSeries(
+                storedSet=storedSet,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
 
     def _buildTomogramItemsFromStoredSet(
             self,
@@ -615,6 +836,9 @@ class PostgresqlIntegratedContextReader:
                 continue
 
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
+                continue
+
+            if rootKind == "tomogram" and candidateKind == "tiltSeries" and links.get("tiltSeries") is not None:
                 continue
 
             allowedRelationKeys = self._getAllowedRelationKeysForRoot(
