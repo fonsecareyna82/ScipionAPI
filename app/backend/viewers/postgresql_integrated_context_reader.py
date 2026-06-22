@@ -562,6 +562,9 @@ class PostgresqlIntegratedContextReader:
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
                 continue
 
+            if rootKind in {"coordinates3d", "tomogram"} and candidateKind == "tiltSeries":
+                continue
+
             if self._shouldReplaceLink(links.get(candidateKind)):
                 links[candidateKind] = self._buildLink(
                     protocolId=self._getCandidateProtocolId(candidate),
