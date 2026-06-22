@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 12
+NESTED_LOGICAL_TABLES_VERSION = 13
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1015,6 +1015,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if str(label) != SELF_LABEL
         }
 
+        self._addRelationIdentityValues(
+            item=item,
+            values=values,
+        )
+
         classSize = self._getClassItemSize(item)
         if classSize is not None and "_size" not in values:
             values["_size"] = classSize
@@ -1026,6 +1031,56 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         return values
+
+    def _addRelationIdentityValues(
+            self,
+            item: Any,
+            values: Dict[str, Any],
+    ) -> None:
+        tsId = self._getFirstGetterValue(
+            item,
+            ("getTsId", "getTiltSeriesId"),
+        )
+        if tsId is not None and not values.get("_tsId"):
+            values["_tsId"] = self._toJsonValue(tsId)
+
+        tomoId = self._getFirstGetterValue(
+            item,
+            ("getTomoId",),
+        )
+        if tomoId is not None and not values.get("_tomoId"):
+            values["_tomoId"] = self._toJsonValue(tomoId)
+
+    def _getFirstGetterValue(
+            self,
+            item: Any,
+            getterNames: Tuple[str, ...],
+    ) -> Optional[Any]:
+        for getterName in getterNames:
+            getter = getattr(item, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = getter()
+            except Exception:
+                continue
+
+            getterValue = getattr(value, "get", None)
+            if callable(getterValue):
+                try:
+                    value = getterValue()
+                except Exception:
+                    continue
+
+            if value is None:
+                continue
+
+            text = str(value).strip()
+            if text:
+                return value
+
+        return None
 
     def _getClassItemSize(self, item: Any) -> Optional[int]:
         className = self._getClassName(item) or item.__class__.__name__

@@ -592,12 +592,6 @@ class PostgresqlIntegratedContextReader:
             [
                 "tiltSeriesId",
                 "tsId",
-                "label",
-                "name",
-                "tomoId",
-                "tomogramId",
-                "sourceTomoId",
-                "id",
             ],
         )
 
@@ -625,9 +619,6 @@ class PostgresqlIntegratedContextReader:
             match = tiltSeriesByKey.get(key)
             if match is not None:
                 return match
-
-        if 0 <= index < len(tiltSeriesItems):
-            return tiltSeriesItems[index]
 
         return None
 
