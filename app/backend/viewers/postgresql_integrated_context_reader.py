@@ -586,13 +586,28 @@ class PostgresqlIntegratedContextReader:
             return
 
         if rootKind == "ctf":
-            self._mergeKindFromInputRefs(
+            tiltRef = self._mergeKindFromInputRefs(
                 kind="tiltSeries",
                 inputRefs=inputRefs,
                 links=links,
                 summaries=summaries,
                 relationsByKey=relationsByKey,
             )
+
+            if tiltRef is None:
+                ctfRef = self._findInputRefByKind(inputRefs, "ctf")
+                if ctfRef is not None:
+                    ctfInputRefs = self._listProtocolInputRefs(
+                        ctfRef.get("parentProtocolDbId")
+                    )
+                    self._mergeKindFromInputRefs(
+                        kind="tiltSeries",
+                        inputRefs=ctfInputRefs,
+                        links=links,
+                        summaries=summaries,
+                        relationsByKey=relationsByKey,
+                    )
+
             return
 
         if rootKind == "tomogram":
@@ -797,6 +812,7 @@ class PostgresqlIntegratedContextReader:
                 relationsByKey,
                 tiltSeriesId,
                 tiltSeriesId=tiltSeriesId,
+                tsId=tiltSeriesId,
                 label=label,
             )
 
@@ -814,6 +830,7 @@ class PostgresqlIntegratedContextReader:
                 tiltSeriesId,
                 ctfSeriesId=tiltSeriesId,
                 tiltSeriesId=tiltSeriesId,
+                tsId=tiltSeriesId,
                 label=label,
             )
 

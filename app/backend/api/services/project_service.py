@@ -8109,7 +8109,8 @@ class ProjectService:
 
                     return self._storeTiltSeriesPreviewInCache(cacheKey, response)
 
-                except Exception:
+
+                except HTTPException:
                     logger.exception(
                         "Failed to render TiltSeries image from PostgreSQL. projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s index=%s",
                         projectId,
@@ -8117,6 +8118,23 @@ class ProjectService:
                         outputName,
                         tiltSeriesId,
                         index,
+                    )
+                    raise
+
+                except Exception as e:
+                    logger.exception(
+                        "Failed to render TiltSeries image from PostgreSQL. projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s index=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        tiltSeriesId,
+                        index,
+                    )
+
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to render TiltSeries image from PostgreSQL metadata: {e}",
+
                     )
 
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
@@ -8566,6 +8584,12 @@ class ProjectService:
                 protocolId,
                 outputName,
                 getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            raise HTTPException(
+                status_code=404,
+                detail="TiltSeries frame not found in PostgreSQL metadata",
             )
 
         try:
