@@ -93,6 +93,12 @@ class PostgresqlIntegratedContextReader:
             summaries=summaries,
         )
 
+        if rootKind == "tomogram":
+            self._mergeRootTomogramRelationsFromInputRefs(
+                rootStoredSet=storedSet,
+                relationsByKey=relationsByKey,
+            )
+
         self._mergeExactInputRefs(
             rootKind=rootKind,
             rootStoredSet=storedSet,
@@ -334,7 +340,8 @@ class PostgresqlIntegratedContextReader:
             storedSet: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
-            "protocolId": inputRef.get("parentProtocolId") or inputRef.get("parentProtocolDbId"),
+            "protocolId": inputRef.get("parentProtocolDbId") or inputRef.get("parentProtocolId"),
+            "publicProtocolId": inputRef.get("parentProtocolId"),
             "outputName": storedSet.get("outputName") or inputRef.get("parentOutputName"),
             "itemId": storedSet.get("objectId") or storedSet.get("id") or inputRef.get("objectId"),
             "label": inputRef.get("inputName") or inputRef.get("parentOutputName"),
@@ -429,6 +436,103 @@ class PostgresqlIntegratedContextReader:
                 allowedRelationKeys,
             )
             self._addCoordinates3dRelations(relationsByKey, items)
+
+    def _listTiltSeriesItemsFromInputRefs(
+            self,
+            inputRefs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        tiltRef = self._findInputRefByKind(inputRefs, "tiltSeries")
+
+        if tiltRef is None:
+            ctfRef = self._findInputRefByKind(inputRefs, "ctf")
+            if ctfRef is not None:
+                ctfInputRefs = self._listProtocolInputRefs(
+                    ctfRef.get("parentProtocolDbId")
+                )
+                tiltRef = self._findInputRefByKind(ctfInputRefs, "tiltSeries")
+
+        if tiltRef is None:
+            return []
+
+        storedSet = self._getStoredSetFromInputRef(tiltRef)
+        if storedSet is None:
+            return []
+
+        protocolDbId = storedSet.get("protocolDbId") or tiltRef.get("parentProtocolDbId")
+        outputName = storedSet.get("outputName") or tiltRef.get("parentOutputName")
+
+        if protocolDbId is None or not outputName:
+            return []
+
+        reader = PostgresqlTiltSeriesReader(
+            db=self.db,
+            projectId=self.projectId,
+            protocolId=protocolDbId,
+            outputName=outputName,
+        )
+
+        return reader.listTiltSeries() or []
+
+    def _mergeRootTomogramRelationsFromInputRefs(
+            self,
+            rootStoredSet: Dict[str, Any],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> None:
+        inputRefs = self._listProtocolInputRefs(rootStoredSet.get("protocolDbId"))
+        if not inputRefs:
+            return
+
+        tiltSeriesItems = self._listTiltSeriesItemsFromInputRefs(inputRefs)
+        if not tiltSeriesItems:
+            return
+
+        tomogramItems = self._buildTomogramItemsFromStoredSet(rootStoredSet)
+
+        for index, tomogramItem in enumerate(tomogramItems):
+            if index >= len(tiltSeriesItems):
+                break
+
+            tiltSeriesItem = tiltSeriesItems[index]
+            tiltSeriesId = (
+                    tiltSeriesItem.get("tiltSeriesId")
+                    or tiltSeriesItem.get("tsId")
+                    or tiltSeriesItem.get("id")
+            )
+
+            if tiltSeriesId is None:
+                continue
+
+            tomogramId = (
+                    tomogramItem.get("tomoId")
+                    or tomogramItem.get("tomogramId")
+                    or tomogramItem.get("id")
+                    or tomogramItem.get("label")
+                    or index
+            )
+
+            volumeId = (
+                    tomogramItem.get("tomogramVolumeId")
+                    or tomogramItem.get("volumeId")
+                    or index
+            )
+
+            label = (
+                    tomogramItem.get("label")
+                    or tomogramItem.get("name")
+                    or str(tomogramId)
+            )
+
+            self._addRelation(
+                relationsByKey,
+                tomogramId,
+                tomogramId=tomogramId,
+                sourceTomoId=tomogramItem.get("sourceTomoId"),
+                tomogramVolumeId=volumeId,
+                tiltSeriesId=tiltSeriesId,
+                tsId=tiltSeriesId,
+                ctfSeriesId=tiltSeriesId,
+                label=label,
+            )
 
     def _mergeKindFromInputRefs(
             self,
@@ -610,6 +714,7 @@ class PostgresqlIntegratedContextReader:
             values.get("ctfSeriesId"),
             values.get("tomogramId"),
             values.get("sourceTomoId"),
+            values.get("tomogramVolumeId"),
             values.get("coordinatesTomogramId"),
         ]
 
@@ -626,21 +731,23 @@ class PostgresqlIntegratedContextReader:
 
         return result
 
-    def _findExistingRelationKey(
+    def _findExistingRelationKeys(
             self,
             relationsByKey: Dict[str, Dict[str, Any]],
             matchValues: List[str],
-    ) -> Optional[str]:
+    ) -> List[str]:
         matchSet = set(matchValues or [])
         if not matchSet:
-            return None
+            return []
+
+        keys = []
 
         for key, relation in (relationsByKey or {}).items():
             existingValues = self._iterRelationMatchValues(key, relation)
             if any(value in matchSet for value in existingValues):
-                return key
+                keys.append(key)
 
-        return None
+        return keys
 
     def _addRelation(
             self,
@@ -653,8 +760,8 @@ class PostgresqlIntegratedContextReader:
             return
 
         matchValues = self._iterRelationMatchValues(requestedKey, values)
-        existingKey = self._findExistingRelationKey(relationsByKey, matchValues)
-        key = existingKey or requestedKey
+        existingKeys = self._findExistingRelationKeys(relationsByKey, matchValues)
+        key = existingKeys[0] if existingKeys else requestedKey
 
         relation = relationsByKey.setdefault(
             key,
@@ -663,6 +770,15 @@ class PostgresqlIntegratedContextReader:
                 "label": key,
             },
         )
+
+        for otherKey in existingKeys[1:]:
+            otherRelation = relationsByKey.pop(otherKey, None)
+            if not otherRelation:
+                continue
+
+            for name, value in otherRelation.items():
+                if value is not None and name not in relation:
+                    relation[name] = value
 
         for name, value in values.items():
             if value is not None:

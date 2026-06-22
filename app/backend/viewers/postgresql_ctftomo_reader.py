@@ -69,10 +69,12 @@ class PostgresqlCtftomoReader:
 
         summary["frames"] = frames
         summary["tiltSeriesId"] = summary.get("tiltSeriesId") or str(tiltSeriesId)
+        summary["ctfSeriesId"] = (
+                summary.get("ctfSeriesId")
+                or summary.get("tiltSeriesId")
+                or str(tiltSeriesId)
+        )
         summary["nViews"] = len(frames)
-
-        if not self._hasCtftomoViewerContract(summary):
-            return None
 
         return summary
 
