@@ -388,15 +388,17 @@ class PostgresqlIntegratedContextReader:
 
             if tomograms:
                 links["tomogram"] = {
-                    "protocolId": None,
-                    "outputName": None,
+                    "protocolId": self.protocolId,
+                    "outputName": self.outputName,
                     "itemId": None,
                     "label": "Tomograms",
-                    "status": "inferred",
+                    "status": "derived",
+                    "source": "coordinates3d",
                 }
                 summaries["tomogram"] = {
                     "objectClass": "SetOfTomograms",
                     "size": len(tomograms),
+                    "source": "coordinates3d",
                 }
             return
 
@@ -553,6 +555,11 @@ class PostgresqlIntegratedContextReader:
 
             candidateKind = self._getIntegratedKind(candidate)
             if candidateKind is None or candidateKind not in links:
+                continue
+
+            rootKind = self._getIntegratedKind(rootStoredSet)
+
+            if rootKind == "coordinates3d" and candidateKind == "tomogram":
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):
