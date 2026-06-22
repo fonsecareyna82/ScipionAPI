@@ -7,6 +7,30 @@ import numpy as np
 
 from app.backend.utils.volume_utils import readVolumeArray3d
 
+VOLUME_DATA_EXTENSIONS = (
+    ".mrc",
+    ".mrcs",
+    ".map",
+    ".rec",
+    ".em",
+    ".spi",
+    ".vol",
+    ".hdf",
+    ".h5",
+)
+
+METADATA_LIKE_VOLUME_EXTENSIONS = (
+    ".tomostar",
+    ".star",
+    ".xmd",
+    ".sqlite",
+    ".db",
+    ".json",
+    ".xml",
+    ".txt",
+    ".csv",
+    ".tsv",
+)
 
 class PostgresqlVolumeReader:
     """Read Volume, VolumeMask and SetOfVolumes outputs from PostgreSQL."""
@@ -162,6 +186,9 @@ class PostgresqlVolumeReader:
     ) -> Optional[Dict[str, Any]]:
         fileName, locationIndex = self._extractVolumeFile(values)
         scipionItemId = item.get("scipionItemId")
+
+        if not fileName:
+            return None
 
         rawLabel = (
                 item.get("label")
@@ -440,18 +467,116 @@ class PostgresqlVolumeReader:
         return None
 
     def _extractVolumeFile(self, values: Dict[str, Any]) -> Tuple[Optional[str], Optional[int]]:
-        raw = self._firstValueBySuffix(
-            values,
+        candidates: List[Tuple[str, Optional[int]]] = []
+
+        priorityGroups = [
+            [
+                "tomogramFileName",
+                "tomogramFilename",
+                "tomogramFile",
+                "tomogramFilePath",
+                "tomogramPath",
+                "tomoFileName",
+                "tomoFilename",
+                "tomoFile",
+                "tomoPath",
+            ],
+            [
+                "volumeFileName",
+                "volumeFilename",
+                "volumeFile",
+                "volumeFilePath",
+                "volumePath",
+                "mapFileName",
+                "mapFilename",
+                "mapFile",
+                "mrcFileName",
+                "mrcFilename",
+                "mrcFile",
+                "recFileName",
+                "recFilename",
+                "recFile",
+            ],
             [
                 "fileName",
                 "filename",
+                "filePath",
+                "filepath",
                 "location",
                 "path",
                 "stack",
             ],
+            [
+                "volName",
+                "volumeName",
+                "tomoName",
+                "tomogramName",
+            ],
+        ]
+
+        for suffixes in priorityGroups:
+            for raw in self._valuesBySuffix(values, suffixes):
+                fileName, locationIndex = self._parseLocation(raw)
+                if not fileName:
+                    continue
+
+                candidates.append((str(fileName), locationIndex))
+
+        for fileName, locationIndex in candidates:
+            if self._isVolumeDataPath(fileName):
+                return fileName, locationIndex
+
+        for fileName, locationIndex in candidates:
+            if not self._isMetadataLikeVolumePath(fileName):
+                return fileName, locationIndex
+
+        return None, None
+
+    def _valuesBySuffix(self, values: Dict[str, Any], suffixes: List[str]) -> List[Any]:
+        normalizedSuffixes = [
+            self._normalizeKey(suffix)
+            for suffix in suffixes
+        ]
+
+        result = []
+        seen = set()
+
+        for key, value in values.items():
+            if value is None:
+                continue
+
+            normalizedKey = self._normalizeKey(key)
+            if not any(normalizedKey.endswith(suffix) for suffix in normalizedSuffixes):
+                continue
+
+            marker = repr(value)
+            if marker in seen:
+                continue
+
+            seen.add(marker)
+            result.append(value)
+
+        return result
+
+    def _isVolumeDataPath(self, fileName: Any) -> bool:
+        text = str(fileName or "").strip().lower()
+        if not text:
+            return False
+
+        return any(
+            text.endswith(extension) or ("%s:" % extension) in text
+            for extension in VOLUME_DATA_EXTENSIONS
         )
 
-        return self._parseLocation(raw)
+    def _isMetadataLikeVolumePath(self, fileName: Any) -> bool:
+        text = str(fileName or "").strip().lower()
+        if not text:
+            return False
+
+        return any(
+            text.endswith(extension)
+            for extension in METADATA_LIKE_VOLUME_EXTENSIONS
+        )
 
     def _parseLocation(self, raw: Any) -> Tuple[Optional[str], Optional[int]]:
         parsed = self._parseJsonValue(raw)
