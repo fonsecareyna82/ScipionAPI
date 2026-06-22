@@ -1111,7 +1111,14 @@ class PostgresqlIntegratedContextReader:
             relationKey = tiltSeriesId or tomogramId
             ctfSeriesId = item.get("ctfSeriesId") or tiltSeriesId
             label = item.get("label") or item.get("name") or str(tomogramId)
-            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
+            volumeId = (
+                item.get("tomogramVolumeId")
+                if item.get("tomogramVolumeId") is not None
+                else item.get("volumeId")
+            )
+
+            if volumeId is None:
+                volumeId = index
 
             self._addRelation(
                 relationsByKey,
@@ -1140,14 +1147,12 @@ class PostgresqlIntegratedContextReader:
             )
 
             label = item.get("label") or item.get("name") or str(tomogramId)
-            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
 
             self._addRelation(
                 relationsByKey,
                 tomogramId,
                 coordinatesTomogramId=tomogramId,
                 tomogramId=tomogramId,
-                tomogramVolumeId=volumeId,
                 label=label,
             )
 
