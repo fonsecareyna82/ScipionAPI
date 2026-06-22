@@ -2587,130 +2587,28 @@ class ProjectService:
             protocolId: int,
             outputName: str,
     ) -> Optional[Dict[str, Any]]:
-        storedSet = self._getPostgresqlStoredSetForIntegratedContext(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
-        )
-
-        if storedSet is None:
+        if mapper is None:
             return None
 
-        rootKind = self._getPostgresqlIntegratedKind(storedSet)
-        if rootKind is None:
+        try:
+            from app.backend.viewers.postgresql_integrated_context_reader import PostgresqlIntegratedContextReader
+
+            reader = PostgresqlIntegratedContextReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+            return reader.getContext()
+        except Exception:
+            logger.debug(
+                "Could not build PostgreSQL integrated analyze context. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
             return None
-
-        links = {
-            "tiltSeries": None,
-            "ctf": None,
-            "tomogram": None,
-            "coordinates3d": None,
-        }
-        summaries = {
-            "tiltSeries": None,
-            "ctf": None,
-            "tomogram": None,
-            "coordinates3d": None,
-        }
-        relationsByKey: Dict[str, Dict[str, Any]] = {}
-
-        rootLink = self._buildPostgresqlIntegratedLink(
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
-            storedSet=storedSet,
-        )
-
-        links[rootKind] = rootLink
-        summaries[rootKind] = self._buildPostgresqlIntegratedSummary(storedSet)
-
-        if rootKind == "tiltSeries":
-            pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-            )
-            items = pgReader.listTiltSeries() if pgReader is not None else []
-            self._addPostgresqlTiltSeriesRelations(relationsByKey, items)
-
-        elif rootKind == "ctf":
-            pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-            )
-            items = pgReader.listCtftomoSeries() if pgReader is not None else []
-            self._addPostgresqlCtftomoRelations(relationsByKey, items)
-
-        elif rootKind == "coordinates3d":
-            pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-            )
-            tomograms = pgReader.listTomograms() if pgReader is not None else []
-            self._addPostgresqlCoordinates3dRelations(relationsByKey, tomograms)
-
-            if tomograms:
-                links["tomogram"] = {
-                    "protocolId": None,
-                    "outputName": None,
-                    "itemId": None,
-                    "label": "Tomograms",
-                    "status": "inferred",
-                }
-                summaries["tomogram"] = self._safeScipionValue(
-                    {
-                        "objectClass": "SetOfTomograms",
-                        "size": len(tomograms),
-                    }
-                )
-
-        elif rootKind == "tomogram":
-            items = []
-            for index, item in enumerate(storedSet.get("items") or []):
-                values = item.get("values") or {}
-
-                tomogramId = self._firstPostgresqlValueByName(
-                    values,
-                    ["_tomoId", "tomoId", "tomogramId", "_tsId", "tsId"],
-                )
-
-                label = self._firstPostgresqlValueByName(
-                    values,
-                    ["_objLabel", "label", "_tsId", "tsId", "tomoId"],
-                )
-
-                items.append(
-                    {
-                        "id": tomogramId or item.get("scipionItemId") or index,
-                        "tomoId": tomogramId or item.get("scipionItemId") or index,
-                        "label": label or tomogramId or item.get("scipionItemId") or index,
-                        "volumeId": index,
-                    }
-                )
-
-            self._addPostgresqlTomogramRelations(relationsByKey, items)
-
-        return {
-            "root": {
-                "projectId": projectId,
-                "protocolId": protocolId,
-                "outputName": outputName,
-                "outputClass": storedSet.get("setClassName") or storedSet.get("itemClassName"),
-            },
-            "links": links,
-            "summaries": summaries,
-            "relations": self._safeScipionValue(
-                {
-                    "items": list(relationsByKey.values()),
-                }
-            ),
-        }
 
     def getIntegratedAnalyzeContextService(
             self,
