@@ -115,6 +115,7 @@ class PostgresqlCtftomoReader:
             label = str(item.get("label") or "CTFTomoSeries %s" % str(tiltSeriesId))
 
         summary: Dict[str, Any] = {
+            "ctfSeriesId": str(tiltSeriesId),
             "tiltSeriesId": str(tiltSeriesId),
             "label": str(label),
             "index": index,
@@ -147,14 +148,40 @@ class PostgresqlCtftomoReader:
         if storedSet is None:
             return None
 
-        targetKey = str(tiltSeriesId)
+        targetKey = str(tiltSeriesId).strip()
+        if not targetKey:
+            return None
 
         for index, item in enumerate(storedSet.get("items") or []):
-            itemTiltSeriesId = self._getTiltSeriesIdFromItem(item, index)
-            if str(itemTiltSeriesId) == targetKey:
+            if targetKey in self._getCtftomoSeriesItemMatchKeys(item, index):
                 return item
 
         return None
+
+    def _getCtftomoSeriesItemMatchKeys(self, item: Dict[str, Any], index: int) -> set:
+        values = item.get("values") or {}
+
+        candidates = [
+            self._getTiltSeriesIdFromItem(item, index),
+            self._firstValue(values, ["_tsId", "tsId", "tiltSeriesId", "ctfSeriesId", "id"]),
+            self._firstValueBySuffix(values, ["tsid", "tiltseriesid", "ctfseriesid"]),
+            self._firstValueBySuffix(values, ["objlabel", "label", "name"]),
+            item.get("label"),
+            item.get("scipionItemId"),
+            item.get("id"),
+            index,
+        ]
+
+        keys = set()
+        for candidate in candidates:
+            if candidate is None:
+                continue
+
+            text = str(candidate).strip()
+            if text:
+                keys.add(text)
+
+        return keys
 
     def _getTiltSeriesIdFromItem(self, item: Dict[str, Any], index: int) -> Any:
         values = item.get("values") or {}
