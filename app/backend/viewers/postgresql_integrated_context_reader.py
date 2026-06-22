@@ -562,21 +562,6 @@ class PostgresqlIntegratedContextReader:
             if rootKind == "coordinates3d" and candidateKind == "tomogram":
                 continue
 
-            allowedRelationKeys = self._getAllowedRelationKeysForRoot(
-                rootKind=rootKind,
-                relationsByKey=relationsByKey,
-            )
-
-            mergedRelations = self._mergeRelationsForCandidate(
-                candidate=candidate,
-                candidateKind=candidateKind,
-                relationsByKey=relationsByKey,
-                allowedRelationKeys=allowedRelationKeys,
-            )
-
-            if not mergedRelations:
-                continue
-
             if self._shouldReplaceLink(links.get(candidateKind)):
                 links[candidateKind] = self._buildLink(
                     protocolId=self._getCandidateProtocolId(candidate),
