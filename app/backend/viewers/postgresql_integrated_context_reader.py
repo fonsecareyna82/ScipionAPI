@@ -354,6 +354,8 @@ class PostgresqlIntegratedContextReader:
                 relation.get("tsId"),
                 relation.get("ctfSeriesId"),
                 relation.get("tomogramId"),
+                relation.get("sourceTomoId"),
+                relation.get("tomogramVolumeId"),
                 relation.get("coordinatesTomogramId"),
             ]
 
@@ -588,15 +590,71 @@ class PostgresqlIntegratedContextReader:
     def _normalizeName(self, value: Any) -> str:
         return str(value).replace("_", "").replace(".", "").replace("-", "").lower()
 
+    def _toRelationMatchText(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
+
+    def _iterRelationMatchValues(
+            self,
+            keyValue: Any,
+            values: Dict[str, Any],
+    ) -> List[str]:
+        candidates = [
+            keyValue,
+            values.get("key"),
+            values.get("tiltSeriesId"),
+            values.get("tsId"),
+            values.get("ctfSeriesId"),
+            values.get("tomogramId"),
+            values.get("sourceTomoId"),
+            values.get("coordinatesTomogramId"),
+        ]
+
+        result = []
+        seen = set()
+
+        for candidate in candidates:
+            text = self._toRelationMatchText(candidate)
+            if not text or text in seen:
+                continue
+
+            seen.add(text)
+            result.append(text)
+
+        return result
+
+    def _findExistingRelationKey(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            matchValues: List[str],
+    ) -> Optional[str]:
+        matchSet = set(matchValues or [])
+        if not matchSet:
+            return None
+
+        for key, relation in (relationsByKey or {}).items():
+            existingValues = self._iterRelationMatchValues(key, relation)
+            if any(value in matchSet for value in existingValues):
+                return key
+
+        return None
+
     def _addRelation(
             self,
             relationsByKey: Dict[str, Dict[str, Any]],
             keyValue: Any,
             **values: Any,
     ) -> None:
-        key = str(keyValue) if keyValue is not None else ""
-        if not key:
+        requestedKey = self._toRelationMatchText(keyValue)
+        if not requestedKey:
             return
+
+        matchValues = self._iterRelationMatchValues(requestedKey, values)
+        existingKey = self._findExistingRelationKey(relationsByKey, matchValues)
+        key = existingKey or requestedKey
 
         relation = relationsByKey.setdefault(
             key,
@@ -649,22 +707,38 @@ class PostgresqlIntegratedContextReader:
             items: List[Dict[str, Any]],
     ) -> None:
         for index, item in enumerate(items or []):
-            tomogramId = (
-                    item.get("tomoId")
+            tiltSeriesId = (
+                    item.get("tiltSeriesId")
+                    or item.get("tsId")
+            )
+
+            sourceTomoId = (
+                    item.get("sourceTomoId")
                     or item.get("tomogramId")
+                    or item.get("tomoId")
+            )
+
+            tomogramId = (
+                    sourceTomoId
                     or item.get("id")
                     or item.get("label")
                     or index
             )
 
+            relationKey = tiltSeriesId or tomogramId
+            ctfSeriesId = item.get("ctfSeriesId") or tiltSeriesId
             label = item.get("label") or item.get("name") or str(tomogramId)
             volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
 
             self._addRelation(
                 relationsByKey,
-                tomogramId,
+                relationKey,
                 tomogramId=tomogramId,
+                sourceTomoId=sourceTomoId,
                 tomogramVolumeId=volumeId,
+                tiltSeriesId=tiltSeriesId,
+                tsId=tiltSeriesId,
+                ctfSeriesId=ctfSeriesId,
                 label=label,
             )
 
@@ -780,14 +854,17 @@ class PostgresqlIntegratedContextReader:
 
             row = {
                 "id": publicId,
-                "tomoId": publicId,
+                "tomoId": tomoId or publicId,
+                "tomogramId": tomoId or publicId,
                 "label": label or publicId,
                 "volumeId": index,
+                "tomogramVolumeId": index,
             }
 
             if tsId is not None:
                 row["tsId"] = tsId
                 row["tiltSeriesId"] = tsId
+                row["ctfSeriesId"] = tsId
 
             if tomoId is not None:
                 row["sourceTomoId"] = tomoId
@@ -973,9 +1050,16 @@ class PostgresqlIntegratedContextReader:
                 item.get("tiltSeriesId"),
                 item.get("ctfSeriesId"),
                 item.get("coordinatesTomogramId"),
+                item.get("tsId"),
+                item.get("sourceTomoId"),
+                item.get("tomogramVolumeId"),
             ]
 
-            if any(str(value) in allowedRelationKeys for value in candidates if value is not None):
+            if any(
+                    str(value).strip() in allowedRelationKeys
+                    for value in candidates
+                    if value is not None and str(value).strip()
+            ):
                 filteredItems.append(item)
 
         return filteredItems
