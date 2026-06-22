@@ -313,7 +313,35 @@ class PostgresqlIntegratedContextReader:
         return [dict(row) for row in rows or []]
 
     def _getInputRefKind(self, inputRef: Dict[str, Any]) -> Optional[str]:
-        return self._getIntegratedKindFromText(inputRef.get("objectClassName"))
+        text = self._normalizeClassText(inputRef.get("objectClassName"))
+
+        if "ctftomo" in text:
+            return "ctf"
+
+        if self._isTiltSeriesMClassText(text):
+            return "tiltSeriesM"
+
+        if self._isRegularTiltSeriesClassText(text):
+            return "tiltSeries"
+
+        if "setoftomograms" in text or "tomogram" in text:
+            return "tomogram"
+
+        if "setofcoordinates3d" in text or "coordinate3d" in text:
+            return "coordinates3d"
+
+        return None
+
+    def _isRegularTiltSeriesClassText(self, value: Any) -> bool:
+        text = self._normalizeClassText(value)
+
+        if self._isTiltSeriesMClassText(text):
+            return False
+
+        if "ctftomo" in text:
+            return False
+
+        return "tiltseries" in text
 
     def _findInputRefByKind(
             self,
@@ -470,6 +498,29 @@ class PostgresqlIntegratedContextReader:
             )
             self._addCoordinates3dRelations(relationsByKey, items)
 
+    def _listRegularTiltSeriesItemsForProtocol(
+            self,
+            protocolDbId: Any,
+    ) -> List[Dict[str, Any]]:
+        storedSet = self._findRegularTiltSeriesStoredSetForProtocol(protocolDbId)
+        if storedSet is None:
+            return []
+
+        protocolDbId = storedSet.get("protocolDbId")
+        outputName = storedSet.get("outputName")
+
+        if protocolDbId is None or not outputName:
+            return []
+
+        reader = PostgresqlTiltSeriesReader(
+            db=self.db,
+            projectId=self.projectId,
+            protocolId=protocolDbId,
+            outputName=outputName,
+        )
+
+        return reader.listTiltSeries() or []
+
     def _listTiltSeriesItemsFromInputRefs(
             self,
             inputRefs: List[Dict[str, Any]],
@@ -511,11 +562,11 @@ class PostgresqlIntegratedContextReader:
             rootStoredSet: Dict[str, Any],
             relationsByKey: Dict[str, Dict[str, Any]],
     ) -> None:
-        inputRefs = self._listProtocolInputRefs(rootStoredSet.get("protocolDbId"))
-        if not inputRefs:
+        rootProtocolDbId = rootStoredSet.get("protocolDbId")
+        if rootProtocolDbId is None:
             return
 
-        tiltSeriesItems = self._listTiltSeriesItemsFromInputRefs(inputRefs)
+        tiltSeriesItems = self._listRegularTiltSeriesItemsForProtocol(rootProtocolDbId)
         if not tiltSeriesItems:
             return
 
@@ -742,31 +793,20 @@ class PostgresqlIntegratedContextReader:
             return
 
         if rootKind == "tomogram":
-            ctfRef = self._mergeKindFromInputRefs(
+            self._mergeRegularTiltSeriesForCtftomo(
+                rootProtocolDbId=rootProtocolDbId,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
+            self._mergeKindFromInputRefs(
                 kind="ctf",
                 inputRefs=inputRefs,
                 links=links,
                 summaries=summaries,
                 relationsByKey=relationsByKey,
             )
-
-            tiltRef = self._mergeKindFromInputRefs(
-                kind="tiltSeries",
-                inputRefs=inputRefs,
-                links=links,
-                summaries=summaries,
-                relationsByKey=relationsByKey,
-            )
-
-            if tiltRef is None and ctfRef is not None:
-                ctfInputRefs = self._listProtocolInputRefs(ctfRef.get("parentProtocolDbId"))
-                self._mergeKindFromInputRefs(
-                    kind="tiltSeries",
-                    inputRefs=ctfInputRefs,
-                    links=links,
-                    summaries=summaries,
-                    relationsByKey=relationsByKey,
-                )
 
             return
 
