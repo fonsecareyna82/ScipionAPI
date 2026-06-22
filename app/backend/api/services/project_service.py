@@ -6754,6 +6754,11 @@ class ProjectService:
             if payload is not None:
                 return payload
 
+            raise HTTPException(
+                status_code=404,
+                detail="CTF tomo series not found in PostgreSQL metadata",
+            )
+
         protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
 
         targetKey = str(tiltSeriesId)

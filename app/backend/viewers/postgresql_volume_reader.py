@@ -197,6 +197,22 @@ class PostgresqlVolumeReader:
         if locationIndex is not None:
             volume["locationIndex"] = locationIndex
 
+        tsId = self._firstValueBySuffix(
+            values,
+            ["tsId", "tiltSeriesId"],
+        )
+        if tsId is not None:
+            volume["tsId"] = tsId
+            volume["tiltSeriesId"] = tsId
+
+        tomoId = self._firstValueBySuffix(
+            values,
+            ["tomoId", "tomogramId"],
+        )
+        if tomoId is not None:
+            volume["tomoId"] = tomoId
+            volume["tomogramId"] = tomoId
+
         dims = self._extractDims(values)
         if dims is not None:
             volume["dims"] = dims
@@ -258,6 +274,22 @@ class PostgresqlVolumeReader:
 
         if locationIndex is not None:
             volume["locationIndex"] = locationIndex
+
+        tsId = self._firstValueBySuffix(
+            valuesByPath,
+            ["tsId", "tiltSeriesId"],
+        )
+        if tsId is not None:
+            volume["tsId"] = tsId
+            volume["tiltSeriesId"] = tsId
+
+        tomoId = self._firstValueBySuffix(
+            valuesByPath,
+            ["tomoId", "tomogramId"],
+        )
+        if tomoId is not None:
+            volume["tomoId"] = tomoId
+            volume["tomogramId"] = tomoId
 
         dims = self._extractDims(valuesByPath)
         if dims is not None:
