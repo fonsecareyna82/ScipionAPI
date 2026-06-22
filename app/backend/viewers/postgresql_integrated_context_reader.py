@@ -178,6 +178,39 @@ class PostgresqlIntegratedContextReader:
 
         return None
 
+    def _normalizeClassText(self, value: Any) -> str:
+        return str(value or "").replace(" ", "").replace("_", "").replace(".", "").lower()
+
+    def _isTiltSeriesMClassText(self, value: Any) -> bool:
+        text = self._normalizeClassText(value)
+
+        return (
+                "setoftiltseriesm" in text
+                or "tiltseriesm" in text
+                or "tiltimagem" in text
+                or "movie" in text
+                or "movies" in text
+        )
+
+    def _isRegularTiltSeriesStoredSet(self, storedSet: Optional[Dict[str, Any]]) -> bool:
+        if storedSet is None:
+            return False
+
+        text = self._normalizeClassText(
+            "%s %s" % (
+                storedSet.get("setClassName") or "",
+                storedSet.get("itemClassName") or "",
+            )
+        )
+
+        if self._isTiltSeriesMClassText(text):
+            return False
+
+        if "ctftomo" in text:
+            return False
+
+        return "tiltseries" in text
+
     def _getStoredSetProperty(
             self,
             storedSet: Dict[str, Any],
@@ -534,6 +567,120 @@ class PostgresqlIntegratedContextReader:
                 label=label,
             )
 
+    def _findRegularTiltSeriesStoredSetForProtocol(
+            self,
+            protocolDbId: Any,
+            visited: Optional[set] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if protocolDbId is None:
+            return None
+
+        if visited is None:
+            visited = set()
+
+        protocolKey = str(protocolDbId)
+        if protocolKey in visited:
+            return None
+
+        visited.add(protocolKey)
+
+        sameProtocolStoredSet = self._findRegularTiltSeriesStoredSetInProtocol(protocolDbId)
+        if sameProtocolStoredSet is not None:
+            return sameProtocolStoredSet
+
+        inputRefs = self._listProtocolInputRefs(protocolDbId)
+
+        for inputRef in inputRefs:
+            if self._getInputRefKind(inputRef) != "tiltSeries":
+                continue
+
+            storedSet = self._getStoredSetFromInputRef(inputRef)
+            if self._isRegularTiltSeriesStoredSet(storedSet):
+                return storedSet
+
+        for inputRef in inputRefs:
+            if self._getInputRefKind(inputRef) != "ctf":
+                continue
+
+            storedSet = self._findRegularTiltSeriesStoredSetForProtocol(
+                inputRef.get("parentProtocolDbId"),
+                visited=visited,
+            )
+
+            if storedSet is not None:
+                return storedSet
+
+        return None
+
+    def _findRegularTiltSeriesStoredSetInProtocol(
+            self,
+            protocolDbId: Any,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            storedSets = self.setMapper.listProtocolStoredSets(
+                projectId=self.projectId,
+                protocolDbId=int(protocolDbId),
+            )
+        except Exception:
+            return None
+
+        for storedSet in storedSets or []:
+            storedSetDict = dict(storedSet)
+            if self._isRegularTiltSeriesStoredSet(storedSetDict):
+                return storedSetDict
+
+        return None
+
+    def _mergeRegularTiltSeriesForCtftomo(
+            self,
+            rootProtocolDbId: Any,
+            links: Dict[str, Optional[Dict[str, Any]]],
+            summaries: Dict[str, Optional[Dict[str, Any]]],
+            relationsByKey: Dict[str, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if links.get("tiltSeries") is not None:
+            return None
+
+        storedSet = self._findRegularTiltSeriesStoredSetForProtocol(rootProtocolDbId)
+        if storedSet is None:
+            return None
+
+        links["tiltSeries"] = self._buildLink(
+            protocolId=storedSet.get("protocolDbId"),
+            outputName=storedSet.get("outputName"),
+            storedSet=storedSet,
+            label=storedSet.get("outputName"),
+            statusValue="inferred",
+        )
+
+        summaries["tiltSeries"] = self._buildSummary(
+            storedSet,
+            extra={
+                "source": "ctfAssociatedTiltSeries",
+            },
+        )
+
+        protocolDbId = storedSet.get("protocolDbId")
+        outputName = storedSet.get("outputName")
+
+        if protocolDbId is None or not outputName:
+            return storedSet
+
+        reader = PostgresqlTiltSeriesReader(
+            db=self.db,
+            projectId=self.projectId,
+            protocolId=protocolDbId,
+            outputName=outputName,
+        )
+
+        items = self._filterIntegratedItemsByAllowedKeys(
+            reader.listTiltSeries(),
+            self._getRelationKeySet(relationsByKey),
+        )
+        self._addTiltSeriesRelations(relationsByKey, items)
+
+        return storedSet
+
     def _mergeKindFromInputRefs(
             self,
             kind: str,
@@ -586,28 +733,12 @@ class PostgresqlIntegratedContextReader:
             return
 
         if rootKind == "ctf":
-            tiltRef = self._mergeKindFromInputRefs(
-                kind="tiltSeries",
-                inputRefs=inputRefs,
+            self._mergeRegularTiltSeriesForCtftomo(
+                rootProtocolDbId=rootProtocolDbId,
                 links=links,
                 summaries=summaries,
                 relationsByKey=relationsByKey,
             )
-
-            if tiltRef is None:
-                ctfRef = self._findInputRefByKind(inputRefs, "ctf")
-                if ctfRef is not None:
-                    ctfInputRefs = self._listProtocolInputRefs(
-                        ctfRef.get("parentProtocolDbId")
-                    )
-                    self._mergeKindFromInputRefs(
-                        kind="tiltSeries",
-                        inputRefs=ctfInputRefs,
-                        links=links,
-                        summaries=summaries,
-                        relationsByKey=relationsByKey,
-                    )
-
             return
 
         if rootKind == "tomogram":
