@@ -124,16 +124,12 @@ class PostgresqlCtftomoReader:
         storedSet = self._getStoredSet()
         rootProtocolDbId = storedSet.get("protocolDbId") if storedSet else self.protocolId
 
-        tiltRef = self._findTiltSeriesInputRefForProtocol(rootProtocolDbId)
-        if tiltRef is None:
-            return []
-
-        tiltStoredSet = self._getStoredSetFromInputRef(tiltRef)
+        tiltStoredSet = self._findRegularTiltSeriesStoredSetForProtocol(rootProtocolDbId)
         if tiltStoredSet is None:
             return []
 
-        protocolDbId = tiltStoredSet.get("protocolDbId") or tiltRef.get("parentProtocolDbId")
-        outputName = tiltStoredSet.get("outputName") or tiltRef.get("parentOutputName")
+        protocolDbId = tiltStoredSet.get("protocolDbId")
+        outputName = tiltStoredSet.get("outputName")
 
         if protocolDbId is None or not outputName:
             return []
@@ -151,7 +147,7 @@ class PostgresqlCtftomoReader:
 
         return payload.get("frames") or []
 
-    def _findTiltSeriesInputRefForProtocol(
+    def _findRegularTiltSeriesStoredSetForProtocol(
             self,
             protocolDbId: Any,
             visited: Optional[set] = None,
@@ -168,23 +164,51 @@ class PostgresqlCtftomoReader:
 
         visited.add(protocolKey)
 
+        sameProtocolStoredSet = self._findRegularTiltSeriesStoredSetInProtocol(protocolDbId)
+        if sameProtocolStoredSet is not None:
+            return sameProtocolStoredSet
+
         inputRefs = self._listProtocolInputRefs(protocolDbId)
+
         for inputRef in inputRefs:
-            if self._getInputRefKind(inputRef) == "tiltSeries":
-                return inputRef
+            if self._getInputRefKind(inputRef) != "tiltSeries":
+                continue
+
+            storedSet = self._getStoredSetFromInputRef(inputRef)
+            if self._isRegularTiltSeriesStoredSet(storedSet):
+                return storedSet
 
         for inputRef in inputRefs:
             if self._getInputRefKind(inputRef) != "ctf":
                 continue
 
             parentProtocolDbId = inputRef.get("parentProtocolDbId")
-            tiltRef = self._findTiltSeriesInputRefForProtocol(
+            storedSet = self._findRegularTiltSeriesStoredSetForProtocol(
                 parentProtocolDbId,
                 visited=visited,
             )
 
-            if tiltRef is not None:
-                return tiltRef
+            if storedSet is not None:
+                return storedSet
+
+        return None
+
+    def _findRegularTiltSeriesStoredSetInProtocol(
+            self,
+            protocolDbId: Any,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            storedSets = self.setMapper.listProtocolStoredSets(
+                projectId=self.projectId,
+                protocolDbId=int(protocolDbId),
+            )
+        except Exception:
+            return None
+
+        for storedSet in storedSets or []:
+            storedSetDict = dict(storedSet)
+            if self._isRegularTiltSeriesStoredSet(storedSetDict):
+                return storedSetDict
 
         return None
 
@@ -219,15 +243,56 @@ class PostgresqlCtftomoReader:
         return [dict(row) for row in rows or []]
 
     def _getInputRefKind(self, inputRef: Dict[str, Any]) -> Optional[str]:
-        text = str(inputRef.get("objectClassName") or "").replace(" ", "").lower()
+        text = self._normalizeClassText(inputRef.get("objectClassName"))
 
         if "ctftomo" in text:
             return "ctf"
 
-        if "tiltseries" in text:
+        if self._isTiltSeriesMClassText(text):
+            return "tiltSeriesM"
+
+        if self._isRegularTiltSeriesClassText(text):
             return "tiltSeries"
 
         return None
+
+    def _isRegularTiltSeriesStoredSet(self, storedSet: Optional[Dict[str, Any]]) -> bool:
+        if storedSet is None:
+            return False
+
+        classText = self._normalizeClassText(
+            "%s %s" % (
+                storedSet.get("setClassName") or "",
+                storedSet.get("itemClassName") or "",
+            )
+        )
+
+        return self._isRegularTiltSeriesClassText(classText)
+
+    def _isRegularTiltSeriesClassText(self, text: Any) -> bool:
+        classText = self._normalizeClassText(text)
+
+        if self._isTiltSeriesMClassText(classText):
+            return False
+
+        if "ctftomo" in classText:
+            return False
+
+        return "tiltseries" in classText
+
+    def _isTiltSeriesMClassText(self, text: Any) -> bool:
+        classText = self._normalizeClassText(text)
+
+        return (
+                "setoftiltseriesm" in classText
+                or "tiltseriesm" in classText
+                or "tiltimagem" in classText
+                or "movie" in classText
+                or "movies" in classText
+        )
+
+    def _normalizeClassText(self, value: Any) -> str:
+        return str(value or "").replace(" ", "").replace("_", "").replace(".", "").lower()
 
     def _getStoredSetFromInputRef(self, inputRef: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         parentProtocolDbId = inputRef.get("parentProtocolDbId")
