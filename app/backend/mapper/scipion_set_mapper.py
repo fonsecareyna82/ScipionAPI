@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 9
+NESTED_LOGICAL_TABLES_VERSION = 8
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1369,9 +1369,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if linkedTomograms:
             properties["linkedTomograms"] = linkedTomograms
 
-        linkedTiltSeries = self._getLinkedTiltSeriesSummary(scipionSet)
-        if linkedTiltSeries:
-            properties["linkedTiltSeries"] = linkedTiltSeries
 
         for attrName, attrValue in self._getAttributesToStore(scipionSet):
             if self._getAttributesToStore(attrValue):
@@ -1389,125 +1386,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 tomograms.append(item)
 
         return tomograms
-
-    def _getLinkedTiltSeriesSummary(self, scipionSet: Any) -> Optional[Dict[str, Any]]:
-        tiltSeriesSet = self._callOptionalGetter(scipionSet, "getSetOfTiltSeries")
-        if tiltSeriesSet is None:
-            return None
-
-        className = self._getClassName(tiltSeriesSet)
-        objectId = self._callOptionalGetter(tiltSeriesSet, "getObjId")
-        fileName = self._callOptionalGetter(tiltSeriesSet, "getFileName")
-        size = self._callOptionalGetter(tiltSeriesSet, "getSize")
-
-        itemSummaries = []
-        tsIds = []
-
-        for index, tiltSeries in enumerate(self._iterTiltSeriesItems(tiltSeriesSet)):
-            item = self._buildLinkedTiltSeriesItemSummary(tiltSeries, index)
-            if item is None:
-                continue
-
-            itemSummaries.append(item)
-
-            tiltSeriesId = item.get("tiltSeriesId") or item.get("tsId") or item.get("id")
-            if tiltSeriesId is not None:
-                tsIds.append(str(tiltSeriesId))
-
-        summary: Dict[str, Any] = {
-            "className": className,
-            "objectId": str(objectId) if objectId is not None else None,
-            "fileName": str(fileName) if fileName else None,
-            "size": self._toOptionalInt(size),
-            "tsIds": self._uniqueTextValues(tsIds),
-            "items": itemSummaries,
-        }
-
-        return {
-            key: value
-            for key, value in summary.items()
-            if value not in (None, [], "")
-        }
-
-    def _iterTiltSeriesItems(self, tiltSeriesSet: Any) -> Iterable[Any]:
-        iterItems = getattr(tiltSeriesSet, "iterItems", None)
-        if callable(iterItems):
-            try:
-                return iterItems(iterate=False)
-            except TypeError:
-                return iterItems()
-            except Exception:
-                pass
-
-        try:
-            return iter(tiltSeriesSet)
-        except Exception:
-            return iter(())
-
-    def _buildLinkedTiltSeriesItemSummary(self, tiltSeries: Any, index: int) -> Optional[Dict[str, Any]]:
-        objectId = self._callOptionalGetter(tiltSeries, "getObjId")
-        tsId = (
-                self._callOptionalGetter(tiltSeries, "getTsId")
-                or self._callOptionalGetter(tiltSeries, "getTSId")
-                or objectId
-                or index
-        )
-
-        if tsId is None:
-            return None
-
-        label = (
-                self._callOptionalGetter(tiltSeries, "getObjLabel")
-                or self._callOptionalGetter(tiltSeries, "getNameId")
-                or tsId
-        )
-
-        item: Dict[str, Any] = {
-            "id": str(tsId),
-            "tsId": str(tsId),
-            "tiltSeriesId": str(tsId),
-            "label": str(label),
-        }
-
-        if objectId is not None:
-            item["objectId"] = str(objectId)
-
-        dims = self._normalizeLinkedTomogramDims(
-            self._callOptionalGetter(tiltSeries, "getDim")
-        )
-        if dims is not None:
-            item["dims"] = dims
-
-        samplingRate = self._toOptionalFloat(
-            self._callOptionalGetter(tiltSeries, "getSamplingRate")
-        )
-        if samplingRate is not None:
-            item["pixelSize"] = samplingRate
-
-        tiltAxisAngle = self._toOptionalFloat(
-            self._callOptionalGetter(
-                self._callOptionalGetter(tiltSeries, "getAcquisition"),
-                "getTiltAxisAngle",
-            )
-        )
-        if tiltAxisAngle is not None:
-            item["tiltAxisAngle"] = tiltAxisAngle
-
-        return item
-
-    def _uniqueTextValues(self, values: Iterable[Any]) -> List[str]:
-        result = []
-        seen = set()
-
-        for value in values or []:
-            text = str(value).strip() if value is not None else ""
-            if not text or text in seen:
-                continue
-
-            seen.add(text)
-            result.append(text)
-
-        return result
 
     def _iterLinkedTomograms(self, scipionSet: Any) -> Iterable[Any]:
         for methodName in ("iterTomograms", "iterVolumes"):
