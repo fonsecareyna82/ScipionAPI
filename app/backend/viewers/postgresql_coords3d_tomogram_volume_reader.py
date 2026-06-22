@@ -23,7 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
