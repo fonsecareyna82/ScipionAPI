@@ -6539,8 +6539,6 @@ class ProjectService:
     # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
     # ======================================================================
-
-    @lru_cache
     def _resolveOutputForCtftomoSeries(self, protocolId: int, outputName: str):
         """
         Resolve protocol + CTFTomoSeries-like output for CTF tomography operations.
@@ -6757,6 +6755,19 @@ class ProjectService:
             raise HTTPException(
                 status_code=404,
                 detail="CTF tomo series not found in PostgreSQL metadata",
+            )
+        if mapper is not None:
+            logger.warning(
+                "PostgreSQL CTFTomo reader is not available. Skipping legacy fallback. "
+                "projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tiltSeriesId,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="CTF tomo output is not available in PostgreSQL metadata",
             )
 
         protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
