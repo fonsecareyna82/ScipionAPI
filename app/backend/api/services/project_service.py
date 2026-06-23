@@ -860,6 +860,21 @@ class ProjectService:
 
         return None
 
+    def _resolvePostgresqlReaderProtocolId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> Union[int, str]:
+        if mapper is None:
+            return protocolId
+
+        return self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        ) or protocolId
+
     def _storeGeneratedSetInPostgresql(
             self,
             mapper,
@@ -7179,10 +7194,16 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
 
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
             reader = PostgresqlTiltSeriesReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
 
@@ -7672,10 +7693,16 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_ctftomo_reader import PostgresqlCtftomoReader
 
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
             reader = PostgresqlCtftomoReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
 
@@ -7742,6 +7769,12 @@ class ProjectService:
         if mapper is None:
             return None
 
+        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
         try:
             from app.backend.viewers.postgresql_coords3d_tomogram_volume_reader import \
                 PostgresqlCoords3dTomogramVolumeReader
@@ -7749,7 +7782,7 @@ class ProjectService:
             reader = PostgresqlCoords3dTomogramVolumeReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
 
@@ -7771,7 +7804,7 @@ class ProjectService:
             reader = PostgresqlVolumeReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
 
@@ -9315,10 +9348,16 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
 
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
             reader = PostgresqlCoords3dReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
 
@@ -10630,10 +10669,16 @@ class ProjectService:
         if mapper is None:
             return None
 
+        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
         dao = PostgresqlDAO(
             db=mapper.db,
             projectId=projectId,
-            protocolId=protocolId,
+            protocolId=readerProtocolId,
             outputName=outputName,
         )
 
