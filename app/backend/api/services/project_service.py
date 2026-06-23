@@ -6444,16 +6444,66 @@ class ProjectService:
     # ----------------------------------------------------------------------
     # Internal helpers for TiltSeries (SetOfTiltSeries)
     # ----------------------------------------------------------------------
+    def _resolveScipionProtocolId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> int:
+        if mapper is None or projectId is None:
+            return int(protocolId)
 
-    @lru_cache
-    def _resolveOutputForTiltSeries(self, protocolId: int, outputName: str):
+        try:
+            row = mapper.db.fetchOne(
+                """
+                SELECT "protocolId"
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND (id = %s OR "protocolId" = %s)
+                 LIMIT 1
+                """,
+                (projectId, protocolId, str(protocolId)),
+            )
+
+            if row:
+                value = row.get("protocolId") if isinstance(row, dict) else row[0]
+                if value is not None:
+                    return int(value)
+
+        except Exception:
+            logger.exception(
+                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+
+        return int(protocolId)
+
+    def _resolveOutputForTiltSeries(
+            self,
+            protocolId: int,
+            outputName: str,
+            projectId: Optional[int] = None,
+            mapper=None,
+    ):
         """
         Resolve protocol + SetOfTiltSeries-like output for tilt series operations.
+
+        protocolId can be either the PostgreSQL protocols.id or the Scipion protocolId.
         """
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
         try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
+            protocol = self.currentProject.getProtocol(int(scipionProtocolId))
         except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol not found: {protocolId}",
+            )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -7642,7 +7692,12 @@ class ProjectService:
         if pgReader is not None:
             return pgReader.listTiltSeries()
 
-        _, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+        _, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
 
         seriesList: List[Dict[str, Any]] = []
         for idx, ts in enumerate(setOfTiltSeries.iterItems(iterate=False)):
@@ -7699,7 +7754,12 @@ class ProjectService:
             if payload is not None:
                 return payload
 
-        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
         targetKey = str(tiltSeriesId)
         selectedSummary: Optional[Dict[str, Any]] = None
         selectedSeries = setOfTiltSeries.getItem('_tsId', targetKey)
@@ -8137,7 +8197,12 @@ class ProjectService:
 
                     )
 
-        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(protocolId, outputName)
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
         ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
 
         if ts is None:
@@ -8299,6 +8364,7 @@ class ProjectService:
         outputName: str,
         exclusions: Dict[str, Any],
         restack: bool,
+        mapper=None
     ) -> Dict[str, Any]:
         """
         Create a new SetOfTiltSeries applying per-tilt-series and per-tilt exclusions.
@@ -8315,7 +8381,12 @@ class ProjectService:
         Returns a JSON-serializable payload for the web UI with basic metadata.
         """
         # Resolve protocol and input set for the given output
-        protocol, inputSet = self._resolveOutputForTiltSeries(protocolId, outputName)
+        protocol, inputSet = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
         hasOddEven = inputSet.hasOddEven()
 
         # Normalize exclusions keys to strings (tsId can be int/str on the backend)
@@ -8495,6 +8566,29 @@ class ProjectService:
         outputSet.write()
         protocol._defineOutputs(**{newOutputName: outputSet})
         protocol._store()
+
+        postgresqlSync = None
+
+        if mapper is not None:
+            try:
+                from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+                setMapper = ScipionSetPostgresqlMapper(mapper.db)
+                postgresqlSync = setMapper.storeSet(
+                    projectId=projectId,
+                    protocolDbId=protocolId,
+                    outputName=newOutputName,
+                    scipionSet=outputSet,
+                )
+
+            except Exception:
+                logger.exception(
+                    "Failed to persist created TiltSeries output to PostgreSQL. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    newOutputName,
+                )
+
         logger.info("The new set (%s) has been created successfully", newOutputName)
 
         return {
@@ -8503,6 +8597,7 @@ class ProjectService:
             "createdTiltSeries": createdCount,
             "hasOddEven": bool(hasOddEven),
             "restack": bool(restack),
+            "postgresqlSync": postgresqlSync,
         }
 
     def _cloneTiltImage(self, ti, included):
