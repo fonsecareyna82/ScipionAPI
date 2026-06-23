@@ -740,7 +740,7 @@ def restartProtocolAll(
         )
 
     try:
-        service.restartProtocolAll(protocolId)
+        service.restartProtocolAll(mapper, projectId, protocolId)
         service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
@@ -832,7 +832,7 @@ def resetProtocolFrom(
         )
 
     try:
-        service.resetProtocolFrom(protocolId)
+        service.resetProtocolFrom(mapper, projectId, protocolId)
         service.syncProjectGraphAfterMutation(
             mapper,
             projectId,

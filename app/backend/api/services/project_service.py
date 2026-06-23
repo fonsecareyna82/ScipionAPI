@@ -803,6 +803,250 @@ class ProjectService:
         except Exception:
             return None
 
+    def _resolvePostgresqlProtocolDbId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> Optional[int]:
+        if mapper is None or projectId is None or protocolId is None:
+            return None
+
+        rawProtocolId = str(protocolId).strip()
+        if not rawProtocolId:
+            return None
+
+        protocolDbIdCandidate = None
+        try:
+            protocolDbIdCandidate = int(rawProtocolId)
+        except Exception:
+            protocolDbIdCandidate = None
+
+        try:
+            if protocolDbIdCandidate is not None:
+                row = mapper.db.fetchOne(
+                    """
+                    SELECT id
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND (id = %s OR "protocolId" = %s)
+                     LIMIT 1
+                    """,
+                    (projectId, protocolDbIdCandidate, rawProtocolId),
+                )
+            else:
+                row = mapper.db.fetchOne(
+                    """
+                    SELECT id
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND "protocolId" = %s
+                     LIMIT 1
+                    """,
+                    (projectId, rawProtocolId),
+                )
+
+            if row:
+                value = row.get("id") if isinstance(row, dict) else row[0]
+                if value is not None:
+                    return int(value)
+
+        except Exception:
+            logger.exception(
+                "Failed to resolve PostgreSQL protocol id. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+
+        return None
+
+
+    def _deletePersistedProtocolOutputsFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+    ) -> Dict[str, Any]:
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return {
+                "protocolDbId": None,
+                "setsDeleted": 0,
+                "objectsDeleted": 0,
+                "skipped": True,
+                "reason": "protocol_not_found",
+            }
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT id
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+            """,
+            (projectId, protocolDbId),
+        )
+
+        setIds = [
+            int(row.get("id") if isinstance(row, dict) else row[0])
+            for row in (setRows or [])
+            if (row.get("id") if isinstance(row, dict) else row[0]) is not None
+        ]
+
+        setsDeleted = 0
+        objectsDeleted = 0
+
+        with mapper.db.transaction():
+            if setIds:
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" IN (
+                           SELECT id
+                             FROM scipion_set_tables
+                            WHERE "setId" = ANY(%s)
+                     )
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_columns
+                     WHERE "tableId" IN (
+                           SELECT id
+                             FROM scipion_set_tables
+                            WHERE "setId" = ANY(%s)
+                     )
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_tables
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_items
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_columns
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_set_properties
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                cur = mapper.db.execute(
+                    """
+                    DELETE FROM scipion_sets
+                     WHERE id = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+                setsDeleted = int(cur.rowcount or 0)
+
+            cur = mapper.db.execute(
+                """
+                WITH RECURSIVE object_tree AS (
+                    SELECT id
+                      FROM scipion_objects
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+
+                    UNION ALL
+
+                    SELECT child.id
+                      FROM scipion_objects child
+                      JOIN object_tree parent
+                        ON child."parentObjectId" = parent.id
+                )
+                DELETE FROM scipion_objects
+                 WHERE id IN (SELECT id FROM object_tree)
+                """,
+                (projectId, protocolDbId),
+                commit=False,
+            )
+            objectsDeleted = int(cur.rowcount or 0)
+
+        return {
+            "protocolDbId": protocolDbId,
+            "setsDeleted": setsDeleted,
+            "objectsDeleted": objectsDeleted,
+            "skipped": False,
+        }
+
+    def _deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocols: List[Any],
+    ) -> Dict[str, Any]:
+        cleanupItems = []
+        totalSetsDeleted = 0
+        totalObjectsDeleted = 0
+
+        for protocol in protocols or []:
+            protocolId = None
+
+            try:
+                protocolId = protocol.getObjId()
+            except Exception:
+                protocolId = protocol
+
+            if protocolId is None:
+                continue
+
+            cleanupInfo = self._deletePersistedProtocolOutputsFromPostgresql(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            cleanupItems.append({
+                "protocolId": str(protocolId),
+                **cleanupInfo,
+            })
+
+            totalSetsDeleted += int(cleanupInfo.get("setsDeleted") or 0)
+            totalObjectsDeleted += int(cleanupInfo.get("objectsDeleted") or 0)
+
+        return {
+            "protocolsCount": len(cleanupItems),
+            "setsDeleted": totalSetsDeleted,
+            "objectsDeleted": totalObjectsDeleted,
+            "items": cleanupItems,
+        }
+
     def _getPointerOutputName(self, pointer: Any) -> Optional[str]:
         outputName = self._safeCall(pointer, "getExtended", None)
         if outputName is None:
@@ -4496,6 +4740,20 @@ class ProjectService:
                 }
                 runMode = modeToRunMode[executeMode]
                 protocol.runMode.set(runMode)
+
+                if executeMode == "restart":
+                    cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=[protocol],
+                    )
+                    logger.info(
+                        "Deleted persisted protocol outputs before restart. projectId=%s protocolId=%s cleanup=%s",
+                        projectId,
+                        getattr(protocol, "getObjId", lambda: protocolId)(),
+                        cleanupInfo,
+                    )
+
                 self.currentProject.launchProtocol(protocol)
 
             self.syncProjectProtocolsAndDependencies(
@@ -5241,19 +5499,19 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    def restartProtocolAll(self, protocolId):
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
+    def restartProtocolAll(self, mapper, projectId: int, protocolId):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         try:
             workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
         except Exception as e:
             logger.exception(
-                "Failed to resolve subworkflow for restart-all. protocolId=%s",
+                "Failed to resolve subworkflow for restart-all. projectId=%s protocolId=%s",
+                projectId,
                 protocolId,
             )
             raise HTTPException(
@@ -5261,12 +5519,25 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
+        cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=workflowProtocolList,
+        )
+        logger.info(
+            "Deleted persisted protocol outputs before restart-all. projectId=%s protocolId=%s cleanup=%s",
+            projectId,
+            protocolId,
+            cleanupInfo,
+        )
+
         errorList = []
         try:
             self.currentProject._restartWorkflow(errorList, workflowProtocolList)
         except Exception as e:
             logger.exception(
-                "Failed to restart workflow subtree. protocolId=%s",
+                "Failed to restart workflow subtree. projectId=%s protocolId=%s",
+                projectId,
                 protocolId,
             )
             raise HTTPException(
@@ -5280,7 +5551,10 @@ class ProjectService:
                 detail=[str(e) for e in errorList],
             )
 
-        return self._buildProtocolMutationResult("Protocol subtree restarted successfully")
+        return self._buildProtocolMutationResult(
+            "Protocol subtree restarted successfully",
+            postgresqlCleanup=cleanupInfo,
+        )
 
     def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
         protocol = self.currentProject.getProtocol(int(protocolId))
@@ -5352,19 +5626,19 @@ class ProjectService:
 
         return self._buildProtocolMutationResult("Protocol subtree continued successfully")
 
-    def resetProtocolFrom(self, protocolId):
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
+    def resetProtocolFrom(self, mapper, projectId: int, protocolId):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         try:
             workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
         except Exception as e:
             logger.exception(
-                "Failed to resolve subworkflow for reset-from. protocolId=%s",
+                "Failed to resolve subworkflow for reset-from. projectId=%s protocolId=%s",
+                projectId,
                 protocolId,
             )
             raise HTTPException(
@@ -5372,11 +5646,24 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
+        cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=workflowProtocolList,
+        )
+        logger.info(
+            "Deleted persisted protocol outputs before reset-from. projectId=%s protocolId=%s cleanup=%s",
+            projectId,
+            protocolId,
+            cleanupInfo,
+        )
+
         try:
             resetErrors = self.currentProject.resetWorkFlow(workflowProtocolList) or []
         except Exception as e:
             logger.exception(
-                "Failed to reset workflow subtree. protocolId=%s",
+                "Failed to reset workflow subtree. projectId=%s protocolId=%s",
+                projectId,
                 protocolId,
             )
             raise HTTPException(
@@ -5390,7 +5677,10 @@ class ProjectService:
                 detail=[str(e) for e in resetErrors],
             )
 
-        return self._buildProtocolMutationResult("Protocol subtree reset successfully")
+        return self._buildProtocolMutationResult(
+            "Protocol subtree reset successfully",
+            postgresqlCleanup=cleanupInfo,
+        )
 
     def stopProtocol(self, protocolIds):
         resolvedProtocols = []
