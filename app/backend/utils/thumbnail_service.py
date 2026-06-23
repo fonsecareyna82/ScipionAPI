@@ -176,6 +176,12 @@ class ThumbnailService:
             size: int = 360,
             outputName: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+                Build a thumbnail for a Scipion runtime protocol id.
+
+                PostgreSQL protocol ids must be resolved by ProjectService before
+                calling ThumbnailService.
+                """
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception:
