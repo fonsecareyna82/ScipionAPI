@@ -8532,7 +8532,12 @@ class ProjectService:
           ...
         }
         """
-        protocol, inputSet = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+        protocol, inputSet = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         # Normalize exclusions keys to strings
         normalizedExclusions: Dict[str, Dict[str, Any]] = {}
@@ -8590,9 +8595,15 @@ class ProjectService:
                     from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 
                     setMapper = ScipionSetPostgresqlMapper(mapper.db)
+                    protocolDbId = self._resolvePostgresqlProtocolDbId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    ) or protocolId
+
                     postgresqlSync = setMapper.storeSet(
                         projectId=projectId,
-                        protocolDbId=protocolId,
+                        protocolDbId=protocolDbId,
                         outputName=newOutputName,
                         scipionSet=outputSet,
                     )
@@ -9228,9 +9239,15 @@ class ProjectService:
                 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 
                 setMapper = ScipionSetPostgresqlMapper(mapper.db)
+                protocolDbId = self._resolvePostgresqlProtocolDbId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                ) or protocolId
+
                 postgresqlSync = setMapper.storeSet(
                     projectId=projectId,
-                    protocolDbId=protocolId,
+                    protocolDbId=protocolDbId,
                     outputName=newOutputName,
                     scipionSet=outputSet,
                 )
@@ -11073,10 +11090,11 @@ class ProjectService:
     ) -> Any:
         selectionIds = self._normalizeMetadataSelectionIds(ids)
 
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -11125,9 +11143,34 @@ class ProjectService:
 
             self.currentProject.launchProtocol(batchProt)
 
+            postgresqlSync = None
+            try:
+                postgresqlSync = self.syncProjectProtocolsAndDependencies(
+                    mapper,
+                    projectId,
+                    refresh=True,
+                    checkPid=True,
+                )
+            except Exception as syncError:
+                logger.exception(
+                    "Subset protocol was launched but PostgreSQL sync failed. projectId=%s protocolId=%s outputName=%s tableName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    tableName,
+                )
+                return {
+                    "success": True,
+                    "message": "Subset protocol was launched successfully, but PostgreSQL sync failed",
+                    "postgresqlSync": None,
+                    "postgresqlError": str(syncError),
+                }
+
             return {
                 "success": True,
                 "message": "Subset protocol was launched successfully",
+                "postgresqlSync": postgresqlSync,
+                "postgresqlError": None,
             }
 
         except Exception as e:
