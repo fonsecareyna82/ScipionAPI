@@ -10069,32 +10069,6 @@ class ProjectService:
             visibleLabels = []
             orderLabels = []
             renderLabels = []
-
-            if table.getName() == SQLITE_OBJECT_TABLE:
-                from pwem.viewers.viewers_data import RegistryViewerConfig
-                protocol = self.currentProject.getProtocol(int(protocolId))
-                output = getattr(protocol, outputName)
-
-                config = RegistryViewerConfig.getConfig(type(output)) or {}
-
-                fileNameLabel = ' _filename'
-                stackLabel = ' stack'
-
-                visibleLabelsStr = config.get(VISIBLE, '')
-                orderLabelsStr = config.get(ORDER, '')
-                renderLabelsStr = config.get(RENDER, '')
-
-                orderLabelsStr = orderLabelsStr.replace(fileNameLabel, stackLabel, 1)
-                renderLabelsStr = renderLabelsStr.replace(fileNameLabel, stackLabel, 1)
-
-                if fileNameLabel in visibleLabelsStr and stackLabel not in renderLabelsStr:
-                    renderLabelsStr += stackLabel
-                    visibleLabelsStr += stackLabel
-
-                visibleLabels = visibleLabelsStr.split()
-                orderLabels = orderLabelsStr.split()
-                renderLabels = renderLabelsStr.split()
-
             actions = self._getMetadataTableActionNames(table)
 
             try:

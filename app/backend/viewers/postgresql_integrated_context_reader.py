@@ -242,13 +242,19 @@ class PostgresqlIntegratedContextReader:
             label: Optional[str] = None,
             statusValue: str = "available",
     ) -> Dict[str, Any]:
-        return {
+        link = {
             "protocolId": protocolId,
             "outputName": outputName,
             "itemId": storedSet.get("objectId") or storedSet.get("id"),
             "label": label or outputName,
             "status": statusValue,
         }
+
+        publicProtocolId = storedSet.get("publicProtocolId") or storedSet.get("protocolId")
+        if publicProtocolId is not None and str(publicProtocolId) != str(protocolId):
+            link["publicProtocolId"] = publicProtocolId
+
+        return link
 
     def _buildSummary(
             self,
@@ -820,7 +826,8 @@ class PostgresqlIntegratedContextReader:
             summaries: Dict[str, Optional[Dict[str, Any]]],
             relationsByKey: Dict[str, Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        if links.get(kind) is not None:
+        existingLink = links.get(kind)
+        if existingLink is not None and not self._shouldReplaceLink(existingLink):
             return None
 
         inputRef = self._findInputRefByKind(inputRefs, kind)
@@ -891,6 +898,14 @@ class PostgresqlIntegratedContextReader:
             return
 
         if rootKind == "coordinates3d":
+            tomogramRef = self._mergeKindFromInputRefs(
+                kind="tomogram",
+                inputRefs=inputRefs,
+                links=links,
+                summaries=summaries,
+                relationsByKey=relationsByKey,
+            )
+
             ctfRef = self._mergeKindFromInputRefs(
                 kind="ctf",
                 inputRefs=inputRefs,
@@ -907,7 +922,6 @@ class PostgresqlIntegratedContextReader:
                 relationsByKey=relationsByKey,
             )
 
-            tomogramRef = self._findInputRefByKind(inputRefs, "tomogram")
             if tomogramRef is not None:
                 tomogramInputRefs = self._listProtocolInputRefs(
                     tomogramRef.get("parentProtocolDbId")
@@ -1548,14 +1562,18 @@ class PostgresqlIntegratedContextReader:
         protocolId = existingLink.get("protocolId")
         outputName = existingLink.get("outputName")
         statusValue = str(existingLink.get("status") or "")
+        sourceValue = str(existingLink.get("source") or "")
 
         if protocolId is None and outputName is None:
+            return True
+
+        if statusValue == "derived" and sourceValue == "coordinates3d":
             return True
 
         return statusValue == "inferred" and protocolId is None
 
     def _getCandidateProtocolId(self, candidate: Dict[str, Any]) -> Any:
-        return candidate.get("publicProtocolId") or candidate.get("protocolDbId")
+        return candidate.get("protocolDbId") or candidate.get("publicProtocolId")
 
     def _safeValue(self, value: Any) -> Any:
         if isinstance(value, dict):
