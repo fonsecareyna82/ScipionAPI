@@ -507,4 +507,4 @@ def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
         service._resolveOutputForTiltSeries(10, "outputTiltSeries")
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found"
+    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime:")

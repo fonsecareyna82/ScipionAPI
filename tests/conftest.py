@@ -291,16 +291,17 @@ class FakeProjectService:
     def listProjectLogChannelsService(self, projectId, protocolId):
         return self.logChannelsResult
 
-    def listProtocolLogChannelsService(self, projectId, protocolId):
+    def listProtocolLogChannelsService(self, projectId, protocolId, mapper=None):
         return self.logChannelsResult
 
-    def pollProtocolLogsService(self, projectId, protocolId, offsets, maxBytes, maxLines):
+    def pollProtocolLogsService(self, projectId, protocolId, offsets, maxBytes, maxLines, mapper=None):
         self.lastPollLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "offsets": dict(offsets),
             "maxBytes": maxBytes,
             "maxLines": maxLines,
+            "mapper": mapper,
         }
         return self.pollLogsResult
 
@@ -533,10 +534,11 @@ class FakeProjectService:
             raise self.applyWorkflowError
         return self.applyWorkflowResult
 
-    def getProtocolParams(self, projectId, protocolId):
+    def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
+            "mapper": mapper,
         }
         return self.protocolParamsResult
 
@@ -571,14 +573,21 @@ class FakeProjectService:
             raise self.saveProtocolError
         return self.saveProtocolResult
 
-    def getNextProtocolSuggestions(self, protocolId):
-        self.lastGetNextProtocolSuggestionsCall = {"protocolId": protocolId}
+    def getNextProtocolSuggestions(self, protocolId, mapper=None, projectId=None):
+        self.lastGetNextProtocolSuggestionsCall = {
+            "protocolId": protocolId,
+            "mapper": mapper,
+            "projectId": projectId,
+        }
         return self.nextProtocolSuggestionsResult
 
-    def renameProtocol(self, protocolId, newName):
+    def renameProtocol(self, mapper, projectId, protocolId, newName, newComment=""):
         self.lastRenameProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
             "protocolId": protocolId,
             "newName": newName,
+            "newComment": newComment,
         }
         if self.renameProtocolError is not None:
             raise self.renameProtocolError
@@ -602,8 +611,12 @@ class FakeProjectService:
         if self.deleteProtocolError is not None:
             raise self.deleteProtocolError
 
-    def restartProtocolAll(self, protocolId):
-        self.lastRestartProtocolAllCall = {"protocolId": protocolId}
+    def restartProtocolAll(self, mapper, projectId, protocolId):
+        self.lastRestartProtocolAllCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        }
         if self.restartProtocolAllError is not None:
             raise self.restartProtocolAllError
         return self.restartProtocolAllResult
@@ -618,13 +631,21 @@ class FakeProjectService:
         if self.continueProtocolAllError is not None:
             raise self.continueProtocolAllError
 
-    def resetProtocolFrom(self, protocolId):
-        self.lastResetProtocolFromCall = {"protocolId": protocolId}
+    def resetProtocolFrom(self, mapper, projectId, protocolId):
+        self.lastResetProtocolFromCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        }
         if self.resetProtocolFromError is not None:
             raise self.resetProtocolFromError
 
-    def stopProtocol(self, protocolIds):
-        self.lastStopProtocolCall = {"protocolIds": protocolIds}
+    def stopProtocol(self, mapper, projectId, protocolIds):
+        self.lastStopProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
         if self.stopProtocolError is not None:
             raise self.stopProtocolError
 

@@ -69,10 +69,11 @@ class FakeProtocolRouterService:
         }
         return self.projectByIdResult
 
-    def getProtocolParams(self, projectId, protocolId):
+    def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
+            "mapper": mapper,
         }
         return self.protocolParamsResult
 
@@ -101,13 +102,14 @@ class FakeProtocolRouterService:
         if self.saveError is not None:
             raise self.saveError
 
-    def getProtocolLogs(self, projectId, protocolId, offset, errOffset, scheduleOffset):
+    def getProtocolLogs(self, projectId, protocolId, offset, errOffset, scheduleOffset, mapper=None):
         self.lastGetProtocolLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "offset": offset,
             "errOffset": errOffset,
             "scheduleOffset": scheduleOffset,
+            "mapper": mapper,
         }
         return self.protocolLogsResult
 
@@ -172,6 +174,7 @@ def test_LoadProtocolReturnsProtocolParams(protocolClient, fakeProtocolRouterSer
     assert fakeProtocolRouterService.lastGetProtocolParamsCall == {
         "projectId": 1,
         "protocolId": 10,
+        "mapper": fakeProtocolRouterService.lastGetProtocolParamsCall["mapper"],
     }
 
 
@@ -296,4 +299,5 @@ def test_GetProtocolLogsReturnsPayload(protocolClient, fakeProtocolRouterService
         "offset": 5,
         "errOffset": 7,
         "scheduleOffset": 9,
+        "mapper": fakeProtocolRouterService.lastGetProtocolLogsCall["mapper"],
     }

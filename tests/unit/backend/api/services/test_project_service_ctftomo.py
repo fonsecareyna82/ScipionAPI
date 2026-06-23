@@ -590,12 +590,11 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
         restack=False,
     )
 
-    assert result == {
-        "status": 0,
-        "outputName": "CTFTomoSeries_0",
-        "createdSeries": 1,
-        "restack": False,
-    }
+    assert result["status"] == 0
+    assert result["outputName"] == "CTFTomoSeries_0"
+    assert result["createdSeries"] == 1
+    assert result["restack"] is False
+    assert result["postgresqlSync"] is None
     assert "CTFTomoSeries_0" in protocol._definedOutputs
     createdSet = protocol._definedOutputs["CTFTomoSeries_0"]
     assert createdSet.isEmpty() is False
