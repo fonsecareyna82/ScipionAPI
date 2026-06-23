@@ -482,16 +482,14 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
         payload=payload,
     )
 
-    assert result == {
-        "success": True,
-        "outputName": "outputCoords3d_edited",
-        "message": "Created new coords3d output 'outputCoords3d_edited'",
-        "data": {
-            "sourceOutputName": "outputCoords3d",
-            "replacedPoints": 2,
-            "copiedPoints": 0,
-        },
-    }
+    assert result["success"] is True
+    assert result["outputName"] == "outputCoords3d_edited"
+    assert result["message"] == "Created new coords3d output 'outputCoords3d_edited'"
+    assert result["data"]["sourceOutputName"] == "outputCoords3d"
+    assert result["data"]["replacedPoints"] == 2
+    assert result["data"]["copiedPoints"] == 0
+    assert result["data"]["postgresqlStored"] is False
+    assert result["data"]["postgresqlError"] is None
 
     assert "outputCoords3d_edited" in protocol.definedOutputs
     createdSet = protocol.definedOutputs["outputCoords3d_edited"]

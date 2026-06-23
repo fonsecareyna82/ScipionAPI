@@ -28,8 +28,10 @@ from fastapi import HTTPException
 
 def patchRenameProtocolFake(fakeProjectService):
     # patchRenameProtocolFake
-    def renameProtocol(protocolId, newName, newComment=""):
+    def renameProtocol(mapper, projectId, protocolId, newName, newComment=""):
         fakeProjectService.lastRenameProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
             "protocolId": protocolId,
             "newName": newName,
             "newComment": newComment,
@@ -62,6 +64,7 @@ def test_LoadProtocolReturnsParams(projectClient, fakeProjectService):
     assert fakeProjectService.lastGetProtocolParamsCall == {
         "projectId": 1,
         "protocolId": 10,
+        "mapper": fakeProjectService.lastGetProtocolParamsCall["mapper"],
     }
 
 
@@ -220,7 +223,11 @@ def test_SuggestionProtocolReturnsSuggestions(projectClient, fakeProjectService)
     assert response.status_code == 200
     assert response.json() == [{"id": "next-1", "name": "Next protocol"}]
 
-    assert fakeProjectService.lastGetNextProtocolSuggestionsCall == {"protocolId": 10}
+    assert fakeProjectService.lastGetNextProtocolSuggestionsCall == {
+        "protocolId": 10,
+        "mapper": fakeProjectService.lastGetNextProtocolSuggestionsCall["mapper"],
+        "projectId": 1,
+    }
 
 
 def test_RenameProtocolRejectsBlankName(projectClient):
@@ -256,6 +263,8 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
     assert fakeProjectService.lastRenameProtocolCall == {
+        "mapper": fakeProjectService.lastRenameProtocolCall["mapper"],
+        "projectId": 1,
         "protocolId": 10,
         "newName": "Renamed protocol",
         "newComment": "Updated comment",
@@ -374,7 +383,11 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
         "workflow": [],
     }
 
-    assert fakeProjectService.lastRestartProtocolAllCall == {"protocolId": 10}
+    assert fakeProjectService.lastRestartProtocolAllCall == {
+        "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+    }
     assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
         "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
         "projectId": 1,
@@ -424,7 +437,11 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
         "workflow": [],
     }
 
-    assert fakeProjectService.lastResetProtocolFromCall == {"protocolId": 10}
+    assert fakeProjectService.lastResetProtocolFromCall == {
+        "mapper": fakeProjectService.lastResetProtocolFromCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+    }
     assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
         "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
         "projectId": 1,
@@ -454,6 +471,8 @@ def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProject
     }
 
     assert fakeProjectService.lastRenameProtocolCall == {
+        "mapper": fakeProjectService.lastRenameProtocolCall["mapper"],
+        "projectId": 1,
         "protocolId": 10,
         "newName": "Renamed protocol",
         "newComment": "Updated comment",
@@ -476,7 +495,11 @@ def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakePro
         "workflow": [],
     }
 
-    assert fakeProjectService.lastRestartProtocolAllCall == {"protocolId": 10}
+    assert fakeProjectService.lastRestartProtocolAllCall == {
+        "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+    }
 
 
 def test_ContinueProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
@@ -521,7 +544,11 @@ def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProj
         "workflow": [],
     }
 
-    assert fakeProjectService.lastResetProtocolFromCall == {"protocolId": 10}
+    assert fakeProjectService.lastResetProtocolFromCall == {
+        "mapper": fakeProjectService.lastResetProtocolFromCall["mapper"],
+        "projectId": 1,
+        "protocolId": 10,
+    }
 
 
 def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
@@ -543,6 +570,8 @@ def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectSe
     }
 
     assert fakeProjectService.lastStopProtocolCall == {
+        "mapper": fakeProjectService.lastStopProtocolCall["mapper"],
+        "projectId": 1,
         "protocolIds": ["10", "11"],
     }
 
@@ -575,8 +604,11 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
     assert fakeProjectService.lastStopProtocolCall == {
+        "mapper": fakeProjectService.lastStopProtocolCall["mapper"],
+        "projectId": 1,
         "protocolIds": ["10", "11"],
     }
+
     assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
         "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
         "projectId": 1,

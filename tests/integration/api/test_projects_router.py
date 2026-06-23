@@ -148,6 +148,7 @@ def test_PollProtocolLogsNormalizesOffsetsAndIncludesDynamicChannels(projectClie
         },
         "maxBytes": 123,
         "maxLines": 45,
+        "mapper": fakeProjectService.lastPollLogsCall["mapper"],
     }
 
 

@@ -193,7 +193,7 @@ def test_ResolveOutputForVolumesReturns404WhenProtocolMissing(service):
         service._resolveOutputForVolumes(10, "outputVolumes")
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found"
+    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime: 10")
 
 
 def test_ListOutputVolumesServiceDelegatesToOutputsPreview(projectServiceModule, service, monkeypatch):

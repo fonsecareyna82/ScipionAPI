@@ -305,7 +305,11 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
     monkeypatch.setattr(projectServiceModule, "StringParam", FakeStringParam)
     monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
     monkeypatch.setattr(projectServiceModule, "CsvList", FakeCsvList)
-    monkeypatch.setattr(service, "applyParamsToProtocol", lambda protocol, params: [])
+    monkeypatch.setattr(
+        service,
+        "applyParamsToProtocol",
+        lambda mapper=None, projectId=None, protocol=None, params=None: [],
+    )
     monkeypatch.setattr(
         service,
         "_buildProtocolContext",
@@ -382,7 +386,11 @@ def test_SaveProtocolAggregatesValidationAndPointerErrors(projectServiceModule, 
     service.currentProject.protocols[10] = protocol
     mapper.dbProtocolsByProtocolId[(10, 1)] = {"id": 500, "protocolId": 10}
 
-    monkeypatch.setattr(service, "applyParamsToProtocol", lambda protocolObj, params: ["pointer error"])
+    monkeypatch.setattr(
+        service,
+        "applyParamsToProtocol",
+        lambda mapper=None, projectId=None, protocol=None, params=None: ["pointer error"],
+    )
 
     def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
         for protocolObj in service.currentProject.storedProtocols:
@@ -428,7 +436,11 @@ def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
 def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
     calls = []
 
-    monkeypatch.setattr(service, "stopProtocol", lambda protocolIds: calls.append(protocolIds))
+    monkeypatch.setattr(
+        service,
+        "stopProtocol",
+        lambda mapper, projectId, protocolIds: calls.append(protocolIds),
+    )
 
     service.launchProtocol(
         mapper=mapper,
@@ -519,7 +531,13 @@ def test_RenameProtocolStoresAnnotation(service):
     protocol = FakeProtocol(objId=10)
     service.currentProject.protocols[10] = protocol
 
-    result = service.renameProtocol(10, "Renamed protocol", "Updated comment")
+    result = service.renameProtocol(
+        mapper=None,
+        projectId=None,
+        protocolId=10,
+        newName="Renamed protocol",
+        newComment="Updated comment",
+    )
 
     assertSuccessEnvelope(result)
     assert protocol._label is None
@@ -624,7 +642,11 @@ def test_RestartProtocolAllReturnsCollectedErrors(service):
     service.currentProject.restartWorkflowInjectedErrors = ["cannot restart", "blocked"]
 
     with pytest.raises(HTTPException) as exc:
-        service.restartProtocolAll(10)
+        service.restartProtocolAll(
+            mapper=None,
+            projectId=None,
+            protocolId=10,
+        )
 
     assert exc.value.status_code == 422
     assert exc.value.detail == ["cannot restart", "blocked"]
@@ -656,7 +678,11 @@ def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
     service.currentProject.protocols[10] = protocol
     service.currentProject.resetWorkflowResult = []
 
-    result = service.resetProtocolFrom(10)
+    result = service.resetProtocolFrom(
+        mapper=None,
+        projectId=None,
+        protocolId=10,
+    )
 
     assertSuccessEnvelope(result)
 
@@ -667,7 +693,11 @@ def test_StopProtocolStopsEachProtocol(service):
     service.currentProject.protocols[10] = protocolA
     service.currentProject.protocols[11] = protocolB
 
-    result = service.stopProtocol(["10", "11"])
+    result = service.stopProtocol(
+        mapper=None,
+        projectId=None,
+        protocolIds=["10", "11"],
+    )
 
     assertSuccessEnvelope(result)
     assert service.currentProject.stoppedProtocols == [protocolA, protocolB]

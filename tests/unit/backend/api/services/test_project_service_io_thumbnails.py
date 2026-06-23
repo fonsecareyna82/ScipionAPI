@@ -341,7 +341,11 @@ def test_ExportProtocolsServiceWritesJsonFile(service, monkeypatch, tmp_path):
         exportPayload=[{"protocolId": 10}, {"protocolId": 11}],
     )
 
-    monkeypatch.setattr(service, "_resolveFsRootForWrite", lambda protocolId: rootPath)
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
 
     payload = FakePayload(
         protocolIds=[10, 11],
@@ -402,7 +406,11 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     rootPath = tmp_path / "browser-root"
     rootPath.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(service, "_resolveFsRootForWrite", lambda protocolId: rootPath)
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
 
     payload = FakePayload(
         path="exports/result.json",

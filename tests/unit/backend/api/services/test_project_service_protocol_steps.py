@@ -230,7 +230,7 @@ def test_UpdateProtocolStepStatusRaisesWhenCurrentProjectIsMissing(service, mapp
         )
 
     assert exc.value.status_code == 500
-    assert exc.value.detail == "No current project loaded"
+    assert exc.value.detail == "No current Scipion project loaded"
 
 
 def test_UpdateProtocolStepStatusRaisesWhenProtocolIsMissing(service, mapper):
@@ -244,7 +244,7 @@ def test_UpdateProtocolStepStatusRaisesWhenProtocolIsMissing(service, mapper):
         )
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found: 99"
+    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime: 99")
 
 
 def test_UpdateProtocolStepStatusRaisesWhenStepIsMissing(service, mapper):
