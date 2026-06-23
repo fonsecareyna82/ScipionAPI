@@ -890,7 +890,7 @@ def stopProtocol(
                          "workflow": []},
             )
 
-        service.stopProtocol(protocolIds)
+        service.stopProtocol(mapper, projectId, protocolIds)
         service.syncProjectGraphAfterMutation(
             mapper,
             projectId,

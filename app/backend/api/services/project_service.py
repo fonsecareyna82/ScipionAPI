@@ -4703,7 +4703,7 @@ class ProjectService:
 
         if executeMode == "stop":
             try:
-                self.stopProtocol([protocolId])
+                self.stopProtocol(mapper, projectId, [protocolId])
 
                 self.syncProjectProtocolsAndDependencies(
                     mapper,
@@ -5452,12 +5452,11 @@ class ProjectService:
             if protocolId is None:
                 continue
             sourceIds.append(protocolId)
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            if protocol is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Protocol not found: {protocolId}",
-                )
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
             protocolList.append(protocol)
 
@@ -5518,8 +5517,20 @@ class ProjectService:
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
-            for protocol in protocols:
-                protList.append(self.currentProject.getProtocol(int(protocol)))
+
+            for protocolId in protocols or []:
+                protocol = self._getScipionProtocolForRuntime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+                protList.append(protocol)
+
+            if not protList:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="No valid protocols to delete",
+                )
 
             self.currentProject.deleteProtocol(*protList)
             mapper.deleteProtocol(projectId, protList)
@@ -5537,6 +5548,9 @@ class ProjectService:
                 "protocolsCount": syncInfo.get("protocols"),
                 "dependenciesCount": syncInfo.get("dependencies"),
             }
+
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -5598,12 +5612,11 @@ class ProjectService:
         )
 
     def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         try:
             workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
@@ -5626,19 +5639,11 @@ class ProjectService:
             protocolToLaunch = item
 
             if not hasattr(protocolToLaunch, "runMode"):
-                try:
-                    protocolToLaunch = self.currentProject.getProtocol(int(item))
-                except Exception:
-                    logger.exception(
-                        "Failed to resolve protocol to continue. projectId=%s protocolId=%s item=%s",
-                        projectId,
-                        protocolId,
-                        item,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=f"Failed to resolve protocol to continue: {item}",
-                    )
+                protocolToLaunch = self._getScipionProtocolForRuntime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=item,
+                )
 
             try:
                 protocolToLaunch.runMode.set(MODE_RESUME)
@@ -5723,16 +5728,15 @@ class ProjectService:
             postgresqlCleanup=cleanupInfo,
         )
 
-    def stopProtocol(self, protocolIds):
+    def stopProtocol(self, mapper, projectId: int, protocolIds):
         resolvedProtocols = []
 
         for protocolId in protocolIds or []:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            if protocol is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Protocol not found: {protocolId}",
-                )
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
             resolvedProtocols.append(protocol)
 
         if not resolvedProtocols:
@@ -5746,7 +5750,8 @@ class ProjectService:
                 self.currentProject.stopProtocol(protocol)
         except Exception as e:
             logger.exception(
-                "Failed to stop protocols. protocolIds=%s",
+                "Failed to stop protocols. projectId=%s protocolIds=%s",
+                projectId,
                 protocolIds,
             )
             raise HTTPException(
