@@ -1443,6 +1443,8 @@ async def writeRemoteFile(
         return service.writeRemoteFileService(
             protocolId=protocolId,
             payload=payload,
+            mapper=mapper,
+            projectId=projectId,
         )
     except HTTPException:
         raise
@@ -1482,6 +1484,8 @@ async def previewOutput(
         outputName=outputName,
         requestHeaders=dict(request.headers),
         colormap=cmapHeader or cmapQuery,
+        mapper=mapper,
+        projectId=projectId,
     )
 
 

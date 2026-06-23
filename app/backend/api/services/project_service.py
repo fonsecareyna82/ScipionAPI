@@ -6266,6 +6266,44 @@ class ProjectService:
 
         return out
 
+    def _resolveRuntimeProtocolsForExport(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[Union[int, str]],
+    ) -> List[Any]:
+        protocolList = []
+        missing = []
+
+        for protocolId in protocolIds or []:
+            try:
+                protocol = self._getScipionProtocolForRuntime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            except HTTPException as e:
+                if e.status_code == status.HTTP_404_NOT_FOUND:
+                    missing.append(str(protocolId))
+                    continue
+                raise
+
+            protocolList.append(protocol)
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol(s) not found: {', '.join(missing)}",
+            )
+
+        if not protocolList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to export",
+            )
+
+        return protocolList
+
     def _sanitizeExportFilename(self, rawFilename: str) -> str:
         filename = str(rawFilename or "").strip()
         filename = filename.replace("\\", "/").split("/")[-1].strip()
@@ -6568,8 +6606,27 @@ class ProjectService:
 
         return fileHandlers.previewProtocolImageFile(runtimeProtocolId, path, inline)
 
-    def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
-        protocol = self.currentProject.getProtocol(protocolId)
+    def outputPreview(
+            self,
+            protocolId: int,
+            outputName: str,
+            requestHeaders: dict = None,
+            colormap: str = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output not found: {outputName}",
+            )
+
         output = getattr(protocol, outputName)
 
         outputPreview = OutputsPreview(
@@ -6652,34 +6709,20 @@ class ProjectService:
         )
 
         try:
-            protocolIdInts = [int(pid) for pid in protocolIds]
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="protocolIds must be numeric",
+            protocolList = self._resolveRuntimeProtocolsForExport(
+                mapper=mapper,
+                projectId=projectId,
+                protocolIds=protocolIds,
             )
-
-        try:
-            protocolList = []
-            missing: List[str] = []
-
-            for protId in protocolIdInts:
-                protocol = self.currentProject.getProtocol(protId)
-                if protocol is None:
-                    missing.append(str(protId))
-                    continue
-                protocolList.append(protocol)
-
-            if missing:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Protocol(s) not found: {', '.join(missing)}",
-                )
 
             rawExport = self.currentProject.getProtocolsJson(protocolList)
             content = self._buildWorkflowExportJsonContent(rawExport, protocolList)
 
-            rootPath = self._resolveFsRootForWrite("-1")
+            rootPath = self._resolveFsRootForWrite(
+                "-1",
+                mapper=mapper,
+                projectId=projectId,
+            )
             targetDir = self._guardFsPathWithinRootForWrite(rootPath, directoryPath)
 
             if targetDir.exists() and not targetDir.is_dir():
@@ -6895,29 +6938,11 @@ class ProjectService:
                 detail="Missing protocolIds",
             )
 
-        try:
-            protocolIdInts = [int(pid) for pid in protocolIds]
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="protocolIds must be numeric",
-            )
-
-        protocolList = []
-        missing: List[str] = []
-
-        for protocolId in protocolIdInts:
-            protocol = self.currentProject.getProtocol(protocolId)
-            if protocol is None:
-                missing.append(str(protocolId))
-                continue
-            protocolList.append(protocol)
-
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol(s) not found: {', '.join(missing)}",
-            )
+        protocolList = self._resolveRuntimeProtocolsForExport(
+            mapper=mapper,
+            projectId=projectId,
+            protocolIds=protocolIds,
+        )
 
         rawExport = self.currentProject.getProtocolsJson(protocolList)
         workflow = self._decodeExportJsonPayload(rawExport)
@@ -7012,8 +7037,14 @@ class ProjectService:
             self,
             protocolId: Union[int, str],
             payload: Any,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
-        rootPath = self._resolveFsRootForWrite(protocolId)
+        rootPath = self._resolveFsRootForWrite(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
         targetPath = self._guardFsPathWithinRootForWrite(
             rootPath,
             getattr(payload, "path", ""),
