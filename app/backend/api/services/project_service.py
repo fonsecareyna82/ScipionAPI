@@ -4255,22 +4255,33 @@ class ProjectService:
 
         return copy.deepcopy(ctx)
 
-    def getProtocolParams(self, projectId: int, protocolId: int) -> dict:
+    def getProtocolParams(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ) -> dict:
         """
         Returns the parameters of an existing protocol given its ID.
         """
-        protocol = self.currentProject.getProtocol(int(protocolId))
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
         protocol.getPlugin()
         self.currentProject._fixProtParamsConfiguration(protocol)
         return self._buildProtocolContext(projectId, protocol)
 
-    def getNextProtocolSuggestions(self, protocolId):
+    def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
         """ Returns the suggestions from the Scipion website for the next protocols to the protocol passed
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
         protName = protocol.getClassName()
         try:
             url = Config.SCIPION_STATS_SUGGESTION % protName  # protocol.getClassName()
@@ -4353,7 +4364,13 @@ class ProjectService:
         else:
             return rawValue
 
-    def applyParamsToProtocol(self, protocol, params):
+    def applyParamsToProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            params,
+    ):
         """Apply pointer parameters to protocol."""
         errorList = []
         for key, value in params.items():
@@ -4369,7 +4386,12 @@ class ProjectService:
                         parentId, rawValue = v.split('.') if v else ("", "")
                         if rawValue:
                             try:
-                                parentProtocol = self.currentProject.getProtocol(int(parentId))
+                                parentScipionProtocolId = self._resolveScipionProtocolId(
+                                    mapper=mapper,
+                                    projectId=projectId,
+                                    protocolId=parentId,
+                                )
+                                parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
                                 extended = rawValue
                                 newInputs.append(Pointer(parentProtocol, extended=extended))
                                 logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
@@ -4386,9 +4408,14 @@ class ProjectService:
                     parentId, rawValue = value.split('.') if value else ("", "")
                     if rawValue:
                         try:
-                            parentProtocol = self.currentProject.getProtocol(int(parentId))
-                            val = value
-                            output = val.split('.')[-1]
+                            parentScipionProtocolId = self._resolveScipionProtocolId(
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocolId=parentId,
+                            )
+                            parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
+                            output = rawValue
+                            val = f"{parentScipionProtocolId}.{output}"
                             param.set(val)
                             parentOutput = hasattr(parentProtocol, output)
                             if parentOutput:
@@ -4424,16 +4451,37 @@ class ProjectService:
                         param.set(None)
         return errorList
 
-    def setPointerParam(self, protocol, key, value, parentId):
+    def setPointerParam(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            key,
+            value,
+            parentId,
+    ):
         """Resolve and set a pointer param from parent protocol outputs."""
         param = protocol.getParam(key)
         if not isinstance(param, PointerParam):
             logger.warning(f"[WARN] Param {key} is not a PointerParam")
             return
-        parentProtocol = self.currentProject.getProtocol(int(parentId))
-        param.set(value['editableValue'])
+
+        parentScipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=parentId,
+        )
+        parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
+
+        editableValue = value.get("editableValue") if isinstance(value, dict) else value
+
+        if editableValue and "." in str(editableValue):
+            _rawParentId, outputName = str(editableValue).split(".", 1)
+            editableValue = f"{parentScipionProtocolId}.{outputName}"
+
+        param.set(editableValue)
         protocol.setAttributeValue(key, parentProtocol)
-        param.default.set(value['editableValue'])
+        param.default.set(editableValue)
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
@@ -4447,12 +4495,11 @@ class ProjectService:
                 )
             protocol = self.currentProject.newProtocol(protClass)
         else:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            if protocol is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Protocol not found: {protocolId}",
-                )
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         protectedParams = ['_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
         for paramName in protectedParams:
@@ -4493,7 +4540,12 @@ class ProjectService:
                 cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>!&|^%()\[\]{}_,.;:]', '', str(e))
                 errorList.append('**' + param.label.get() + '** ' + cleaned)
 
-        errorList += self.applyParamsToProtocol(protocol, params)
+        errorList += self.applyParamsToProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params,
+        )
 
         # Persist protocol in Scipion always.
         # The setToSave flag only controls whether we also sync the graph to PostgreSQL now.
@@ -4561,22 +4613,11 @@ class ProjectService:
 
         targetStatus = statusMap[normalizedStatus]
 
-        if self.currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current project loaded",
-            )
-
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            protocol = None
-
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         try:
             steps = protocol.loadSteps() or []
