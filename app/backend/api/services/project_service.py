@@ -661,6 +661,148 @@ class ProjectService:
 
         return None
 
+    # ------------------------------------------------------------------
+    # Scipion runtime protocol resolution
+    # ------------------------------------------------------------------
+    def _resolveScipionProtocolId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> int:
+        rawProtocolId = str(protocolId).strip()
+
+        if not rawProtocolId:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing protocol id",
+            )
+
+        if mapper is None or projectId is None:
+            try:
+                return int(rawProtocolId)
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid Scipion protocol id: {protocolId}",
+                )
+
+        protocolDbIdCandidate = None
+        try:
+            protocolDbIdCandidate = int(rawProtocolId)
+        except Exception:
+            protocolDbIdCandidate = None
+
+        try:
+            if protocolDbIdCandidate is not None:
+                row = mapper.db.fetchOne(
+                    """
+                    SELECT "protocolId"
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND (id = %s OR "protocolId" = %s)
+                     LIMIT 1
+                    """,
+                    (projectId, protocolDbIdCandidate, rawProtocolId),
+                )
+            else:
+                row = mapper.db.fetchOne(
+                    """
+                    SELECT "protocolId"
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND "protocolId" = %s
+                     LIMIT 1
+                    """,
+                    (projectId, rawProtocolId),
+                )
+
+            if row:
+                value = row.get("protocolId") if isinstance(row, dict) else row[0]
+                if value is not None:
+                    return int(value)
+
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+
+        try:
+            return int(rawProtocolId)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
+    def _getScipionProtocolByRuntimeId(
+            self,
+            protocolId: Union[int, str],
+    ):
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current Scipion project loaded",
+            )
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
+            )
+
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in Scipion runtime: {protocolId}",
+            )
+
+        return protocol
+
+    def _tryGetScipionProtocolByRuntimeId(
+            self,
+            protocolId: Union[int, str],
+    ):
+        try:
+            return self._getScipionProtocolByRuntimeId(protocolId)
+        except Exception:
+            return None
+
+    def _getScipionProtocolForRuntime(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ):
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+    def _tryGetScipionProtocolForRuntime(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ):
+        try:
+            return self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        except Exception:
+            return None
+
     def _getPointerOutputName(self, pointer: Any) -> Optional[str]:
         outputName = self._safeCall(pointer, "getExtended", None)
         if outputName is None:
@@ -751,10 +893,7 @@ class ProjectService:
 
             protocol = getattr(nodeObj, "run", None)
             if protocol is None:
-                try:
-                    protocol = self.currentProject.getProtocol(int(nodeId))
-                except Exception:
-                    protocol = None
+                protocol = self._tryGetScipionProtocolByRuntimeId(nodeId)
 
             if protocol is None:
                 continue
@@ -1654,10 +1793,7 @@ class ProjectService:
             protocol = liveRuns.get(nodeId)
 
             if protocol is None:
-                try:
-                    protocol = self.currentProject.getProtocol(int(nodeId))
-                except Exception:
-                    protocol = None
+                protocol = self._tryGetScipionProtocolByRuntimeId(nodeId)
 
             if protocol is not None:
                 try:
@@ -6444,101 +6580,6 @@ class ProjectService:
     # ----------------------------------------------------------------------
     # Internal helpers for TiltSeries (SetOfTiltSeries)
     # ----------------------------------------------------------------------
-    def _resolveScipionProtocolId(
-            self,
-            mapper,
-            projectId: Optional[int],
-            protocolId: Union[int, str],
-    ) -> int:
-        if mapper is None or projectId is None:
-            return int(protocolId)
-
-        try:
-            row = mapper.db.fetchOne(
-                """
-                SELECT "protocolId"
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND (id = %s OR "protocolId" = %s)
-                 LIMIT 1
-                """,
-                (projectId, protocolId, str(protocolId)),
-            )
-
-            if row:
-                value = row.get("protocolId") if isinstance(row, dict) else row[0]
-                if value is not None:
-                    return int(value)
-
-        except Exception:
-            logger.exception(
-                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-
-        return int(protocolId)
-
-    def _resolveScipionProtocolId(
-            self,
-            mapper,
-            projectId: Optional[int],
-            protocolId: Union[int, str],
-    ) -> int:
-        if mapper is None or projectId is None:
-            return int(protocolId)
-
-        try:
-            row = mapper.db.fetchOne(
-                """
-                SELECT "protocolId"
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND (id = %s OR "protocolId" = %s)
-                 LIMIT 1
-                """,
-                (projectId, protocolId, str(protocolId)),
-            )
-
-            if row:
-                value = row.get("protocolId") if isinstance(row, dict) else row[0]
-                if value is not None:
-                    return int(value)
-
-        except Exception:
-            logger.exception(
-                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-
-        return int(protocolId)
-
-    def _getScipionProtocolForRuntime(
-            self,
-            mapper,
-            projectId: Optional[int],
-            protocolId: Union[int, str],
-    ):
-        if self.currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current Scipion project loaded",
-            )
-
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        try:
-            return self.currentProject.getProtocol(int(scipionProtocolId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
-            )
 
     def _resolveOutputForTiltSeries(
             self,
