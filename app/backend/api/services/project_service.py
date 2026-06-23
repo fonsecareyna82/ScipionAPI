@@ -6660,10 +6660,18 @@ class ProjectService:
             force: bool = False,
             size: int = 320,
             outputName: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
+        runtimeProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
         service = ThumbnailService(self.currentProject)
         return service.buildProtocolThumbnail(
-            protocolId=protocolId,
+            protocolId=runtimeProtocolId,
             force=force,
             size=size,
             outputName=outputName,
