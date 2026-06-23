@@ -2546,6 +2546,7 @@ def getFscRows(
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
         )
 
         resp = JSONResponse(payload or {"curves": [], "threshold": 0.143})
