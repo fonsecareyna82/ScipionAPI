@@ -12000,29 +12000,17 @@ class ProjectService:
         return obj
 
     def _getProtocolOutputObject(
-        self,
-        protocolId: int,
-        outputName: str,
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> Tuple[Any, Any]:
-        if self.currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current project loaded",
-            )
-
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}. {e}",
-            )
-
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         outputObj = None
 
@@ -12198,15 +12186,20 @@ class ProjectService:
         return None
 
     def listExternalViewers(
-        self,
-        protocolId: int,
-        outputName: str,
-        objectId: Optional[Union[str, int]] = None,
-        objectKind: Optional[str] = None,
+            self,
+            protocolId: int,
+            outputName: str,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+
         protocol, outputObj = self._getProtocolOutputObject(
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
         )
 
         targetObj = self._resolveExternalViewerTargetObject(
@@ -12339,17 +12332,22 @@ class ProjectService:
             self._showExternalView(view)
 
     def launchExternalViewer(
-        self,
-        protocolId: int,
-        outputName: str,
-        viewerId: str,
-        objectId: Optional[Union[str, int]] = None,
-        objectKind: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+            self,
+            protocolId: int,
+            outputName: str,
+            viewerId: str,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+            params: Optional[Dict[str, Any]] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
+
         protocol, outputObj = self._getProtocolOutputObject(
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
         )
 
         targetObj = self._resolveExternalViewerTargetObject(
