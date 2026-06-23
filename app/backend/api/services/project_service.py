@@ -6479,6 +6479,67 @@ class ProjectService:
 
         return int(protocolId)
 
+    def _resolveScipionProtocolId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> int:
+        if mapper is None or projectId is None:
+            return int(protocolId)
+
+        try:
+            row = mapper.db.fetchOne(
+                """
+                SELECT "protocolId"
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND (id = %s OR "protocolId" = %s)
+                 LIMIT 1
+                """,
+                (projectId, protocolId, str(protocolId)),
+            )
+
+            if row:
+                value = row.get("protocolId") if isinstance(row, dict) else row[0]
+                if value is not None:
+                    return int(value)
+
+        except Exception:
+            logger.exception(
+                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+
+        return int(protocolId)
+
+    def _getScipionProtocolForRuntime(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ):
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current Scipion project loaded",
+            )
+
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        try:
+            return self.currentProject.getProtocol(int(scipionProtocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
+            )
+
     def _resolveOutputForTiltSeries(
             self,
             protocolId: int,
@@ -6491,19 +6552,11 @@ class ProjectService:
 
         protocolId can be either the PostgreSQL protocols.id or the Scipion protocolId.
         """
-        scipionProtocolId = self._resolveScipionProtocolId(
+        protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
-
-        try:
-            protocol = self.currentProject.getProtocol(int(scipionProtocolId))
-        except Exception:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Protocol not found: {protocolId}",
-            )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
