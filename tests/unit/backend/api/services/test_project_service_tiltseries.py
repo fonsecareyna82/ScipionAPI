@@ -280,6 +280,62 @@ def service(projectServiceModule):
     instance.currentProject = None
     return instance
 
+def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlTiltSeriesReader:
+        # fakePostgresqlTiltSeriesReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_tiltseries_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlTiltSeriesReader",
+        FakePostgresqlTiltSeriesReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 321,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlTiltSeriesReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+    )
+
+    assert reader is createdReaders[0]
+    assert createdReaders[0].db is mapper.db
+    assert createdReaders[0].projectId == 1
+    assert createdReaders[0].protocolId == 321
+    assert createdReaders[0].outputName == "outputTiltSeries"
 
 def test_ListOutputTiltSeriesServiceBuildsSummaries(service):
     ts1 = FakeTiltSeries(
