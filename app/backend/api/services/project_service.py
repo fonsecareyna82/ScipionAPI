@@ -9290,6 +9290,28 @@ class ProjectService:
 
         return None
 
+    def _resolveOutputForCoordinates3d(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        output = getattr(protocol, outputName, None)
+        if output is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        return protocol, output
+
     def listCoordinates3dTomogramsService(
             self,
             projectId: int,
@@ -9333,17 +9355,12 @@ class ProjectService:
                 detail="TiltSeries frame not found in PostgreSQL metadata",
             )
 
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
-
-        setOfCoordinates3D = getattr(protocol, outputName, None)
-        if setOfCoordinates3D is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Output '{outputName}' not found in protocol",
-            )
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         self.tomoList = {}
         tomogramList: List[Dict[str, Any]] = []
         tomosIter = None
@@ -9475,17 +9492,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
-
-        setOfCoordinates3D = getattr(protocol, outputName, None)
-        if setOfCoordinates3D is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Output '{outputName}' not found in protocol",
-            )
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         try:
             boxSize = float(setOfCoordinates3D.getBoxSize())
@@ -9758,17 +9770,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
-
-        setOfCoordinates3D = getattr(protocol, outputName, None)
-        if setOfCoordinates3D is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Output '{outputName}' not found in protocol",
-            )
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         try:
             if self.tomoList:
@@ -10208,14 +10215,14 @@ class ProjectService:
         # ---------------------------------
         # 1. Obtaining protocol and origin
         # ---------------------------------
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(404, "Protocol not found")
+        protocol, srcSet = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
-        srcSet = getattr(protocol, outputName, None)
-        if srcSet is None:
-            raise HTTPException(404, f"Output '{outputName}' not found in protocol")
+        runtimeProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
 
         # -------------------------------
         # 2. Ensure tomograms
@@ -10223,8 +10230,9 @@ class ProjectService:
         if not self.tomoList:
             self.listCoordinates3dTomogramsService(
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=runtimeProtocolId,
                 outputName=outputName,
+                mapper=None,
             )
 
         # -----------------------------------
@@ -10297,7 +10305,11 @@ class ProjectService:
                 setMapper = ScipionSetPostgresqlMapper(mapper.db)
                 setMapper.storeSet(
                     projectId=projectId,
-                    protocolDbId=protocolId,
+                    protocolDbId=self._resolvePostgresqlProtocolDbId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    ) or protocolId,
                     outputName=outName,
                     scipionSet=dstSet,
                 )
@@ -10332,6 +10344,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            mapper=None,
     ) -> Dict[str, Any]:
         """
         Return FSC curves for a SetOfFSCs-like output.
@@ -10350,10 +10363,11 @@ class ProjectService:
           ],
         }
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         output = getattr(protocol, outputName, None)
         if output is None:
@@ -10479,7 +10493,13 @@ class ProjectService:
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
     # ======================================================================
 
-    def _resolveOutputForMetadata(self, protocolId: int, outputName: str):
+    def _resolveOutputForMetadata(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """
         Resolve protocol and output object for metadata operations.
 
@@ -10488,10 +10508,11 @@ class ProjectService:
           project-relative.
         - Raises 404 if the final path does not exist on disk.
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -10619,7 +10640,12 @@ class ProjectService:
             objMgr.getTables()
             return objMgr
 
-        _, _, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+        _, _, metaPath = self._resolveOutputForMetadata(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         return self._getMetadataObjectManager(metaPath)
 
     def _openMetadataTable(
