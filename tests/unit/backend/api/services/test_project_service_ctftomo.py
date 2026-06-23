@@ -540,6 +540,114 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
         "message": "No output was generated because it cannot be empty",
     }
 
+def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    storedCalls = []
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeScipionSetPostgresqlMapper:
+        # fakeScipionSetPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
+            storedCalls.append(
+                {
+                    "projectId": projectId,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "scipionSet": scipionSet,
+                }
+            )
+            return {
+                "stored": True,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            }
+
+    scipionSetMapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+    monkeypatch.setattr(
+        scipionSetMapperModule,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 654,
+    )
+
+    associatedTs = FakeAssociatedTiltSeries()
+    ctf1 = FakeCtfMeasurement(
+        objId=100,
+        index=1,
+        defocusU=12000.0,
+        defocusV=11000.0,
+        defocusAngle=45.0,
+        resolution=3.2,
+        phaseShift=0.15,
+        acquisitionOrder=1,
+        psdFile="psd1.mrc",
+        enabled=True,
+    )
+    inputSeries = FakeCtftomoSeries(
+        tsId="TS_001",
+        label="Series 1",
+        tiltSeries=associatedTs,
+        items=[ctf1],
+    )
+    inputSet = FakeCtftomoOutputSet(
+        seriesList=[inputSeries],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    protocol = FakeProtocol("outputCtftomo", inputSet, "/tmp/fake-protocol")
+    service.currentProject = FakeCurrentProject(protocol)
+
+    mapper = FakeMapper()
+
+    result = service.createNewSetOfCtftomoSeriesService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCtftomo",
+        exclusions={
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [],
+            }
+        },
+        restack=False,
+        mapper=mapper,
+    )
+
+    assert result["status"] == 0
+    assert result["outputName"] == "CTFTomoSeries_0"
+    assert result["postgresqlSync"] == {
+        "stored": True,
+        "protocolDbId": 654,
+        "outputName": "CTFTomoSeries_0",
+    }
+    assert storedCalls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 654,
+            "outputName": "CTFTomoSeries_0",
+            "scipionSet": protocol._definedOutputs["CTFTomoSeries_0"],
+        }
+    ]
+
 
 def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_path):
     associatedTs = FakeAssociatedTiltSeries()

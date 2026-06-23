@@ -798,12 +798,49 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         rowsByTable={"objects": []},
         dao=dao,
     )
-    mapper = object()
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    mapper = FakeMapper()
     calls = []
+    syncCalls = []
+    syncResult = {
+        "protocols": 2,
+        "dependencies": 1,
+    }
+
+    def syncProjectProtocolsAndDependencies(
+            mapperArg,
+            projectIdArg,
+            refresh=True,
+            checkPid=True,
+    ):
+        syncCalls.append(
+            {
+                "mapper": mapperArg,
+                "projectId": projectIdArg,
+                "refresh": refresh,
+                "checkPid": checkPid,
+            }
+        )
+        return syncResult
 
     patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        syncProjectProtocolsAndDependencies,
+    )
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -820,7 +857,17 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     assert result == {
         "success": True,
         "message": "Subset protocol was launched successfully",
+        "postgresqlSync": syncResult,
+        "postgresqlError": None,
     }
+    assert syncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "refresh": True,
+            "checkPid": True,
+        }
+    ]
     assert calls == [
         {
             "projectId": 1,
