@@ -345,7 +345,11 @@ async def loadProtocol(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getProtocolParams(projectId, protocolId)
+    return service.getProtocolParams(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+    )
 
 
 class ProtocolStepStatusUpdate(BaseModel):
@@ -544,7 +548,11 @@ def suggestionProtocol(
                      "errors": ["Project not found"],
                      "workflow": []},
         )
-    return service.getNextProtocolSuggestions(protocolId)
+    return service.getNextProtocolSuggestions(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+    )
 
 
 @router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
