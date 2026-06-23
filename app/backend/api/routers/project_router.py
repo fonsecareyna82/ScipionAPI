@@ -3487,6 +3487,8 @@ def getProtocolThumbnail(
                 protocolId=protocolId,
                 force=False,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         result = _runThumbnailProjectJob(
@@ -3547,6 +3549,8 @@ def rebuildProtocolThumbnail(
                 protocolId=protocolId,
                 force=True,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         result = _runThumbnailProjectJob(

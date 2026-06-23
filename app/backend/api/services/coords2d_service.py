@@ -66,26 +66,11 @@ class Coords2dService:
                 detail="Project not found",
             )
 
-        currentProject = self.projectService.currentProject
-        if currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Project could not be loaded",
-            )
-
-        try:
-            protocol = currentProject.getProtocol(int(protocolId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol '{protocolId}' not found: {e}",
-            )
-
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol '{protocolId}' not found",
-            )
+        protocol = self.projectService._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
