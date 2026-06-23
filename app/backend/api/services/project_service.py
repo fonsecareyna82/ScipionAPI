@@ -6649,8 +6649,10 @@ class ProjectService:
         if not outputPath:
             return outputPreview.renderOutputFallbackPreview()
 
+        runtimeProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
+
         objMgr = self._createObjectManager()
-        return outputPreview.preview(protocolId, outputPath, objMgr)
+        return outputPreview.preview(runtimeProtocolId, outputPath, objMgr)
 
     def buildProtocolThumbnail(
             self,
@@ -7176,29 +7178,34 @@ class ProjectService:
     # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
     # ======================================================================
-    def _resolveOutputForCtftomoSeries(self, protocolId: int, outputName: str):
+    def _resolveOutputForCtftomoSeries(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """
         Resolve protocol + CTFTomoSeries-like output for CTF tomography operations.
 
-        The output can be:
-          * a single CTFTomoSeries (one tilt-series)
-          * a container of CTFTomoSeries objects (SetOfCTFTomoSeries)
+        protocolId can be either the PostgreSQL protocols.id or the Scipion protocolId.
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Output '{outputName}' not found in protocol",
             )
 
         output = getattr(protocol, outputName)
         if output is None:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Output '{outputName}' is None",
             )
 
@@ -7323,7 +7330,12 @@ class ProjectService:
         if pgReader is not None:
             return pgReader.listCtftomoSeries()
 
-        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         seriesList: List[Dict[str, Any]] = []
 
@@ -7407,7 +7419,12 @@ class ProjectService:
                 detail="CTF tomo output is not available in PostgreSQL metadata",
             )
 
-        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         targetKey = str(tiltSeriesId)
         setOfTiltSeries = output.getSetOfTiltSeries()
@@ -7505,7 +7522,12 @@ class ProjectService:
                     psdPath,
                 )
 
-        protocol, output = self._resolveOutputForCtftomoSeries(protocolId, outputName)
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         if protocol is None:
             raise HTTPException(
                 status_code=404,
@@ -7617,11 +7639,18 @@ class ProjectService:
     # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
     # ======================================================================
 
-    def _resolveOutputForVolumes(self, protocolId: int, outputName: str):
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+    def _resolveOutputForVolumes(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         # Try exact + common alternates (singular/plural/alias)
         candidates = [outputName]
@@ -7729,7 +7758,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.listOutputVolumes()
 
@@ -7762,7 +7796,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.getVolumeInfo(volumeId)
 
@@ -7799,7 +7838,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         op = OutputsPreview(self.currentProject, protocol, output)
 
         if isinstance(output, SetOfVolumes):
@@ -7881,7 +7925,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.renderVolumeSlice(
             volumeId=volumeId,
@@ -7943,7 +7992,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
         try:
@@ -8207,7 +8261,12 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        _protocol, output = self._resolveOutputForVolumes(protocolId, outputName)
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
         volume, _props = readVolumeArray3d(volumePath)
