@@ -860,6 +860,55 @@ class ProjectService:
 
         return None
 
+    def _storeGeneratedSetInPostgresql(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+            outputName: str,
+            scipionSet,
+            contextLabel: str,
+    ) -> Dict[str, Any]:
+        postgresqlSync = None
+        postgresqlError = None
+
+        if mapper is None:
+            return {
+                "postgresqlSync": postgresqlSync,
+                "postgresqlError": postgresqlError,
+            }
+
+        try:
+            from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            ) or protocolId
+
+            setMapper = ScipionSetPostgresqlMapper(mapper.db)
+            postgresqlSync = setMapper.storeSet(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=scipionSet,
+            )
+
+        except Exception as e:
+            postgresqlError = str(e)
+            logger.exception(
+                "Failed to persist generated %s output to PostgreSQL. projectId=%s protocolId=%s outputName=%s",
+                contextLabel,
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return {
+            "postgresqlSync": postgresqlSync,
+            "postgresqlError": postgresqlError,
+        }
 
     def _deletePersistedProtocolOutputsFromPostgresql(
             self,
@@ -8585,36 +8634,22 @@ class ProjectService:
                 "message": "No output was generated because it cannot be empty",
             }
         postgresqlSync = None
+        postgresqlError = None
 
         try:
             protocol._defineOutputs(**{newOutputName: outputSet})
             protocol._store()
 
-            if mapper is not None:
-                try:
-                    from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
-
-                    setMapper = ScipionSetPostgresqlMapper(mapper.db)
-                    protocolDbId = self._resolvePostgresqlProtocolDbId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    ) or protocolId
-
-                    postgresqlSync = setMapper.storeSet(
-                        projectId=projectId,
-                        protocolDbId=protocolDbId,
-                        outputName=newOutputName,
-                        scipionSet=outputSet,
-                    )
-
-                except Exception:
-                    logger.exception(
-                        "Failed to persist created CTFTomo output to PostgreSQL. projectId=%s protocolId=%s outputName=%s",
-                        projectId,
-                        protocolId,
-                        newOutputName,
-                    )
+            postgresqlStore = self._storeGeneratedSetInPostgresql(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=newOutputName,
+                scipionSet=outputSet,
+                contextLabel="CTFTomo",
+            )
+            postgresqlSync = postgresqlStore["postgresqlSync"]
+            postgresqlError = postgresqlStore["postgresqlError"]
 
         except Exception:
             logger.exception("Error attaching Ctftomo filtered set '%s' to protocol", newOutputName)
@@ -8631,6 +8666,7 @@ class ProjectService:
             "createdSeries": createdCount,
             "restack": bool(restack),
             "postgresqlSync": postgresqlSync,
+            "postgresqlError": postgresqlError,
         }
 
     def _buildTiltSeriesPreviewCacheKey(
@@ -9232,33 +9268,16 @@ class ProjectService:
         protocol._defineOutputs(**{newOutputName: outputSet})
         protocol._store()
 
-        postgresqlSync = None
-
-        if mapper is not None:
-            try:
-                from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
-
-                setMapper = ScipionSetPostgresqlMapper(mapper.db)
-                protocolDbId = self._resolvePostgresqlProtocolDbId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                ) or protocolId
-
-                postgresqlSync = setMapper.storeSet(
-                    projectId=projectId,
-                    protocolDbId=protocolDbId,
-                    outputName=newOutputName,
-                    scipionSet=outputSet,
-                )
-
-            except Exception:
-                logger.exception(
-                    "Failed to persist created TiltSeries output to PostgreSQL. projectId=%s protocolId=%s outputName=%s",
-                    projectId,
-                    protocolId,
-                    newOutputName,
-                )
+        postgresqlStore = self._storeGeneratedSetInPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=newOutputName,
+            scipionSet=outputSet,
+            contextLabel="TiltSeries",
+        )
+        postgresqlSync = postgresqlStore["postgresqlSync"]
+        postgresqlError = postgresqlStore["postgresqlError"]
 
         logger.info("The new set (%s) has been created successfully", newOutputName)
 
@@ -9269,6 +9288,7 @@ class ProjectService:
             "hasOddEven": bool(hasOddEven),
             "restack": bool(restack),
             "postgresqlSync": postgresqlSync,
+            "postgresqlError": postgresqlError,
         }
 
     def _cloneTiltImage(self, ti, included):
@@ -10308,7 +10328,7 @@ class ProjectService:
                         replaced += 1
                     break
         # ------------------------------------
-        # 7. Saving and registering the output
+        # 5. Saving and registering the output
         # ------------------------------------
         try:
             dstSet.write()
@@ -10320,33 +10340,16 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(500, f"Failed to attach new coords3d output: {e}")
 
-        postgresqlStored = False
-        postgresqlError = None
-
-        if mapper is not None:
-            try:
-                from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
-
-                setMapper = ScipionSetPostgresqlMapper(mapper.db)
-                setMapper.storeSet(
-                    projectId=projectId,
-                    protocolDbId=self._resolvePostgresqlProtocolDbId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    ) or protocolId,
-                    outputName=outName,
-                    scipionSet=dstSet,
-                )
-                postgresqlStored = True
-            except Exception as e:
-                postgresqlError = str(e)
-                logger.exception(
-                    "Failed to store new Coordinates3D output in PostgreSQL. projectId=%s protocolId=%s outputName=%s",
-                    projectId,
-                    protocolId,
-                    outName,
-                )
+        postgresqlStore = self._storeGeneratedSetInPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outName,
+            scipionSet=dstSet,
+            contextLabel="Coordinates3D",
+        )
+        postgresqlError = postgresqlStore["postgresqlError"]
+        postgresqlStored = mapper is not None and postgresqlError is None
 
         return {
             "success": True,
