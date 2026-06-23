@@ -2999,32 +2999,6 @@ def getMetadataTableWindow(
 # ======================================================================
 #                            ANALYZE RESULTS:  EXTERNAL VIEWERS
 # ======================================================================
-
-@router.get(
-    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers",
-    response_model=Any,
-    status_code=status.HTTP_200_OK,
-)
-def listExternalViewers(
-    projectId: int,
-    protocolId: int,
-    outputName: str,
-    objectId: Optional[str] = Query(None),
-    objectKind: Optional[str] = Query(None),
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
-):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
-    if not project:
-        raise
-
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers",
     response_model=Any,
@@ -3056,6 +3030,8 @@ def listExternalViewers(
             outputName=outputName,
             objectId=objectId,
             objectKind=objectKind,
+            mapper=mapper,
+            projectId=projectId,
         )
 
         return {"viewers": viewers or []}
@@ -3105,6 +3081,8 @@ def launchExternalViewer(
             objectId=payload.objectId,
             objectKind=payload.objectKind,
             params=payload.params or {},
+            mapper=mapper,
+            projectId=projectId,
         )
 
     except HTTPException:
