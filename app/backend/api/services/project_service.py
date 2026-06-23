@@ -6288,8 +6288,17 @@ class ProjectService:
 
         return filename
 
-    def _resolveFsRootForWrite(self, protocolId: Union[int, str]) -> Path:
-        pathInfo = self.getProtocolPath(protocolId)
+    def _resolveFsRootForWrite(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Path:
+        pathInfo = self.getProtocolPath(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
         rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
         if not rootAbs:
             raise HTTPException(
@@ -6326,16 +6335,27 @@ class ProjectService:
 
         return candidate
 
-    def getProtocolPath(self, protocolId):
+    def getProtocolPath(
+            self,
+            protocolId,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         if self._isGlobalFsBrowserMode(protocolId):
             root = self._getGlobalFsBrowserRoot()
             return {
                 "rootAbs": str(root),
                 "startPath": "",
             }
+
         fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
+
         if protocolId != fakeProtocolId:
-            protocol = self.currentProject.getProtocol(int(protocolId))
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
             protocolAbsPath = os.path.abspath(protocol.getPath())
             rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         else:
@@ -6382,14 +6402,26 @@ class ProjectService:
 
         return os.path.abspath(projectPath) if projectPath else ""
 
-    def _protocolRoot(self, protocolId: Union[int, str]) -> FsPath:
+    def _protocolRoot(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> FsPath:
         """
         Resolve the absolute root folder for a protocol, using your service.
         """
-        root = self.getProtocolPath(str(protocolId))
-        if not root:
+        pathInfo = self.getProtocolPath(
+            protocolId=str(protocolId),
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
+        if not rootAbs:
             raise HTTPException(status_code=404, detail="Protocol path not found")
-        return FsPath(root).resolve()
+
+        return FsPath(rootAbs).resolve()
 
     @staticmethod
     def _guardJoin(root: FsPath, relPath: str) -> FsPath:
@@ -6410,7 +6442,30 @@ class ProjectService:
         mt, _ = mimetypes.guess_type(str(p))
         return mt or "application/octet-stream"
 
-    def listProtocolDir(self, protocolId: str, path: str):
+    def _resolveRuntimeProtocolIdForFs(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> str:
+        if self._isGlobalFsBrowserMode(protocolId):
+            return str(protocolId)
+
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return str(scipionProtocolId)
+
+    def listProtocolDir(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """Return the directory file list."""
         fileHandlers = FileHandlers(self.currentProject)
 
@@ -6418,9 +6473,21 @@ class ProjectService:
             root = self._getGlobalFsBrowserRoot()
             return fileHandlers.listRemoteDirectoryUnderRoot(root, path)
 
-        return fileHandlers.listProtocolDir(protocolId, path)
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
-    def previewProtocolTextFile(self, protocolId: str, path: str):
+        return fileHandlers.listProtocolDir(runtimeProtocolId, path)
+
+    def previewProtocolTextFile(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """
         Return a lightweight preview for a file inside a protocol workspace.
         """
@@ -6430,9 +6497,21 @@ class ProjectService:
             root = self._getGlobalFsBrowserRoot()
             return fileHandlers.previewTextFileUnderRoot(root, path)
 
-        return fileHandlers.previewProtocolTextFile(protocolId, path)
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
 
-    def previewRemoteEntry(self, protocolId: str, path: str):
+        return fileHandlers.previewProtocolTextFile(runtimeProtocolId, path)
+
+    def previewRemoteEntry(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """
         Return a preview.
         """
@@ -6446,13 +6525,26 @@ class ProjectService:
                 databaseInspector=self._inspectScipionSqliteDatabase,
             )
 
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
         return fileHandlers.previewProtocolRemoteEntry(
-            protocolId,
+            runtimeProtocolId,
             path,
             databaseInspector=self._inspectScipionSqliteDatabase,
         )
 
-    def previewProtocolImageFile(self, protocolId, path, inline: bool):
+    def previewProtocolImageFile(
+            self,
+            protocolId,
+            path,
+            inline: bool,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
         """
         inline == False:
             - attachment download (binary as-is)
@@ -6468,7 +6560,13 @@ class ProjectService:
             root = self._getGlobalFsBrowserRoot()
             return fileHandlers.previewImageFileUnderRoot(root, path, inline)
 
-        return fileHandlers.previewProtocolImageFile(protocolId, path, inline)
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return fileHandlers.previewProtocolImageFile(runtimeProtocolId, path, inline)
 
     def outputPreview(self, protocolId: int, outputName: str, requestHeaders: dict = None, colormap: str = None):
         protocol = self.currentProject.getProtocol(protocolId)
