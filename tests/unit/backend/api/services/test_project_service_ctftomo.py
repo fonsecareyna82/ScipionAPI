@@ -540,6 +540,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
         "message": "No output was generated because it cannot be empty",
     }
 
+
 def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -639,6 +640,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
         "protocolDbId": 654,
         "outputName": "CTFTomoSeries_0",
     }
+    assert result["postgresqlError"] is None
     assert storedCalls == [
         {
             "projectId": 1,
@@ -703,6 +705,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
     assert result["createdSeries"] == 1
     assert result["restack"] is False
     assert result["postgresqlSync"] is None
+    assert result["postgresqlError"] is None
     assert "CTFTomoSeries_0" in protocol._definedOutputs
     createdSet = protocol._definedOutputs["CTFTomoSeries_0"]
     assert createdSet.isEmpty() is False

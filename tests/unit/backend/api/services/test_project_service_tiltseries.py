@@ -622,6 +622,7 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
         "protocolDbId": 321,
         "outputName": "TiltSeries_0",
     }
+    assert result["postgresqlError"] is None
     assert storedCalls == [
         {
             "projectId": 1,
