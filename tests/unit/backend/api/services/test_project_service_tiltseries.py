@@ -495,6 +495,142 @@ def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectS
     assert createdOutputSet._dim == [128, 128, 40]
 
 
+def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    storedCalls = []
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeScipionSetPostgresqlMapper:
+        # fakeScipionSetPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
+            storedCalls.append(
+                {
+                    "projectId": projectId,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "scipionSet": scipionSet,
+                }
+            )
+            return {
+                "stored": True,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            }
+
+    class FakeCreatedTiltSeries:
+        # fakeCreatedTiltSeries
+        def __init__(self):
+            self._items = []
+            self._dim = None
+            self._anglesCount = None
+            self._written = False
+
+        def copyInfo(self, tiltSeries):
+            self._copiedInfoFrom = tiltSeries
+
+        def append(self, item):
+            self._items.append(item)
+
+        def setEnabled(self, value):
+            self._enabled = value
+
+        def getSize(self):
+            return len(self._items)
+
+        def setDim(self, dim):
+            self._dim = dim
+
+        def setAnglesCount(self, count):
+            self._anglesCount = count
+
+        def write(self):
+            self._written = True
+
+    class FakeSetOfTiltSeriesFactory:
+        # fakeSetOfTiltSeriesFactory
+        @staticmethod
+        def create(projectPath, suffix):
+            return createdOutputSet
+
+    createdOutputSet = FakeCreatedTiltSeriesOutputSet()
+    createdOutputSet.update = lambda item: None
+    createdOutputSet.remove = lambda item: None
+
+    tiltSeries = FakeTiltSeries(
+        tsId="TS_001",
+        size=0,
+        dims=[128, 128, 40],
+        samplingRate=1.5,
+        tiltAxisAngle=90.0,
+        items=[],
+    )
+    inputSet = FakeTiltSeriesSet(
+        items=[tiltSeries],
+        hasOddEven=False,
+        dims=[128, 128, 40],
+    )
+    protocol = FakeProtocol("outputTiltSeries", inputSet)
+    service.currentProject = FakeCurrentProject(protocol)
+
+    scipionSetMapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+
+    monkeypatch.setattr(
+        scipionSetMapperModule,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(projectServiceModule, "SetOfTiltSeries", FakeSetOfTiltSeriesFactory)
+    monkeypatch.setattr(projectServiceModule, "TiltSeries", FakeCreatedTiltSeries)
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 321,
+    )
+
+    mapper = FakeMapper()
+
+    result = service.createNewSetOfTiltSeriesService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+        exclusions={},
+        restack=False,
+        mapper=mapper,
+    )
+
+    assert result["status"] == 0
+    assert result["outputName"] == "TiltSeries_0"
+    assert result["postgresqlSync"] == {
+        "stored": True,
+        "protocolDbId": 321,
+        "outputName": "TiltSeries_0",
+    }
+    assert storedCalls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 321,
+            "outputName": "TiltSeries_0",
+            "scipionSet": createdOutputSet,
+        }
+    ]
+
 def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
     class BrokenCurrentProject:
         # brokenCurrentProject
