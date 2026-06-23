@@ -1958,14 +1958,14 @@ def createNewSetOfTiltSeries(
 ):
     """
     Create a new tilt-series output applying the given exclusions.
-    The backend is expected to duplicate the SetOfTiltSeries and
-    remove excluded views, optionally restacking files on disk.
+    The backend duplicates the SetOfTiltSeries and removes excluded views,
+    optionally restacking files on disk.
     """
     project = service.getProjectById(
         mapper,
         projectId,
         currentUser,
-        refresh=False,
+        refresh=True,
         checkPid=False,
     )
     if not project:
@@ -1978,6 +1978,7 @@ def createNewSetOfTiltSeries(
             outputName=outputName,
             exclusions=payload.exclusions,
             restack=payload.restack,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
@@ -1998,10 +1999,10 @@ def createNewSetOfTiltSeries(
             detail=f"Failed to create new tilt-series set: {e}",
         )
 
-
 # ==============================================================================
 #        ANALYZE RESULTS: CTF TOMOGRAPHY (SetOfCTFTomoSeries)
 # ==============================================================================
+
 class CtftomoNewSetRequest(BaseModel):
     """
     Request payload for creating a new SetOfCTFTomoSeries based on exclusions.
