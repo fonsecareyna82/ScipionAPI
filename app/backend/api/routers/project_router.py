@@ -1195,7 +1195,11 @@ async def getProtocolPath(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.getProtocolPath(protocolId)
+    return service.getProtocolPath(
+        protocolId=protocolId,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
@@ -1215,7 +1219,12 @@ async def listProtocolDir(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.listProtocolDir(protocolId, path)
+    return service.listProtocolDir(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
@@ -1228,7 +1237,12 @@ async def previewProtocolText(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolTextFile(protocolId, path)
+    return service.previewProtocolTextFile(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
@@ -1249,7 +1263,12 @@ def previewRemoteEntry(
         refresh=False,
         checkPid=False,
     )
-    return service.previewRemoteEntry(protocolId, path)
+    return service.previewRemoteEntry(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
@@ -1263,7 +1282,13 @@ async def previewProtocolImageFile(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolImageFile(protocolId, path, inline)
+    return service.previewProtocolImageFile(
+        protocolId=protocolId,
+        path=path,
+        inline=inline,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.post(
