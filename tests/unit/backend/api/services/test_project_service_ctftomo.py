@@ -371,6 +371,63 @@ def test_ListOutputCtftomoSeriesServiceBuildsSummaries(service, tmp_path):
         },
     ]
 
+def test_GetPostgresqlCtftomoReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlCtftomoReader:
+        # fakePostgresqlCtftomoReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_ctftomo_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlCtftomoReader",
+        FakePostgresqlCtftomoReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 654,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlCtftomoReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputCtftomo",
+    )
+
+    assert reader is createdReaders[0]
+    assert createdReaders[0].db is mapper.db
+    assert createdReaders[0].projectId == 1
+    assert createdReaders[0].protocolId == 654
+    assert createdReaders[0].outputName == "outputCtftomo"
+
 
 def test_GetCtftomoSeriesViewsServiceBuildsFrames(service, tmp_path):
     associatedTs = FakeAssociatedTiltSeries(

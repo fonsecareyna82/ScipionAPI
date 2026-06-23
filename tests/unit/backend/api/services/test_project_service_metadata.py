@@ -399,6 +399,63 @@ def test_ListOutputMetadataTablesServiceReturnsSummaries(service, monkeypatch):
         },
     ]
 
+def test_GetPostgresqlDAOIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdDaos = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlDAO:
+        # fakePostgresqlDAO
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdDaos.append(self)
+
+        def hasOutput(self):
+            return True
+
+    daoModule = importlib.import_module(
+        "app.backend.viewers.postgresql_dao"
+    )
+
+    monkeypatch.setattr(
+        daoModule,
+        "PostgresqlDAO",
+        FakePostgresqlDAO,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 852,
+    )
+
+    mapper = FakeMapper()
+
+    dao = service._getPostgresqlDAOIfAvailable(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        mapper=mapper,
+    )
+
+    assert dao is createdDaos[0]
+    assert createdDaos[0].db is mapper.db
+    assert createdDaos[0].projectId == 1
+    assert createdDaos[0].protocolId == 852
+    assert createdDaos[0].outputName == "outputParticles"
+
 
 def test_GetMetadataTableSchemaServiceBuildsColumns(service, monkeypatch):
     columns = [

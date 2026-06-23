@@ -174,6 +174,90 @@ def test_ResolveOutputForVolumesReturnsExactOutput(service):
     assert resolvedProtocol is protocol
     assert resolvedOutput is volume
 
+def test_GetPostgresqlVolumeReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdCoordsVolumeReaders = []
+    createdVolumeReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlCoords3dTomogramVolumeReader:
+        # fakePostgresqlCoords3dTomogramVolumeReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdCoordsVolumeReaders.append(self)
+
+        def hasOutput(self):
+            return False
+
+    class FakePostgresqlVolumeReader:
+        # fakePostgresqlVolumeReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdVolumeReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    coordsVolumeModule = importlib.import_module(
+        "app.backend.viewers.postgresql_coords3d_tomogram_volume_reader"
+    )
+    volumeModule = importlib.import_module(
+        "app.backend.viewers.postgresql_volume_reader"
+    )
+
+    monkeypatch.setattr(
+        coordsVolumeModule,
+        "PostgresqlCoords3dTomogramVolumeReader",
+        FakePostgresqlCoords3dTomogramVolumeReader,
+    )
+    monkeypatch.setattr(
+        volumeModule,
+        "PostgresqlVolumeReader",
+        FakePostgresqlVolumeReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 741,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlVolumeReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+    )
+
+    assert reader is createdVolumeReaders[0]
+
+    assert createdCoordsVolumeReaders[0].db is mapper.db
+    assert createdCoordsVolumeReaders[0].projectId == 1
+    assert createdCoordsVolumeReaders[0].protocolId == 741
+    assert createdCoordsVolumeReaders[0].outputName == "outputVolumes"
+
+    assert createdVolumeReaders[0].db is mapper.db
+    assert createdVolumeReaders[0].projectId == 1
+    assert createdVolumeReaders[0].protocolId == 741
+    assert createdVolumeReaders[0].outputName == "outputVolumes"
+
 
 def test_ResolveOutputForVolumesSupportsAliasFallback(service):
     volume = FakeVolumeOutput("/tmp/volume.mrc")
