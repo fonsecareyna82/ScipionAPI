@@ -2554,7 +2554,7 @@ def listOutputMetadataTables(
     """
     List logical metadata tables (blocks) associated with a given output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2591,7 +2591,7 @@ def getMetadataTableSchema(
     """
     Return logical schema for one metadata table: columns, renderers, flags.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2627,7 +2627,7 @@ def runMetadataTableAction(
     service: ProjectService = Depends(getProjectService),
 ):
     # runMetadataTableAction
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2720,7 +2720,7 @@ def getMetadataTablePage(
     """
     Return one logical page of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2779,7 +2779,7 @@ def exportMetadataTable(
     """
     Export a metadata table (full or subset) as CSV/XLSX.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2865,7 +2865,7 @@ def renderMetadataImageCell(
     """
     Render one image cell from a metadata table using the same logic as ImageRenderer.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2928,7 +2928,7 @@ def getMetadataTableWindow(
     """
     Return a window (offset + limit) of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -2980,6 +2980,31 @@ def listExternalViewers(
         checkPid=False,
     )
     if not project:
+        raise
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listExternalViewers(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    objectId: Optional[Union[str, int]] = Query(None),
+    objectKind: Optional[str] = Query(None),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=True,
+        checkPid=False,
+    )
+    if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     try:
@@ -2989,7 +3014,9 @@ def listExternalViewers(
             objectId=objectId,
             objectKind=objectKind,
         )
-        return {"viewers": viewers}
+
+        return {"viewers": viewers or []}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3019,7 +3046,7 @@ def launchExternalViewer(
         mapper,
         projectId,
         currentUser,
-        refresh=False,
+        refresh=True,
         checkPid=False,
     )
     if not project:
@@ -3036,6 +3063,7 @@ def launchExternalViewer(
             objectKind=payload.objectKind,
             params=payload.params or {},
         )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3044,7 +3072,6 @@ def launchExternalViewer(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to launch external viewer: {e}",
         )
-
 # ======================================================================
 #                            PROTOCOL TAGS
 # ======================================================================
