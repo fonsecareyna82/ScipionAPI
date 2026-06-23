@@ -592,6 +592,8 @@ def renameProtocol(
             )
 
         service.renameProtocol(
+            mapper,
+            projectId,
             protocolId,
             newNameText.strip(),
             str(newComment or "").strip(),
@@ -1009,6 +1011,7 @@ def listProtocolLogChannels(
         channels = service.listProtocolLogChannelsService(
             projectId=projectId,
             protocolId=protocolId,
+            mapper=mapper,
         )
 
         # normalizeChannels
@@ -1072,6 +1075,7 @@ def pollProtocolLogs(
             offsets=offsets,
             maxBytes=maxBytes,
             maxLines=maxLines,
+            mapper=mapper,
         )
 
         # normalizePollResponse

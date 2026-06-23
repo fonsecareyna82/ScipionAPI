@@ -101,4 +101,11 @@ async def getProtocolLogs(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getProtocolLogs(projectId, protocolId, offset, errOffset, scheduleOffset)
+    return service.getProtocolLogs(
+        projectId,
+        protocolId,
+        offset,
+        errOffset,
+        scheduleOffset,
+        mapper=mapper,
+    )

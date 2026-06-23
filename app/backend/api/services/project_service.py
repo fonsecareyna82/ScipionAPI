@@ -4801,14 +4801,20 @@ class ProjectService:
 
         return 'default'
 
-    def listProtocolLogChannelsService(self, projectId: int, protocolId: int):
+    def listProtocolLogChannelsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            mapper=None,
+    ):
         """
         Return available log channels for a protocol, including paths and basic file stats.
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         # Resolve log paths from Scipion protocol object
         stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
@@ -4862,14 +4868,16 @@ class ProjectService:
             offsets: Dict[str, int],
             maxBytes: Optional[int] = 65536,
             maxLines: Optional[int] = 2000,
+            mapper=None,
     ):
         """
         Incrementally read protocol logs from the given offsets, applying maxBytes and maxLines limits.
         """
-        try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception:
-            raise HTTPException(status_code=404, detail="Protocol not found")
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
         stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
@@ -5028,11 +5036,20 @@ class ProjectService:
             },
         }
 
-    def getProtocolLogs(self, projectId: int, protocolId: int,
-                        offset: int = 0,
-                        errOffset: int = 0,
-                        scheduleOffset: int = 0):
-        protocol = self.currentProject.getProtocol(int(protocolId))
+    def getProtocolLogs(
+            self,
+            projectId: int,
+            protocolId: int,
+            offset: int = 0,
+            errOffset: int = 0,
+            scheduleOffset: int = 0,
+            mapper=None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
         logPath = protocol.getStdoutLog()
         errLogPath = protocol.getStderrLog()
         scheduleLogPath = protocol.getScheduleLog()
@@ -5089,8 +5106,19 @@ class ProjectService:
 
         return result
 
-    def renameProtocol(self, protocolId, newName, newComment):
-        protocol = self.currentProject.getProtocol(int(protocolId))
+    def renameProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            newName,
+            newComment,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
         if protocol is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
