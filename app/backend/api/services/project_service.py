@@ -7442,6 +7442,15 @@ class ProjectService:
         if pgReader is not None:
             return pgReader.listCtftomoSeries()
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="reader_not_available",
+            )
+
         protocol, output = self._resolveOutputForCtftomoSeries(
             protocolId=protocolId,
             outputName=outputName,
@@ -7633,6 +7642,16 @@ class ProjectService:
                     outputName,
                     psdPath,
                 )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo PSD",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="psd_file_not_available",
+                psdPath=psdPath,
+            )
 
         protocol, output = self._resolveOutputForCtftomoSeries(
             protocolId=protocolId,
