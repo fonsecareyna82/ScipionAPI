@@ -4902,11 +4902,13 @@ class ProjectService:
 
         targetStatus = statusMap[normalizedStatus]
 
-        protocol = self._getScipionProtocolForRuntime(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
         try:
             steps = protocol.loadSteps() or []
@@ -4965,7 +4967,7 @@ class ProjectService:
 
         row = mapper.updateProtocolStepStatus(
             projectId=projectId,
-            protocolId=protocolId,
+            protocolId=scipionProtocolId,
             stepIndex=stepIndex,
             stepStatus=targetStatus,
         )
