@@ -399,6 +399,7 @@ def test_ListOutputMetadataTablesServiceReturnsSummaries(service, monkeypatch):
         },
     ]
 
+
 def test_GetPostgresqlDAOIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -455,6 +456,43 @@ def test_GetPostgresqlDAOIfAvailableUsesResolvedProtocolDbId(
     assert createdDaos[0].projectId == 1
     assert createdDaos[0].protocolId == 852
     assert createdDaos[0].outputName == "outputParticles"
+
+
+def test_GetMetadataObjectManagerForOutputRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlDAOIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy metadata fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForMetadata", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service._getMetadataObjectManagerForOutput(
+            projectId=1,
+            protocolId=10,
+            outputName="outputParticles",
+            mapper=FakeMapper(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "Metadata output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "dao_not_available" in exc.value.detail
 
 
 def test_GetMetadataTableSchemaServiceBuildsColumns(service, monkeypatch):
