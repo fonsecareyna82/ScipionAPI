@@ -272,6 +272,316 @@ def assertSuccessEnvelope(result):
     assert result["errors"] == []
 
 
+def test_RegisterOutputReturnsPersistenceReport(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeSetOutput:
+        # fakeSetOutput
+        def getClassName(self):
+            return "SetOfParticles"
+
+    class FakeObjectOutput:
+        # fakeObjectOutput
+        def getClassName(self):
+            return "Volume"
+
+    class FakeBadSetOutput:
+        # fakeBadSetOutput
+        def getClassName(self):
+            return "SetOfBadThings"
+
+    class FakeUnsupportedOutput:
+        # fakeUnsupportedOutput
+        pass
+
+    class FakeProtocolWithOutputs:
+        # fakeProtocolWithOutputs
+        def getObjId(self):
+            return 10
+
+        def iterOutputAttributes(self):
+            return [
+                ("outputParticles", FakeSetOutput()),
+                ("outputVolume", FakeObjectOutput()),
+                ("badSet", FakeBadSetOutput()),
+                ("unsupportedOutput", FakeUnsupportedOutput()),
+            ]
+
+    class FakeScipionSetPostgresqlMapper:
+        # fakeScipionSetPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
+            if outputName == "badSet":
+                raise RuntimeError("broken set output")
+
+            return {
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "stored": True,
+            }
+
+    class FakeScipionObjectPostgresqlMapper:
+        # fakeScipionObjectPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeObjectTree(
+            self,
+            projectId,
+            protocolDbId,
+            outputName,
+            scipionObj,
+            includeNestedProperties,
+        ):
+            return {
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "stored": True,
+                "includeNestedProperties": includeNestedProperties,
+            }
+
+    mapperPackage = importlib.import_module("app.backend.mapper")
+
+    monkeypatch.setattr(
+        mapperPackage,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(
+        mapperPackage,
+        "ScipionObjectPostgresqlMapper",
+        FakeScipionObjectPostgresqlMapper,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolveProtocolDbIdForOutputPersistence",
+        lambda db, projectId, protocol: 500,
+    )
+
+    report = service.registerOutput(
+        projectId=1,
+        protocol=FakeProtocolWithOutputs(),
+        mapper=FakeMapper(),
+        returnReport=True,
+    )
+
+    assert report["persisted"] == [
+        {
+            "projectId": 1,
+            "protocolDbId": 500,
+            "stored": True,
+            "mapperKind": "flat_set",
+            "outputName": "outputParticles",
+            "outputClassName": "SetOfParticles",
+        },
+        {
+            "projectId": 1,
+            "protocolDbId": 500,
+            "stored": True,
+            "includeNestedProperties": True,
+            "mapperKind": "tree",
+            "outputName": "outputVolume",
+            "outputClassName": "Volume",
+        },
+    ]
+
+    assert report["skipped"] == [
+        {
+            "outputName": "unsupportedOutput",
+            "outputClassName": "FakeUnsupportedOutput",
+            "reason": "unsupported_output_type",
+        }
+    ]
+
+    assert report["errors"] == [
+        {
+            "outputName": "badSet",
+            "outputClassName": "SetOfBadThings",
+            "error": "broken set output",
+        }
+    ]
+
+
+def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    service.syncProjectProtocolsAndDependencies = (
+        projectServiceModule.ProjectService.syncProjectProtocolsAndDependencies.__get__(
+            service,
+            projectServiceModule.ProjectService,
+        )
+    )
+
+    class FakeProtocolNode:
+        # fakeProtocolNode
+        def __init__(self, protocol):
+            self.run = protocol
+            self._parents = []
+
+    class FakeRunsGraph:
+        # fakeRunsGraph
+        def __init__(self, protocol):
+            self._nodesDict = {
+                "PROJECT": object(),
+                "10": FakeProtocolNode(protocol),
+            }
+
+    class FakeCurrentProjectForSync:
+        # fakeCurrentProjectForSync
+        def __init__(self, protocol):
+            self.protocol = protocol
+
+        def getRunsGraph(self, refresh=False, checkPids=False):
+            return FakeRunsGraph(self.protocol)
+
+    class FakeProtocolForSync:
+        # fakeProtocolForSync
+        def getObjId(self):
+            return 10
+
+        def iterInputAttributes(self):
+            return []
+
+    class FakeSyncMapper:
+        # fakeSyncMapper
+        def __init__(self):
+            self.savedProtocolContexts = []
+            self.deletedProtocolIds = None
+            self.savedEdges = None
+            self.savedInputRefs = None
+
+        def saveProtocol(self, protocolContext):
+            self.savedProtocolContexts.append(protocolContext)
+            return 500
+
+        def deleteProjectProtocolsNotInProtocolIds(self, projectId, protocolIds):
+            self.deletedProtocolIds = {
+                "projectId": projectId,
+                "protocolIds": protocolIds,
+            }
+
+        def replaceProjectProtocolDependencies(self, projectId, edges):
+            self.savedEdges = {
+                "projectId": projectId,
+                "edges": edges,
+            }
+            return len(edges)
+
+        def replaceProjectProtocolInputRefs(self, projectId, inputRefs):
+            self.savedInputRefs = {
+                "projectId": projectId,
+                "inputRefs": inputRefs,
+            }
+            return len(inputRefs)
+
+    protocol = FakeProtocolForSync()
+    service.currentProject = FakeCurrentProjectForSync(protocol)
+
+    monkeypatch.setattr(
+        service,
+        "_buildProtocolContext",
+        lambda projectId, protocol: {
+            "projectId": projectId,
+            "protocolId": protocol.getObjId(),
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_shouldRegisterProtocolOutputs",
+        lambda protocol: True,
+    )
+    monkeypatch.setattr(
+        service,
+        "registerOutput",
+        lambda projectId, protocol, mapper, returnReport=False: {
+            "persisted": [
+                {
+                    "mapperKind": "flat_set",
+                    "outputName": "outputParticles",
+                },
+                {
+                    "mapperKind": "tree",
+                    "outputName": "outputVolume",
+                },
+            ],
+            "skipped": [
+                {
+                    "outputName": "unsupportedOutput",
+                    "outputClassName": "UnsupportedOutput",
+                    "reason": "unsupported_output_type",
+                }
+            ],
+            "errors": [
+                {
+                    "outputName": "badOutput",
+                    "outputClassName": "SetOfBad",
+                    "error": "boom",
+                }
+            ],
+        },
+    )
+
+    mapper = FakeSyncMapper()
+
+    result = service.syncProjectProtocolsAndDependencies(
+        mapper=mapper,
+        projectId=1,
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result == {
+        "protocols": 1,
+        "dependencies": 0,
+        "inputRefs": 0,
+        "outputs": 2,
+        "outputsByKind": {
+            "flat_set": 1,
+            "tree": 1,
+        },
+        "outputErrors": [
+            {
+                "protocolId": "10",
+                "outputName": "unsupportedOutput",
+                "outputClassName": "UnsupportedOutput",
+                "reason": "unsupported_output_type",
+            },
+            {
+                "protocolId": "10",
+                "outputName": "badOutput",
+                "outputClassName": "SetOfBad",
+                "error": "boom",
+            },
+        ],
+    }
+
+    assert mapper.savedProtocolContexts == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+        }
+    ]
+    assert mapper.deletedProtocolIds == {
+        "projectId": 1,
+        "protocolIds": ["10"],
+    }
+
+
 def test_CastParamValueSupportsEnumLookup(projectServiceModule, service, monkeypatch):
     monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
 
