@@ -116,6 +116,9 @@ class FakeProtocol:
     def getPlugin(self):
         return None
 
+    def getClassName(self):
+        return self._className
+
     def setAttributeValue(self, name, value):
         self.attributeValues[name] = value
 
@@ -1640,6 +1643,80 @@ def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypa
         }
     ]
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_GetNextProtocolSuggestionsResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    protocol = FakeProtocol(objId=10, className="ProtImportMovies")
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    calledUrls = []
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps([
+                [
+                    "ProtLowerScore",
+                    3,
+                    "Lower score protocol",
+                    "scipion-em-lower",
+                    "Lower score help",
+                ],
+                [
+                    "ProtHigherScore",
+                    9,
+                    "Higher score protocol",
+                    "scipion-em-higher",
+                    "Higher score help",
+                ],
+            ]).encode("utf-8")
+
+    def fakeUrlopen(url):
+        calledUrls.append(url)
+        return FakeResponse()
+
+    class FakeConfig:
+        SCIPION_STATS_SUGGESTION = "https://example.test/suggestions/%s"
+
+        @staticmethod
+        def getDomain():
+            return FakeDomain({})
+
+    monkeypatch.setattr(projectServiceModule, "Config", FakeConfig)
+    monkeypatch.setattr(projectServiceModule, "urlopen", fakeUrlopen)
+
+    result = service.getNextProtocolSuggestions(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assert calledUrls == [
+        "https://example.test/suggestions/ProtImportMovies",
+    ]
+
+    assert result == [
+        {
+            "protocolName": "Higher score protocol",
+            "protocolClass": "ProtHigherScore",
+            "help": "Higher score help",
+            "installed": "Missing. Available in scipion-em-higher plugin.",
+        },
+        {
+            "protocolName": "Lower score protocol",
+            "protocolClass": "ProtLowerScore",
+            "help": "Lower score help",
+            "installed": "Missing. Available in scipion-em-lower plugin.",
+        },
+    ]
+
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
 
 def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
     protocol = FakeProtocol(objId=10, className="ProtClass")
