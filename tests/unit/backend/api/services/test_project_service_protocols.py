@@ -1723,7 +1723,8 @@ def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
     assert service.currentProject.scheduledProtocols == []
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
-    def test_LaunchProtocolRestartResolvesPostgresqlProtocolId(
+
+def test_LaunchProtocolRestartResolvesPostgresqlProtocolId(
             projectServiceModule,
             service,
             mapper,
