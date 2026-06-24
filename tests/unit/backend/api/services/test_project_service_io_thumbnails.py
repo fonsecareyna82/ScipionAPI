@@ -680,3 +680,89 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
     ]
 
     assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    rootPath = tmp_path / "browser-root"
+    rootPath.mkdir(parents=True, exist_ok=True)
+
+    protocol10 = FakeProtocol(protocolId=10)
+    protocol11 = FakeProtocol(protocolId=11)
+
+    service.currentProject = FakeCurrentProject(
+        protocols={
+            10: protocol10,
+            11: protocol11,
+        },
+        exportPayload=[
+            {"protocolId": 10},
+            {"protocolId": 11},
+        ],
+    )
+
+    exportedProtocolLists = []
+
+    def fakeGetProtocolsJson(protocolList):
+        exportedProtocolLists.append(protocolList)
+        return [
+            {"protocolId": 10},
+            {"protocolId": 11},
+        ]
+
+    service.currentProject.getProtocolsJson = fakeGetProtocolsJson
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={
+        500: 10,
+        501: 11,
+    })
+
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
+
+    payload = FakePayload(
+        protocolIds=["500", "501"],
+        directoryPath="exports",
+        filename="workflow-export",
+    )
+
+    result = service.exportProtocolsService(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 1},
+        payload=payload,
+    )
+
+    exportedPath = rootPath / "exports" / "workflow-export.json"
+
+    assert exportedProtocolLists == [[protocol10, protocol11]]
+    assert exportedPath.exists() is True
+
+    exportedText = exportedPath.read_text(encoding="utf-8")
+    assert exportedText.startswith("ScipionWeb metadata format: scipionweb.workflow.metadata")
+    assert "ScipionWeb metadata version: 1" in exportedText
+    assert "Scipion required plugins:" in exportedText
+
+    exportedJsonText = service._extractWorkflowJsonText(exportedText)
+    assert json.loads(exportedJsonText) == [
+        {"protocolId": 10},
+        {"protocolId": 11},
+    ]
+
+    assert result == {
+        "success": True,
+        "path": str(exportedPath.resolve()),
+        "filename": "workflow-export.json",
+        "size": exportedPath.stat().st_size,
+        "mimeType": "application/json",
+        "protocolIds": ["500", "501"],
+    }
+
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[1]["params"] == (1, 501, "501")
