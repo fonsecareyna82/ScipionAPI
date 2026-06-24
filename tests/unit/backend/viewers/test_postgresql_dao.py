@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import numpy as np
 
 import pytest
 
@@ -372,3 +373,84 @@ def test_GetTableWithAdditionalInfoReturnsCompatibilityTuple(postgresqlDaoModule
     assert table is None
     assert displayColumns == postgresqlDaoModule.ADITIONAL_INFO_DISPLAY_COLUMN_LIST
     assert displayColumns == ["_size", "id"]
+
+
+def test_PostgresqlDaoNormalizesTypedStringsFromDatabase(postgresqlDaoModule):
+    dao = object.__new__(postgresqlDaoModule.PostgresqlDAO)
+
+    matrixText = (
+        "[[    1.       0.       0.   -2275.2 ]\n"
+        " [    0.       1.       0.   -1616.34]\n"
+        " [    0.       0.       1.       0.  ]\n"
+        " [    0.       0.       0.       1.  ]]"
+    )
+
+    item = {
+        "id": 1,
+        "enabled": "False",
+        "values": {
+            "flag": "False",
+            "score": "3.5",
+            "count": "7",
+            "transform_matrix": matrixText,
+        },
+    }
+
+    columns = [
+        {
+            "labelProperty": "flag",
+            "position": 0,
+            "className": "Boolean",
+        },
+        {
+            "labelProperty": "score",
+            "position": 1,
+            "className": "Float",
+        },
+        {
+            "labelProperty": "count",
+            "position": 2,
+            "className": "Integer",
+        },
+        {
+            "labelProperty": "transform_matrix",
+            "position": 3,
+            "className": "Matrix",
+        },
+    ]
+
+    row = dao._itemToRow(item, columns)
+
+    assert row["enabled"] is False
+    assert row["flag"] is False
+    assert row["score"] == pytest.approx(3.5)
+    assert row["count"] == 7
+
+    assert isinstance(row["transform_matrix"], np.ndarray)
+    assert row["transform_matrix"].shape == (4, 4)
+    assert row["transform_matrix"][0, 3] == pytest.approx(-2275.2)
+    assert row["transform_matrix"][1, 3] == pytest.approx(-1616.34)
+
+
+def test_PostgresqlDaoParsesJsonMatrixString(postgresqlDaoModule):
+    dao = object.__new__(postgresqlDaoModule.PostgresqlDAO)
+
+    matrix = dao._normalizeValue(
+        "transform_matrix",
+        "[[1, 0, 0, -1.5], [0, 1, 0, 2.5], [0, 0, 1, 0], [0, 0, 0, 1]]",
+        {"className": "Matrix"},
+    )
+
+    assert isinstance(matrix, np.ndarray)
+    assert matrix.shape == (4, 4)
+    assert matrix[0, 3] == pytest.approx(-1.5)
+    assert matrix[1, 3] == pytest.approx(2.5)
+
+
+def test_PostgresqlDaoDoesNotUseEvalForMatrixStrings(postgresqlDaoModule):
+    dao = object.__new__(postgresqlDaoModule.PostgresqlDAO)
+
+    matrix = dao._toNumpyMatrix("__import__('os').system('echo unsafe')")
+
+    assert isinstance(matrix, np.ndarray)
+    assert matrix.size == 0

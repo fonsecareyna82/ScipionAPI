@@ -32,8 +32,10 @@
 # *
 # ******************************************************************************
 
+import ast
 import json
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -47,6 +49,7 @@ from metadataviewer.model import (
     FloatRenderer,
     ImageRenderer,
     StrRenderer,
+    MatrixRender,
 )
 
 from pwem.convert.transformations import euler_from_matrix
@@ -259,9 +262,23 @@ class PostgresqlDAO(IDAO):
         for index, colName in enumerate(labels):
             value = firstRow.get(colName)
             isFileNameCol = imgRenderer is None and colName.endswith("_filename")
+            columnDef = next(
+                (
+                    column
+                    for column in columns
+                    if str(column.get("labelProperty") or "").strip() == str(colName)
+                ),
+                None,
+            )
+            columnClassName = self._getColumnClassName(columnDef)
+            columnClassNameLower = columnClassName.lower()
 
-            if colName == ENABLED_COLUMN:
+            if colName == ENABLED_COLUMN or columnClassNameLower == "boolean":
                 renderer = BoolRenderer()
+            elif columnClassNameLower == "matrix" or colName.endswith("_matrix") or self._looksLikeMatrix(value):
+                renderer = MatrixRender()
+            elif columnClassNameLower == "float":
+                renderer = FloatRenderer()
             elif isFileNameCol:
                 renderer = StrRenderer()
             else:
@@ -840,7 +857,7 @@ class PostgresqlDAO(IDAO):
 
         row: Dict[str, Any] = {
             "id": itemId,
-            "enabled": bool(item.get("enabled", True)),
+            "enabled": self._toBool(item.get("enabled", True), default=True),
         }
 
         for column in columns:
@@ -852,7 +869,7 @@ class PostgresqlDAO(IDAO):
             if value is None:
                 value = values.get(str(label).strip())
 
-            row[str(label)] = self._normalizeValue(str(label), value)
+            row[str(label)] = self._normalizeValue(str(label), value, column)
 
         return row
 
@@ -1012,47 +1029,224 @@ class PostgresqlDAO(IDAO):
 
         return 0
 
-    def _normalizeValue(self, label: str, value: Any) -> Any:
+    @staticmethod
+    def _getColumnClassName(column: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(column, dict):
+            return ""
+
+        for key in ("className", "type", "columnType"):
+            value = column.get(key)
+            if value is not None:
+                return str(value).strip()
+
+        return ""
+
+    @staticmethod
+    def _isBooleanString(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+
+        return value.strip().lower() in {
+            "true",
+            "false",
+            "t",
+            "f",
+            "yes",
+            "no",
+            "y",
+            "n",
+            "1",
+            "0",
+            "on",
+            "off",
+        }
+
+    @staticmethod
+    def _toBool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+
+        if value is None:
+            return default
+
+        if isinstance(value, (int, float)):
+            return bool(value)
+
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "t", "yes", "y", "1", "on"}:
+                return True
+            if text in {"false", "f", "no", "n", "0", "off"}:
+                return False
+
+        return default
+
+    @staticmethod
+    def _toFloat(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _looksLikeMatrix(value: Any) -> bool:
+        if isinstance(value, numpy.ndarray):
+            return value.ndim == 2
+
+        if isinstance(value, (list, tuple)):
+            try:
+                return numpy.asarray(value).ndim == 2
+            except Exception:
+                return False
+
+        if not isinstance(value, str):
+            return False
+
+        text = value.strip()
+        return text.startswith("[[") and text.endswith("]]")
+
+    def _normalizeValue(
+            self,
+            label: str,
+            value: Any,
+            column: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         if value is None:
             return None
 
-        if label.endswith("_matrix"):
+        className = self._getColumnClassName(column)
+        classNameLower = className.lower()
+
+        if classNameLower == "boolean" or label == ENABLED_COLUMN:
+            return self._toBool(value)
+
+        if classNameLower == "integer":
+            parsed = self._toInt(value)
+            return parsed if parsed is not None else value
+
+        if classNameLower == "float":
+            parsed = self._toFloat(value)
+            return parsed if parsed is not None else value
+
+        if classNameLower == "matrix" or label.endswith("_matrix") or self._looksLikeMatrix(value):
             return self._toNumpyMatrix(value)
 
-        if isinstance(value, (str, int, float, bool)):
+        if classNameLower == "csvlist":
+            return self._toListValue(value)
+
+        if isinstance(value, str):
+            if self._isBooleanString(value):
+                return self._toBool(value)
+
+            return value
+
+        if isinstance(value, (int, float, bool)):
             return value
 
         if isinstance(value, list):
             return [
-                self._normalizeValue(label, item)
+                self._normalizeValue(label, item, column)
                 for item in value
             ]
 
         if isinstance(value, tuple):
             return [
-                self._normalizeValue(label, item)
+                self._normalizeValue(label, item, column)
                 for item in value
             ]
 
         if isinstance(value, dict):
             return {
-                str(key): self._normalizeValue(label, item)
+                str(key): self._normalizeValue(label, item, column)
                 for key, item in value.items()
             }
 
         return str(value)
+
+    def _toListValue(self, value: Any) -> List[Any]:
+        if value is None:
+            return []
+
+        if isinstance(value, numpy.ndarray):
+            return value.tolist()
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, tuple):
+            return list(value)
+
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, (list, tuple)):
+                    return list(parsed)
+            except Exception:
+                pass
+
+            return [item.strip() for item in text.split(",") if item.strip()]
+
+        return [value]
 
     def _toNumpyMatrix(self, value: Any):
         if isinstance(value, numpy.ndarray):
             return value
 
         if isinstance(value, str):
-            try:
-                value = eval(value)
-            except Exception:
-                value = []
+            text = value.strip()
+            if not text:
+                return numpy.array([])
 
-        return numpy.array(value)
+            parsed = None
+
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+
+            if parsed is None:
+                try:
+                    parsed = ast.literal_eval(text)
+                except Exception:
+                    parsed = None
+
+            if parsed is None:
+                rowTexts = re.findall(r"\[([^\[\]]+)\]", text)
+                rows = []
+
+                for rowText in rowTexts:
+                    numbers = re.findall(
+                        r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?",
+                        rowText,
+                    )
+                    if numbers:
+                        rows.append([float(number) for number in numbers])
+
+                parsed = rows
+
+            try:
+                return numpy.asarray(parsed, dtype=float)
+            except Exception:
+                return numpy.array([])
+
+        try:
+            return numpy.asarray(value, dtype=float)
+        except Exception:
+            return numpy.array([])
 
     def _sortValue(self, value: Any):
         if value is None:
