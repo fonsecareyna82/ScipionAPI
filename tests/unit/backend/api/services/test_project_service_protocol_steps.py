@@ -37,8 +37,33 @@ class FakeCurrentProject:
         return self.protocols[int(protocolId)]
 
 
+class FakeDb:
+    def __init__(self):
+        self.runtimeProtocolIdByDbId = {}
+        self.fetchOneCalls = []
+
+    def fetchOne(self, query, params):
+        self.fetchOneCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        if len(params) < 3:
+            return None
+
+        protocolDbId = params[1]
+        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+        if runtimeProtocolId is None:
+            return None
+
+        return {
+            "protocolId": runtimeProtocolId,
+        }
+
+
 class FakeMapper:
     def __init__(self):
+        self.db = FakeDb()
         self.listProtocolStepsResult = []
         self.updateProtocolStepStatusCalls = []
         self.updateProtocolStepStatusResult = None
@@ -163,6 +188,48 @@ def test_UpdateProtocolStepStatusUpdatesScipionAndPostgres(
     assert protocol.updateStepsCalls == [{"where": "id='102'"}]
     assert stepA.status is None
     assert stepB.status == "finished"
+    assert mapper.updateProtocolStepStatusCalls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "stepIndex": 2,
+            "stepStatus": "finished",
+        },
+    ]
+
+
+def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "STATUS_FINISHED", "finished")
+
+    step = FakeStep(index=2, objId=102)
+    protocol = FakeProtocolWithSteps([step])
+
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.updateProtocolStepStatusResult = {
+        "index": 2,
+        "name": "processStep",
+        "status": "finished",
+    }
+
+    result = service.updateProtocolStepStatusService(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        stepIndex=2,
+        stepStatus="finished",
+    )
+
+    assert result == mapper.updateProtocolStepStatusResult
+    assert protocol.updateStepsCalls == [{"where": "id='102'"}]
+    assert step.status == "finished"
+
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
     assert mapper.updateProtocolStepStatusCalls == [
         {
             "projectId": 1,
