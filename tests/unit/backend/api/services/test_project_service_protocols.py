@@ -272,6 +272,76 @@ def assertSuccessEnvelope(result):
     assert result["errors"] == []
 
 
+def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):
+    declaredOutputs = [
+        {
+            "outputName": "persistedOutput",
+            "outputClassName": "SetOfParticles",
+        },
+        {
+            "outputName": "skippedOutput",
+            "outputClassName": "UnsupportedOutput",
+        },
+        {
+            "outputName": "erroredOutput",
+            "outputClassName": "SetOfBad",
+        },
+        {
+            "outputName": "missingOutput",
+            "outputClassName": "SetOfMissing",
+        },
+    ]
+    persistedOutputs = [
+        {
+            "outputName": "persistedOutput",
+            "outputClassName": "SetOfParticles",
+        }
+    ]
+    skippedOutputs = [
+        {
+            "outputName": "skippedOutput",
+            "outputClassName": "UnsupportedOutput",
+            "reason": "unsupported_output_type",
+        }
+    ]
+    outputErrors = [
+        {
+            "outputName": "erroredOutput",
+            "outputClassName": "SetOfBad",
+            "error": "broken output",
+        }
+    ]
+
+    result = service._buildMissingOutputSyncItems(
+        protocolId=10,
+        declaredOutputs=declaredOutputs,
+        persistedOutputs=persistedOutputs,
+        skippedOutputs=skippedOutputs,
+        outputErrors=outputErrors,
+    )
+
+    assert result == [
+        {
+            "protocolId": "10",
+            "outputName": "skippedOutput",
+            "outputClassName": "UnsupportedOutput",
+            "reason": "unsupported_output_type",
+        },
+        {
+            "protocolId": "10",
+            "outputName": "erroredOutput",
+            "outputClassName": "SetOfBad",
+            "reason": "persistence_error",
+            "error": "broken output",
+        },
+        {
+            "protocolId": "10",
+            "outputName": "missingOutput",
+            "outputClassName": "SetOfMissing",
+            "reason": "not_persisted",
+        },
+    ]
+
 def test_RegisterOutputReturnsPersistenceReport(
     projectServiceModule,
     service,
@@ -315,6 +385,7 @@ def test_RegisterOutputReturnsPersistenceReport(
                 ("outputParticles", FakeSetOutput()),
                 ("outputVolume", FakeObjectOutput()),
                 ("badSet", FakeBadSetOutput()),
+                ("emptyOutput", None),
                 ("unsupportedOutput", FakeUnsupportedOutput()),
             ]
 
@@ -378,6 +449,29 @@ def test_RegisterOutputReturnsPersistenceReport(
         returnReport=True,
     )
 
+    assert report["declared"] == [
+        {
+            "outputName": "outputParticles",
+            "outputClassName": "SetOfParticles",
+        },
+        {
+            "outputName": "outputVolume",
+            "outputClassName": "Volume",
+        },
+        {
+            "outputName": "badSet",
+            "outputClassName": "SetOfBadThings",
+        },
+        {
+            "outputName": "emptyOutput",
+            "outputClassName": "",
+        },
+        {
+            "outputName": "unsupportedOutput",
+            "outputClassName": "FakeUnsupportedOutput",
+        },
+    ]
+
     assert report["persisted"] == [
         {
             "projectId": 1,
@@ -400,10 +494,15 @@ def test_RegisterOutputReturnsPersistenceReport(
 
     assert report["skipped"] == [
         {
+            "outputName": "emptyOutput",
+            "outputClassName": "",
+            "reason": "empty_output",
+        },
+        {
             "outputName": "unsupportedOutput",
             "outputClassName": "FakeUnsupportedOutput",
             "reason": "unsupported_output_type",
-        }
+        },
     ]
 
     assert report["errors"] == [
@@ -509,6 +608,28 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
         service,
         "registerOutput",
         lambda projectId, protocol, mapper, returnReport=False: {
+            "declared": [
+                {
+                    "outputName": "outputParticles",
+                    "outputClassName": "SetOfParticles",
+                },
+                {
+                    "outputName": "outputVolume",
+                    "outputClassName": "Volume",
+                },
+                {
+                    "outputName": "unsupportedOutput",
+                    "outputClassName": "UnsupportedOutput",
+                },
+                {
+                    "outputName": "badOutput",
+                    "outputClassName": "SetOfBad",
+                },
+                {
+                    "outputName": "orphanOutput",
+                    "outputClassName": "SetOfOrphan",
+                },
+            ],
             "persisted": [
                 {
                     "mapperKind": "flat_set",
@@ -549,11 +670,34 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
         "protocols": 1,
         "dependencies": 0,
         "inputRefs": 0,
+        "outputsDeclared": 5,
         "outputs": 2,
+        "outputsMissing": 3,
         "outputsByKind": {
             "flat_set": 1,
             "tree": 1,
         },
+        "outputMissing": [
+            {
+                "protocolId": "10",
+                "outputName": "unsupportedOutput",
+                "outputClassName": "UnsupportedOutput",
+                "reason": "unsupported_output_type",
+            },
+            {
+                "protocolId": "10",
+                "outputName": "badOutput",
+                "outputClassName": "SetOfBad",
+                "reason": "persistence_error",
+                "error": "boom",
+            },
+            {
+                "protocolId": "10",
+                "outputName": "orphanOutput",
+                "outputClassName": "SetOfOrphan",
+                "reason": "not_persisted",
+            },
+        ],
         "outputErrors": [
             {
                 "protocolId": "10",
