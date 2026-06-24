@@ -726,6 +726,210 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
     }
 
 
+def test_GetPostgresqlIntegratedAnalyzeContextUsesResolvedProtocolId(
+    service,
+    monkeypatch,
+):
+    readerCalls = []
+    resolverCalls = []
+
+    class FakeDb:
+        pass
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlIntegratedContextReader:
+        def __init__(self, db, projectId, protocolId, outputName):
+            readerCalls.append({
+                "db": db,
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+            })
+
+        def getContext(self):
+            return {
+                "root": {
+                    "projectId": 1,
+                    "protocolId": 321,
+                    "outputName": "outputTiltSeries",
+                }
+            }
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlIntegratedContextReader",
+        FakePostgresqlIntegratedContextReader,
+    )
+
+    def fakeResolvePostgresqlReaderProtocolId(mapper, projectId, protocolId):
+        resolverCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+        return 321
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlReaderProtocolId",
+        fakeResolvePostgresqlReaderProtocolId,
+    )
+
+    mapper = FakeMapper()
+
+    result = service._getPostgresqlIntegratedAnalyzeContextIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+    )
+
+    assert result == {
+        "root": {
+            "projectId": 1,
+            "protocolId": 321,
+            "outputName": "outputTiltSeries",
+        }
+    }
+
+    assert resolverCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+        }
+    ]
+
+    assert readerCalls == [
+        {
+            "db": mapper.db,
+            "projectId": 1,
+            "protocolId": 321,
+            "outputName": "outputTiltSeries",
+        }
+    ]
+
+
+def test_GetIntegratedAnalyzeContextRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    class FakeMapper:
+        pass
+
+    class RuntimeShouldNotBeUsed:
+        def getProtocol(self, protocolId):
+            raise AssertionError("Runtime fallback should not be used")
+
+    service.currentProject = RuntimeShouldNotBeUsed()
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlIntegratedAnalyzeContextIfAvailable",
+        lambda mapper, projectId, protocolId, outputName: None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.getIntegratedAnalyzeContextService(
+            mapper=FakeMapper(),
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == (
+        "Integrated Analyze Context output is not available in PostgreSQL metadata: "
+        "context_not_available"
+    )
+
+
+def test_GetIntegratedAnalyzeContextKeepsLegacyRuntimeFallbackWithoutMapper(
+    service,
+    monkeypatch,
+):
+    class FakeTiltSeriesOutput:
+        def getClassName(self):
+            return "SetOfTiltSeries"
+
+        def getObjId(self):
+            return 22
+
+        def getSize(self):
+            return 1
+
+        def getTSIds(self):
+            return ["TS_001"]
+
+        def getSamplingRate(self):
+            return 1.5
+
+        def getDimensions(self):
+            return (100, 100, 40)
+
+        def iterItems(self):
+            return iter([])
+
+    class FakeProtocol:
+        def __init__(self):
+            self.outputTiltSeries = FakeTiltSeriesOutput()
+
+        def iterInputAttributes(self):
+            return []
+
+        def iterOutputAttributes(self):
+            return [("outputTiltSeries", self.outputTiltSeries)]
+
+    class FakeCurrentProjectForIntegratedContext:
+        def __init__(self):
+            self.protocol = FakeProtocol()
+
+        def getProtocol(self, protocolId):
+            assert protocolId == 10
+            return self.protocol
+
+    service.currentProject = FakeCurrentProjectForIntegratedContext()
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlIntegratedAnalyzeContextIfAvailable",
+        lambda mapper, projectId, protocolId, outputName: None,
+    )
+
+    result = service.getIntegratedAnalyzeContextService(
+        mapper=None,
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+    )
+
+    assert result["root"] == {
+        "projectId": 1,
+        "protocolId": 10,
+        "outputName": "outputTiltSeries",
+        "outputClass": "SetOfTiltSeries",
+    }
+
+    assert result["links"]["tiltSeries"] == {
+        "protocolId": 10,
+        "outputName": "outputTiltSeries",
+        "itemId": 22,
+        "label": "outputTiltSeries",
+        "status": "available",
+    }
+
+    assert result["summaries"]["tiltSeries"]["objectClass"] == "SetOfTiltSeries"
+    assert result["summaries"]["tiltSeries"]["objectId"] == 22
+    assert result["summaries"]["tiltSeries"]["size"] == 1
+
+
 def test_CastParamValueSupportsEnumLookup(projectServiceModule, service, monkeypatch):
     monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
 
