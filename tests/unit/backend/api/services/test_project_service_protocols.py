@@ -1498,3 +1498,181 @@ def test_StopProtocolResolvesPostgresqlProtocolIds(service, mapper):
 
     assertSuccessEnvelope(result)
     assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
+
+
+def test_RestartProtocolAllResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
+    protocol = FakeProtocol(objId=10)
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    subworkflowCalls = []
+
+    def fakeGetSubworkflow(protocolObj):
+        subworkflowCalls.append(protocolObj)
+        return [protocol], []
+
+    service.currentProject._getSubworkflow = fakeGetSubworkflow
+
+    cleanupCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql",
+        lambda mapper, projectId, protocols: cleanupCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocols": protocols,
+        }) or {
+            "protocolsCount": len(protocols),
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "items": [],
+        },
+    )
+
+    result = service.restartProtocolAll(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assertSuccessEnvelope(result)
+    assert subworkflowCalls == [protocol]
+    assert cleanupCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocols": [protocol],
+        }
+    ]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ContinueProtocolAllResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "MODE_RESUME", "resume-mode")
+
+    protocol = FakeProtocol(objId=10)
+    activeProtocol = FakeProtocol(objId=20)
+
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    subworkflowCalls = []
+
+    def fakeGetSubworkflow(protocolObj):
+        subworkflowCalls.append(protocolObj)
+        return [protocol], [activeProtocol]
+
+    service.currentProject._getSubworkflow = fakeGetSubworkflow
+
+    result = service.continueProtocolAll(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        currentUser={"id": 1},
+    )
+
+    assertSuccessEnvelope(result)
+    assert subworkflowCalls == [protocol]
+    assert activeProtocol.runMode.get() == "resume-mode"
+    assert service.currentProject.launchedProtocols == [activeProtocol]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
+    protocol = FakeProtocol(objId=10)
+
+    service.currentProject.protocols[10] = protocol
+    service.currentProject.resetWorkflowResult = []
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    subworkflowCalls = []
+
+    def fakeGetSubworkflow(protocolObj):
+        subworkflowCalls.append(protocolObj)
+        return [protocol], []
+
+    service.currentProject._getSubworkflow = fakeGetSubworkflow
+
+    cleanupCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql",
+        lambda mapper, projectId, protocols: cleanupCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocols": protocols,
+        }) or {
+            "protocolsCount": len(protocols),
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "items": [],
+        },
+    )
+
+    result = service.resetProtocolFrom(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assertSuccessEnvelope(result)
+    assert subworkflowCalls == [protocol]
+    assert cleanupCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocols": [protocol],
+        }
+    ]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "IntParam", FakeIntParam)
+    monkeypatch.setattr(projectServiceModule, "StringParam", FakeStringParam)
+    monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
+    monkeypatch.setattr(projectServiceModule, "CsvList", FakeCsvList)
+
+    protocol = FakeProtocol(objId=10, className="ProtClass")
+    protocol.addParam("runName", FakeStringParam(label="Run name"))
+    protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    monkeypatch.setattr(
+        service,
+        "applyParamsToProtocol",
+        lambda mapper=None, projectId=None, protocol=None, params=None: [],
+    )
+
+    savedProtocol, errors = service.saveProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params={
+            "runName": "Edited protocol",
+            "iterations": "7",
+        },
+        setToSave=False,
+    )
+
+    assert errors == []
+    assert savedProtocol is protocol
+    assert protocol.runName.get() == "Edited protocol"
+    assert protocol.attributeValues["iterations"] == 7
+    assert service.currentProject.storedProtocols == [protocol]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
