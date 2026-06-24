@@ -87,6 +87,44 @@ class FakeCsvList(FakeBaseParam):
     pass
 
 
+class FakePointerParam(FakeBaseParam):
+    def __init__(self, label="Pointer", choices=None, validationErrors=None, allowsNull=True, condition=None):
+        super().__init__(
+            label=label,
+            choices=choices,
+            validationErrors=validationErrors,
+            allowsNull=allowsNull,
+            condition=condition,
+        )
+        self.default = FakeValueHolder(None)
+
+
+class FakeMultiPointerParam(FakeBaseParam):
+    pass
+
+
+class FakeRelationParam(FakeBaseParam):
+    pass
+
+
+class FakePointerAttribute:
+    def __init__(self):
+        self.extended = None
+
+    def setExtended(self, extended):
+        self.extended = extended
+
+
+class FakePointerList(list):
+    def isEmpty(self):
+        return len(self) == 0
+
+
+class FakePointer:
+    def __init__(self, protocol, extended=None):
+        self.protocol = protocol
+        self.extended = extended
+
 class FakeProtocol:
     # fakeProtocol
     def __init__(self, objId=None, className="ProtClass", useQueueFlag=False, validateErrors=None):
@@ -2207,3 +2245,122 @@ def test_ImportWorkflowProtocolsKeepsReferencesForSameProject(service, mapper, m
             },
         ]
     ]
+
+
+def test_ApplyParamsToProtocolResolvesPostgresqlPointerParentId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "PointerParam", FakePointerParam)
+    monkeypatch.setattr(projectServiceModule, "MultiPointerParam", FakeMultiPointerParam)
+    monkeypatch.setattr(projectServiceModule, "RelationParam", FakeRelationParam)
+
+    parentProtocol = FakeProtocol(objId=10, className="ParentProtocol")
+    parentProtocol.outputParticles = object()
+
+    protocol = FakeProtocol(objId=20, className="ChildProtocol")
+    pointerParam = FakePointerParam(label="Input particles")
+    protocol.addParam("inputParticles", pointerParam)
+    protocol.inputParticles = FakePointerAttribute()
+
+    service.currentProject.protocols[10] = parentProtocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    errors = service.applyParamsToProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocol=protocol,
+        params={
+            "inputParticles": "500.outputParticles",
+        },
+    )
+
+    assert errors == []
+    assert pointerParam.get() == "10.outputParticles"
+    assert pointerParam.default.get() == "10.outputParticles"
+    assert protocol.attributeValues["inputParticles"] is parentProtocol
+    assert protocol.inputParticles.extended == "outputParticles"
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+def test_SetPointerParamResolvesPostgresqlPointerParentId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "PointerParam", FakePointerParam)
+
+    parentProtocol = FakeProtocol(objId=10, className="ParentProtocol")
+    protocol = FakeProtocol(objId=20, className="ChildProtocol")
+
+    pointerParam = FakePointerParam(label="Input volume")
+    protocol.addParam("inputVolume", pointerParam)
+
+    service.currentProject.protocols[10] = parentProtocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    service.setPointerParam(
+        mapper=mapper,
+        projectId=1,
+        protocol=protocol,
+        key="inputVolume",
+        value={
+            "editableValue": "500.outputVolume",
+        },
+        parentId=500,
+    )
+
+    assert pointerParam.get() == "10.outputVolume"
+    assert pointerParam.default.get() == "10.outputVolume"
+    assert protocol.attributeValues["inputVolume"] is parentProtocol
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+def test_ApplyParamsToProtocolResolvesPostgresqlMultiPointerParentIds(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "PointerParam", FakePointerParam)
+    monkeypatch.setattr(projectServiceModule, "MultiPointerParam", FakeMultiPointerParam)
+    monkeypatch.setattr(projectServiceModule, "RelationParam", FakeRelationParam)
+    monkeypatch.setattr(projectServiceModule, "PointerList", FakePointerList)
+    monkeypatch.setattr(projectServiceModule, "Pointer", FakePointer)
+
+    parentProtocolA = FakeProtocol(objId=10, className="ParentProtocolA")
+    parentProtocolB = FakeProtocol(objId=11, className="ParentProtocolB")
+
+    protocol = FakeProtocol(objId=20, className="ChildProtocol")
+    multiPointerParam = FakeMultiPointerParam(label="Input sets")
+    protocol.addParam("inputSets", multiPointerParam)
+
+    service.currentProject.protocols[10] = parentProtocolA
+    service.currentProject.protocols[11] = parentProtocolB
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.db.runtimeProtocolIdByDbId[501] = 11
+
+    errors = service.applyParamsToProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocol=protocol,
+        params={
+            "inputSets": [
+                "500.outputParticles",
+                "501.outputClasses",
+            ],
+        },
+    )
+
+    assert errors == []
+    assert len(protocol.attributeValues["inputSets"]) == 2
+    assert protocol.attributeValues["inputSets"][0].protocol is parentProtocolA
+    assert protocol.attributeValues["inputSets"][0].extended == "outputParticles"
+    assert protocol.attributeValues["inputSets"][1].protocol is parentProtocolB
+    assert protocol.attributeValues["inputSets"][1].extended == "outputClasses"
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchOneCalls[1]["params"] == (1, 501, "501")
+
+
