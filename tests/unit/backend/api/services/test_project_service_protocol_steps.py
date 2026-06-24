@@ -65,10 +65,15 @@ class FakeMapper:
     def __init__(self):
         self.db = FakeDb()
         self.listProtocolStepsResult = []
+        self.listProtocolStepsCalls = []
         self.updateProtocolStepStatusCalls = []
         self.updateProtocolStepStatusResult = None
 
     def listProtocolSteps(self, projectId, protocolId):
+        self.listProtocolStepsCalls.append({
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
         return self.listProtocolStepsResult
 
     def updateProtocolStepStatus(self, **kwargs):
@@ -156,6 +161,30 @@ def test_ListProtocolStepsDelegatesToMapper(service, mapper):
     result = service.listProtocolStepsService(mapper, projectId=1, protocolId=10)
 
     assert result == [{"index": 1, "name": "resumeStep", "status": "finished"}]
+
+
+def test_ListProtocolStepsResolvesPostgresqlProtocolId(service, mapper):
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.listProtocolStepsResult = [
+        {"index": 1, "name": "resumeStep", "status": "finished"},
+    ]
+
+    result = service.listProtocolStepsService(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assert result == [
+        {"index": 1, "name": "resumeStep", "status": "finished"},
+    ]
+    assert mapper.listProtocolStepsCalls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+        }
+    ]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
 
 def test_UpdateProtocolStepStatusUpdatesScipionAndPostgres(
