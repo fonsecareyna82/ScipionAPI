@@ -4878,7 +4878,13 @@ class ProjectService:
         return protocol, errorList
 
     def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
-        return mapper.listProtocolSteps(projectId, protocolId)
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return mapper.listProtocolSteps(projectId, scipionProtocolId)
 
     def updateProtocolStepStatusService(
             self,
