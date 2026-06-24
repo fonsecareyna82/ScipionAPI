@@ -3843,7 +3843,7 @@ def getProtocolOutputThumbnailsBatch(
                     logger.debug(
                         "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
                         projectId,
-                        protocolId,
+                        requestedProtocolId,
                         outputName,
                         exc_info=True,
                     )
@@ -3870,7 +3870,7 @@ def getProtocolOutputThumbnailsBatch(
                         logger.debug(
                             "Could not inline batch thumbnail image. projectId=%s protocolId=%s outputName=%s",
                             projectId,
-                            protocolId,
+                            requestedProtocolId,
                             outputName,
                             exc_info=True,
                         )
