@@ -1213,7 +1213,7 @@ class ProjectService:
             projectId: int,
             refresh: bool = False,
             checkPid: bool = False,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1248,12 +1248,30 @@ class ProjectService:
 
             if self._shouldRegisterProtocolOutputs(protocol):
                 try:
-                    outputResults = self.registerOutput(
+                    outputReport = self.registerOutput(
                         projectId=projectId,
                         protocol=protocol,
                         mapper=mapper,
+                        returnReport=True,
                     )
-                    outputSyncResults.extend(outputResults or [])
+
+                    outputSyncResults.extend(outputReport.get("persisted") or [])
+
+                    for skippedOutput in outputReport.get("skipped") or []:
+                        outputSyncErrors.append({
+                            "protocolId": nodeIdText,
+                            "outputName": skippedOutput.get("outputName"),
+                            "outputClassName": skippedOutput.get("outputClassName"),
+                            "reason": skippedOutput.get("reason"),
+                        })
+
+                    for outputError in outputReport.get("errors") or []:
+                        outputSyncErrors.append({
+                            "protocolId": nodeIdText,
+                            "outputName": outputError.get("outputName"),
+                            "outputClassName": outputError.get("outputClassName"),
+                            "error": outputError.get("error"),
+                        })
                 except Exception as exc:
                     outputSyncErrors.append({
                         "protocolId": nodeIdText,
@@ -1333,7 +1351,7 @@ class ProjectService:
             actionLabel: str,
             refresh: bool = True,
             checkPid: bool = True,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         try:
             return self.syncProjectProtocolsAndDependencies(
                 mapper,
@@ -3784,7 +3802,8 @@ class ProjectService:
             protocol: Any,
             raiseOnError: bool = False,
             mapper=None,
-    ) -> List[Dict[str, Any]]:
+            returnReport: bool = False,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Persist all Scipion protocol outputs in PostgreSQL.
 
@@ -3800,6 +3819,8 @@ class ProjectService:
         from app.backend.mapper import ScipionObjectPostgresqlMapper, ScipionSetPostgresqlMapper
 
         results: List[Dict[str, Any]] = []
+        skippedOutputs: List[Dict[str, Any]] = []
+        outputErrors: List[Dict[str, Any]] = []
 
         closeMapper = mapper is None
         if mapper is None:
@@ -3839,7 +3860,15 @@ class ProjectService:
                         )
                         result["mapperKind"] = "tree"
 
+
                     else:
+
+                        skippedOutputs.append({
+                            "outputName": outputName,
+                            "outputClassName": self._getOutputClassName(outputObj),
+                            "reason": "unsupported_output_type",
+                        })
+
                         continue
 
                     result["outputName"] = outputName
@@ -3850,6 +3879,11 @@ class ProjectService:
                     if raiseOnError:
                         raise
 
+                    outputErrors.append({
+                        "outputName": outputName,
+                        "outputClassName": self._getOutputClassName(outputObj),
+                        "error": str(exc),
+                    })
                     logger.warning(
                         "Could not persist Scipion output. projectId=%s protocolId=%s outputName=%s outputClass=%s error=%s",
                         projectId,
@@ -3859,8 +3893,6 @@ class ProjectService:
                         exc,
                         exc_info=True,
                     )
-
-
         finally:
             if closeMapper:
                 mapper.db.close()
