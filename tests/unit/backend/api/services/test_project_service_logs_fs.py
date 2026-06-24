@@ -51,6 +51,34 @@ class FakeProtocol:
     def getScheduleLog(self):
         return self._scheduleLog
 
+class FakeDb:
+    def __init__(self, runtimeProtocolIdByDbId=None):
+        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+        self.fetchCalls = []
+
+    def fetchOne(self, query, params):
+        self.fetchCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        if len(params) < 3:
+            return None
+
+        protocolDbId = params[1]
+        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+        if runtimeProtocolId is None:
+            return None
+
+        return {
+            "protocolId": runtimeProtocolId,
+        }
+
+
+class FakeMapper:
+    def __init__(self, runtimeProtocolIdByDbId=None):
+        self.db = FakeDb(runtimeProtocolIdByDbId=runtimeProtocolIdByDbId)
+
 
 class FakeCurrentProject:
     # fakeCurrentProject
@@ -253,6 +281,121 @@ def test_GetProtocolLogsReadsAllChannelsFromOffsets(service, tmp_path):
         "scheduleLog": "SCH2\n",
         "scheduleOffset": 10,
     }
+
+
+def test_ListProtocolLogChannelsServiceResolvesPostgresqlProtocolId(service, tmp_path):
+    stdoutLog = tmp_path / "stdout.log"
+    stderrLog = tmp_path / "stderr.log"
+    scheduleLog = tmp_path / "schedule.log"
+
+    stdoutLog.write_text("hello\n", encoding="utf-8")
+    stderrLog.write_text("error\n", encoding="utf-8")
+    scheduleLog.write_text("schedule\n", encoding="utf-8")
+
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(stdoutLog),
+        stderrLog=str(stderrLog),
+        scheduleLog=str(scheduleLog),
+    )
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.listProtocolLogChannelsService(
+        projectId=1,
+        protocolId=500,
+        mapper=mapper,
+    )
+
+    assert result["projectId"] == 1
+    assert result["protocolId"] == 10
+    assert result["channels"] == [
+        {"id": "stdout", "label": "Output", "order": 1},
+        {"id": "stderr", "label": "Errors", "order": 2},
+        {"id": "schedule", "label": "Schedule", "order": 3},
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_PollProtocolLogsServiceResolvesPostgresqlProtocolId(service, tmp_path):
+    stdoutLog = tmp_path / "stdout.log"
+    scheduleLog = tmp_path / "schedule.log"
+
+    stdoutLog.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    scheduleLog.write_text("sched1\nsched2\n", encoding="utf-8")
+
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(stdoutLog),
+        stderrLog=str(tmp_path / "missing-stderr.log"),
+        scheduleLog=str(scheduleLog),
+    )
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.pollProtocolLogsService(
+        projectId=1,
+        protocolId=500,
+        offsets={
+            "stdoutLog": 6,
+            "err": 0,
+            "schedule": 7,
+        },
+        maxBytes=64,
+        maxLines=1,
+        mapper=mapper,
+    )
+
+    assert result["projectId"] == 1
+    assert result["protocolId"] == 10
+    assert result["channels"]["stdout"] == {
+        "content": "line2\n",
+        "offset": 12,
+    }
+    assert result["channels"]["stderr"] == {
+        "content": "",
+        "offset": 0,
+    }
+    assert result["channels"]["schedule"] == {
+        "content": "sched2\n",
+        "offset": 14,
+    }
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_GetProtocolLogsResolvesPostgresqlProtocolId(service, tmp_path):
+    stdoutLog = tmp_path / "stdout.log"
+    stderrLog = tmp_path / "stderr.log"
+    scheduleLog = tmp_path / "schedule.log"
+
+    stdoutLog.write_text("abc\ndef\n", encoding="utf-8")
+    stderrLog.write_text("ERR1\nERR2\n", encoding="utf-8")
+    scheduleLog.write_text("SCH1\nSCH2\n", encoding="utf-8")
+
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(stdoutLog),
+        stderrLog=str(stderrLog),
+        scheduleLog=str(scheduleLog),
+    )
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.getProtocolLogs(
+        projectId=1,
+        protocolId=500,
+        offset=4,
+        errOffset=5,
+        scheduleOffset=5,
+        mapper=mapper,
+    )
+
+    assert result == {
+        "stdoutLog": "def\n",
+        "stderrLog": "ERR2\n",
+        "stdoutOffset": 8,
+        "stderrOffset": 10,
+        "scheduleLog": "SCH2\n",
+        "scheduleOffset": 10,
+    }
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
 
 
 def test_GetProtocolPathReturnsGlobalBrowserPayload(service, monkeypatch, tmp_path):
