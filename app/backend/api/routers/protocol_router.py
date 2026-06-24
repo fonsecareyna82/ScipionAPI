@@ -69,26 +69,26 @@ async def loadNewProtocol(
     return service.getNewProtocolParams(projectId, protClassName)
 
 
-@router.post("/launch", response_model=Any)
-async def launchProtocol(request: ProtocolRequest):
-    try:
-        protocolId = request.getProtocolId()
-        protocolClassName = request.getProtocolClassName()
-        params = request.getParams()
-        service.launchProtocol(protocolId, protocolClassName, params)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/save", response_model=Any)
-async def saveProtocol(request: ProtocolRequest):
-    try:
-        protocolId = request.getProtocolId()
-        protocolClassName = request.getProtocolClassName()
-        params = request.getParams()
-        service.saveProtocol(protocolId, protocolClassName, params)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.post("/launch", response_model=Any)
+# async def launchProtocol(request: ProtocolRequest):
+#     try:
+#         protocolId = request.getProtocolId()
+#         protocolClassName = request.getProtocolClassName()
+#         params = request.getParams()
+#         service.launchProtocol(protocolId, protocolClassName, params)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+#
+#
+# @router.post("/save", response_model=Any)
+# async def saveProtocol(request: ProtocolRequest):
+#     try:
+#         protocolId = request.getProtocolId()
+#         protocolClassName = request.getProtocolClassName()
+#         params = request.getParams()
+#         service.saveProtocol(protocolId, protocolClassName, params)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/logs/{projectId}/{protocolId}/{offset}/{errOffset}/{scheduleOffset}", response_model=Any)

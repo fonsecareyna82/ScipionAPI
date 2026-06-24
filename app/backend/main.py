@@ -39,7 +39,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
+# from app.backend.api.routers.protocol_router import router as protocols
 from app.backend.api.routers.plugin_router import router as plugins
 from app.backend.api.routers.auth_router import router as auth
 from app.backend.api.routers.user_router import router as users
@@ -130,7 +130,7 @@ def _buildApiApp() -> FastAPI:
 
     # includeRouters
     apiApp.include_router(projects)
-    apiApp.include_router(protocols)
+    # apiApp.include_router(protocols)
     apiApp.include_router(plugins)
     apiApp.include_router(auth)
     apiApp.include_router(users)
