@@ -5398,11 +5398,13 @@ class ProjectService:
         """
         Return available log channels for a protocol, including paths and basic file stats.
         """
-        protocol = self._getScipionProtocolForRuntime(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
         # Resolve log paths from Scipion protocol object
         stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
@@ -5445,7 +5447,7 @@ class ProjectService:
         # Keep a consistent list but allow UI to filter by exists==True
         return {
             "projectId": projectId,
-            "protocolId": int(protocolId),
+            "protocolId": int(scipionProtocolId),
             "channels": channels,
         }
 
@@ -5461,11 +5463,13 @@ class ProjectService:
         """
         Incrementally read protocol logs from the given offsets, applying maxBytes and maxLines limits.
         """
-        protocol = self._getScipionProtocolForRuntime(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
         stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
         stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
@@ -5616,7 +5620,7 @@ class ProjectService:
 
         return {
             "projectId": projectId,
-            "protocolId": int(protocolId),
+            "protocolId": int(scipionProtocolId),
             "channels": {
                 "stdout": stdoutRes,
                 "stderr": stderrRes,
@@ -5633,11 +5637,13 @@ class ProjectService:
             scheduleOffset: int = 0,
             mapper=None,
     ):
-        protocol = self._getScipionProtocolForRuntime(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
         logPath = protocol.getStdoutLog()
         errLogPath = protocol.getStderrLog()
         scheduleLogPath = protocol.getScheduleLog()
