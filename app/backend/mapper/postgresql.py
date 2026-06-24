@@ -394,15 +394,53 @@ class PostgresqlFlatMapper(Mapper):
         )
         return [r["tagId"] for r in rows if r.get("tagId")]
 
-    def setProtocolTagIds(self, projectId: int, protocolId: int, tagIds: List[str]) -> dict:
-        # setProtocolTagIds
+    def setProtocolTagIdsByProtocolDbId(self, projectId: int, protocolDbId: int, tagIds: List[str]) -> dict:
+        # setProtocolTagIdsByProtocolDbId
         clean = sorted({str(t).strip() for t in (tagIds or []) if str(t).strip()})
 
-        # validateProtocolBelongsToProject
         row = self.db.fetchOne(
             """
-            SELECT "id"
-              FROM "protocols"
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE id = %s
+               AND "projectId" = %s
+            """,
+            (int(protocolDbId), projectId),
+        )
+        if not row:
+            raise Exception("Protocol not found in project")
+
+        self.db.execute(
+            """
+            DELETE FROM protocol_tag_assignments
+             WHERE "protocolDbId" = %s
+            """,
+            (int(protocolDbId),),
+        )
+
+        if clean:
+            self.db.execute(
+                """
+                INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
+                SELECT %s, x
+                  FROM unnest(%s::text[]) AS x
+                ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
+                """,
+                (int(protocolDbId), clean),
+            )
+
+        return {
+            "protocolId": str(row["protocolId"]),
+            "protocolDbId": int(protocolDbId),
+            "tagIds": clean,
+        }
+
+    def setProtocolTagIds(self, projectId: int, protocolId: int, tagIds: List[str]) -> dict:
+        # setProtocolTagIds
+        row = self.db.fetchOne(
+            """
+            SELECT id
+              FROM protocols
              WHERE "protocolId" = %s
                AND "projectId" = %s
             """,
@@ -411,29 +449,11 @@ class PostgresqlFlatMapper(Mapper):
         if not row:
             raise Exception("Protocol not found in project")
 
-        # deleteExistingAssignments
-        protocolDbId = row['id']
-        self.db.execute(
-            """
-            DELETE FROM protocol_tag_assignments
-             WHERE "protocolDbId" = %s
-            """,
-            (protocolDbId,),
+        return self.setProtocolTagIdsByProtocolDbId(
+            projectId=projectId,
+            protocolDbId=int(row["id"]),
+            tagIds=tagIds,
         )
-
-        if clean:
-            # bulkInsertWithUnnest
-            self.db.execute(
-                """
-                INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
-                SELECT %s, x
-                  FROM unnest(%s::text[]) AS x
-                ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
-                """,
-                (protocolDbId, clean),
-            )
-
-        return {"protocolId": protocolDbId, "tagIds": clean}
 
     def getProjectProtocolTagIdsByProtocolId(self, projectId: int, includeEmpty: bool = False) -> Dict[str, List[str]]:
         # getProjectProtocolTagIdsByProtocolId
