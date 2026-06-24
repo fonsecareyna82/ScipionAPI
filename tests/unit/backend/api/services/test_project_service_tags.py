@@ -168,6 +168,31 @@ class FakeMapper:
 class FakeMapperWithoutDbIdSetter(FakeMapper):
     setProtocolTagIdsByProtocolDbId = None
 
+    def setProtocolTagIds(self, projectId, protocolId, tagIds):
+        self.setProtocolTagIdsCalls.append({
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "tagIds": list(tagIds or []),
+        })
+
+        for row in self.db.protocolRows:
+            if row["projectId"] == int(projectId) and row["protocolId"] == str(protocolId):
+                cleanTagIds = sorted({
+                    str(tagId).strip()
+                    for tagId in (tagIds or [])
+                    if str(tagId).strip()
+                })
+
+                self.protocolTagIdsByProtocolDbId[int(row["id"])] = cleanTagIds
+
+                return {
+                    "protocolId": str(row["protocolId"]),
+                    "protocolDbId": int(row["id"]),
+                    "tagIds": cleanTagIds,
+                }
+
+        raise Exception("Protocol not found in project")
+
 
 @pytest.fixture
 def projectServiceModule(authTestEnv):
