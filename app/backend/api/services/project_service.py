@@ -11587,6 +11587,8 @@ class ProjectService:
                 mapper=mapper,
             )
             columns = list(table.getColumns())
+            table.setSortingColumn(sortBy)
+            table.setSortingAsc(asc)
 
             if selectionOnly:
                 rows: list = []
