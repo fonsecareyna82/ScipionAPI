@@ -12966,33 +12966,72 @@ class ProjectService:
             )
 
     def listProtocolTags(
-        self,
-        mapper,
-        projectId: int,
-        protocolId: int,
-        currentUser: dict,
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            currentUser: dict,
     ) -> Dict[str, Any]:
         # listProtocolTags
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
         try:
-            tagIds = mapper.getProtocolTagIds(projectId=projectId, protocolDbId=int(protocolId))
+            tagIds = mapper.getProtocolTagIds(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list protocol tags: {e}",
             )
 
-        return {"tagIds": tagIds}
+        return {
+            "protocolId": str(protocolId),
+            "protocolDbId": protocolDbId,
+            "tagIds": tagIds,
+        }
 
     def setProtocolTags(
-        self,
-        mapper,
-        projectId: int,
-        protocolId: int,
-        tagIds: List[str],
-        currentUser: dict,
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            tagIds: List[str],
+            currentUser: dict,
     ) -> Dict[str, Any]:
         # setProtocolTags
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
         try:
+            setByDbId = getattr(mapper, "setProtocolTagIdsByProtocolDbId", None)
+            if callable(setByDbId):
+                return setByDbId(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    tagIds=tagIds or [],
+                )
+
             return mapper.setProtocolTagIds(
                 projectId=projectId,
                 protocolId=int(protocolId),
