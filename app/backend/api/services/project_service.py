@@ -860,6 +860,40 @@ class ProjectService:
 
         return None
 
+    def _raisePostgresqlViewerUnavailable(
+            self,
+            viewerName: str,
+            projectId: int,
+            protocolId: Union[int, str],
+            outputName: str,
+            reason: Optional[str] = None,
+            **extra,
+    ) -> None:
+        extraText = " ".join(
+            "%s=%s" % (key, value)
+            for key, value in extra.items()
+            if value is not None
+        )
+
+        logger.warning(
+            "%s output is not available in PostgreSQL metadata. projectId=%s protocolId=%s outputName=%s reason=%s %s",
+            viewerName,
+            projectId,
+            protocolId,
+            outputName,
+            reason,
+            extraText,
+        )
+
+        detail = "%s output is not available in PostgreSQL metadata" % viewerName
+        if reason:
+            detail = "%s: %s" % (detail, reason)
+
+        raise HTTPException(
+            status_code=404,
+            detail=detail,
+        )
+
     def _resolvePostgresqlReaderProtocolId(
             self,
             mapper,
@@ -7848,6 +7882,15 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
         protocol, output = self._resolveOutputForVolumes(
             protocolId=protocolId,
             outputName=outputName,
@@ -7884,6 +7927,16 @@ class ProjectService:
                 outputName,
                 volumeId,
                 getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
             )
 
         protocol, output = self._resolveOutputForVolumes(
@@ -7926,6 +7979,16 @@ class ProjectService:
                 outputName,
                 volumeId,
                 getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume histogram",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
             )
 
         protocol, output = self._resolveOutputForVolumes(
@@ -8015,6 +8078,16 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume slice",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
         protocol, output = self._resolveOutputForVolumes(
             protocolId=protocolId,
             outputName=outputName,
@@ -8080,6 +8153,16 @@ class ProjectService:
                 outputName,
                 volumeId,
                 getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume 3D data",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
             )
 
         protocol, output = self._resolveOutputForVolumes(
@@ -8351,6 +8434,16 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume surface mesh",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
         protocol, output = self._resolveOutputForVolumes(
             protocolId=protocolId,
             outputName=outputName,
@@ -8428,6 +8521,15 @@ class ProjectService:
         if pgReader is not None:
             return pgReader.listTiltSeries()
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="reader_not_available",
+            )
+
         _, setOfTiltSeries = self._resolveOutputForTiltSeries(
             protocolId=protocolId,
             outputName=outputName,
@@ -8489,6 +8591,16 @@ class ProjectService:
             payload = pgReader.getTiltSeriesFrames(tiltSeriesId)
             if payload is not None:
                 return payload
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries frames",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="frames_not_available" if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+            )
 
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
             protocolId=protocolId,
@@ -9436,7 +9548,7 @@ class ProjectService:
         if mapper is not None:
             raise HTTPException(
                 status_code=404,
-                detail="TiltSeries frame not found in PostgreSQL metadata",
+                detail="Coordinates3D output is not available in PostgreSQL metadata",
             )
 
         protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
@@ -10712,6 +10824,15 @@ class ProjectService:
             objMgr._tables = {}
             objMgr.getTables()
             return objMgr
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Metadata",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="dao_not_available",
+            )
 
         _, _, metaPath = self._resolveOutputForMetadata(
             protocolId=protocolId,
