@@ -3285,12 +3285,19 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_integrated_context_reader import PostgresqlIntegratedContextReader
 
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
             reader = PostgresqlIntegratedContextReader(
                 db=mapper.db,
                 projectId=projectId,
-                protocolId=protocolId,
+                protocolId=readerProtocolId,
                 outputName=outputName,
             )
+
             return reader.getContext()
         except Exception:
             logger.debug(
@@ -3309,11 +3316,6 @@ class ProjectService:
             outputName: str,
             mapper=None,
     ) -> Dict[str, Any]:
-        if self.currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current project loaded",
-            )
 
         pgContext = self._getPostgresqlIntegratedAnalyzeContextIfAvailable(
             mapper=mapper,
@@ -3324,6 +3326,21 @@ class ProjectService:
 
         if pgContext is not None:
             return pgContext
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Integrated Analyze Context",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="context_not_available",
+            )
+
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
 
         try:
             protocol = self.currentProject.getProtocol(int(protocolId))
