@@ -6897,28 +6897,31 @@ class ProjectService:
 
     def outputPreview(
             self,
-            protocolId: int,
-            outputName: str,
-            requestHeaders: dict = None,
-            colormap: str = None,
+            protocolId,
+            outputName,
+            requestHeaders=None,
+            colormap=None,
             mapper=None,
-            projectId: Optional[int] = None,
+            projectId=None,
     ):
-        protocol = self._getScipionProtocolForRuntime(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
 
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
         if not hasattr(protocol, outputName):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output not found: {outputName}",
+                detail=f"Output '{outputName}' not found in protocol",
             )
 
         output = getattr(protocol, outputName)
+        outputPath = output.getFileName()
 
-        outputPreview = OutputsPreview(
+        preview = OutputsPreview(
             self.currentProject,
             protocol,
             output,
@@ -6926,22 +6929,8 @@ class ProjectService:
             colormapOverride=colormap,
         )
 
-        getFileName = getattr(output, "getFileName", None)
-        if not callable(getFileName):
-            return outputPreview.renderOutputFallbackPreview()
-
-        try:
-            outputPath = getFileName()
-        except Exception:
-            return outputPreview.renderOutputFallbackPreview()
-
-        if not outputPath:
-            return outputPreview.renderOutputFallbackPreview()
-
-        runtimeProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
-
         objMgr = self._createObjectManager()
-        return outputPreview.preview(runtimeProtocolId, outputPath, objMgr)
+        return preview.preview(scipionProtocolId, outputPath, objMgr)
 
     def buildProtocolThumbnail(
             self,
