@@ -3807,14 +3807,22 @@ class ProjectService:
 
     def buildProtocolOutputThumbnail(
             self,
-            protocolId: int,
+            protocolId: Union[int, str],
             outputName: str,
             force: bool = False,
             size: int = 320,
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
-        service = ThumbnailService(self.currentProject)
-        return service.buildProtocolOutputThumbnail(
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
             protocolId=protocolId,
+        )
+
+        thumbnailService = ThumbnailService(self.currentProject)
+        return thumbnailService.buildProtocolOutputThumbnail(
+            protocolId=scipionProtocolId,
             outputName=outputName,
             force=force,
             size=size,
@@ -6937,22 +6945,22 @@ class ProjectService:
 
     def buildProtocolThumbnail(
             self,
-            protocolId: int,
+            protocolId: Union[int, str],
             force: bool = False,
             size: int = 320,
             outputName: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
-        runtimeProtocolId = self._resolveScipionProtocolId(
+        scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
 
-        service = ThumbnailService(self.currentProject)
-        return service.buildProtocolThumbnail(
-            protocolId=runtimeProtocolId,
+        thumbnailService = ThumbnailService(self.currentProject)
+        return thumbnailService.buildProtocolThumbnail(
+            protocolId=scipionProtocolId,
             force=force,
             size=size,
             outputName=outputName,
