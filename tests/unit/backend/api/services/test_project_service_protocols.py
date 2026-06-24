@@ -1836,3 +1836,84 @@ def test_LaunchProtocolScheduleResolvesPostgresqlProtocolId(
     assert service.currentProject.scheduledProtocols == [protocol]
     assert service.currentProject.launchedProtocols == []
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
+    protocolA = FakeProtocol(objId=10, className="ProtA")
+    protocolB = FakeProtocol(objId=11, className="ProtB")
+
+    service.currentProject.protocols[10] = protocolA
+    service.currentProject.protocols[11] = protocolB
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.db.runtimeProtocolIdByDbId[501] = 11
+
+    exportedProtocolLists = []
+
+    def fakeGetProtocolsJson(protocolList):
+        exportedProtocolLists.append(protocolList)
+        return [
+            {
+                "protocol": "exported-a",
+            },
+            {
+                "protocol": "exported-b",
+            },
+        ]
+
+    service.currentProject.getProtocolsJson = fakeGetProtocolsJson
+
+    class FakeExportPayload:
+        includeUpstream = False
+        protocolIds = ["500", "501"]
+
+    result = service.exportWorkflowProtocolsService(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 1},
+        payload=FakeExportPayload(),
+    )
+
+    assert exportedProtocolLists == [[protocolA, protocolB]]
+    assert result["sourceProjectId"] == 1
+    assert result["protocolIds"] == ["500", "501"]
+    assert result["workflow"] == [
+        {
+            "protocol": "exported-a",
+        },
+        {
+            "protocol": "exported-b",
+        },
+    ]
+
+    assert result["scipionWeb"]["sourceProjectId"] == 1
+    assert result["scipionWeb"]["sourceProtocolIds"] == ["500", "501"]
+    assert result["scipionWeb"]["protocolPlugins"][0]["protocolId"] == "10"
+    assert result["scipionWeb"]["protocolPlugins"][1]["protocolId"] == "11"
+
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchOneCalls[1]["params"] == (1, 501, "501")
+
+
+def test_ExportWorkflowProtocolsRaisesWhenPostgresqlProtocolIdCannotBeResolved(service, mapper):
+    protocol = FakeProtocol(objId=10, className="ProtA")
+    service.currentProject.protocols[10] = protocol
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    class FakeExportPayload:
+        includeUpstream = False
+        protocolIds = ["500", "999"]
+
+    with pytest.raises(HTTPException) as exc:
+        service.exportWorkflowProtocolsService(
+            mapper=mapper,
+            projectId=1,
+            currentUser={"id": 1},
+            payload=FakeExportPayload(),
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Protocol(s) not found: 999"
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchOneCalls[1]["params"] == (1, 999, "999")
