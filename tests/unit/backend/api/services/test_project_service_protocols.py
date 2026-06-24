@@ -212,9 +212,34 @@ class FakeCurrentProject:
         return self.resetWorkflowResult
 
 
+class FakeDb:
+    def __init__(self):
+        self.runtimeProtocolIdByDbId = {}
+        self.fetchOneCalls = []
+
+    def fetchOne(self, query, params):
+        self.fetchOneCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        if len(params) < 3:
+            return None
+
+        protocolDbId = params[1]
+        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+        if runtimeProtocolId is None:
+            return None
+
+        return {
+            "protocolId": runtimeProtocolId,
+        }
+
+
 class FakeMapper:
     # fakeMapper
     def __init__(self):
+        self.db = FakeDb()
         self.dbProtocolsByProtocolId = {}
         self.savedProtocolContexts = []
         self.deleteProtocolCalls = []
@@ -1355,6 +1380,120 @@ def test_StopProtocolStopsEachProtocol(service):
         mapper=None,
         projectId=None,
         protocolIds=["10", "11"],
+    )
+
+    assertSuccessEnvelope(result)
+    assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
+
+
+def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
+    protocol = FakeProtocol(objId=10)
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    result = service.renameProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        newName="Renamed protocol",
+        newComment="Updated comment",
+    )
+
+    assertSuccessEnvelope(result)
+    assert protocol.runName.get() == "Renamed protocol"
+    assert protocol._objComment == "Updated comment"
+    assert service.currentProject.storedProtocols == [protocol]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_DuplicateProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
+    protocolA = FakeProtocol(objId=10)
+    protocolB = FakeProtocol(objId=11)
+    copiedA = FakeProtocol(objId=110)
+    copiedB = FakeProtocol(objId=111)
+
+    service.currentProject.protocols[10] = protocolA
+    service.currentProject.protocols[11] = protocolB
+    service.currentProject.copiedProtocolOutputs = [copiedA, copiedB]
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.db.runtimeProtocolIdByDbId[501] = 11
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        lambda mapper, projectId, refresh=False, checkPid=False: {
+            "protocols": 2,
+            "dependencies": 0,
+        },
+    )
+
+    class DuplicateItem:
+        def __init__(self, itemId):
+            self.id = itemId
+
+    result = service.duplicateProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocols=[DuplicateItem("500"), DuplicateItem("501")],
+    )
+
+    assertSuccessEnvelope(result)
+    assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
+    assert result["duplicated"] == [
+        {"sourceId": "500", "newId": "110"},
+        {"sourceId": "501", "newId": "111"},
+    ]
+
+
+def test_DeleteProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
+    protocolA = FakeProtocol(objId=10)
+    protocolB = FakeProtocol(objId=11)
+
+    service.currentProject.protocols[10] = protocolA
+    service.currentProject.protocols[11] = protocolB
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.db.runtimeProtocolIdByDbId[501] = 11
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        lambda mapper, projectId, refresh=False, checkPid=False: {
+            "protocols": 0,
+            "dependencies": 0,
+        },
+    )
+
+    result = service.deleteProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocols=["500", "501"],
+    )
+
+    assert result["status"] == 0
+    assert service.currentProject.deleteProtocolCalls == [[protocolA, protocolB]]
+    assert mapper.deleteProtocolCalls == [
+        {
+            "projectId": 1,
+            "protocolList": [protocolA, protocolB],
+        }
+    ]
+
+def test_StopProtocolResolvesPostgresqlProtocolIds(service, mapper):
+    protocolA = FakeProtocol(objId=10)
+    protocolB = FakeProtocol(objId=11)
+
+    service.currentProject.protocols[10] = protocolA
+    service.currentProject.protocols[11] = protocolB
+
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.db.runtimeProtocolIdByDbId[501] = 11
+
+    result = service.stopProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["500", "501"],
     )
 
     assertSuccessEnvelope(result)
