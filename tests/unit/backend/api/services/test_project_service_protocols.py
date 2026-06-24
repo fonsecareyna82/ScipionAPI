@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -1917,3 +1918,156 @@ def test_ExportWorkflowProtocolsRaisesWhenPostgresqlProtocolIdCannotBeResolved(s
     assert exc.value.detail == "Protocol(s) not found: 999"
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
     assert mapper.db.fetchOneCalls[1]["params"] == (1, 999, "999")
+
+
+def test_ImportWorkflowProtocolsSanitizesExternalReferences(service, mapper, monkeypatch):
+    loadedJsonPayloads = []
+
+    def fakeLoadProtocols(jsonStr):
+        loadedJsonPayloads.append(json.loads(jsonStr))
+        return None
+
+    service.currentProject.loadProtocols = fakeLoadProtocols
+
+    workflowIds = [
+        {"10"},
+        {"10", "20", "21"},
+    ]
+
+    monkeypatch.setattr(
+        service,
+        "_getCurrentWorkflowProtocolIds",
+        lambda: workflowIds.pop(0),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        lambda mapper, projectId, refresh=False, checkPid=False: {
+            "protocols": 3,
+            "dependencies": 2,
+        },
+    )
+
+    class FakeImportPayload:
+        mode = "append"
+        sourceProjectId = 999
+        workflow = [
+            {
+                "object.id": "1",
+                "inputFromCopiedProtocol": "1.outputParticles",
+                "inputFromExternalProtocol": "99.outputParticles",
+                "params": {
+                    "validPointer": "2.outputVolume",
+                    "invalidPointer": "100.outputCoordinates",
+                },
+            },
+            {
+                "object.id": "2",
+                "inputFromFirstProtocol": "1.outputParticles",
+            },
+        ]
+
+    result = service.importWorkflowProtocolsService(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 1},
+        payload=FakeImportPayload(),
+    )
+
+    assert result == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "created": [
+            {"newId": "20"},
+            {"newId": "21"},
+        ],
+        "protocolsCount": 3,
+        "dependenciesCount": 2,
+    }
+
+    assert loadedJsonPayloads == [
+        [
+            {
+                "object.id": "1",
+                "inputFromCopiedProtocol": "1.outputParticles",
+                "params": {
+                    "validPointer": "2.outputVolume",
+                },
+            },
+            {
+                "object.id": "2",
+                "inputFromFirstProtocol": "1.outputParticles",
+            },
+        ]
+    ]
+
+
+def test_ImportWorkflowProtocolsKeepsReferencesForSameProject(service, mapper, monkeypatch):
+    loadedJsonPayloads = []
+
+    def fakeLoadProtocols(jsonStr):
+        loadedJsonPayloads.append(json.loads(jsonStr))
+        return None
+
+    service.currentProject.loadProtocols = fakeLoadProtocols
+
+    workflowIds = [
+        {"10"},
+        {"10", "20"},
+    ]
+
+    monkeypatch.setattr(
+        service,
+        "_getCurrentWorkflowProtocolIds",
+        lambda: workflowIds.pop(0),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        lambda mapper, projectId, refresh=False, checkPid=False: {
+            "protocols": 2,
+            "dependencies": 1,
+        },
+    )
+
+    class FakeImportPayload:
+        mode = "append"
+        sourceProjectId = 1
+        workflow = [
+            {
+                "object.id": "1",
+                "inputFromExistingSameProjectProtocol": "99.outputParticles",
+                "inputFromCopiedProtocol": "1.outputParticles",
+            },
+        ]
+
+    result = service.importWorkflowProtocolsService(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 1},
+        payload=FakeImportPayload(),
+    )
+
+    assert result == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "created": [
+            {"newId": "20"},
+        ],
+        "protocolsCount": 2,
+        "dependenciesCount": 1,
+    }
+
+    assert loadedJsonPayloads == [
+        [
+            {
+                "object.id": "1",
+                "inputFromExistingSameProjectProtocol": "99.outputParticles",
+                "inputFromCopiedProtocol": "1.outputParticles",
+            },
+        ]
+    ]
