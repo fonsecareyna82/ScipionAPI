@@ -3897,6 +3897,13 @@ class ProjectService:
             if closeMapper:
                 mapper.db.close()
 
+        if returnReport:
+            return {
+                "persisted": results,
+                "skipped": skippedOutputs,
+                "errors": outputErrors,
+            }
+
         return results
 
     def _resolveProtocolDbIdForOutputPersistence(self, db, projectId: int, protocol: Any) -> int:
