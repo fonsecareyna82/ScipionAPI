@@ -3787,25 +3787,25 @@ def getProtocolOutputThumbnailsBatch(
             seen = set()
 
             for requestedOutput in requestedOutputs:
-                protocolId = int(requestedOutput.protocolId)
+                requestedProtocolId = int(requestedOutput.protocolId)
                 outputName = str(requestedOutput.outputName or "").strip()
 
                 if not outputName:
                     continue
 
-                requestKey = (protocolId, outputName)
+                requestKey = (requestedProtocolId, outputName)
                 if requestKey in seen:
                     continue
                 seen.add(requestKey)
 
                 item = {
-                    "protocolId": protocolId,
+                    "protocolId": requestedProtocolId,
                     "outputName": outputName,
                     "outputClassName": None,
                     "exists": False,
                     "cached": False,
                     "thumbnailUrl": (
-                        f"/projects/{int(projectId)}/protocols/{protocolId}"
+                        f"/projects/{int(projectId)}/protocols/{requestedProtocolId}"
                         f"/outputs/{outputName}/thumbnail"
                     ),
                     "thumbnailDataUrl": None,
@@ -3813,14 +3813,14 @@ def getProtocolOutputThumbnailsBatch(
                 }
 
                 try:
-                    protocol = service.currentProject.getProtocol(protocolId)
+                    scipionProtocolId = service._resolveScipionProtocolId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=requestedProtocolId,
+                    )
+                    protocol = service.currentProject.getProtocol(int(scipionProtocolId))
                 except Exception:
                     item["error"] = "Protocol not found"
-                    items.append(item)
-                    continue
-
-                if not hasattr(protocol, outputName):
-                    item["error"] = "Output not found"
                     items.append(item)
                     continue
 
@@ -3832,7 +3832,7 @@ def getProtocolOutputThumbnailsBatch(
 
                 try:
                     result = service.buildProtocolOutputThumbnail(
-                        protocolId=protocolId,
+                        protocolId=requestedProtocolId,
                         outputName=outputName,
                         force=False,
                         size=payload.size,
