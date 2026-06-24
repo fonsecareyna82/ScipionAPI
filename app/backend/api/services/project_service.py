@@ -1227,6 +1227,9 @@ class ProjectService:
         currentProtocolIds: Set[str] = set()
         protocolsByScipionId: Dict[str, Any] = {}
 
+        outputSyncResults: List[Dict[str, Any]] = []
+        outputSyncErrors: List[Dict[str, Any]] = []
+
         # 1) Save all protocol nodes that are currently present in the real Scipion graph
         for nodeId, nodeObj in nodesDict.items():
             nodeIdText = str(nodeId)
@@ -1244,7 +1247,23 @@ class ProjectService:
             protocolDbId = mapper.saveProtocol(protocolContext)
 
             if self._shouldRegisterProtocolOutputs(protocol):
-                self.registerOutput(projectId, protocol)
+                try:
+                    outputResults = self.registerOutput(
+                        projectId=projectId,
+                        protocol=protocol,
+                        mapper=mapper,
+                    )
+                    outputSyncResults.extend(outputResults or [])
+                except Exception as exc:
+                    outputSyncErrors.append({
+                        "protocolId": nodeIdText,
+                        "error": str(exc),
+                    })
+                    logger.exception(
+                        "Failed to sync protocol outputs. projectId=%s protocolId=%s",
+                        projectId,
+                        nodeIdText,
+                    )
 
             currentProtocolIds.add(nodeIdText)
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
@@ -1293,10 +1312,18 @@ class ProjectService:
         if callable(replaceInputRefs):
             savedInputRefs = replaceInputRefs(projectId, inputRefs)
 
+        outputResultsByKind: Dict[str, int] = {}
+        for item in outputSyncResults:
+            mapperKind = str(item.get("mapperKind") or "unknown")
+            outputResultsByKind[mapperKind] = outputResultsByKind.get(mapperKind, 0) + 1
+
         return {
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
             "inputRefs": int(savedInputRefs),
+            "outputs": len(outputSyncResults),
+            "outputsByKind": outputResultsByKind,
+            "outputErrors": outputSyncErrors,
         }
 
     def syncProjectGraphAfterMutation(
@@ -3756,6 +3783,7 @@ class ProjectService:
             projectId: int,
             protocol: Any,
             raiseOnError: bool = False,
+            mapper=None,
     ) -> List[Dict[str, Any]]:
         """
         Persist all Scipion protocol outputs in PostgreSQL.
@@ -3773,7 +3801,10 @@ class ProjectService:
 
         results: List[Dict[str, Any]] = []
 
-        mapper = getMapper()
+        closeMapper = mapper is None
+        if mapper is None:
+            mapper = getMapper()
+
         try:
             protocolDbId = self._resolveProtocolDbIdForOutputPersistence(
                 mapper.db,
@@ -3829,8 +3860,10 @@ class ProjectService:
                         exc_info=True,
                     )
 
+
         finally:
-            mapper.db.close()
+            if closeMapper:
+                mapper.db.close()
 
         return results
 
