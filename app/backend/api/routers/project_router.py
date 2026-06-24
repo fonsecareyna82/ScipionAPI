@@ -3481,6 +3481,8 @@ def getProtocolThumbnail(
                     outputName=outputName,
                     force=False,
                     size=size,
+                    mapper=mapper,
+                    projectId=projectId,
                 )
 
             return service.buildProtocolThumbnail(
@@ -3543,6 +3545,8 @@ def rebuildProtocolThumbnail(
                     outputName=outputName,
                     force=True,
                     size=size,
+                    mapper=mapper,
+                    projectId=projectId,
                 )
 
             return service.buildProtocolThumbnail(
@@ -3707,6 +3711,8 @@ def getProtocolOutputThumbnail(
                 outputName=outputName,
                 force=False,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         thumbPath = result.get("absolutePath")
@@ -3830,6 +3836,8 @@ def getProtocolOutputThumbnailsBatch(
                         outputName=outputName,
                         force=False,
                         size=payload.size,
+                        mapper=mapper,
+                        projectId=projectId,
                     )
                 except Exception as exc:
                     logger.debug(
