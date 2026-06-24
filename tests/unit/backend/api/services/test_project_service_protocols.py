@@ -113,6 +113,9 @@ class FakeProtocol:
     def getParam(self, name):
         return self._params.get(name)
 
+    def getPlugin(self):
+        return None
+
     def setAttributeValue(self, name, value):
         self.attributeValues[name] = value
 
@@ -174,6 +177,10 @@ class FakeCurrentProject:
 
     def getProtocol(self, protocolId):
         return self.protocols[int(protocolId)]
+
+    def _fixProtParamsConfiguration(self, protocol):
+        self.fixedProtocolParams = getattr(self, "fixedProtocolParams", [])
+        self.fixedProtocolParams.append(protocol)
 
     def _storeProtocol(self, protocol):
         self.storedProtocols.append(protocol)
@@ -1634,6 +1641,58 @@ def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypa
     ]
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
+def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
+    protocol = FakeProtocol(objId=10, className="ProtClass")
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    buildContextCalls = []
+
+    def fakeBuildProtocolContext(projectId, protocolObj):
+        buildContextCalls.append({
+            "projectId": projectId,
+            "protocol": protocolObj,
+        })
+        return {
+            "info": {
+                "projectId": projectId,
+                "protocolId": protocolObj.getObjId(),
+                "protocolClassName": "ProtClass",
+            },
+            "form": {
+                "sections": [],
+            },
+            "values": {},
+        }
+
+    monkeypatch.setattr(service, "_buildProtocolContext", fakeBuildProtocolContext)
+
+    result = service.getProtocolParams(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assert result == {
+        "info": {
+            "projectId": 1,
+            "protocolId": 10,
+            "protocolClassName": "ProtClass",
+        },
+        "form": {
+            "sections": [],
+        },
+        "values": {},
+    }
+
+    assert service.currentProject.fixedProtocolParams == [protocol]
+    assert buildContextCalls == [
+        {
+            "projectId": 1,
+            "protocol": protocol,
+        }
+    ]
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
 def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
     projectServiceModule,
