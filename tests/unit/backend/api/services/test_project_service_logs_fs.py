@@ -571,3 +571,167 @@ def test_PreviewProtocolImageFileDelegatesToProtocolBrowser(projectServiceModule
     assert FakeFileHandlers.lastInstance.calls == [
         ("previewProtocolImageFile", "10", "preview.webp", False),
     ]
+
+
+def test_GetProtocolPathResolvesPostgresqlProtocolId(service, tmp_path):
+    protocolPath = tmp_path / "DemoProject" / "Runs" / "000010_ProtImport"
+    protocolPath.mkdir(parents=True, exist_ok=True)
+
+    service.currentProject.protocols[10] = FakeProtocol(protocolPath=str(protocolPath))
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.getProtocolPath(
+        protocolId=500,
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "rootAbs": str((tmp_path / "DemoProject").resolve()),
+        "startPath": "Runs/000010_ProtImport",
+        "protocolRoot": "Runs/000010_ProtImport",
+    }
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ListProtocolDirResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.listProtocolDir(
+        protocolId="500",
+        path="extra",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "mode": "protocol",
+        "protocolId": "10",
+        "path": "extra",
+    }
+    assert FakeFileHandlers.lastInstance.calls == [
+        ("listProtocolDir", "10", "extra"),
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_PreviewProtocolTextFileResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.previewProtocolTextFile(
+        protocolId="500",
+        path="notes.txt",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "mode": "protocol-text",
+        "protocolId": "10",
+        "path": "notes.txt",
+    }
+    assert FakeFileHandlers.lastInstance.calls == [
+        ("previewProtocolTextFile", "10", "notes.txt"),
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_PreviewRemoteEntryResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.previewRemoteEntry(
+        protocolId="500",
+        path="image.png",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "mode": "protocol-preview",
+        "protocolId": "10",
+        "path": "image.png",
+    }
+    assert FakeFileHandlers.lastInstance.calls == [
+        ("previewProtocolRemoteEntry", "10", "image.png"),
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_PreviewProtocolImageFileResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.previewProtocolImageFile(
+        protocolId="500",
+        path="preview.webp",
+        inline=False,
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "mode": "protocol-image",
+        "protocolId": "10",
+        "path": "preview.webp",
+        "inline": False,
+    }
+    assert FakeFileHandlers.lastInstance.calls == [
+        ("previewProtocolImageFile", "10", "preview.webp", False),
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_WriteRemoteFileServiceResolvesPostgresqlProtocolId(service, tmp_path):
+    protocolPath = tmp_path / "DemoProject" / "Runs" / "000010_ProtImport"
+    protocolPath.mkdir(parents=True, exist_ok=True)
+
+    service.currentProject.protocols[10] = FakeProtocol(protocolPath=str(protocolPath))
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    class FakePayload:
+        path = "exports/result.json"
+        content = '{"ok": true}'
+        mimeType = "application/json"
+
+    result = service.writeRemoteFileService(
+        protocolId=500,
+        payload=FakePayload(),
+        mapper=mapper,
+        projectId=1,
+    )
+
+    targetPath = tmp_path / "DemoProject" / "exports" / "result.json"
+
+    assert targetPath.exists() is True
+    assert targetPath.read_text(encoding="utf-8") == '{"ok": true}'
+    assert result == {
+        "success": True,
+        "path": str(targetPath.resolve()),
+        "size": targetPath.stat().st_size,
+        "mimeType": "application/json",
+    }
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
