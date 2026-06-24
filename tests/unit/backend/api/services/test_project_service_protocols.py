@@ -1676,3 +1676,162 @@ def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
     assert protocol.attributeValues["iterations"] == 7
     assert service.currentProject.storedProtocols == [protocol]
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+
+def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "IntParam", FakeIntParam)
+    monkeypatch.setattr(projectServiceModule, "StringParam", FakeStringParam)
+    monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
+    monkeypatch.setattr(projectServiceModule, "CsvList", FakeCsvList)
+    monkeypatch.setattr(projectServiceModule, "MODE_RESUME", "resume-mode")
+
+    protocol = FakeProtocol(objId=10, className="ProtClass", validateErrors=[])
+    protocol.addParam("runName", FakeStringParam(label="Run name"))
+    protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    monkeypatch.setattr(
+        service,
+        "applyParamsToProtocol",
+        lambda mapper=None, projectId=None, protocol=None, params=None: [],
+    )
+
+    service.launchProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params={
+            "runName": "Launch protocol",
+            "iterations": "7",
+        },
+        executeMode="launch",
+    )
+
+    assert protocol.runName.get() == "Launch protocol"
+    assert protocol.attributeValues["iterations"] == 7
+    assert protocol.runMode.get() == "resume-mode"
+    assert service.currentProject.storedProtocols == [protocol]
+    assert service.currentProject.launchedProtocols == [protocol]
+    assert service.currentProject.scheduledProtocols == []
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+    def test_LaunchProtocolRestartResolvesPostgresqlProtocolId(
+            projectServiceModule,
+            service,
+            mapper,
+            monkeypatch,
+    ):
+        monkeypatch.setattr(projectServiceModule, "IntParam", FakeIntParam)
+        monkeypatch.setattr(projectServiceModule, "StringParam", FakeStringParam)
+        monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
+        monkeypatch.setattr(projectServiceModule, "CsvList", FakeCsvList)
+        monkeypatch.setattr(projectServiceModule, "MODE_RESTART", "restart-mode")
+
+        protocol = FakeProtocol(objId=10, className="ProtClass", validateErrors=[])
+        protocol.addParam("runName", FakeStringParam(label="Run name"))
+        protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+
+        service.currentProject.protocols[10] = protocol
+        mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+        monkeypatch.setattr(
+            service,
+            "applyParamsToProtocol",
+            lambda mapper=None, projectId=None, protocol=None, params=None: [],
+        )
+
+        cleanupCalls = []
+
+        monkeypatch.setattr(
+            service,
+            "_deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql",
+            lambda mapper, projectId, protocols: cleanupCalls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocols": protocols,
+            }) or {
+                                                     "protocolsCount": len(protocols),
+                                                     "setsDeleted": 0,
+                                                     "objectsDeleted": 0,
+                                                     "items": [],
+                                                 },
+        )
+
+        service.launchProtocol(
+            mapper=mapper,
+            projectId=1,
+            protocolId=500,
+            protocolClassName="ProtClass",
+            params={
+                "runName": "Restart protocol",
+                "iterations": "9",
+            },
+            executeMode="restart",
+        )
+
+        assert protocol.runName.get() == "Restart protocol"
+        assert protocol.attributeValues["iterations"] == 9
+        assert protocol.runMode.get() == "restart-mode"
+        assert service.currentProject.storedProtocols == [protocol]
+        assert service.currentProject.launchedProtocols == [protocol]
+        assert service.currentProject.scheduledProtocols == []
+        assert cleanupCalls == [
+            {
+                "mapper": mapper,
+                "projectId": 1,
+                "protocols": [protocol],
+            }
+        ]
+        assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+
+def test_LaunchProtocolScheduleResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    mapper,
+    monkeypatch,
+):
+    monkeypatch.setattr(projectServiceModule, "IntParam", FakeIntParam)
+    monkeypatch.setattr(projectServiceModule, "StringParam", FakeStringParam)
+    monkeypatch.setattr(projectServiceModule, "EnumParam", FakeEnumParam)
+    monkeypatch.setattr(projectServiceModule, "CsvList", FakeCsvList)
+
+    protocol = FakeProtocol(objId=10, className="ProtClass", validateErrors=[])
+    protocol.addParam("runName", FakeStringParam(label="Run name"))
+    protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+
+    service.currentProject.protocols[10] = protocol
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    monkeypatch.setattr(
+        service,
+        "applyParamsToProtocol",
+        lambda mapper=None, projectId=None, protocol=None, params=None: [],
+    )
+
+    service.launchProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params={
+            "runName": "Schedule protocol",
+            "iterations": "11",
+        },
+        executeMode="schedule",
+    )
+
+    assert protocol.runName.get() == "Schedule protocol"
+    assert protocol.attributeValues["iterations"] == 11
+    assert protocol.runMode.get() is None
+    assert service.currentProject.storedProtocols == [protocol]
+    assert service.currentProject.scheduledProtocols == [protocol]
+    assert service.currentProject.launchedProtocols == []
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
