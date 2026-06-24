@@ -371,6 +371,61 @@ def test_ListOutputCtftomoSeriesServiceBuildsSummaries(service, tmp_path):
         },
     ]
 
+def test_ListOutputCtftomoSeriesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlCtftomoReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy CTFTomo fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.listOutputCtftomoSeriesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCtftomo",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "CTFTomo output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_RenderCtfTomoPsdImageServiceRequiresPostgresqlPathWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy CTFTomo PSD fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.renderCtfTomoPsdImageService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCtftomo",
+            psdPath="relative/psd.mrc",
+            size=512,
+            fmt="png",
+            inline=True,
+            index=0,
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "CTFTomo PSD output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "psd_file_not_available" in exc.value.detail
+
+
 def test_GetPostgresqlCtftomoReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,

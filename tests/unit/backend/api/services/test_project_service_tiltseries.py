@@ -280,6 +280,7 @@ def service(projectServiceModule):
     instance.currentProject = None
     return instance
 
+
 def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -336,6 +337,63 @@ def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
     assert createdReaders[0].projectId == 1
     assert createdReaders[0].protocolId == 321
     assert createdReaders[0].outputName == "outputTiltSeries"
+
+def test_ListOutputTiltSeriesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.listOutputTiltSeriesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_GetTiltSeriesFramesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.getTiltSeriesFramesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            tiltSeriesId="TS_001",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries frames output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
 
 def test_ListOutputTiltSeriesServiceBuildsSummaries(service):
     ts1 = FakeTiltSeries(
