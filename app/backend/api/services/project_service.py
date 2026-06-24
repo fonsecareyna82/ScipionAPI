@@ -1229,6 +1229,8 @@ class ProjectService:
 
         outputSyncResults: List[Dict[str, Any]] = []
         outputSyncErrors: List[Dict[str, Any]] = []
+        outputSyncDeclared: List[Dict[str, Any]] = []
+        outputSyncMissing: List[Dict[str, Any]] = []
 
         # 1) Save all protocol nodes that are currently present in the real Scipion graph
         for nodeId, nodeObj in nodesDict.items():
@@ -1256,6 +1258,27 @@ class ProjectService:
                     )
 
                     outputSyncResults.extend(outputReport.get("persisted") or [])
+                    declaredOutputs = outputReport.get("declared") or []
+                    persistedOutputs = outputReport.get("persisted") or []
+                    skippedOutputs = outputReport.get("skipped") or []
+                    erroredOutputs = outputReport.get("errors") or []
+
+                    for declaredOutput in declaredOutputs:
+                        outputSyncDeclared.append({
+                            "protocolId": nodeIdText,
+                            "outputName": declaredOutput.get("outputName"),
+                            "outputClassName": declaredOutput.get("outputClassName"),
+                        })
+
+                    outputSyncMissing.extend(
+                        self._buildMissingOutputSyncItems(
+                            protocolId=nodeIdText,
+                            declaredOutputs=declaredOutputs,
+                            persistedOutputs=persistedOutputs,
+                            skippedOutputs=skippedOutputs,
+                            outputErrors=erroredOutputs,
+                        )
+                    )
 
                     for skippedOutput in outputReport.get("skipped") or []:
                         outputSyncErrors.append({
@@ -1339,8 +1362,11 @@ class ProjectService:
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
             "inputRefs": int(savedInputRefs),
+            "outputsDeclared": len(outputSyncDeclared),
             "outputs": len(outputSyncResults),
+            "outputsMissing": len(outputSyncMissing),
             "outputsByKind": outputResultsByKind,
+            "outputMissing": outputSyncMissing,
             "outputErrors": outputSyncErrors,
         }
 
@@ -3796,6 +3822,60 @@ class ProjectService:
             inlineImages=inlineImages,
         )
 
+    def _buildMissingOutputSyncItems(
+            self,
+            protocolId: Union[int, str],
+            declaredOutputs: List[Dict[str, Any]],
+            persistedOutputs: List[Dict[str, Any]],
+            skippedOutputs: List[Dict[str, Any]],
+            outputErrors: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        persistedByName = {
+            str(item.get("outputName") or ""): item
+            for item in persistedOutputs or []
+            if item.get("outputName") is not None
+        }
+
+        skippedByName = {
+            str(item.get("outputName") or ""): item
+            for item in skippedOutputs or []
+            if item.get("outputName") is not None
+        }
+
+        errorsByName = {
+            str(item.get("outputName") or ""): item
+            for item in outputErrors or []
+            if item.get("outputName") is not None
+        }
+
+        missingOutputs: List[Dict[str, Any]] = []
+
+        for declaredOutput in declaredOutputs or []:
+            outputName = str(declaredOutput.get("outputName") or "")
+            if not outputName or outputName in persistedByName:
+                continue
+
+            missingItem = {
+                "protocolId": str(protocolId),
+                "outputName": outputName,
+                "outputClassName": declaredOutput.get("outputClassName"),
+            }
+
+            skippedOutput = skippedByName.get(outputName)
+            outputError = errorsByName.get(outputName)
+
+            if skippedOutput is not None:
+                missingItem["reason"] = skippedOutput.get("reason") or "skipped"
+            elif outputError is not None:
+                missingItem["reason"] = "persistence_error"
+                missingItem["error"] = outputError.get("error")
+            else:
+                missingItem["reason"] = "not_persisted"
+
+            missingOutputs.append(missingItem)
+
+        return missingOutputs
+
     def registerOutput(
             self,
             projectId: int,
@@ -3821,6 +3901,7 @@ class ProjectService:
         results: List[Dict[str, Any]] = []
         skippedOutputs: List[Dict[str, Any]] = []
         outputErrors: List[Dict[str, Any]] = []
+        declaredOutputs: List[Dict[str, Any]] = []
 
         closeMapper = mapper is None
         if mapper is None:
@@ -3837,7 +3918,19 @@ class ProjectService:
             setMapper = ScipionSetPostgresqlMapper(mapper.db)
 
             for outputName, outputObj in protocol.iterOutputAttributes():
+                outputClassName = self._getOutputClassName(outputObj)
+
+                declaredOutputs.append({
+                    "outputName": outputName,
+                    "outputClassName": outputClassName,
+                })
+
                 if outputObj is None:
+                    skippedOutputs.append({
+                        "outputName": outputName,
+                        "outputClassName": outputClassName,
+                        "reason": "empty_output",
+                    })
                     continue
 
                 try:
@@ -3899,6 +3992,7 @@ class ProjectService:
 
         if returnReport:
             return {
+                "declared": declaredOutputs,
                 "persisted": results,
                 "skipped": skippedOutputs,
                 "errors": outputErrors,
