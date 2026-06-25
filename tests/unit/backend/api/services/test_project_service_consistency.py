@@ -30,10 +30,11 @@ import pytest
 
 
 class FakeProtocol:
-    def __init__(self, status, outputs=None, steps=None):
+    def __init__(self, status, outputs=None, steps=None, inputs=None):
         self.status = status
         self.outputs = outputs or []
         self.steps = steps or []
+        self.inputs = inputs or []
 
     def getStatus(self):
         return self.status
@@ -43,6 +44,37 @@ class FakeProtocol:
 
     def loadSteps(self):
         return list(self.steps)
+
+    def iterInputAttributes(self):
+        return list(self.inputs)
+
+
+class FakePointerTarget:
+    def __init__(self, objId, className):
+        self.objId = objId
+        self.className = className
+
+    def getObjId(self):
+        return self.objId
+
+    def getClassName(self):
+        return self.className
+
+
+class FakePointer:
+    def __init__(self, parentProtocolId, outputName, className="SetOfParticles", objectId=100):
+        self.parent = FakePointerTarget(parentProtocolId, className)
+        self.target = FakePointerTarget(objectId, className)
+        self.outputName = outputName
+
+    def getObjValue(self):
+        return self.parent
+
+    def getExtended(self):
+        return self.outputName
+
+    def get(self):
+        return self.target
 
 
 class FakeOutput:
@@ -75,6 +107,7 @@ class FakeStep:
 
     def getClassName(self):
         return "FakeStep"
+
 
 class FakeParentNode:
     def __init__(self, name):
@@ -120,11 +153,13 @@ class FakeMapper:
             setRows=None,
             treeRows=None,
             stepsByProtocolId=None,
+            inputRefs=None,
     ):
         self.projectRow = projectRow
         self.protocolRows = protocolRows
         self.adjacencyMap = adjacencyMap
         self.stepsByProtocolId = stepsByProtocolId or {}
+        self.inputRefs = inputRefs or []
         self.db = FakeDb(
             setRows=setRows,
             treeRows=treeRows,
@@ -145,6 +180,9 @@ class FakeMapper:
 
     def getProjectProtocolStepsByProtocolId(self, projectId):
         return dict(self.stepsByProtocolId)
+
+    def listProtocolInputRefs(self, projectId):
+        return list(self.inputRefs)
 
 
 class FakeDb:
@@ -240,6 +278,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlOutputs": 0,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
+        "runtimeInputRefs": 0,
+        "postgresqlInputRefs": 0,
         "issues": 0,
     }
     assert result["issues"] == {
@@ -253,6 +293,9 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "missingSteps": [],
         "extraSteps": [],
         "stepMismatches": [],
+        "missingInputRefs": [],
+        "extraInputRefs": [],
+        "inputRefMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -306,6 +349,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlOutputs": 0,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
+        "runtimeInputRefs": 0,
+        "postgresqlInputRefs": 0,
         "issues": 5,
     }
     assert result["issues"] == {
@@ -345,6 +390,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "missingSteps": [],
         "extraSteps": [],
         "stepMismatches": [],
+        "missingInputRefs": [],
+        "extraInputRefs": [],
+        "inputRefMismatches": [],
     }
 
 
@@ -430,6 +478,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
         "postgresqlOutputs": 2,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
+        "runtimeInputRefs": 0,
+        "postgresqlInputRefs": 0,
         "issues": 2,
     }
     assert result["issues"]["missingOutputs"] == [
@@ -455,6 +505,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
     assert result["issues"]["missingSteps"] == []
     assert result["issues"]["extraSteps"] == []
     assert result["issues"]["stepMismatches"] == []
+    assert result["issues"]["missingInputRefs"] == []
+    assert result["issues"]["extraInputRefs"] == []
+    assert result["issues"]["inputRefMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
@@ -529,6 +582,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
         "postgresqlOutputs": 0,
         "runtimeSteps": 2,
         "postgresqlSteps": 3,
+        "runtimeInputRefs": 0,
+        "postgresqlInputRefs": 0,
         "issues": 2,
     }
     assert result["issues"]["missingSteps"] == []
@@ -558,6 +613,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["extraDependencies"] == []
     assert result["issues"]["missingOutputs"] == []
     assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["missingInputRefs"] == []
+    assert result["issues"]["extraInputRefs"] == []
+    assert result["issues"]["inputRefMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
@@ -634,3 +692,138 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     assert result["issues"]["missingSteps"] == []
     assert result["issues"]["extraSteps"] == []
     assert result["issues"]["stepMismatches"] == []
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+            "11": FakeRunNode(
+                "11",
+                status="running",
+                parents=["10"],
+            ),
+        }
+    )
+    currentProject.nodes["11"].run.inputs = [
+        ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
+        ("inputVolume", FakePointer(parentProtocolId=10, outputName="outputVolume", className="Volume")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished"},
+            {"protocolId": "11", "status": "running"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": ["11"]},
+            "11": {"parents": ["10"], "children": []},
+        },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "wrongOutput",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+            {
+                "protocolId": "11",
+                "inputName": "inputMask",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputMask",
+                "objectClassName": "VolumeMask",
+                "objectId": "101",
+            },
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"] == {
+        "runtimeProtocols": 2,
+        "postgresqlProtocols": 2,
+        "runtimeDependencies": 1,
+        "postgresqlDependencies": 1,
+        "runtimeOutputs": 0,
+        "postgresqlOutputs": 0,
+        "runtimeSteps": 0,
+        "postgresqlSteps": 0,
+        "runtimeInputRefs": 2,
+        "postgresqlInputRefs": 2,
+        "issues": 3,
+    }
+
+    assert result["issues"]["missingInputRefs"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputVolume",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputVolume",
+            "objectClassName": "Volume",
+        }
+    ]
+
+    assert result["issues"]["extraInputRefs"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputMask",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputMask",
+            "objectClassName": "VolumeMask",
+        }
+    ]
+
+    assert result["issues"]["inputRefMismatches"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputParticles",
+            "itemIndex": 0,
+            "fields": ["parentOutputName"],
+            "runtimeParentProtocolId": "10",
+            "postgresqlParentProtocolId": "10",
+            "runtimeParentOutputName": "outputParticles",
+            "postgresqlParentOutputName": "wrongOutput",
+            "runtimeObjectClassName": "SetOfParticles",
+            "postgresqlObjectClassName": "SetOfParticles",
+        }
+    ]
+
+    assert result["issues"]["missingProtocols"] == []
+    assert result["issues"]["extraProtocols"] == []
+    assert result["issues"]["statusMismatches"] == []
+    assert result["issues"]["missingDependencies"] == []
+    assert result["issues"]["extraDependencies"] == []
+    assert result["issues"]["missingOutputs"] == []
+    assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["missingSteps"] == []
+    assert result["issues"]["extraSteps"] == []
+    assert result["issues"]["stepMismatches"] == []
+
