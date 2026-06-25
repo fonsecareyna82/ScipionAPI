@@ -2638,10 +2638,98 @@ class ProjectService:
                 "status": normalizeStatus(payload.get("status")),
             }
 
+        def normalizeOptionalText(value: Any) -> Optional[str]:
+            if value is None or value == "":
+                return None
+
+            text = str(value).strip()
+            return text or None
+
+        def inputRefSortKey(item: Tuple[str, str, int]):
+            protocolId, inputName, itemIndex = item
+            return protocolSortKey(protocolId), str(inputName), int(itemIndex)
+
+        def buildInputRef(
+                key: Tuple[str, str, int],
+                payload: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            protocolId, inputName, itemIndex = key
+            return {
+                "protocolId": normalizeProtocolId(protocolId),
+                "inputName": str(inputName),
+                "itemIndex": int(itemIndex),
+                "parentProtocolId": normalizeOptionalText(payload.get("parentProtocolId")),
+                "parentOutputName": normalizeOptionalText(payload.get("parentOutputName")),
+                "objectClassName": normalizeOptionalText(payload.get("objectClassName")),
+            }
+
+        def iterPointerItems(attr: Any) -> List[Tuple[int, Any]]:
+            try:
+                if isinstance(attr, PointerList):
+                    return [
+                        (index, pointer)
+                        for index, pointer in enumerate(attr)
+                    ]
+            except Exception:
+                pass
+
+            return [(0, attr)]
+
+        def extractRuntimeInputRef(
+                protocolId: str,
+                inputName: str,
+                itemIndex: int,
+                pointer: Any,
+        ) -> Optional[Dict[str, Any]]:
+            parentProtocolId = None
+            parentOutputName = None
+            objectClassName = None
+            objectId = None
+
+            try:
+                parentObj = pointer.getObjValue()
+                parentProtocolId = normalizeOptionalText(
+                    self._safeCall(parentObj, "getObjId", None)
+                )
+            except Exception:
+                parentProtocolId = None
+
+            try:
+                parentOutputName = normalizeOptionalText(pointer.getExtended())
+            except Exception:
+                parentOutputName = None
+
+            try:
+                targetObj = pointer.get()
+                if targetObj is not None:
+                    objectClassName = normalizeOptionalText(
+                        self._getScipionClassName(targetObj)
+                    )
+                    objectId = normalizeOptionalText(
+                        self._safeCall(targetObj, "getObjId", None)
+                    )
+            except Exception:
+                objectClassName = None
+                objectId = None
+
+            if parentProtocolId is None and parentOutputName is None:
+                return None
+
+            return {
+                "protocolId": normalizeProtocolId(protocolId),
+                "inputName": str(inputName),
+                "itemIndex": int(itemIndex),
+                "parentProtocolId": parentProtocolId,
+                "parentOutputName": parentOutputName,
+                "objectClassName": objectClassName,
+                "objectId": objectId,
+            }
+
         runtimeStatuses: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
         runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
         runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        runtimeInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -2717,6 +2805,37 @@ class ProjectService:
                         protocolId,
                         exc_info=True,
                     )
+                try:
+                    for inputName, attr in protocol.iterInputAttributes():
+                        inputNameText = str(inputName or "").strip()
+                        if not inputNameText:
+                            continue
+
+                        for itemIndex, pointer in iterPointerItems(attr):
+                            inputRef = extractRuntimeInputRef(
+                                protocolId=protocolId,
+                                inputName=inputNameText,
+                                itemIndex=int(itemIndex),
+                                pointer=pointer,
+                            )
+                            if inputRef is None:
+                                continue
+
+                            key = (
+                                inputRef["protocolId"],
+                                inputRef["inputName"],
+                                inputRef["itemIndex"],
+                            )
+                            runtimeInputRefsByKey[key] = inputRef
+                except Exception:
+                    logger.debug(
+                        "Could not inspect runtime protocol input refs during consistency check. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        protocolId,
+                        exc_info=True,
+                    )
+
 
             for parent in getattr(nodeObj, "_parents", []) or []:
                 try:
@@ -2815,6 +2934,41 @@ class ProjectService:
                     "status": normalizeStatus(step.get("status")),
                 }
 
+        try:
+            postgresqlInputRefs = mapper.listProtocolInputRefs(projectId) or []
+        except Exception as e:
+            logger.exception(
+                "Failed to load PostgreSQL protocol input refs for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load PostgreSQL protocol input refs: {e}",
+            )
+
+        postgresqlInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+        for ref in postgresqlInputRefs:
+            protocolIdText = normalizeProtocolId(ref.get("protocolId"))
+            inputName = str(ref.get("inputName") or "").strip()
+            itemIndex = toOptionalInt(ref.get("itemIndex"))
+
+            if not protocolIdText or not inputName:
+                continue
+
+            if itemIndex is None or itemIndex < 0:
+                itemIndex = 0
+
+            key = (protocolIdText, inputName, int(itemIndex))
+            postgresqlInputRefsByKey[key] = {
+                "protocolId": protocolIdText,
+                "inputName": inputName,
+                "itemIndex": int(itemIndex),
+                "parentProtocolId": normalizeOptionalText(ref.get("parentProtocolId")),
+                "parentOutputName": normalizeOptionalText(ref.get("parentOutputName")),
+                "objectClassName": normalizeOptionalText(ref.get("objectClassName")),
+                "objectId": normalizeOptionalText(ref.get("objectId")),
+            }
+
         runtimeOutputs: Set[Tuple[str, str]] = set()
         for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
             for outputName in outputsByName.keys():
@@ -2837,6 +2991,8 @@ class ProjectService:
 
         runtimeProtocolIds = set(runtimeStatuses.keys())
         postgresqlProtocolIds = set(postgresqlStatuses.keys())
+        runtimeInputRefs = set(runtimeInputRefsByKey.keys())
+        postgresqlInputRefsKeys = set(postgresqlInputRefsByKey.keys())
 
         missingProtocolIds = sorted(
             runtimeProtocolIds - postgresqlProtocolIds,
@@ -2918,6 +3074,60 @@ class ProjectService:
                     "postgresqlStatus": postgresqlStatus,
                 })
 
+
+        missingInputRefs = sorted(
+            runtimeInputRefs - postgresqlInputRefsKeys,
+            key=inputRefSortKey,
+        )
+        extraInputRefs = sorted(
+            postgresqlInputRefsKeys - runtimeInputRefs,
+            key=inputRefSortKey,
+        )
+
+        inputRefMismatches = []
+        for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=inputRefSortKey):
+            runtimeRef = runtimeInputRefsByKey.get(key, {})
+            postgresqlRef = postgresqlInputRefsByKey.get(key, {})
+
+            changedFields = []
+
+            runtimeParentProtocolId = normalizeOptionalText(runtimeRef.get("parentProtocolId"))
+            postgresqlParentProtocolId = normalizeOptionalText(postgresqlRef.get("parentProtocolId"))
+
+            runtimeParentOutputName = normalizeOptionalText(runtimeRef.get("parentOutputName"))
+            postgresqlParentOutputName = normalizeOptionalText(postgresqlRef.get("parentOutputName"))
+
+            runtimeObjectClassName = normalizeOptionalText(runtimeRef.get("objectClassName"))
+            postgresqlObjectClassName = normalizeOptionalText(postgresqlRef.get("objectClassName"))
+
+            if runtimeParentProtocolId != postgresqlParentProtocolId:
+                changedFields.append("parentProtocolId")
+
+            if runtimeParentOutputName != postgresqlParentOutputName:
+                changedFields.append("parentOutputName")
+
+            if (
+                    runtimeObjectClassName is not None
+                    and postgresqlObjectClassName is not None
+                    and runtimeObjectClassName != postgresqlObjectClassName
+            ):
+                changedFields.append("objectClassName")
+
+            if changedFields:
+                protocolId, inputName, itemIndex = key
+                inputRefMismatches.append({
+                    "protocolId": protocolId,
+                    "inputName": inputName,
+                    "itemIndex": int(itemIndex),
+                    "fields": changedFields,
+                    "runtimeParentProtocolId": runtimeParentProtocolId,
+                    "postgresqlParentProtocolId": postgresqlParentProtocolId,
+                    "runtimeParentOutputName": runtimeParentOutputName,
+                    "postgresqlParentOutputName": postgresqlParentOutputName,
+                    "runtimeObjectClassName": runtimeObjectClassName,
+                    "postgresqlObjectClassName": postgresqlObjectClassName,
+                })
+
         issues = {
             "missingProtocols": [
                 {
@@ -2985,6 +3195,15 @@ class ProjectService:
                 for protocolId, stepIndex in extraSteps
             ],
             "stepMismatches": stepMismatches,
+            "missingInputRefs": [
+                buildInputRef(key, runtimeInputRefsByKey.get(key, {}))
+                for key in missingInputRefs
+            ],
+            "extraInputRefs": [
+                buildInputRef(key, postgresqlInputRefsByKey.get(key, {}))
+                for key in extraInputRefs
+            ],
+            "inputRefMismatches": inputRefMismatches,
         }
 
         issuesCount = sum(len(items) for items in issues.values())
@@ -2994,16 +3213,18 @@ class ProjectService:
             "projectId": projectId,
             "checkedAt": datetime.utcnow().isoformat() + "Z",
             "summary": {
-            "runtimeProtocols": len(runtimeProtocolIds),
-            "postgresqlProtocols": len(postgresqlProtocolIds),
-            "runtimeDependencies": len(runtimeDependencies),
-            "postgresqlDependencies": len(postgresqlDependencies),
-            "runtimeOutputs": len(runtimeOutputs),
-            "postgresqlOutputs": len(postgresqlOutputs),
-            "runtimeSteps": len(runtimeSteps),
-            "postgresqlSteps": len(postgresqlSteps),
-            "issues": issuesCount,
-        },
+                "runtimeProtocols": len(runtimeProtocolIds),
+                "postgresqlProtocols": len(postgresqlProtocolIds),
+                "runtimeDependencies": len(runtimeDependencies),
+                "postgresqlDependencies": len(postgresqlDependencies),
+                "runtimeOutputs": len(runtimeOutputs),
+                "postgresqlOutputs": len(postgresqlOutputs),
+                "runtimeSteps": len(runtimeSteps),
+                "postgresqlSteps": len(postgresqlSteps),
+                "runtimeInputRefs": len(runtimeInputRefs),
+                "postgresqlInputRefs": len(postgresqlInputRefsKeys),
+                "issues": issuesCount,
+            },
             "issues": issues,
         }
 
