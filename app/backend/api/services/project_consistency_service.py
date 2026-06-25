@@ -145,6 +145,46 @@ class ProjectConsistencyService:
             "value": payload.get("value"),
         }
 
+    def buildMissingOutputIssue(
+            self,
+            protocolId: Any,
+            outputName: Any,
+            runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        protocolIdText = self.normalizeProtocolId(protocolId)
+        outputNameText = str(outputName)
+
+        return {
+            "protocolId": protocolIdText,
+            "outputName": outputNameText,
+            "className": runtimeOutputsByProtocolId
+            .get(protocolIdText, {})
+            .get(outputNameText, {})
+            .get("className"),
+        }
+
+    def buildExtraOutputIssue(
+            self,
+            protocolId: Any,
+            outputName: Any,
+            persistedOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        protocolIdText = self.normalizeProtocolId(protocolId)
+        outputNameText = str(outputName)
+
+        return {
+            "protocolId": protocolIdText,
+            "outputName": outputNameText,
+            "mapperKind": persistedOutputsByProtocolId
+            .get(protocolIdText, {})
+            .get(outputNameText, {})
+            .get("mapperKind"),
+            "className": persistedOutputsByProtocolId
+            .get(protocolIdText, {})
+            .get(outputNameText, {})
+            .get("className"),
+        }
+
     def expectedOutputMapperKind(self, className: Any) -> Optional[str]:
         classNameText = self.normalizeOptionalText(className)
         if classNameText is None:
@@ -1154,30 +1194,20 @@ class ProjectConsistencyService:
                 self.buildDependency(parentId, childId)
                 for parentId, childId in extraDependencies
             ],
-            "missingOutputs": [
-                {
-                    "protocolId": protocolId,
-                    "outputName": outputName,
-                    "className": runtimeOutputsByProtocolId
-                    .get(protocolId, {})
-                    .get(outputName, {})
-                    .get("className"),
-                }
+                        "missingOutputs": [
+                self.buildMissingOutputIssue(
+                    protocolId,
+                    outputName,
+                    runtimeOutputsByProtocolId,
+                )
                 for protocolId, outputName in missingOutputs
             ],
             "extraOutputs": [
-                {
-                    "protocolId": protocolId,
-                    "outputName": outputName,
-                    "mapperKind": persistedOutputsByProtocolId
-                    .get(protocolId, {})
-                    .get(outputName, {})
-                    .get("mapperKind"),
-                    "className": persistedOutputsByProtocolId
-                    .get(protocolId, {})
-                    .get(outputName, {})
-                    .get("className"),
-                }
+                self.buildExtraOutputIssue(
+                    protocolId,
+                    outputName,
+                    persistedOutputsByProtocolId,
+                )
                 for protocolId, outputName in extraOutputs
             ],
             "outputClassMismatches": outputClassMismatches,
