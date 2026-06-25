@@ -814,6 +814,28 @@ class ProjectConsistencyService:
             "protocolClassMismatches": protocolClassMismatches,
         }
 
+    def compareDependencies(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeDependencies = runtimeSnapshot["dependencies"]
+        postgresqlDependencies = postgresqlSnapshot["dependencies"]
+
+        missingDependencies = sorted(
+            runtimeDependencies - postgresqlDependencies,
+            key=self.dependencySortKey,
+        )
+        extraDependencies = sorted(
+            postgresqlDependencies - runtimeDependencies,
+            key=self.dependencySortKey,
+        )
+
+        return {
+            "missingDependencies": missingDependencies,
+            "extraDependencies": extraDependencies,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -888,14 +910,13 @@ class ProjectConsistencyService:
         statusMismatches = protocolComparison["statusMismatches"]
         protocolClassMismatches = protocolComparison["protocolClassMismatches"]
 
-        missingDependencies = sorted(
-            runtimeDependencies - postgresqlDependencies,
-            key=self.dependencySortKey,
+        dependencyComparison = self.compareDependencies(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
         )
-        extraDependencies = sorted(
-            postgresqlDependencies - runtimeDependencies,
-            key=self.dependencySortKey,
-        )
+
+        missingDependencies = dependencyComparison["missingDependencies"]
+        extraDependencies = dependencyComparison["extraDependencies"]
 
         missingOutputs = sorted(
             runtimeOutputs - postgresqlOutputs,
