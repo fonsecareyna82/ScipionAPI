@@ -2740,11 +2740,130 @@ class ProjectService:
                 "objectId": objectId,
             }
 
+        def normalizeParamValue(value: Any) -> Any:
+            if value is None:
+                return None
+
+            if isinstance(value, bool):
+                return value
+
+            if isinstance(value, (int, float)):
+                return value
+
+            if isinstance(value, str):
+                text = value.strip()
+                if text == "":
+                    return ""
+                lowerText = text.lower()
+                if lowerText in ("true", "false"):
+                    return lowerText == "true"
+
+                try:
+                    if "." not in text:
+                        return int(text)
+                except Exception:
+                    pass
+
+                try:
+                    return float(text)
+                except Exception:
+                    return text
+
+            if isinstance(value, (list, tuple)):
+                return [normalizeParamValue(item) for item in value]
+
+            if isinstance(value, dict):
+                return {
+                    str(key): normalizeParamValue(itemValue)
+                    for key, itemValue in value.items()
+                }
+
+            try:
+                if hasattr(value, "get"):
+                    return normalizeParamValue(value.get())
+            except Exception:
+                pass
+
+            return str(value)
+
+        def paramSortKey(item: Tuple[str, str]):
+            protocolId, paramName = item
+            return protocolSortKey(protocolId), str(paramName)
+
+        def buildParamIssue(
+                key: Tuple[str, str],
+                payload: Dict[str, Any],
+        ) -> Dict[str, Any]:
+            protocolId, paramName = key
+            return {
+                "protocolId": normalizeProtocolId(protocolId),
+                "paramName": str(paramName),
+                "value": payload.get("value"),
+            }
+
+        def isPointerParam(param: Any) -> bool:
+            return isinstance(param, (PointerParam, MultiPointerParam, RelationParam))
+
+        def extractRuntimeParams(protocol: Any) -> Dict[str, Dict[str, Any]]:
+            paramsByName: Dict[str, Dict[str, Any]] = {}
+
+            try:
+                self.currentProject._fixProtParamsConfiguration(protocol)
+            except Exception:
+                pass
+
+            try:
+                for paramName, param in protocol.iterParams():
+                    paramNameText = str(paramName or "").strip()
+                    if not paramNameText:
+                        continue
+
+                    if isPointerParam(param):
+                        continue
+
+                    rawValue = None
+                    try:
+                        rawValue = protocol.getAttributeValue(paramNameText)
+                    except Exception:
+                        try:
+                            rawValue = getattr(protocol, paramNameText, None)
+                        except Exception:
+                            rawValue = None
+
+                    paramsByName[paramNameText] = {
+                        "value": normalizeParamValue(rawValue),
+                    }
+            except Exception:
+                logger.debug(
+                    "Could not inspect runtime protocol params during consistency check.",
+                    exc_info=True,
+                )
+
+            return paramsByName
+
+        def extractPostgresqlParams(row: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+            rawParams = row.get("params")
+            if not isinstance(rawParams, dict):
+                return {}
+
+            paramsByName: Dict[str, Dict[str, Any]] = {}
+            for paramName, rawValue in rawParams.items():
+                paramNameText = str(paramName or "").strip()
+                if not paramNameText:
+                    continue
+
+                paramsByName[paramNameText] = {
+                    "value": normalizeParamValue(rawValue),
+                }
+
+            return paramsByName
+
         runtimeStatuses: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
         runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
         runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
         runtimeInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+        runtimeParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -2851,6 +2970,7 @@ class ProjectService:
                         exc_info=True,
                     )
 
+                runtimeParamsByProtocolId[protocolId] = extractRuntimeParams(protocol)
 
             for parent in getattr(nodeObj, "_parents", []) or []:
                 try:
@@ -2876,12 +2996,15 @@ class ProjectService:
             )
 
         postgresqlStatuses: Dict[str, str] = {}
+        postgresqlParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
         for row in protocolRows:
             protocolId = normalizeProtocolId(row.get("protocolId"))
             if not protocolId:
                 continue
 
             postgresqlStatuses[protocolId] = normalizeStatus(row.get("status"))
+            postgresqlParamsByProtocolId[protocolId] = extractPostgresqlParams(row)
 
         try:
             adjacencyMap = mapper.getProjectProtocolAdjacencyMap(projectId) or {}
@@ -3010,6 +3133,16 @@ class ProjectService:
         postgresqlInputRefsKeys = set(postgresqlInputRefsByKey.keys())
         runtimeDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
 
+        runtimeParams: Set[Tuple[str, str]] = set()
+        for protocolId, paramsByName in runtimeParamsByProtocolId.items():
+            for paramName in paramsByName.keys():
+                runtimeParams.add((protocolId, paramName))
+
+        postgresqlParams: Set[Tuple[str, str]] = set()
+        for protocolId, paramsByName in postgresqlParamsByProtocolId.items():
+            for paramName in paramsByName.keys():
+                postgresqlParams.add((protocolId, paramName))
+
         for inputRef in runtimeInputRefsByKey.values():
             dependencyKey = dependencyKeyFromInputRef(inputRef)
             if dependencyKey is not None:
@@ -3110,6 +3243,33 @@ class ProjectService:
             postgresqlInputRefsKeys - runtimeInputRefs,
             key=inputRefSortKey,
         )
+
+        missingParams = sorted(
+            runtimeParams - postgresqlParams,
+            key=paramSortKey,
+        )
+        extraParams = sorted(
+            postgresqlParams - runtimeParams,
+            key=paramSortKey,
+        )
+
+        paramValueMismatches = []
+        for key in sorted(runtimeParams.intersection(postgresqlParams), key=paramSortKey):
+            protocolId, paramName = key
+
+            runtimeParam = runtimeParamsByProtocolId.get(protocolId, {}).get(paramName, {})
+            postgresqlParam = postgresqlParamsByProtocolId.get(protocolId, {}).get(paramName, {})
+
+            runtimeValue = normalizeParamValue(runtimeParam.get("value"))
+            postgresqlValue = normalizeParamValue(postgresqlParam.get("value"))
+
+            if runtimeValue != postgresqlValue:
+                paramValueMismatches.append({
+                    "protocolId": protocolId,
+                    "paramName": paramName,
+                    "runtimeValue": runtimeValue,
+                    "postgresqlValue": postgresqlValue,
+                })
 
         inputRefMismatches = []
         for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=inputRefSortKey):
@@ -3265,6 +3425,15 @@ class ProjectService:
                 buildDependency(parentId, childId)
                 for parentId, childId in postgresqlDependenciesWithoutInputRefs
             ],
+            "missingParams": [
+                buildParamIssue(key, runtimeParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                for key in missingParams
+            ],
+            "extraParams": [
+                buildParamIssue(key, postgresqlParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                for key in extraParams
+            ],
+            "paramValueMismatches": paramValueMismatches,
         }
 
         issuesCount = sum(len(items) for items in issues.values())
@@ -3286,6 +3455,8 @@ class ProjectService:
                 "postgresqlInputRefs": len(postgresqlInputRefsKeys),
                 "runtimeInputRefDependencies": len(runtimeDependenciesFromInputRefs),
                 "postgresqlInputRefDependencies": len(postgresqlDependenciesFromInputRefs),
+                "runtimeParams": len(runtimeParams),
+                "postgresqlParams": len(postgresqlParams),
                 "issues": issuesCount,
             },
             "issues": issues,

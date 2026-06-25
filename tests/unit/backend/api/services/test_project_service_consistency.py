@@ -29,12 +29,18 @@ import importlib
 import pytest
 
 
+class FakeParam:
+    def __init__(self, value):
+        self.value = value
+
+
 class FakeProtocol:
-    def __init__(self, status, outputs=None, steps=None, inputs=None):
+    def __init__(self, status, outputs=None, steps=None, inputs=None, params=None):
         self.status = status
         self.outputs = outputs or []
         self.steps = steps or []
         self.inputs = inputs or []
+        self.params = params or {}
 
     def getStatus(self):
         return self.status
@@ -48,6 +54,14 @@ class FakeProtocol:
     def iterInputAttributes(self):
         return list(self.inputs)
 
+    def iterParams(self):
+        return [
+            (paramName, FakeParam(value))
+            for paramName, value in self.params.items()
+        ]
+
+    def getAttributeValue(self, paramName):
+        return self.params.get(paramName)
 
 class FakePointerTarget:
     def __init__(self, objId, className):
@@ -297,6 +311,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlInputRefs": 1,
         "runtimeInputRefDependencies": 1,
         "postgresqlInputRefDependencies": 1,
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 0,
     }
     assert result["issues"] == {
@@ -317,6 +333,9 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "runtimeDependenciesWithoutInputRefs": [],
         "postgresqlInputRefDependenciesMissing": [],
         "postgresqlDependenciesWithoutInputRefs": [],
+        "missingParams": [],
+        "extraParams": [],
+        "paramValueMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -374,6 +393,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
+        "missingParams": [],
+        "extraParams": [],
+        "paramValueMismatches": [],
         "issues": 7,
     }
     assert result["issues"] == {
@@ -430,6 +452,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
                 "childId": "10",
             }
         ],
+        "missingParams": [],
+        "extraParams": [],
+        "paramValueMismatches": [],
     }
 
 
@@ -519,6 +544,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
+        "missingParams": [],
+        "extraParams": [],
+        "paramValueMismatches": [],
         "issues": 2,
     }
     assert result["issues"]["missingOutputs"] == [
@@ -629,6 +657,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
+        "missingParams": [],
+        "extraParams": [],
+        "paramValueMismatches": [],
         "issues": 2,
     }
     assert result["issues"]["missingSteps"] == []
@@ -850,6 +881,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         "postgresqlInputRefs": 2,
         "runtimeInputRefDependencies": 1,
         "postgresqlInputRefDependencies": 1,
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 3,
     }
 
@@ -999,6 +1032,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
         "postgresqlInputRefs": 2,
         "runtimeInputRefDependencies": 2,
         "postgresqlInputRefDependencies": 2,
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 2,
     }
 
@@ -1030,3 +1065,79 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["missingInputRefs"] == []
     assert result["issues"]["extraInputRefs"] == []
     assert result["issues"]["inputRefMismatches"] == []
+
+def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.params = {
+        "boxSize": 128,
+        "threshold": 0.5,
+    }
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+                "params": {
+                    "boxSize": 256,
+                    "extraParam": "abc",
+                },
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["runtimeParams"] == 2
+    assert result["summary"]["postgresqlParams"] == 2
+    assert result["issues"]["missingParams"] == [
+        {
+            "protocolId": "10",
+            "paramName": "threshold",
+            "value": 0.5,
+        }
+    ]
+    assert result["issues"]["extraParams"] == [
+        {
+            "protocolId": "10",
+            "paramName": "extraParam",
+            "value": "abc",
+        }
+    ]
+    assert result["issues"]["paramValueMismatches"] == [
+        {
+            "protocolId": "10",
+            "paramName": "boxSize",
+            "runtimeValue": 128,
+            "postgresqlValue": 256,
+        }
+    ]
