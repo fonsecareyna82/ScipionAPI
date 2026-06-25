@@ -433,6 +433,82 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
     ]
 
 
+def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutputs(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    class FakeThumbnailServiceWithItems:
+        # fakeThumbnailServiceWithItems
+        instances = []
+
+        def __init__(self, currentProject):
+            self.currentProject = currentProject
+            FakeThumbnailServiceWithItems.instances.append(self)
+
+        def listProtocolThumbnailItems(
+                self,
+                projectId,
+                force=False,
+                size=320,
+                maxProtocols=12,
+                maxOutputsPerProtocol=4,
+                inlineImages=False,
+        ):
+            return [
+                {
+                    "projectId": projectId,
+                    "protocolId": 500,
+                    "outputs": [
+                        {"outputName": "outputVol"},
+                        {"outputName": "missingOutput"},
+                    ],
+                },
+                {
+                    "projectId": projectId,
+                    "protocolId": 999,
+                    "outputs": [
+                        {"outputName": "outputVol"},
+                    ],
+                },
+            ]
+
+    output = FakeOutput("volume.mrc")
+    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
+    service.currentProject = FakeCurrentProject(protocols={10: protocol})
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ThumbnailService",
+        FakeThumbnailServiceWithItems,
+    )
+
+    result = service.listProjectThumbnailItems(
+        projectId=1,
+        force=False,
+        size=320,
+        maxProtocols=12,
+        maxOutputsPerProtocol=4,
+        inlineImages=False,
+        mapper=mapper,
+    )
+
+    assert result == [
+        {
+            "projectId": 1,
+            "protocolId": 500,
+            "outputs": [
+                {"outputName": "outputVol"},
+            ],
+        }
+    ]
+
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[1]["params"] == (1, 999, "999")
+
+
 def test_NormalizeExportJsonContentAcceptsJsonString(service):
     content = service._normalizeExportJsonContent('[{"id": 10}]')
     assert json.loads(content) == [{"id": 10}]
