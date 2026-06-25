@@ -2601,6 +2601,21 @@ class ProjectService:
                 "childId": normalizeProtocolId(childId),
             }
 
+        def dependencyKeyFromInputRef(payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+            parentProtocolId = normalizeOptionalText(payload.get("parentProtocolId"))
+            childProtocolId = normalizeOptionalText(payload.get("protocolId"))
+
+            if not parentProtocolId or not childProtocolId:
+                return None
+
+            if parentProtocolId == "PROJECT" or childProtocolId == "PROJECT":
+                return None
+
+            if parentProtocolId == childProtocolId:
+                return None
+
+            return parentProtocolId, childProtocolId
+
         def toOptionalInt(value: Any) -> Optional[int]:
             try:
                 if value is None or value == "":
@@ -2993,6 +3008,18 @@ class ProjectService:
         postgresqlProtocolIds = set(postgresqlStatuses.keys())
         runtimeInputRefs = set(runtimeInputRefsByKey.keys())
         postgresqlInputRefsKeys = set(postgresqlInputRefsByKey.keys())
+        runtimeDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
+
+        for inputRef in runtimeInputRefsByKey.values():
+            dependencyKey = dependencyKeyFromInputRef(inputRef)
+            if dependencyKey is not None:
+                runtimeDependenciesFromInputRefs.add(dependencyKey)
+
+        postgresqlDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
+        for inputRef in postgresqlInputRefsByKey.values():
+            dependencyKey = dependencyKeyFromInputRef(inputRef)
+            if dependencyKey is not None:
+                postgresqlDependenciesFromInputRefs.add(dependencyKey)
 
         missingProtocolIds = sorted(
             runtimeProtocolIds - postgresqlProtocolIds,
@@ -3128,6 +3155,24 @@ class ProjectService:
                     "postgresqlObjectClassName": postgresqlObjectClassName,
                 })
 
+        runtimeInputRefDependenciesMissing = sorted(
+            runtimeDependenciesFromInputRefs - runtimeDependencies,
+            key=dependencySortKey,
+        )
+        runtimeDependenciesWithoutInputRefs = sorted(
+            runtimeDependencies - runtimeDependenciesFromInputRefs,
+            key=dependencySortKey,
+        )
+
+        postgresqlInputRefDependenciesMissing = sorted(
+            postgresqlDependenciesFromInputRefs - postgresqlDependencies,
+            key=dependencySortKey,
+        )
+        postgresqlDependenciesWithoutInputRefs = sorted(
+            postgresqlDependencies - postgresqlDependenciesFromInputRefs,
+            key=dependencySortKey,
+        )
+
         issues = {
             "missingProtocols": [
                 {
@@ -3204,6 +3249,22 @@ class ProjectService:
                 for key in extraInputRefs
             ],
             "inputRefMismatches": inputRefMismatches,
+            "runtimeInputRefDependenciesMissing": [
+                buildDependency(parentId, childId)
+                for parentId, childId in runtimeInputRefDependenciesMissing
+            ],
+            "runtimeDependenciesWithoutInputRefs": [
+                buildDependency(parentId, childId)
+                for parentId, childId in runtimeDependenciesWithoutInputRefs
+            ],
+            "postgresqlInputRefDependenciesMissing": [
+                buildDependency(parentId, childId)
+                for parentId, childId in postgresqlInputRefDependenciesMissing
+            ],
+            "postgresqlDependenciesWithoutInputRefs": [
+                buildDependency(parentId, childId)
+                for parentId, childId in postgresqlDependenciesWithoutInputRefs
+            ],
         }
 
         issuesCount = sum(len(items) for items in issues.values())
@@ -3223,6 +3284,8 @@ class ProjectService:
                 "postgresqlSteps": len(postgresqlSteps),
                 "runtimeInputRefs": len(runtimeInputRefs),
                 "postgresqlInputRefs": len(postgresqlInputRefsKeys),
+                "runtimeInputRefDependencies": len(runtimeDependenciesFromInputRefs),
+                "postgresqlInputRefDependencies": len(postgresqlDependenciesFromInputRefs),
                 "issues": issuesCount,
             },
             "issues": issues,
