@@ -9,6 +9,19 @@
 # * the Free Software Foundation; either version 3 of the License, or
 # * (at your option) any later version.
 # *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
 # ******************************************************************************
 
 from __future__ import annotations
@@ -44,6 +57,324 @@ class ProjectConsistencyService:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.projectService, name)
 
+    def normalizeStatus(self, value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    def normalizeClassName(self, value: Any) -> str:
+        return str(value or "").strip()
+
+    def normalizeProtocolId(self, value: Any) -> str:
+        return str(value).strip()
+
+    def normalizeOptionalText(self, value: Any) -> Optional[str]:
+        if value is None or value == "":
+            return None
+
+        text = str(value).strip()
+        return text or None
+
+    def toOptionalInt(self, value: Any) -> Optional[int]:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    def protocolSortKey(self, value: Any):
+        text = self.normalizeProtocolId(value)
+        try:
+            return 0, int(text)
+        except Exception:
+            return 1, text
+
+    def dependencySortKey(self, item: Tuple[str, str]):
+        parentId, childId = item
+        return self.protocolSortKey(parentId), self.protocolSortKey(childId)
+
+    def stepSortKey(self, item: Tuple[str, int]):
+        protocolId, stepIndex = item
+        return self.protocolSortKey(protocolId), int(stepIndex)
+
+    def inputRefSortKey(self, item: Tuple[str, str, int]):
+        protocolId, inputName, itemIndex = item
+        return self.protocolSortKey(protocolId), str(inputName), int(itemIndex)
+
+    def paramSortKey(self, item: Tuple[str, str]):
+        protocolId, paramName = item
+        return self.protocolSortKey(protocolId), str(paramName)
+
+    def buildDependency(self, parentId: Any, childId: Any) -> Dict[str, str]:
+        return {
+            "parentId": self.normalizeProtocolId(parentId),
+            "childId": self.normalizeProtocolId(childId),
+        }
+
+    def buildStep(self, protocolId: Any, stepIndex: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "protocolId": self.normalizeProtocolId(protocolId),
+            "index": int(stepIndex),
+            "name": str(payload.get("name") or ""),
+            "status": self.normalizeStatus(payload.get("status")),
+        }
+
+    def buildInputRef(
+            self,
+            key: Tuple[str, str, int],
+            payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        protocolId, inputName, itemIndex = key
+        return {
+            "protocolId": self.normalizeProtocolId(protocolId),
+            "inputName": str(inputName),
+            "itemIndex": int(itemIndex),
+            "parentProtocolId": self.normalizeOptionalText(payload.get("parentProtocolId")),
+            "parentOutputName": self.normalizeOptionalText(payload.get("parentOutputName")),
+            "objectClassName": self.normalizeOptionalText(payload.get("objectClassName")),
+        }
+
+    def buildParamIssue(
+            self,
+            key: Tuple[str, str],
+            payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        protocolId, paramName = key
+        return {
+            "protocolId": self.normalizeProtocolId(protocolId),
+            "paramName": str(paramName),
+            "value": payload.get("value"),
+        }
+
+    def expectedOutputMapperKind(self, className: Any) -> Optional[str]:
+        classNameText = self.normalizeOptionalText(className)
+        if classNameText is None:
+            return None
+
+        if classNameText.startswith("SetOf"):
+            return "flat_set"
+
+        return "tree"
+
+    def getRuntimeOutputItemsCount(self, outputObj: Any) -> Optional[int]:
+        if outputObj is None:
+            return None
+
+        for methodName in ("getSize", "getDim", "__len__"):
+            try:
+                if methodName == "__len__":
+                    value = len(outputObj)
+                else:
+                    method = getattr(outputObj, methodName, None)
+                    if method is None:
+                        continue
+                    value = method()
+
+                if value is None or value == "":
+                    continue
+
+                return int(value)
+            except Exception:
+                continue
+
+        return None
+
+    def iterPointerItems(self, attr: Any) -> List[Tuple[int, Any]]:
+        try:
+            if isinstance(attr, PointerList):
+                return [
+                    (index, pointer)
+                    for index, pointer in enumerate(attr)
+                ]
+        except Exception:
+            pass
+
+        return [(0, attr)]
+
+    def dependencyKeyFromInputRef(self, payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        parentProtocolId = self.normalizeOptionalText(payload.get("parentProtocolId"))
+        childProtocolId = self.normalizeOptionalText(payload.get("protocolId"))
+
+        if not parentProtocolId or not childProtocolId:
+            return None
+
+        if parentProtocolId == "PROJECT" or childProtocolId == "PROJECT":
+            return None
+
+        if parentProtocolId == childProtocolId:
+            return None
+
+        return parentProtocolId, childProtocolId
+
+    def normalizeParamValue(self, value: Any) -> Any:
+        if value is None:
+            return None
+
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, (int, float)):
+            return value
+
+        if isinstance(value, str):
+            text = value.strip()
+            if text == "":
+                return ""
+            lowerText = text.lower()
+            if lowerText in ("true", "false"):
+                return lowerText == "true"
+
+            try:
+                if "." not in text:
+                    return int(text)
+            except Exception:
+                pass
+
+            try:
+                return float(text)
+            except Exception:
+                return text
+
+        if isinstance(value, (list, tuple)):
+            return [self.normalizeParamValue(item) for item in value]
+
+        if isinstance(value, dict):
+            return {
+                str(key): self.normalizeParamValue(itemValue)
+                for key, itemValue in value.items()
+            }
+
+        try:
+            if hasattr(value, "get"):
+                return self.normalizeParamValue(value.get())
+        except Exception:
+            pass
+
+        return str(value)
+
+    def isPointerParam(self, param: Any) -> bool:
+        return isinstance(param, (PointerParam, MultiPointerParam, RelationParam))
+
+    def stepValue(self, step: Any, attrName: str, fallback: Any = None) -> Any:
+        try:
+            value = getattr(step, attrName, None)
+            if hasattr(value, "get"):
+                return value.get()
+            return value if value is not None else fallback
+        except Exception:
+            return fallback
+
+    def getStepName(self, step: Any) -> str:
+        name = self.stepValue(step, "funcName", None)
+        if name:
+            return str(name)
+
+        className = self._safeCall(step, "getClassName", None)
+        return str(className or "")
+
+    def extractRuntimeInputRef(
+            self,
+            protocolId: str,
+            inputName: str,
+            itemIndex: int,
+            pointer: Any,
+    ) -> Optional[Dict[str, Any]]:
+        parentProtocolId = None
+        parentOutputName = None
+        objectClassName = None
+        objectId = None
+
+        try:
+            parentObj = pointer.getObjValue()
+            parentProtocolId = self.normalizeOptionalText(
+                self._safeCall(parentObj, "getObjId", None)
+            )
+        except Exception:
+            parentProtocolId = None
+
+        try:
+            parentOutputName = self.normalizeOptionalText(pointer.getExtended())
+        except Exception:
+            parentOutputName = None
+
+        try:
+            targetObj = pointer.get()
+            if targetObj is not None:
+                objectClassName = self.normalizeOptionalText(
+                    self._getScipionClassName(targetObj)
+                )
+                objectId = self.normalizeOptionalText(
+                    self._safeCall(targetObj, "getObjId", None)
+                )
+        except Exception:
+            objectClassName = None
+            objectId = None
+
+        if parentProtocolId is None and parentOutputName is None:
+            return None
+
+        return {
+            "protocolId": self.normalizeProtocolId(protocolId),
+            "inputName": str(inputName),
+            "itemIndex": int(itemIndex),
+            "parentProtocolId": parentProtocolId,
+            "parentOutputName": parentOutputName,
+            "objectClassName": objectClassName,
+            "objectId": objectId,
+        }
+
+    def extractRuntimeParams(self, protocol: Any) -> Dict[str, Dict[str, Any]]:
+        paramsByName: Dict[str, Dict[str, Any]] = {}
+
+        try:
+            self.currentProject._fixProtParamsConfiguration(protocol)
+        except Exception:
+            pass
+
+        try:
+            for paramName, param in protocol.iterParams():
+                paramNameText = str(paramName or "").strip()
+                if not paramNameText:
+                    continue
+
+                if self.isPointerParam(param):
+                    continue
+
+                rawValue = None
+                try:
+                    rawValue = protocol.getAttributeValue(paramNameText)
+                except Exception:
+                    try:
+                        rawValue = getattr(protocol, paramNameText, None)
+                    except Exception:
+                        rawValue = None
+
+                paramsByName[paramNameText] = {
+                    "value": self.normalizeParamValue(rawValue),
+                }
+        except Exception:
+            logger.debug(
+                "Could not inspect runtime protocol params during consistency check.",
+                exc_info=True,
+            )
+
+        return paramsByName
+
+    def extractPostgresqlParams(self, row: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        rawParams = row.get("params")
+        if not isinstance(rawParams, dict):
+            return {}
+
+        paramsByName: Dict[str, Dict[str, Any]] = {}
+        for paramName, rawValue in rawParams.items():
+            paramNameText = str(paramName or "").strip()
+            if not paramNameText:
+                continue
+
+            paramsByName[paramNameText] = {
+                "value": self.normalizeParamValue(rawValue),
+            }
+
+        return paramsByName
 
     def validateProjectPostgresqlConsistency(
             self,
@@ -61,322 +392,6 @@ class ProjectConsistencyService:
             )
 
         self.loadProjectForThumbnails(dbProj)
-
-        def normalizeStatus(value: Any) -> str:
-            return str(value or "").strip().lower()
-
-        def normalizeClassName(value: Any) -> str:
-            return str(value or "").strip()
-
-        def normalizeProtocolId(value: Any) -> str:
-            return str(value).strip()
-
-        def protocolSortKey(value: Any):
-            text = normalizeProtocolId(value)
-            try:
-                return 0, int(text)
-            except Exception:
-                return 1, text
-
-        def dependencySortKey(item: Tuple[str, str]):
-            parentId, childId = item
-            return protocolSortKey(parentId), protocolSortKey(childId)
-
-        def buildDependency(parentId: Any, childId: Any) -> Dict[str, str]:
-            return {
-                "parentId": normalizeProtocolId(parentId),
-                "childId": normalizeProtocolId(childId),
-            }
-
-        def dependencyKeyFromInputRef(payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-            parentProtocolId = normalizeOptionalText(payload.get("parentProtocolId"))
-            childProtocolId = normalizeOptionalText(payload.get("protocolId"))
-
-            if not parentProtocolId or not childProtocolId:
-                return None
-
-            if parentProtocolId == "PROJECT" or childProtocolId == "PROJECT":
-                return None
-
-            if parentProtocolId == childProtocolId:
-                return None
-
-            return parentProtocolId, childProtocolId
-
-        def toOptionalInt(value: Any) -> Optional[int]:
-            try:
-                if value is None or value == "":
-                    return None
-                return int(value)
-            except Exception:
-                return None
-
-        def stepSortKey(item: Tuple[str, int]):
-            protocolId, stepIndex = item
-            return protocolSortKey(protocolId), int(stepIndex)
-
-        def stepValue(step: Any, attrName: str, fallback: Any = None) -> Any:
-            try:
-                value = getattr(step, attrName, None)
-                if hasattr(value, "get"):
-                    return value.get()
-                return value if value is not None else fallback
-            except Exception:
-                return fallback
-
-        def getStepName(step: Any) -> str:
-            name = stepValue(step, "funcName", None)
-            if name:
-                return str(name)
-
-            className = self._safeCall(step, "getClassName", None)
-            return str(className or "")
-
-        def buildStep(protocolId: Any, stepIndex: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
-            return {
-                "protocolId": normalizeProtocolId(protocolId),
-                "index": int(stepIndex),
-                "name": str(payload.get("name") or ""),
-                "status": normalizeStatus(payload.get("status")),
-            }
-
-        def normalizeOptionalText(value: Any) -> Optional[str]:
-            if value is None or value == "":
-                return None
-
-            text = str(value).strip()
-            return text or None
-
-        def inputRefSortKey(item: Tuple[str, str, int]):
-            protocolId, inputName, itemIndex = item
-            return protocolSortKey(protocolId), str(inputName), int(itemIndex)
-
-        def buildInputRef(
-                key: Tuple[str, str, int],
-                payload: Dict[str, Any],
-        ) -> Dict[str, Any]:
-            protocolId, inputName, itemIndex = key
-            return {
-                "protocolId": normalizeProtocolId(protocolId),
-                "inputName": str(inputName),
-                "itemIndex": int(itemIndex),
-                "parentProtocolId": normalizeOptionalText(payload.get("parentProtocolId")),
-                "parentOutputName": normalizeOptionalText(payload.get("parentOutputName")),
-                "objectClassName": normalizeOptionalText(payload.get("objectClassName")),
-            }
-
-        def expectedOutputMapperKind(className: Any) -> Optional[str]:
-            classNameText = normalizeOptionalText(className)
-            if classNameText is None:
-                return None
-
-            if classNameText.startswith("SetOf"):
-                return "flat_set"
-
-            return "tree"
-
-        def getRuntimeOutputItemsCount(outputObj: Any) -> Optional[int]:
-            if outputObj is None:
-                return None
-
-            for methodName in ("getSize", "getDim", "__len__"):
-                try:
-                    if methodName == "__len__":
-                        value = len(outputObj)
-                    else:
-                        method = getattr(outputObj, methodName, None)
-                        if method is None:
-                            continue
-                        value = method()
-
-                    if value is None or value == "":
-                        continue
-
-                    return int(value)
-                except Exception:
-                    continue
-
-            return None
-
-        def iterPointerItems(attr: Any) -> List[Tuple[int, Any]]:
-            try:
-                if isinstance(attr, PointerList):
-                    return [
-                        (index, pointer)
-                        for index, pointer in enumerate(attr)
-                    ]
-            except Exception:
-                pass
-
-            return [(0, attr)]
-
-        def extractRuntimeInputRef(
-                protocolId: str,
-                inputName: str,
-                itemIndex: int,
-                pointer: Any,
-        ) -> Optional[Dict[str, Any]]:
-            parentProtocolId = None
-            parentOutputName = None
-            objectClassName = None
-            objectId = None
-
-            try:
-                parentObj = pointer.getObjValue()
-                parentProtocolId = normalizeOptionalText(
-                    self._safeCall(parentObj, "getObjId", None)
-                )
-            except Exception:
-                parentProtocolId = None
-
-            try:
-                parentOutputName = normalizeOptionalText(pointer.getExtended())
-            except Exception:
-                parentOutputName = None
-
-            try:
-                targetObj = pointer.get()
-                if targetObj is not None:
-                    objectClassName = normalizeOptionalText(
-                        self._getScipionClassName(targetObj)
-                    )
-                    objectId = normalizeOptionalText(
-                        self._safeCall(targetObj, "getObjId", None)
-                    )
-            except Exception:
-                objectClassName = None
-                objectId = None
-
-            if parentProtocolId is None and parentOutputName is None:
-                return None
-
-            return {
-                "protocolId": normalizeProtocolId(protocolId),
-                "inputName": str(inputName),
-                "itemIndex": int(itemIndex),
-                "parentProtocolId": parentProtocolId,
-                "parentOutputName": parentOutputName,
-                "objectClassName": objectClassName,
-                "objectId": objectId,
-            }
-
-        def normalizeParamValue(value: Any) -> Any:
-            if value is None:
-                return None
-
-            if isinstance(value, bool):
-                return value
-
-            if isinstance(value, (int, float)):
-                return value
-
-            if isinstance(value, str):
-                text = value.strip()
-                if text == "":
-                    return ""
-                lowerText = text.lower()
-                if lowerText in ("true", "false"):
-                    return lowerText == "true"
-
-                try:
-                    if "." not in text:
-                        return int(text)
-                except Exception:
-                    pass
-
-                try:
-                    return float(text)
-                except Exception:
-                    return text
-
-            if isinstance(value, (list, tuple)):
-                return [normalizeParamValue(item) for item in value]
-
-            if isinstance(value, dict):
-                return {
-                    str(key): normalizeParamValue(itemValue)
-                    for key, itemValue in value.items()
-                }
-
-            try:
-                if hasattr(value, "get"):
-                    return normalizeParamValue(value.get())
-            except Exception:
-                pass
-
-            return str(value)
-
-        def paramSortKey(item: Tuple[str, str]):
-            protocolId, paramName = item
-            return protocolSortKey(protocolId), str(paramName)
-
-        def buildParamIssue(
-                key: Tuple[str, str],
-                payload: Dict[str, Any],
-        ) -> Dict[str, Any]:
-            protocolId, paramName = key
-            return {
-                "protocolId": normalizeProtocolId(protocolId),
-                "paramName": str(paramName),
-                "value": payload.get("value"),
-            }
-
-        def isPointerParam(param: Any) -> bool:
-            return isinstance(param, (PointerParam, MultiPointerParam, RelationParam))
-
-        def extractRuntimeParams(protocol: Any) -> Dict[str, Dict[str, Any]]:
-            paramsByName: Dict[str, Dict[str, Any]] = {}
-
-            try:
-                self.currentProject._fixProtParamsConfiguration(protocol)
-            except Exception:
-                pass
-
-            try:
-                for paramName, param in protocol.iterParams():
-                    paramNameText = str(paramName or "").strip()
-                    if not paramNameText:
-                        continue
-
-                    if isPointerParam(param):
-                        continue
-
-                    rawValue = None
-                    try:
-                        rawValue = protocol.getAttributeValue(paramNameText)
-                    except Exception:
-                        try:
-                            rawValue = getattr(protocol, paramNameText, None)
-                        except Exception:
-                            rawValue = None
-
-                    paramsByName[paramNameText] = {
-                        "value": normalizeParamValue(rawValue),
-                    }
-            except Exception:
-                logger.debug(
-                    "Could not inspect runtime protocol params during consistency check.",
-                    exc_info=True,
-                )
-
-            return paramsByName
-
-        def extractPostgresqlParams(row: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-            rawParams = row.get("params")
-            if not isinstance(rawParams, dict):
-                return {}
-
-            paramsByName: Dict[str, Dict[str, Any]] = {}
-            for paramName, rawValue in rawParams.items():
-                paramNameText = str(paramName or "").strip()
-                if not paramNameText:
-                    continue
-
-                paramsByName[paramNameText] = {
-                    "value": normalizeParamValue(rawValue),
-                }
-
-            return paramsByName
 
         runtimeStatuses: Dict[str, str] = {}
         runtimeClassNames: Dict[str, str] = {}
@@ -400,15 +415,15 @@ class ProjectConsistencyService:
             )
 
         for nodeId, nodeObj in nodesDict.items():
-            protocolId = normalizeProtocolId(nodeId)
+            protocolId = self.normalizeProtocolId(nodeId)
             if not protocolId or protocolId == "PROJECT":
                 continue
 
             protocol = getattr(nodeObj, "run", None)
-            runtimeStatuses[protocolId] = normalizeStatus(
+            runtimeStatuses[protocolId] = self.normalizeStatus(
                 self._safeCall(protocol, "getStatus", None)
             )
-            runtimeClassNames[protocolId] = normalizeClassName(
+            runtimeClassNames[protocolId] = self.normalizeClassName(
                 self._safeCall(protocol, "getClassName", None)
             )
             runtimeOutputsByProtocolId.setdefault(protocolId, {})
@@ -434,8 +449,8 @@ class ProjectConsistencyService:
                         runtimeOutputsByProtocolId[protocolId][outputName] = {
                             "outputName": outputName,
                             "className": outputClassName,
-                            "itemsCount": getRuntimeOutputItemsCount(outputObj)
-                            if expectedOutputMapperKind(outputClassName) == "flat_set"
+                            "itemsCount": self.getRuntimeOutputItemsCount(outputObj)
+                            if self.expectedOutputMapperKind(outputClassName) == "flat_set"
                             else None,
                         }
                 except Exception:
@@ -450,14 +465,14 @@ class ProjectConsistencyService:
 
                 try:
                     for step in protocol.loadSteps() or []:
-                        stepIndex = toOptionalInt(self._safeCall(step, "getIndex", None))
+                        stepIndex = self.toOptionalInt(self._safeCall(step, "getIndex", None))
                         if stepIndex is None:
                             continue
 
                         runtimeStepsByProtocolId[protocolId][stepIndex] = {
                             "index": stepIndex,
-                            "name": getStepName(step),
-                            "status": normalizeStatus(self._safeCall(step, "getStatus", None)),
+                            "name": self.getStepName(step),
+                            "status": self.normalizeStatus(self._safeCall(step, "getStatus", None)),
                         }
                 except Exception:
                     logger.debug(
@@ -473,8 +488,8 @@ class ProjectConsistencyService:
                         if not inputNameText:
                             continue
 
-                        for itemIndex, pointer in iterPointerItems(attr):
-                            inputRef = extractRuntimeInputRef(
+                        for itemIndex, pointer in self.iterPointerItems(attr):
+                            inputRef = self.extractRuntimeInputRef(
                                 protocolId=protocolId,
                                 inputName=inputNameText,
                                 itemIndex=int(itemIndex),
@@ -498,13 +513,13 @@ class ProjectConsistencyService:
                         exc_info=True,
                     )
 
-                runtimeParamsByProtocolId[protocolId] = extractRuntimeParams(protocol)
+                runtimeParamsByProtocolId[protocolId] = self.extractRuntimeParams(protocol)
 
             for parent in getattr(nodeObj, "_parents", []) or []:
                 try:
-                    parentId = normalizeProtocolId(parent.getName())
+                    parentId = self.normalizeProtocolId(parent.getName())
                 except Exception:
-                    parentId = normalizeProtocolId(parent)
+                    parentId = self.normalizeProtocolId(parent)
 
                 if not parentId or parentId == "PROJECT":
                     continue
@@ -528,13 +543,13 @@ class ProjectConsistencyService:
         postgresqlParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         for row in protocolRows:
-            protocolId = normalizeProtocolId(row.get("protocolId"))
+            protocolId = self.normalizeProtocolId(row.get("protocolId"))
             if not protocolId:
                 continue
 
-            postgresqlStatuses[protocolId] = normalizeStatus(row.get("status"))
-            postgresqlClassNames[protocolId] = normalizeClassName(row.get("protocolClassName"))
-            postgresqlParamsByProtocolId[protocolId] = extractPostgresqlParams(row)
+            postgresqlStatuses[protocolId] = self.normalizeStatus(row.get("status"))
+            postgresqlClassNames[protocolId] = self.normalizeClassName(row.get("protocolClassName"))
+            postgresqlParamsByProtocolId[protocolId] = self.extractPostgresqlParams(row)
 
         try:
             adjacencyMap = mapper.getProjectProtocolAdjacencyMap(projectId) or {}
@@ -550,12 +565,12 @@ class ProjectConsistencyService:
 
         postgresqlDependencies: Set[Tuple[str, str]] = set()
         for childId, refs in adjacencyMap.items():
-            childProtocolId = normalizeProtocolId(childId)
+            childProtocolId = self.normalizeProtocolId(childId)
             if not childProtocolId or childProtocolId == "PROJECT":
                 continue
 
             for parentIdValue in refs.get("parents") or []:
-                parentProtocolId = normalizeProtocolId(parentIdValue)
+                parentProtocolId = self.normalizeProtocolId(parentIdValue)
                 if not parentProtocolId or parentProtocolId == "PROJECT":
                     continue
 
@@ -590,16 +605,16 @@ class ProjectConsistencyService:
 
         normalizedPostgresqlStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
         for protocolId, steps in postgresqlStepsByProtocolId.items():
-            protocolIdText = normalizeProtocolId(protocolId)
+            protocolIdText = self.normalizeProtocolId(protocolId)
             for step in steps or []:
-                stepIndex = toOptionalInt(step.get("index"))
+                stepIndex = self.toOptionalInt(step.get("index"))
                 if stepIndex is None:
                     continue
 
                 normalizedPostgresqlStepsByProtocolId.setdefault(protocolIdText, {})[stepIndex] = {
                     "index": stepIndex,
                     "name": str(step.get("name") or ""),
-                    "status": normalizeStatus(step.get("status")),
+                    "status": self.normalizeStatus(step.get("status")),
                 }
 
         try:
@@ -616,9 +631,9 @@ class ProjectConsistencyService:
 
         postgresqlInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
         for ref in postgresqlInputRefs:
-            protocolIdText = normalizeProtocolId(ref.get("protocolId"))
+            protocolIdText = self.normalizeProtocolId(ref.get("protocolId"))
             inputName = str(ref.get("inputName") or "").strip()
-            itemIndex = toOptionalInt(ref.get("itemIndex"))
+            itemIndex = self.toOptionalInt(ref.get("itemIndex"))
 
             if not protocolIdText or not inputName:
                 continue
@@ -631,10 +646,10 @@ class ProjectConsistencyService:
                 "protocolId": protocolIdText,
                 "inputName": inputName,
                 "itemIndex": int(itemIndex),
-                "parentProtocolId": normalizeOptionalText(ref.get("parentProtocolId")),
-                "parentOutputName": normalizeOptionalText(ref.get("parentOutputName")),
-                "objectClassName": normalizeOptionalText(ref.get("objectClassName")),
-                "objectId": normalizeOptionalText(ref.get("objectId")),
+                "parentProtocolId": self.normalizeOptionalText(ref.get("parentProtocolId")),
+                "parentOutputName": self.normalizeOptionalText(ref.get("parentOutputName")),
+                "objectClassName": self.normalizeOptionalText(ref.get("objectClassName")),
+                "objectId": self.normalizeOptionalText(ref.get("objectId")),
             }
 
         runtimeOutputs: Set[Tuple[str, str]] = set()
@@ -645,7 +660,7 @@ class ProjectConsistencyService:
         postgresqlOutputs: Set[Tuple[str, str]] = set()
         for protocolId, outputsByName in persistedOutputsByProtocolId.items():
             for outputName in outputsByName.keys():
-                postgresqlOutputs.add((normalizeProtocolId(protocolId), str(outputName)))
+                postgresqlOutputs.add((self.normalizeProtocolId(protocolId), str(outputName)))
 
         runtimeSteps: Set[Tuple[str, int]] = set()
         for protocolId, stepsByIndex in runtimeStepsByProtocolId.items():
@@ -674,28 +689,28 @@ class ProjectConsistencyService:
                 postgresqlParams.add((protocolId, paramName))
 
         for inputRef in runtimeInputRefsByKey.values():
-            dependencyKey = dependencyKeyFromInputRef(inputRef)
+            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
             if dependencyKey is not None:
                 runtimeDependenciesFromInputRefs.add(dependencyKey)
 
         postgresqlDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
         for inputRef in postgresqlInputRefsByKey.values():
-            dependencyKey = dependencyKeyFromInputRef(inputRef)
+            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
             if dependencyKey is not None:
                 postgresqlDependenciesFromInputRefs.add(dependencyKey)
 
         missingProtocolIds = sorted(
             runtimeProtocolIds - postgresqlProtocolIds,
-            key=protocolSortKey,
+            key=self.protocolSortKey,
         )
         extraProtocolIds = sorted(
             postgresqlProtocolIds - runtimeProtocolIds,
-            key=protocolSortKey,
+            key=self.protocolSortKey,
         )
 
         commonProtocolIds = sorted(
             runtimeProtocolIds.intersection(postgresqlProtocolIds),
-            key=protocolSortKey,
+            key=self.protocolSortKey,
         )
 
         statusMismatches = []
@@ -712,8 +727,8 @@ class ProjectConsistencyService:
 
         protocolClassMismatches = []
         for protocolId in commonProtocolIds:
-            runtimeClassName = normalizeClassName(runtimeClassNames.get(protocolId))
-            postgresqlClassName = normalizeClassName(postgresqlClassNames.get(protocolId))
+            runtimeClassName = self.normalizeClassName(runtimeClassNames.get(protocolId))
+            postgresqlClassName = self.normalizeClassName(postgresqlClassNames.get(protocolId))
 
             if (
                     runtimeClassName
@@ -728,29 +743,29 @@ class ProjectConsistencyService:
 
         missingDependencies = sorted(
             runtimeDependencies - postgresqlDependencies,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
         extraDependencies = sorted(
             postgresqlDependencies - runtimeDependencies,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
 
         missingOutputs = sorted(
             runtimeOutputs - postgresqlOutputs,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
         extraOutputs = sorted(
             postgresqlOutputs - runtimeOutputs,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
 
         outputClassMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
             runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
             postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
 
-            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
-            postgresqlClassName = normalizeOptionalText(postgresqlOutput.get("className"))
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            postgresqlClassName = self.normalizeOptionalText(postgresqlOutput.get("className"))
 
             if (
                     runtimeClassName is not None
@@ -766,13 +781,13 @@ class ProjectConsistencyService:
                 })
 
         outputMapperKindMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
             runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
             postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
 
-            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
-            expectedMapperKind = expectedOutputMapperKind(runtimeClassName)
-            postgresqlMapperKind = normalizeOptionalText(postgresqlOutput.get("mapperKind"))
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            expectedMapperKind = self.expectedOutputMapperKind(runtimeClassName)
+            postgresqlMapperKind = self.normalizeOptionalText(postgresqlOutput.get("mapperKind"))
 
             if (
                     expectedMapperKind is not None
@@ -788,16 +803,16 @@ class ProjectConsistencyService:
                 })
 
         outputItemsCountMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
             runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
             postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
 
-            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
-            if expectedOutputMapperKind(runtimeClassName) != "flat_set":
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            if self.expectedOutputMapperKind(runtimeClassName) != "flat_set":
                 continue
 
-            runtimeItemsCount = toOptionalInt(runtimeOutput.get("itemsCount"))
-            postgresqlItemsCount = toOptionalInt(postgresqlOutput.get("itemsCount"))
+            runtimeItemsCount = self.toOptionalInt(runtimeOutput.get("itemsCount"))
+            postgresqlItemsCount = self.toOptionalInt(postgresqlOutput.get("itemsCount"))
 
             if runtimeItemsCount is None or postgresqlItemsCount is None:
                 continue
@@ -814,22 +829,22 @@ class ProjectConsistencyService:
 
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
-            key=stepSortKey,
+            key=self.stepSortKey,
         )
         extraSteps = sorted(
             postgresqlSteps - runtimeSteps,
-            key=stepSortKey,
+            key=self.stepSortKey,
         )
 
         stepMismatches = []
-        for protocolId, stepIndex in sorted(runtimeSteps.intersection(postgresqlSteps), key=stepSortKey):
+        for protocolId, stepIndex in sorted(runtimeSteps.intersection(postgresqlSteps), key=self.stepSortKey):
             runtimeStep = runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
             postgresqlStep = normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
 
             runtimeName = str(runtimeStep.get("name") or "")
             postgresqlName = str(postgresqlStep.get("name") or "")
-            runtimeStatus = normalizeStatus(runtimeStep.get("status"))
-            postgresqlStatus = normalizeStatus(postgresqlStep.get("status"))
+            runtimeStatus = self.normalizeStatus(runtimeStep.get("status"))
+            postgresqlStatus = self.normalizeStatus(postgresqlStep.get("status"))
 
             changedFields = []
             if runtimeName != postgresqlName:
@@ -851,31 +866,31 @@ class ProjectConsistencyService:
 
         missingInputRefs = sorted(
             runtimeInputRefs - postgresqlInputRefsKeys,
-            key=inputRefSortKey,
+            key=self.inputRefSortKey,
         )
         extraInputRefs = sorted(
             postgresqlInputRefsKeys - runtimeInputRefs,
-            key=inputRefSortKey,
+            key=self.inputRefSortKey,
         )
 
         missingParams = sorted(
             runtimeParams - postgresqlParams,
-            key=paramSortKey,
+            key=self.paramSortKey,
         )
         extraParams = sorted(
             postgresqlParams - runtimeParams,
-            key=paramSortKey,
+            key=self.paramSortKey,
         )
 
         paramValueMismatches = []
-        for key in sorted(runtimeParams.intersection(postgresqlParams), key=paramSortKey):
+        for key in sorted(runtimeParams.intersection(postgresqlParams), key=self.paramSortKey):
             protocolId, paramName = key
 
             runtimeParam = runtimeParamsByProtocolId.get(protocolId, {}).get(paramName, {})
             postgresqlParam = postgresqlParamsByProtocolId.get(protocolId, {}).get(paramName, {})
 
-            runtimeValue = normalizeParamValue(runtimeParam.get("value"))
-            postgresqlValue = normalizeParamValue(postgresqlParam.get("value"))
+            runtimeValue = self.normalizeParamValue(runtimeParam.get("value"))
+            postgresqlValue = self.normalizeParamValue(postgresqlParam.get("value"))
 
             if runtimeValue != postgresqlValue:
                 paramValueMismatches.append({
@@ -886,20 +901,20 @@ class ProjectConsistencyService:
                 })
 
         inputRefMismatches = []
-        for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=inputRefSortKey):
+        for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=self.inputRefSortKey):
             runtimeRef = runtimeInputRefsByKey.get(key, {})
             postgresqlRef = postgresqlInputRefsByKey.get(key, {})
 
             changedFields = []
 
-            runtimeParentProtocolId = normalizeOptionalText(runtimeRef.get("parentProtocolId"))
-            postgresqlParentProtocolId = normalizeOptionalText(postgresqlRef.get("parentProtocolId"))
+            runtimeParentProtocolId = self.normalizeOptionalText(runtimeRef.get("parentProtocolId"))
+            postgresqlParentProtocolId = self.normalizeOptionalText(postgresqlRef.get("parentProtocolId"))
 
-            runtimeParentOutputName = normalizeOptionalText(runtimeRef.get("parentOutputName"))
-            postgresqlParentOutputName = normalizeOptionalText(postgresqlRef.get("parentOutputName"))
+            runtimeParentOutputName = self.normalizeOptionalText(runtimeRef.get("parentOutputName"))
+            postgresqlParentOutputName = self.normalizeOptionalText(postgresqlRef.get("parentOutputName"))
 
-            runtimeObjectClassName = normalizeOptionalText(runtimeRef.get("objectClassName"))
-            postgresqlObjectClassName = normalizeOptionalText(postgresqlRef.get("objectClassName"))
+            runtimeObjectClassName = self.normalizeOptionalText(runtimeRef.get("objectClassName"))
+            postgresqlObjectClassName = self.normalizeOptionalText(postgresqlRef.get("objectClassName"))
 
             if runtimeParentProtocolId != postgresqlParentProtocolId:
                 changedFields.append("parentProtocolId")
@@ -931,20 +946,20 @@ class ProjectConsistencyService:
 
         runtimeInputRefDependenciesMissing = sorted(
             runtimeDependenciesFromInputRefs - runtimeDependencies,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
         runtimeDependenciesWithoutInputRefs = sorted(
             runtimeDependencies - runtimeDependenciesFromInputRefs,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
 
         postgresqlInputRefDependenciesMissing = sorted(
             postgresqlDependenciesFromInputRefs - postgresqlDependencies,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
         postgresqlDependenciesWithoutInputRefs = sorted(
             postgresqlDependencies - postgresqlDependenciesFromInputRefs,
-            key=dependencySortKey,
+            key=self.dependencySortKey,
         )
 
         issues = {
@@ -965,11 +980,11 @@ class ProjectConsistencyService:
             "statusMismatches": statusMismatches,
             "protocolClassMismatches": protocolClassMismatches,
             "missingDependencies": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in missingDependencies
             ],
             "extraDependencies": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in extraDependencies
             ],
             "missingOutputs": [
@@ -1003,7 +1018,7 @@ class ProjectConsistencyService:
             "outputItemsCountMismatches": outputItemsCountMismatches,
 
             "missingSteps": [
-                buildStep(
+                self.buildStep(
                     protocolId,
                     stepIndex,
                     runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
@@ -1011,7 +1026,7 @@ class ProjectConsistencyService:
                 for protocolId, stepIndex in missingSteps
             ],
             "extraSteps": [
-                buildStep(
+                self.buildStep(
                     protocolId,
                     stepIndex,
                     normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
@@ -1020,36 +1035,36 @@ class ProjectConsistencyService:
             ],
             "stepMismatches": stepMismatches,
             "missingInputRefs": [
-                buildInputRef(key, runtimeInputRefsByKey.get(key, {}))
+                self.buildInputRef(key, runtimeInputRefsByKey.get(key, {}))
                 for key in missingInputRefs
             ],
             "extraInputRefs": [
-                buildInputRef(key, postgresqlInputRefsByKey.get(key, {}))
+                self.buildInputRef(key, postgresqlInputRefsByKey.get(key, {}))
                 for key in extraInputRefs
             ],
             "inputRefMismatches": inputRefMismatches,
             "runtimeInputRefDependenciesMissing": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in runtimeInputRefDependenciesMissing
             ],
             "runtimeDependenciesWithoutInputRefs": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in runtimeDependenciesWithoutInputRefs
             ],
             "postgresqlInputRefDependenciesMissing": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in postgresqlInputRefDependenciesMissing
             ],
             "postgresqlDependenciesWithoutInputRefs": [
-                buildDependency(parentId, childId)
+                self.buildDependency(parentId, childId)
                 for parentId, childId in postgresqlDependenciesWithoutInputRefs
             ],
             "missingParams": [
-                buildParamIssue(key, runtimeParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                self.buildParamIssue(key, runtimeParamsByProtocolId.get(key[0], {}).get(key[1], {}))
                 for key in missingParams
             ],
             "extraParams": [
-                buildParamIssue(key, postgresqlParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                self.buildParamIssue(key, postgresqlParamsByProtocolId.get(key[0], {}).get(key[1], {}))
                 for key in extraParams
             ],
             "paramValueMismatches": paramValueMismatches,
@@ -1080,4 +1095,3 @@ class ProjectConsistencyService:
             },
             "issues": issues,
         }
-
