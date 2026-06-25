@@ -558,3 +558,79 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["extraDependencies"] == []
     assert result["issues"]["missingOutputs"] == []
     assert result["issues"]["extraOutputs"] == []
+
+
+def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+            "11": FakeRunNode(
+                "11",
+                status="running",
+                parents=["10"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.steps = [
+        FakeStep(index=1, name="importStep", status="finished"),
+    ]
+    currentProject.nodes["11"].run.steps = [
+        FakeStep(index=1, name="processStep", status="running"),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished"},
+            {"protocolId": "11", "status": "running"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": ["11"]},
+            "11": {"parents": ["10"], "children": []},
+        },
+        stepsByProtocolId={
+            "10": [
+                {
+                    "index": 1,
+                    "name": "importStep",
+                    "status": "finished",
+                }
+            ],
+            "11": [
+                {
+                    "index": 1,
+                    "name": "processStep",
+                    "status": "running",
+                }
+            ],
+        },
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is True
+    assert result["summary"]["runtimeSteps"] == 2
+    assert result["summary"]["postgresqlSteps"] == 2
+    assert result["issues"]["missingSteps"] == []
+    assert result["issues"]["extraSteps"] == []
+    assert result["issues"]["stepMismatches"] == []
