@@ -30,11 +30,22 @@ import pytest
 
 
 class FakeProtocol:
-    def __init__(self, status):
+    def __init__(self, status, outputs=None):
         self.status = status
+        self.outputs = outputs or []
 
     def getStatus(self):
         return self.status
+
+    def iterOutputAttributes(self):
+        return list(self.outputs)
+
+class FakeOutput:
+    def __init__(self, className):
+        self.className = className
+
+    def getClassName(self):
+        return self.className
 
 
 class FakeParentNode:
@@ -73,10 +84,21 @@ class FakeCurrentProject:
 
 
 class FakeMapper:
-    def __init__(self, projectRow, protocolRows, adjacencyMap):
+    def __init__(
+            self,
+            projectRow,
+            protocolRows,
+            adjacencyMap,
+            setRows=None,
+            treeRows=None,
+    ):
         self.projectRow = projectRow
         self.protocolRows = protocolRows
         self.adjacencyMap = adjacencyMap
+        self.db = FakeDb(
+            setRows=setRows,
+            treeRows=treeRows,
+        )
 
     def getProject(self, projectId, userId):
         if int(projectId) != int(self.projectRow["id"]):
@@ -91,6 +113,30 @@ class FakeMapper:
     def getProjectProtocolAdjacencyMap(self, projectId):
         return dict(self.adjacencyMap)
 
+
+class FakeDb:
+    def __init__(self, setRows=None, treeRows=None):
+        self.setRows = setRows or []
+        self.treeRows = treeRows or []
+        self.fetchAllCalls = []
+
+    def fetchAll(self, query, params):
+        normalizedQuery = " ".join(str(query).split())
+
+        self.fetchAllCalls.append(
+            {
+                "query": query,
+                "params": params,
+            }
+        )
+
+        if "FROM scipion_objects o" in normalizedQuery:
+            return list(self.treeRows)
+
+        if "FROM scipion_sets s" in normalizedQuery and "JOIN protocols p" in normalizedQuery:
+            return list(self.setRows)
+
+        return []
 
 @pytest.fixture
 def projectServiceModule(authTestEnv):
@@ -158,6 +204,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
         "issues": 0,
+        "runtimeOutputs": 0,
+        "postgresqlOutputs": 0,
     }
     assert result["issues"] == {
         "missingProtocols": [],
@@ -165,6 +213,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "statusMismatches": [],
         "missingDependencies": [],
         "extraDependencies": [],
+        "missingOutputs": [],
+        "extraOutputs": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -215,6 +265,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
         "issues": 5,
+        "runtimeOutputs": 0,
+        "postgresqlOutputs": 0,
     }
     assert result["issues"] == {
         "missingProtocols": [
@@ -248,4 +300,110 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
                 "childId": "10",
             }
         ],
+        "missingOutputs": [],
+        "extraOutputs": [],
     }
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles")),
+        ("outputVolume", FakeOutput("Volume")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            {
+                "protocolId": "10",
+                "id": 100,
+                "objectId": 200,
+                "outputName": "outputParticles",
+                "setClassName": "SetOfParticles",
+                "itemClassName": "Particle",
+                "properties": {"itemsCount": 12},
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        ],
+        treeRows=[
+            {
+                "protocolId": "10",
+                "id": 300,
+                "scipionObjId": 400,
+                "name": "outputExtra",
+                "path": "outputExtra",
+                "className": "Volume",
+                "value": None,
+                "label": None,
+                "comment": None,
+                "metadata": {},
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"] == {
+        "runtimeProtocols": 1,
+        "postgresqlProtocols": 1,
+        "runtimeDependencies": 0,
+        "postgresqlDependencies": 0,
+        "runtimeOutputs": 2,
+        "postgresqlOutputs": 2,
+        "issues": 2,
+    }
+    assert result["issues"]["missingOutputs"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputVolume",
+            "className": "Volume",
+        }
+    ]
+    assert result["issues"]["extraOutputs"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputExtra",
+            "mapperKind": "tree",
+            "className": "Volume",
+        }
+    ]
+    assert result["issues"]["missingProtocols"] == []
+    assert result["issues"]["extraProtocols"] == []
+    assert result["issues"]["statusMismatches"] == []
+    assert result["issues"]["missingDependencies"] == []
+    assert result["issues"]["extraDependencies"] == []

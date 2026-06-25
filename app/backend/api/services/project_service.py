@@ -2561,7 +2561,6 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
-
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -2604,6 +2603,7 @@ class ProjectService:
 
         runtimeStatuses: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
+        runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -2627,6 +2627,37 @@ class ProjectService:
             runtimeStatuses[protocolId] = normalizeStatus(
                 self._safeCall(protocol, "getStatus", None)
             )
+            runtimeOutputsByProtocolId.setdefault(protocolId, {})
+
+            if protocol is not None:
+                try:
+                    for outputItem in protocol.iterOutputAttributes():
+                        outputName = None
+                        outputObj = None
+
+                        if isinstance(outputItem, (tuple, list)) and len(outputItem) >= 2:
+                            outputName = outputItem[0]
+                            outputObj = outputItem[1]
+                        else:
+                            outputName = self._safeCall(outputItem, "getName", None)
+                            outputObj = outputItem
+
+                        outputName = str(outputName or "").strip()
+                        if not outputName or outputObj is None:
+                            continue
+
+                        runtimeOutputsByProtocolId[protocolId][outputName] = {
+                            "outputName": outputName,
+                            "className": self._getScipionClassName(outputObj),
+                        }
+                except Exception:
+                    logger.debug(
+                        "Could not inspect runtime protocol outputs during consistency check. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        protocolId,
+                        exc_info=True,
+                    )
 
             for parent in getattr(nodeObj, "_parents", []) or []:
                 try:
@@ -2684,6 +2715,31 @@ class ProjectService:
 
                 postgresqlDependencies.add((parentProtocolId, childProtocolId))
 
+        try:
+            persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
+                mapper,
+                projectId,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to load PostgreSQL persisted outputs for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load PostgreSQL persisted outputs: {e}",
+            )
+
+        runtimeOutputs: Set[Tuple[str, str]] = set()
+        for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
+            for outputName in outputsByName.keys():
+                runtimeOutputs.add((protocolId, outputName))
+
+        postgresqlOutputs: Set[Tuple[str, str]] = set()
+        for protocolId, outputsByName in persistedOutputsByProtocolId.items():
+            for outputName in outputsByName.keys():
+                postgresqlOutputs.add((normalizeProtocolId(protocolId), str(outputName)))
+
         runtimeProtocolIds = set(runtimeStatuses.keys())
         postgresqlProtocolIds = set(postgresqlStatuses.keys())
 
@@ -2722,6 +2778,15 @@ class ProjectService:
             key=dependencySortKey,
         )
 
+        missingOutputs = sorted(
+            runtimeOutputs - postgresqlOutputs,
+            key=dependencySortKey,
+        )
+        extraOutputs = sorted(
+            postgresqlOutputs - runtimeOutputs,
+            key=dependencySortKey,
+        )
+
         issues = {
             "missingProtocols": [
                 {
@@ -2746,6 +2811,32 @@ class ProjectService:
                 buildDependency(parentId, childId)
                 for parentId, childId in extraDependencies
             ],
+            "missingOutputs": [
+                {
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "className": runtimeOutputsByProtocolId
+                    .get(protocolId, {})
+                    .get(outputName, {})
+                    .get("className"),
+                }
+                for protocolId, outputName in missingOutputs
+            ],
+            "extraOutputs": [
+                {
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "mapperKind": persistedOutputsByProtocolId
+                    .get(protocolId, {})
+                    .get(outputName, {})
+                    .get("mapperKind"),
+                    "className": persistedOutputsByProtocolId
+                    .get(protocolId, {})
+                    .get(outputName, {})
+                    .get("className"),
+                }
+                for protocolId, outputName in extraOutputs
+            ],
         }
 
         issuesCount = sum(len(items) for items in issues.values())
@@ -2760,6 +2851,8 @@ class ProjectService:
                 "runtimeDependencies": len(runtimeDependencies),
                 "postgresqlDependencies": len(postgresqlDependencies),
                 "issues": issuesCount,
+                "runtimeOutputs": len(runtimeOutputs),
+                "postgresqlOutputs": len(postgresqlOutputs),
             },
             "issues": issues,
         }
