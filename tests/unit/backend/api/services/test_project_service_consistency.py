@@ -92,11 +92,15 @@ class FakePointer:
 
 
 class FakeOutput:
-    def __init__(self, className):
+    def __init__(self, className, itemsCount=None):
         self.className = className
+        self.itemsCount = itemsCount
 
     def getClassName(self):
         return self.className
+
+    def getSize(self):
+        return self.itemsCount
 
 
 class FakeValueHolder:
@@ -338,6 +342,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "paramValueMismatches": [],
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
+        "outputItemsCountMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -458,6 +463,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "paramValueMismatches": [],
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
+        "outputItemsCountMismatches": [],
     }
 
 
@@ -583,6 +589,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
@@ -704,6 +711,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["paramValueMismatches"] == []
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
@@ -805,6 +813,7 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
@@ -949,6 +958,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatches(
@@ -1079,6 +1089,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["inputRefMismatches"] == []
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
@@ -1157,6 +1168,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
         }
     ]
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
@@ -1230,6 +1242,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
         }
     ]
     assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsOutputMapperKindMismatches(
@@ -1308,5 +1321,87 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMapperKindMismatches(
             "className": "SetOfParticles",
             "expectedMapperKind": "flat_set",
             "postgresqlMapperKind": "tree",
+        }
+    ]
+    assert result["issues"]["outputItemsCountMismatches"] == []
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsOutputItemsCountMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=12)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            {
+                "protocolId": "10",
+                "id": 100,
+                "objectId": 200,
+                "outputName": "outputParticles",
+                "setClassName": "SetOfParticles",
+                "itemClassName": "Particle",
+                "properties": {
+                    "itemsCount": 10,
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["runtimeOutputs"] == 1
+    assert result["summary"]["postgresqlOutputs"] == 1
+    assert result["summary"]["issues"] == 1
+
+    assert result["issues"]["missingOutputs"] == []
+    assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["outputClassMismatches"] == []
+    assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "className": "SetOfParticles",
+            "runtimeItemsCount": 12,
+            "postgresqlItemsCount": 10,
+            "mapperKind": "flat_set",
         }
     ]
