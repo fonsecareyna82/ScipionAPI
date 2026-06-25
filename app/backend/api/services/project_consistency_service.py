@@ -376,23 +376,12 @@ class ProjectConsistencyService:
 
         return paramsByName
 
-    def validateProjectPostgresqlConsistency(
+    def collectRuntimeSnapshot(
             self,
-            mapper: PostgresqlFlatMapper,
             projectId: int,
-            currentUser: dict,
-            refresh: bool = True,
-            checkPid: bool = True,
+            refresh: bool,
+            checkPid: bool,
     ) -> Dict[str, Any]:
-        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        self.loadProjectForThumbnails(dbProj)
-
         runtimeStatuses: Dict[str, str] = {}
         runtimeClassNames: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
@@ -461,6 +450,7 @@ class ProjectConsistencyService:
                         protocolId,
                         exc_info=True,
                     )
+
                 runtimeStepsByProtocolId.setdefault(protocolId, {})
 
                 try:
@@ -482,6 +472,7 @@ class ProjectConsistencyService:
                         protocolId,
                         exc_info=True,
                     )
+
                 try:
                     for inputName, attr in protocol.iterInputAttributes():
                         inputNameText = str(inputName or "").strip()
@@ -525,6 +516,47 @@ class ProjectConsistencyService:
                     continue
 
                 runtimeDependencies.add((parentId, protocolId))
+
+        return {
+            "statuses": runtimeStatuses,
+            "classNames": runtimeClassNames,
+            "dependencies": runtimeDependencies,
+            "outputsByProtocolId": runtimeOutputsByProtocolId,
+            "stepsByProtocolId": runtimeStepsByProtocolId,
+            "inputRefsByKey": runtimeInputRefsByKey,
+            "paramsByProtocolId": runtimeParamsByProtocolId,
+        }
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            refresh: bool = True,
+            checkPid: bool = True,
+    ) -> Dict[str, Any]:
+        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        self.loadProjectForThumbnails(dbProj)
+
+        runtimeSnapshot = self.collectRuntimeSnapshot(
+            projectId=projectId,
+            refresh=refresh,
+            checkPid=checkPid,
+        )
+
+        runtimeStatuses = runtimeSnapshot["statuses"]
+        runtimeClassNames = runtimeSnapshot["classNames"]
+        runtimeDependencies = runtimeSnapshot["dependencies"]
+        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
+        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
+        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
+        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
 
         try:
             protocolRows = mapper.getProtocols(projectId) or []
