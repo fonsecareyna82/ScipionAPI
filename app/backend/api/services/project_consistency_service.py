@@ -668,6 +668,87 @@ class ProjectConsistencyService:
             "paramsByProtocolId": postgresqlParamsByProtocolId,
         }
 
+    def buildDerivedSets(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeStatuses = runtimeSnapshot["statuses"]
+        runtimeDependencies = runtimeSnapshot["dependencies"]
+        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
+        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
+        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
+        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
+
+        postgresqlStatuses = postgresqlSnapshot["statuses"]
+        postgresqlDependencies = postgresqlSnapshot["dependencies"]
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+        normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
+        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
+        postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
+
+        runtimeOutputs: Set[Tuple[str, str]] = set()
+        for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
+            for outputName in outputsByName.keys():
+                runtimeOutputs.add((protocolId, outputName))
+
+        postgresqlOutputs: Set[Tuple[str, str]] = set()
+        for protocolId, outputsByName in persistedOutputsByProtocolId.items():
+            for outputName in outputsByName.keys():
+                postgresqlOutputs.add((self.normalizeProtocolId(protocolId), str(outputName)))
+
+        runtimeSteps: Set[Tuple[str, int]] = set()
+        for protocolId, stepsByIndex in runtimeStepsByProtocolId.items():
+            for stepIndex in stepsByIndex.keys():
+                runtimeSteps.add((protocolId, int(stepIndex)))
+
+        postgresqlSteps: Set[Tuple[str, int]] = set()
+        for protocolId, stepsByIndex in normalizedPostgresqlStepsByProtocolId.items():
+            for stepIndex in stepsByIndex.keys():
+                postgresqlSteps.add((protocolId, int(stepIndex)))
+
+        runtimeProtocolIds = set(runtimeStatuses.keys())
+        postgresqlProtocolIds = set(postgresqlStatuses.keys())
+        runtimeInputRefs = set(runtimeInputRefsByKey.keys())
+        postgresqlInputRefsKeys = set(postgresqlInputRefsByKey.keys())
+
+        runtimeParams: Set[Tuple[str, str]] = set()
+        for protocolId, paramsByName in runtimeParamsByProtocolId.items():
+            for paramName in paramsByName.keys():
+                runtimeParams.add((protocolId, paramName))
+
+        postgresqlParams: Set[Tuple[str, str]] = set()
+        for protocolId, paramsByName in postgresqlParamsByProtocolId.items():
+            for paramName in paramsByName.keys():
+                postgresqlParams.add((protocolId, paramName))
+
+        runtimeDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
+        for inputRef in runtimeInputRefsByKey.values():
+            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
+            if dependencyKey is not None:
+                runtimeDependenciesFromInputRefs.add(dependencyKey)
+
+        postgresqlDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
+        for inputRef in postgresqlInputRefsByKey.values():
+            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
+            if dependencyKey is not None:
+                postgresqlDependenciesFromInputRefs.add(dependencyKey)
+
+        return {
+            "runtimeOutputs": runtimeOutputs,
+            "postgresqlOutputs": postgresqlOutputs,
+            "runtimeSteps": runtimeSteps,
+            "postgresqlSteps": postgresqlSteps,
+            "runtimeProtocolIds": runtimeProtocolIds,
+            "postgresqlProtocolIds": postgresqlProtocolIds,
+            "runtimeInputRefs": runtimeInputRefs,
+            "postgresqlInputRefsKeys": postgresqlInputRefsKeys,
+            "runtimeParams": runtimeParams,
+            "postgresqlParams": postgresqlParams,
+            "runtimeDependenciesFromInputRefs": runtimeDependenciesFromInputRefs,
+            "postgresqlDependenciesFromInputRefs": postgresqlDependenciesFromInputRefs,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -712,52 +793,23 @@ class ProjectConsistencyService:
         postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
         postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
 
-        runtimeOutputs: Set[Tuple[str, str]] = set()
-        for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
-            for outputName in outputsByName.keys():
-                runtimeOutputs.add((protocolId, outputName))
+        derivedSets = self.buildDerivedSets(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+        )
 
-        postgresqlOutputs: Set[Tuple[str, str]] = set()
-        for protocolId, outputsByName in persistedOutputsByProtocolId.items():
-            for outputName in outputsByName.keys():
-                postgresqlOutputs.add((self.normalizeProtocolId(protocolId), str(outputName)))
-
-        runtimeSteps: Set[Tuple[str, int]] = set()
-        for protocolId, stepsByIndex in runtimeStepsByProtocolId.items():
-            for stepIndex in stepsByIndex.keys():
-                runtimeSteps.add((protocolId, int(stepIndex)))
-
-        postgresqlSteps: Set[Tuple[str, int]] = set()
-        for protocolId, stepsByIndex in normalizedPostgresqlStepsByProtocolId.items():
-            for stepIndex in stepsByIndex.keys():
-                postgresqlSteps.add((protocolId, int(stepIndex)))
-
-        runtimeProtocolIds = set(runtimeStatuses.keys())
-        postgresqlProtocolIds = set(postgresqlStatuses.keys())
-        runtimeInputRefs = set(runtimeInputRefsByKey.keys())
-        postgresqlInputRefsKeys = set(postgresqlInputRefsByKey.keys())
-        runtimeDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
-
-        runtimeParams: Set[Tuple[str, str]] = set()
-        for protocolId, paramsByName in runtimeParamsByProtocolId.items():
-            for paramName in paramsByName.keys():
-                runtimeParams.add((protocolId, paramName))
-
-        postgresqlParams: Set[Tuple[str, str]] = set()
-        for protocolId, paramsByName in postgresqlParamsByProtocolId.items():
-            for paramName in paramsByName.keys():
-                postgresqlParams.add((protocolId, paramName))
-
-        for inputRef in runtimeInputRefsByKey.values():
-            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
-            if dependencyKey is not None:
-                runtimeDependenciesFromInputRefs.add(dependencyKey)
-
-        postgresqlDependenciesFromInputRefs: Set[Tuple[str, str]] = set()
-        for inputRef in postgresqlInputRefsByKey.values():
-            dependencyKey = self.dependencyKeyFromInputRef(inputRef)
-            if dependencyKey is not None:
-                postgresqlDependenciesFromInputRefs.add(dependencyKey)
+        runtimeOutputs = derivedSets["runtimeOutputs"]
+        postgresqlOutputs = derivedSets["postgresqlOutputs"]
+        runtimeSteps = derivedSets["runtimeSteps"]
+        postgresqlSteps = derivedSets["postgresqlSteps"]
+        runtimeProtocolIds = derivedSets["runtimeProtocolIds"]
+        postgresqlProtocolIds = derivedSets["postgresqlProtocolIds"]
+        runtimeInputRefs = derivedSets["runtimeInputRefs"]
+        postgresqlInputRefsKeys = derivedSets["postgresqlInputRefsKeys"]
+        runtimeParams = derivedSets["runtimeParams"]
+        postgresqlParams = derivedSets["postgresqlParams"]
+        runtimeDependenciesFromInputRefs = derivedSets["runtimeDependenciesFromInputRefs"]
+        postgresqlDependenciesFromInputRefs = derivedSets["postgresqlDependenciesFromInputRefs"]
 
         missingProtocolIds = sorted(
             runtimeProtocolIds - postgresqlProtocolIds,
