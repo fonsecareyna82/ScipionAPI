@@ -1077,6 +1077,77 @@ class ProjectConsistencyService:
             "paramValueMismatches": paramValueMismatches,
         }
 
+    def compareInputRefs(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
+        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
+
+        runtimeInputRefs = derivedSets["runtimeInputRefs"]
+        postgresqlInputRefsKeys = derivedSets["postgresqlInputRefsKeys"]
+
+        missingInputRefs = sorted(
+            runtimeInputRefs - postgresqlInputRefsKeys,
+            key=self.inputRefSortKey,
+        )
+        extraInputRefs = sorted(
+            postgresqlInputRefsKeys - runtimeInputRefs,
+            key=self.inputRefSortKey,
+        )
+
+        inputRefMismatches = []
+        for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=self.inputRefSortKey):
+            runtimeRef = runtimeInputRefsByKey.get(key, {})
+            postgresqlRef = postgresqlInputRefsByKey.get(key, {})
+
+            changedFields = []
+
+            runtimeParentProtocolId = self.normalizeOptionalText(runtimeRef.get("parentProtocolId"))
+            postgresqlParentProtocolId = self.normalizeOptionalText(postgresqlRef.get("parentProtocolId"))
+
+            runtimeParentOutputName = self.normalizeOptionalText(runtimeRef.get("parentOutputName"))
+            postgresqlParentOutputName = self.normalizeOptionalText(postgresqlRef.get("parentOutputName"))
+
+            runtimeObjectClassName = self.normalizeOptionalText(runtimeRef.get("objectClassName"))
+            postgresqlObjectClassName = self.normalizeOptionalText(postgresqlRef.get("objectClassName"))
+
+            if runtimeParentProtocolId != postgresqlParentProtocolId:
+                changedFields.append("parentProtocolId")
+
+            if runtimeParentOutputName != postgresqlParentOutputName:
+                changedFields.append("parentOutputName")
+
+            if (
+                    runtimeObjectClassName is not None
+                    and postgresqlObjectClassName is not None
+                    and runtimeObjectClassName != postgresqlObjectClassName
+            ):
+                changedFields.append("objectClassName")
+
+            if changedFields:
+                protocolId, inputName, itemIndex = key
+                inputRefMismatches.append({
+                    "protocolId": protocolId,
+                    "inputName": inputName,
+                    "itemIndex": int(itemIndex),
+                    "fields": changedFields,
+                    "runtimeParentProtocolId": runtimeParentProtocolId,
+                    "postgresqlParentProtocolId": postgresqlParentProtocolId,
+                    "runtimeParentOutputName": runtimeParentOutputName,
+                    "postgresqlParentOutputName": postgresqlParentOutputName,
+                    "runtimeObjectClassName": runtimeObjectClassName,
+                    "postgresqlObjectClassName": postgresqlObjectClassName,
+                })
+
+        return {
+            "missingInputRefs": missingInputRefs,
+            "extraInputRefs": extraInputRefs,
+            "inputRefMismatches": inputRefMismatches,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1181,15 +1252,6 @@ class ProjectConsistencyService:
         extraSteps = stepComparison["extraSteps"]
         stepMismatches = stepComparison["stepMismatches"]
 
-        missingInputRefs = sorted(
-            runtimeInputRefs - postgresqlInputRefsKeys,
-            key=self.inputRefSortKey,
-        )
-        extraInputRefs = sorted(
-            postgresqlInputRefsKeys - runtimeInputRefs,
-            key=self.inputRefSortKey,
-        )
-
         paramComparison = self.compareParams(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
@@ -1200,49 +1262,15 @@ class ProjectConsistencyService:
         extraParams = paramComparison["extraParams"]
         paramValueMismatches = paramComparison["paramValueMismatches"]
 
-        inputRefMismatches = []
-        for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=self.inputRefSortKey):
-            runtimeRef = runtimeInputRefsByKey.get(key, {})
-            postgresqlRef = postgresqlInputRefsByKey.get(key, {})
+        inputRefComparison = self.compareInputRefs(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
+        )
 
-            changedFields = []
-
-            runtimeParentProtocolId = self.normalizeOptionalText(runtimeRef.get("parentProtocolId"))
-            postgresqlParentProtocolId = self.normalizeOptionalText(postgresqlRef.get("parentProtocolId"))
-
-            runtimeParentOutputName = self.normalizeOptionalText(runtimeRef.get("parentOutputName"))
-            postgresqlParentOutputName = self.normalizeOptionalText(postgresqlRef.get("parentOutputName"))
-
-            runtimeObjectClassName = self.normalizeOptionalText(runtimeRef.get("objectClassName"))
-            postgresqlObjectClassName = self.normalizeOptionalText(postgresqlRef.get("objectClassName"))
-
-            if runtimeParentProtocolId != postgresqlParentProtocolId:
-                changedFields.append("parentProtocolId")
-
-            if runtimeParentOutputName != postgresqlParentOutputName:
-                changedFields.append("parentOutputName")
-
-            if (
-                    runtimeObjectClassName is not None
-                    and postgresqlObjectClassName is not None
-                    and runtimeObjectClassName != postgresqlObjectClassName
-            ):
-                changedFields.append("objectClassName")
-
-            if changedFields:
-                protocolId, inputName, itemIndex = key
-                inputRefMismatches.append({
-                    "protocolId": protocolId,
-                    "inputName": inputName,
-                    "itemIndex": int(itemIndex),
-                    "fields": changedFields,
-                    "runtimeParentProtocolId": runtimeParentProtocolId,
-                    "postgresqlParentProtocolId": postgresqlParentProtocolId,
-                    "runtimeParentOutputName": runtimeParentOutputName,
-                    "postgresqlParentOutputName": postgresqlParentOutputName,
-                    "runtimeObjectClassName": runtimeObjectClassName,
-                    "postgresqlObjectClassName": postgresqlObjectClassName,
-                })
+        missingInputRefs = inputRefComparison["missingInputRefs"]
+        extraInputRefs = inputRefComparison["extraInputRefs"]
+        inputRefMismatches = inputRefComparison["inputRefMismatches"]
 
         runtimeInputRefDependenciesMissing = sorted(
             runtimeDependenciesFromInputRefs - runtimeDependencies,
