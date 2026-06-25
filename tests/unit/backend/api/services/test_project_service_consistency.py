@@ -242,6 +242,9 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
             "11": FakeRunNode("11", status="running", parents=["10"]),
         }
     )
+    currentProject.nodes["11"].run.inputs = [
+        ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
+    ]
     patchRuntimeProject(service, monkeypatch, currentProject)
 
     mapper = FakeMapper(
@@ -249,6 +252,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
             "id": 1,
             "ownerId": 7,
             "name": str(tmp_path),
+
         },
         protocolRows=[
             {"protocolId": "10", "status": "finished"},
@@ -258,6 +262,17 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
             "10": {"parents": [], "children": ["11"]},
             "11": {"parents": ["10"], "children": []},
         },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputParticles",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+        ],
     )
 
     result = service.validateProjectPostgresqlConsistency(
@@ -278,8 +293,10 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlOutputs": 0,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
-        "runtimeInputRefs": 0,
-        "postgresqlInputRefs": 0,
+        "runtimeInputRefs": 1,
+        "postgresqlInputRefs": 1,
+        "runtimeInputRefDependencies": 1,
+        "postgresqlInputRefDependencies": 1,
         "issues": 0,
     }
     assert result["issues"] == {
@@ -296,6 +313,10 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "missingInputRefs": [],
         "extraInputRefs": [],
         "inputRefMismatches": [],
+        "runtimeInputRefDependenciesMissing": [],
+        "runtimeDependenciesWithoutInputRefs": [],
+        "postgresqlInputRefDependenciesMissing": [],
+        "postgresqlDependenciesWithoutInputRefs": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -351,7 +372,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlSteps": 0,
         "runtimeInputRefs": 0,
         "postgresqlInputRefs": 0,
-        "issues": 5,
+        "runtimeInputRefDependencies": 0,
+        "postgresqlInputRefDependencies": 0,
+        "issues": 7,
     }
     assert result["issues"] == {
         "missingProtocols": [
@@ -393,6 +416,20 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "missingInputRefs": [],
         "extraInputRefs": [],
         "inputRefMismatches": [],
+        "runtimeInputRefDependenciesMissing": [],
+        "runtimeDependenciesWithoutInputRefs": [
+            {
+                "parentId": "10",
+                "childId": "11",
+            }
+        ],
+        "postgresqlInputRefDependenciesMissing": [],
+        "postgresqlDependenciesWithoutInputRefs": [
+            {
+                "parentId": "99",
+                "childId": "10",
+            }
+        ],
     }
 
 
@@ -480,6 +517,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
         "postgresqlSteps": 0,
         "runtimeInputRefs": 0,
         "postgresqlInputRefs": 0,
+        "runtimeInputRefDependencies": 0,
+        "postgresqlInputRefDependencies": 0,
         "issues": 2,
     }
     assert result["issues"]["missingOutputs"] == [
@@ -508,6 +547,10 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
     assert result["issues"]["missingInputRefs"] == []
     assert result["issues"]["extraInputRefs"] == []
     assert result["issues"]["inputRefMismatches"] == []
+    assert result["issues"]["runtimeInputRefDependenciesMissing"] == []
+    assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
+    assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
@@ -584,6 +627,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
         "postgresqlSteps": 3,
         "runtimeInputRefs": 0,
         "postgresqlInputRefs": 0,
+        "runtimeInputRefDependencies": 0,
+        "postgresqlInputRefDependencies": 0,
         "issues": 2,
     }
     assert result["issues"]["missingSteps"] == []
@@ -616,6 +661,10 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["missingInputRefs"] == []
     assert result["issues"]["extraInputRefs"] == []
     assert result["issues"]["inputRefMismatches"] == []
+    assert result["issues"]["runtimeInputRefDependenciesMissing"] == []
+    assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
+    assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
@@ -638,6 +687,9 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
             ),
         }
     )
+    currentProject.nodes["11"].run.inputs = [
+        ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
+    ]
     currentProject.nodes["10"].run.steps = [
         FakeStep(index=1, name="importStep", status="finished"),
     ]
@@ -676,6 +728,17 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
                 }
             ],
         },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputParticles",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+        ],
     )
 
     result = service.validateProjectPostgresqlConsistency(
@@ -692,6 +755,15 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     assert result["issues"]["missingSteps"] == []
     assert result["issues"]["extraSteps"] == []
     assert result["issues"]["stepMismatches"] == []
+    assert result["summary"]["runtimeInputRefs"] == 1
+    assert result["summary"]["postgresqlInputRefs"] == 1
+    assert result["summary"]["runtimeInputRefDependencies"] == 1
+    assert result["summary"]["postgresqlInputRefDependencies"] == 1
+
+    assert result["issues"]["runtimeInputRefDependenciesMissing"] == []
+    assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
+    assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
@@ -776,6 +848,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         "postgresqlSteps": 0,
         "runtimeInputRefs": 2,
         "postgresqlInputRefs": 2,
+        "runtimeInputRefDependencies": 1,
+        "postgresqlInputRefDependencies": 1,
         "issues": 3,
     }
 
@@ -826,4 +900,133 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
     assert result["issues"]["missingSteps"] == []
     assert result["issues"]["extraSteps"] == []
     assert result["issues"]["stepMismatches"] == []
+    assert result["issues"]["runtimeInputRefDependenciesMissing"] == []
+    assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
+    assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
 
+
+def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+            "11": FakeRunNode(
+                "11",
+                status="running",
+                parents=["10"],
+            ),
+            "12": FakeRunNode(
+                "12",
+                status="running",
+                parents=[],
+            ),
+        }
+    )
+    currentProject.nodes["11"].run.inputs = [
+        ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
+    ]
+    currentProject.nodes["12"].run.inputs = [
+        ("inputVolume", FakePointer(parentProtocolId=10, outputName="outputVolume", className="Volume")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished"},
+            {"protocolId": "11", "status": "running"},
+            {"protocolId": "12", "status": "running"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": ["11"]},
+            "11": {"parents": ["10"], "children": []},
+            "12": {"parents": [], "children": []},
+        },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputParticles",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+            {
+                "protocolId": "12",
+                "inputName": "inputVolume",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputVolume",
+                "objectClassName": "Volume",
+                "objectId": "101",
+            },
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"] == {
+        "runtimeProtocols": 3,
+        "postgresqlProtocols": 3,
+        "runtimeDependencies": 1,
+        "postgresqlDependencies": 1,
+        "runtimeOutputs": 0,
+        "postgresqlOutputs": 0,
+        "runtimeSteps": 0,
+        "postgresqlSteps": 0,
+        "runtimeInputRefs": 2,
+        "postgresqlInputRefs": 2,
+        "runtimeInputRefDependencies": 2,
+        "postgresqlInputRefDependencies": 2,
+        "issues": 2,
+    }
+
+    assert result["issues"]["runtimeInputRefDependenciesMissing"] == [
+        {
+            "parentId": "10",
+            "childId": "12",
+        }
+    ]
+    assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["postgresqlInputRefDependenciesMissing"] == [
+        {
+            "parentId": "10",
+            "childId": "12",
+        }
+    ]
+    assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
+
+    assert result["issues"]["missingProtocols"] == []
+    assert result["issues"]["extraProtocols"] == []
+    assert result["issues"]["statusMismatches"] == []
+    assert result["issues"]["missingDependencies"] == []
+    assert result["issues"]["extraDependencies"] == []
+    assert result["issues"]["missingOutputs"] == []
+    assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["missingSteps"] == []
+    assert result["issues"]["extraSteps"] == []
+    assert result["issues"]["stepMismatches"] == []
+    assert result["issues"]["missingInputRefs"] == []
+    assert result["issues"]["extraInputRefs"] == []
+    assert result["issues"]["inputRefMismatches"] == []
