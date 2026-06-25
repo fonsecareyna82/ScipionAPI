@@ -149,6 +149,30 @@ class FakeProjectService:
         )
         self.lastExportMetadataTableCall = None
 
+        self.consistencyResult = {
+            "ok": True,
+            "projectId": 1,
+            "summary": {
+                "runtimeProtocols": 2,
+                "postgresqlProtocols": 2,
+                "runtimeDependencies": 1,
+                "postgresqlDependencies": 1,
+                "issues": 0,
+            },
+            "issues": {
+                "runtimeDependencies": 1,
+                "postgresqlDependencies": 1,
+                "issues": 0,
+            },
+            "issues": {
+                "missingProtocols": [],
+                "extraProtocols": [],
+                "statusMismatches": [],
+                "missingDependencies": [],
+                "extraDependencies": [],
+            },
+        }
+        self.lastValidateProjectPostgresqlConsistencyCall = None
 
         self.metadataTablesResult = [
             {
@@ -284,6 +308,23 @@ class FakeProjectService:
             "checkPid": checkPid,
         }
         return self.projectByIdResult
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=True,
+            checkPid=True,
+    ):
+        self.lastValidateProjectPostgresqlConsistencyCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "refresh": refresh,
+            "checkPid": checkPid,
+        }
+        return self.consistencyResult
 
     def getProtocols(self, mapper, projectId, currentUser):
         return self.protocolsResult
