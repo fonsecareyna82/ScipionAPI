@@ -749,6 +749,71 @@ class ProjectConsistencyService:
             "postgresqlDependenciesFromInputRefs": postgresqlDependenciesFromInputRefs,
         }
 
+    def compareProtocols(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeStatuses = runtimeSnapshot["statuses"]
+        runtimeClassNames = runtimeSnapshot["classNames"]
+
+        postgresqlStatuses = postgresqlSnapshot["statuses"]
+        postgresqlClassNames = postgresqlSnapshot["classNames"]
+
+        runtimeProtocolIds = derivedSets["runtimeProtocolIds"]
+        postgresqlProtocolIds = derivedSets["postgresqlProtocolIds"]
+
+        missingProtocolIds = sorted(
+            runtimeProtocolIds - postgresqlProtocolIds,
+            key=self.protocolSortKey,
+        )
+        extraProtocolIds = sorted(
+            postgresqlProtocolIds - runtimeProtocolIds,
+            key=self.protocolSortKey,
+        )
+
+        commonProtocolIds = sorted(
+            runtimeProtocolIds.intersection(postgresqlProtocolIds),
+            key=self.protocolSortKey,
+        )
+
+        statusMismatches = []
+        for protocolId in commonProtocolIds:
+            runtimeStatus = runtimeStatuses.get(protocolId, "")
+            postgresqlStatus = postgresqlStatuses.get(protocolId, "")
+
+            if runtimeStatus != postgresqlStatus:
+                statusMismatches.append({
+                    "protocolId": protocolId,
+                    "runtimeStatus": runtimeStatus,
+                    "postgresqlStatus": postgresqlStatus,
+                })
+
+        protocolClassMismatches = []
+        for protocolId in commonProtocolIds:
+            runtimeClassName = self.normalizeClassName(runtimeClassNames.get(protocolId))
+            postgresqlClassName = self.normalizeClassName(postgresqlClassNames.get(protocolId))
+
+            if (
+                    runtimeClassName
+                    and postgresqlClassName
+                    and runtimeClassName != postgresqlClassName
+            ):
+                protocolClassMismatches.append({
+                    "protocolId": protocolId,
+                    "runtimeClassName": runtimeClassName,
+                    "postgresqlClassName": postgresqlClassName,
+                })
+
+        return {
+            "missingProtocolIds": missingProtocolIds,
+            "extraProtocolIds": extraProtocolIds,
+            "commonProtocolIds": commonProtocolIds,
+            "statusMismatches": statusMismatches,
+            "protocolClassMismatches": protocolClassMismatches,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -811,47 +876,17 @@ class ProjectConsistencyService:
         runtimeDependenciesFromInputRefs = derivedSets["runtimeDependenciesFromInputRefs"]
         postgresqlDependenciesFromInputRefs = derivedSets["postgresqlDependenciesFromInputRefs"]
 
-        missingProtocolIds = sorted(
-            runtimeProtocolIds - postgresqlProtocolIds,
-            key=self.protocolSortKey,
-        )
-        extraProtocolIds = sorted(
-            postgresqlProtocolIds - runtimeProtocolIds,
-            key=self.protocolSortKey,
+        protocolComparison = self.compareProtocols(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
         )
 
-        commonProtocolIds = sorted(
-            runtimeProtocolIds.intersection(postgresqlProtocolIds),
-            key=self.protocolSortKey,
-        )
-
-        statusMismatches = []
-        for protocolId in commonProtocolIds:
-            runtimeStatus = runtimeStatuses.get(protocolId, "")
-            postgresqlStatus = postgresqlStatuses.get(protocolId, "")
-
-            if runtimeStatus != postgresqlStatus:
-                statusMismatches.append({
-                    "protocolId": protocolId,
-                    "runtimeStatus": runtimeStatus,
-                    "postgresqlStatus": postgresqlStatus,
-                })
-
-        protocolClassMismatches = []
-        for protocolId in commonProtocolIds:
-            runtimeClassName = self.normalizeClassName(runtimeClassNames.get(protocolId))
-            postgresqlClassName = self.normalizeClassName(postgresqlClassNames.get(protocolId))
-
-            if (
-                    runtimeClassName
-                    and postgresqlClassName
-                    and runtimeClassName != postgresqlClassName
-            ):
-                protocolClassMismatches.append({
-                    "protocolId": protocolId,
-                    "runtimeClassName": runtimeClassName,
-                    "postgresqlClassName": postgresqlClassName,
-                })
+        missingProtocolIds = protocolComparison["missingProtocolIds"]
+        extraProtocolIds = protocolComparison["extraProtocolIds"]
+        commonProtocolIds = protocolComparison["commonProtocolIds"]
+        statusMismatches = protocolComparison["statusMismatches"]
+        protocolClassMismatches = protocolComparison["protocolClassMismatches"]
 
         missingDependencies = sorted(
             runtimeDependencies - postgresqlDependencies,
@@ -974,7 +1009,6 @@ class ProjectConsistencyService:
                     "runtimeStatus": runtimeStatus,
                     "postgresqlStatus": postgresqlStatus,
                 })
-
 
         missingInputRefs = sorted(
             runtimeInputRefs - postgresqlInputRefsKeys,
