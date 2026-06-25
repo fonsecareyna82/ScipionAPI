@@ -2601,9 +2601,47 @@ class ProjectService:
                 "childId": normalizeProtocolId(childId),
             }
 
+        def toOptionalInt(value: Any) -> Optional[int]:
+            try:
+                if value is None or value == "":
+                    return None
+                return int(value)
+            except Exception:
+                return None
+
+        def stepSortKey(item: Tuple[str, int]):
+            protocolId, stepIndex = item
+            return protocolSortKey(protocolId), int(stepIndex)
+
+        def stepValue(step: Any, attrName: str, fallback: Any = None) -> Any:
+            try:
+                value = getattr(step, attrName, None)
+                if hasattr(value, "get"):
+                    return value.get()
+                return value if value is not None else fallback
+            except Exception:
+                return fallback
+
+        def getStepName(step: Any) -> str:
+            name = stepValue(step, "funcName", None)
+            if name:
+                return str(name)
+
+            className = self._safeCall(step, "getClassName", None)
+            return str(className or "")
+
+        def buildStep(protocolId: Any, stepIndex: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "protocolId": normalizeProtocolId(protocolId),
+                "index": int(stepIndex),
+                "name": str(payload.get("name") or ""),
+                "status": normalizeStatus(payload.get("status")),
+            }
+
         runtimeStatuses: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
         runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -2730,6 +2768,32 @@ class ProjectService:
                 detail=f"Failed to load PostgreSQL persisted outputs: {e}",
             )
 
+        try:
+            postgresqlStepsByProtocolId = mapper.getProjectProtocolStepsByProtocolId(projectId) or {}
+        except Exception as e:
+            logger.exception(
+                "Failed to load PostgreSQL protocol steps for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load PostgreSQL protocol steps: {e}",
+            )
+
+        normalizedPostgresqlStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
+        for protocolId, steps in postgresqlStepsByProtocolId.items():
+            protocolIdText = normalizeProtocolId(protocolId)
+            for step in steps or []:
+                stepIndex = toOptionalInt(step.get("index"))
+                if stepIndex is None:
+                    continue
+
+                normalizedPostgresqlStepsByProtocolId.setdefault(protocolIdText, {})[stepIndex] = {
+                    "index": stepIndex,
+                    "name": str(step.get("name") or ""),
+                    "status": normalizeStatus(step.get("status")),
+                }
+
         runtimeOutputs: Set[Tuple[str, str]] = set()
         for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
             for outputName in outputsByName.keys():
@@ -2739,6 +2803,38 @@ class ProjectService:
         for protocolId, outputsByName in persistedOutputsByProtocolId.items():
             for outputName in outputsByName.keys():
                 postgresqlOutputs.add((normalizeProtocolId(protocolId), str(outputName)))
+
+        runtimeStepsByProtocolId.setdefault(protocolId, {})
+        if protocol is not None:
+            try:
+                for step in protocol.loadSteps() or []:
+                    stepIndex = toOptionalInt(self._safeCall(step, "getIndex", None))
+                    if stepIndex is None:
+                        continue
+
+                    runtimeStepsByProtocolId[protocolId][stepIndex] = {
+                        "index": stepIndex,
+                        "name": getStepName(step),
+                        "status": normalizeStatus(self._safeCall(step, "getStatus", None)),
+                    }
+            except Exception:
+                logger.debug(
+                    "Could not inspect runtime protocol steps during consistency check. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                    exc_info=True,
+                )
+
+        runtimeSteps: Set[Tuple[str, int]] = set()
+        for protocolId, stepsByIndex in runtimeStepsByProtocolId.items():
+            for stepIndex in stepsByIndex.keys():
+                runtimeSteps.add((protocolId, int(stepIndex)))
+
+        postgresqlSteps: Set[Tuple[str, int]] = set()
+        for protocolId, stepsByIndex in normalizedPostgresqlStepsByProtocolId.items():
+            for stepIndex in stepsByIndex.keys():
+                postgresqlSteps.add((protocolId, int(stepIndex)))
 
         runtimeProtocolIds = set(runtimeStatuses.keys())
         postgresqlProtocolIds = set(postgresqlStatuses.keys())
@@ -2786,6 +2882,42 @@ class ProjectService:
             postgresqlOutputs - runtimeOutputs,
             key=dependencySortKey,
         )
+
+        missingSteps = sorted(
+            runtimeSteps - postgresqlSteps,
+            key=stepSortKey,
+        )
+        extraSteps = sorted(
+            postgresqlSteps - runtimeSteps,
+            key=stepSortKey,
+        )
+
+        stepMismatches = []
+        for protocolId, stepIndex in sorted(runtimeSteps.intersection(postgresqlSteps), key=stepSortKey):
+            runtimeStep = runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
+            postgresqlStep = normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
+
+            runtimeName = str(runtimeStep.get("name") or "")
+            postgresqlName = str(postgresqlStep.get("name") or "")
+            runtimeStatus = normalizeStatus(runtimeStep.get("status"))
+            postgresqlStatus = normalizeStatus(postgresqlStep.get("status"))
+
+            changedFields = []
+            if runtimeName != postgresqlName:
+                changedFields.append("name")
+            if runtimeStatus != postgresqlStatus:
+                changedFields.append("status")
+
+            if changedFields:
+                stepMismatches.append({
+                    "protocolId": protocolId,
+                    "index": int(stepIndex),
+                    "fields": changedFields,
+                    "runtimeName": runtimeName,
+                    "postgresqlName": postgresqlName,
+                    "runtimeStatus": runtimeStatus,
+                    "postgresqlStatus": postgresqlStatus,
+                })
 
         issues = {
             "missingProtocols": [
@@ -2837,6 +2969,23 @@ class ProjectService:
                 }
                 for protocolId, outputName in extraOutputs
             ],
+            "missingSteps": [
+                buildStep(
+                    protocolId,
+                    stepIndex,
+                    runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
+                )
+                for protocolId, stepIndex in missingSteps
+            ],
+            "extraSteps": [
+                buildStep(
+                    protocolId,
+                    stepIndex,
+                    normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
+                )
+                for protocolId, stepIndex in extraSteps
+            ],
+            "stepMismatches": stepMismatches,
         }
 
         issuesCount = sum(len(items) for items in issues.values())
@@ -2846,14 +2995,16 @@ class ProjectService:
             "projectId": projectId,
             "checkedAt": datetime.utcnow().isoformat() + "Z",
             "summary": {
-                "runtimeProtocols": len(runtimeProtocolIds),
-                "postgresqlProtocols": len(postgresqlProtocolIds),
-                "runtimeDependencies": len(runtimeDependencies),
-                "postgresqlDependencies": len(postgresqlDependencies),
-                "issues": issuesCount,
-                "runtimeOutputs": len(runtimeOutputs),
-                "postgresqlOutputs": len(postgresqlOutputs),
-            },
+            "runtimeProtocols": len(runtimeProtocolIds),
+            "postgresqlProtocols": len(postgresqlProtocolIds),
+            "runtimeDependencies": len(runtimeDependencies),
+            "postgresqlDependencies": len(postgresqlDependencies),
+            "runtimeOutputs": len(runtimeOutputs),
+            "postgresqlOutputs": len(postgresqlOutputs),
+            "runtimeSteps": len(runtimeSteps),
+            "postgresqlSteps": len(postgresqlSteps),
+            "issues": issuesCount,
+        },
             "issues": issues,
         }
 
