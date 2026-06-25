@@ -35,12 +35,16 @@ class FakeParam:
 
 
 class FakeProtocol:
-    def __init__(self, status, outputs=None, steps=None, inputs=None, params=None):
+    def __init__(self, status, outputs=None, steps=None, inputs=None, params=None, className="FakeProtocol"):
         self.status = status
         self.outputs = outputs or []
         self.steps = steps or []
         self.inputs = inputs or []
         self.params = params or {}
+        self.className = className
+
+    def getClassName(self):
+        return self.className
 
     def getStatus(self):
         return self.status
@@ -273,8 +277,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
 
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
-            {"protocolId": "11", "status": "running"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": ["11"]},
@@ -343,6 +347,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
+        "protocolClassMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -464,6 +469,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
+        "protocolClassMismatches": [],
     }
 
 
@@ -495,7 +501,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
             "name": str(tmp_path),
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": []},
@@ -590,6 +596,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
@@ -712,6 +719,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
@@ -752,8 +760,8 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
             "name": str(tmp_path),
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
-            {"protocolId": "11", "status": "running"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": ["11"]},
@@ -814,6 +822,7 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
@@ -849,8 +858,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
             "name": str(tmp_path),
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
-            {"protocolId": "11", "status": "running"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": ["11"]},
@@ -959,6 +968,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatches(
@@ -1001,9 +1011,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
             "name": str(tmp_path),
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
-            {"protocolId": "11", "status": "running"},
-            {"protocolId": "12", "status": "running"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "12", "status": "running", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": ["11"]},
@@ -1090,6 +1100,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["outputClassMismatches"] == []
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
@@ -1169,6 +1180,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
     ]
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
@@ -1198,7 +1210,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
             "name": str(tmp_path),
         },
         protocolRows=[
-            {"protocolId": "10", "status": "finished"},
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
         ],
         adjacencyMap={
             "10": {"parents": [], "children": []},
@@ -1243,6 +1255,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
     ]
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsOutputMapperKindMismatches(
@@ -1324,6 +1337,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMapperKindMismatches(
         }
     ]
     assert result["issues"]["outputItemsCountMismatches"] == []
+    assert result["issues"]["protocolClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsOutputItemsCountMismatches(
@@ -1403,5 +1417,62 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputItemsCountMismatches(
             "runtimeItemsCount": 12,
             "postgresqlItemsCount": 10,
             "mapperKind": "flat_set",
+        }
+    ]
+    assert result["issues"]["protocolClassMismatches"] == []
+
+def test_ValidateProjectPostgresqlConsistencyReportsProtocolClassMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.className = "RuntimeProtocolClass"
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+                "protocolClassName": "PostgresqlProtocolClass",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["runtimeProtocols"] == 1
+    assert result["summary"]["postgresqlProtocols"] == 1
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["protocolClassMismatches"] == [
+        {
+            "protocolId": "10",
+            "runtimeClassName": "RuntimeProtocolClass",
+            "postgresqlClassName": "PostgresqlProtocolClass",
         }
     ]
