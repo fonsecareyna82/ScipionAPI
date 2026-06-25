@@ -1522,7 +1522,7 @@ def resolveAnalyzeViewer(
             projectId=projectId,
             protocolId=protocolId,
             ctx=payload,
-
+            mapper=mapper,
         )
         return decision or {"handled": False}
     except Exception as e:
