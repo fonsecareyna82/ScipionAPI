@@ -3198,6 +3198,27 @@ class ProjectService:
             key=dependencySortKey,
         )
 
+        outputClassMismatches = []
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
+            postgresqlClassName = normalizeOptionalText(postgresqlOutput.get("className"))
+
+            if (
+                    runtimeClassName is not None
+                    and postgresqlClassName is not None
+                    and runtimeClassName != postgresqlClassName
+            ):
+                outputClassMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "runtimeClassName": runtimeClassName,
+                    "postgresqlClassName": postgresqlClassName,
+                    "mapperKind": postgresqlOutput.get("mapperKind"),
+                })
+
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
             key=stepSortKey,
@@ -3383,6 +3404,8 @@ class ProjectService:
                 }
                 for protocolId, outputName in extraOutputs
             ],
+            "outputClassMismatches": outputClassMismatches,
+
             "missingSteps": [
                 buildStep(
                     protocolId,
