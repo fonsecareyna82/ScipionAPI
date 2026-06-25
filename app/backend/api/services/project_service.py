@@ -2688,6 +2688,29 @@ class ProjectService:
 
             return "tree"
 
+        def getRuntimeOutputItemsCount(outputObj: Any) -> Optional[int]:
+            if outputObj is None:
+                return None
+
+            for methodName in ("getSize", "getDim", "__len__"):
+                try:
+                    if methodName == "__len__":
+                        value = len(outputObj)
+                    else:
+                        method = getattr(outputObj, methodName, None)
+                        if method is None:
+                            continue
+                        value = method()
+
+                    if value is None or value == "":
+                        continue
+
+                    return int(value)
+                except Exception:
+                    continue
+
+            return None
+
         def iterPointerItems(attr: Any) -> List[Tuple[int, Any]]:
             try:
                 if isinstance(attr, PointerList):
@@ -2916,9 +2939,13 @@ class ProjectService:
                         if not outputName or outputObj is None:
                             continue
 
+                        outputClassName = self._getScipionClassName(outputObj)
                         runtimeOutputsByProtocolId[protocolId][outputName] = {
                             "outputName": outputName,
-                            "className": self._getScipionClassName(outputObj),
+                            "className": outputClassName,
+                            "itemsCount": getRuntimeOutputItemsCount(outputObj)
+                            if expectedOutputMapperKind(outputClassName) == "flat_set"
+                            else None,
                         }
                 except Exception:
                     logger.debug(
@@ -3251,6 +3278,31 @@ class ProjectService:
                     "postgresqlMapperKind": postgresqlMapperKind,
                 })
 
+        outputItemsCountMismatches = []
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
+            if expectedOutputMapperKind(runtimeClassName) != "flat_set":
+                continue
+
+            runtimeItemsCount = toOptionalInt(runtimeOutput.get("itemsCount"))
+            postgresqlItemsCount = toOptionalInt(postgresqlOutput.get("itemsCount"))
+
+            if runtimeItemsCount is None or postgresqlItemsCount is None:
+                continue
+
+            if runtimeItemsCount != postgresqlItemsCount:
+                outputItemsCountMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "className": runtimeClassName,
+                    "runtimeItemsCount": runtimeItemsCount,
+                    "postgresqlItemsCount": postgresqlItemsCount,
+                    "mapperKind": postgresqlOutput.get("mapperKind"),
+                })
+
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
             key=stepSortKey,
@@ -3438,6 +3490,7 @@ class ProjectService:
             ],
             "outputClassMismatches": outputClassMismatches,
             "outputMapperKindMismatches": outputMapperKindMismatches,
+            "outputItemsCountMismatches": outputItemsCountMismatches,
 
             "missingSteps": [
                 buildStep(
