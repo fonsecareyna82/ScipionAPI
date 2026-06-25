@@ -693,6 +693,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
     assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["missingParams"] == []
+    assert result["issues"]["extraParams"] == []
+    assert result["issues"]["paramValueMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
