@@ -2581,6 +2581,9 @@ class ProjectService:
         def normalizeStatus(value: Any) -> str:
             return str(value or "").strip().lower()
 
+        def normalizeClassName(value: Any) -> str:
+            return str(value or "").strip()
+
         def normalizeProtocolId(value: Any) -> str:
             return str(value).strip()
 
@@ -2892,6 +2895,7 @@ class ProjectService:
             return paramsByName
 
         runtimeStatuses: Dict[str, str] = {}
+        runtimeClassNames: Dict[str, str] = {}
         runtimeDependencies: Set[Tuple[str, str]] = set()
         runtimeOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
         runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
@@ -2919,6 +2923,9 @@ class ProjectService:
             protocol = getattr(nodeObj, "run", None)
             runtimeStatuses[protocolId] = normalizeStatus(
                 self._safeCall(protocol, "getStatus", None)
+            )
+            runtimeClassNames[protocolId] = normalizeClassName(
+                self._safeCall(protocol, "getClassName", None)
             )
             runtimeOutputsByProtocolId.setdefault(protocolId, {})
 
@@ -3033,6 +3040,7 @@ class ProjectService:
             )
 
         postgresqlStatuses: Dict[str, str] = {}
+        postgresqlClassNames: Dict[str, str] = {}
         postgresqlParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         for row in protocolRows:
@@ -3041,6 +3049,7 @@ class ProjectService:
                 continue
 
             postgresqlStatuses[protocolId] = normalizeStatus(row.get("status"))
+            postgresqlClassNames[protocolId] = normalizeClassName(row.get("protocolClassName"))
             postgresqlParamsByProtocolId[protocolId] = extractPostgresqlParams(row)
 
         try:
@@ -3215,6 +3224,22 @@ class ProjectService:
                     "protocolId": protocolId,
                     "runtimeStatus": runtimeStatus,
                     "postgresqlStatus": postgresqlStatus,
+                })
+
+        protocolClassMismatches = []
+        for protocolId in commonProtocolIds:
+            runtimeClassName = normalizeClassName(runtimeClassNames.get(protocolId))
+            postgresqlClassName = normalizeClassName(postgresqlClassNames.get(protocolId))
+
+            if (
+                    runtimeClassName
+                    and postgresqlClassName
+                    and runtimeClassName != postgresqlClassName
+            ):
+                protocolClassMismatches.append({
+                    "protocolId": protocolId,
+                    "runtimeClassName": runtimeClassName,
+                    "postgresqlClassName": postgresqlClassName,
                 })
 
         missingDependencies = sorted(
@@ -3454,6 +3479,7 @@ class ProjectService:
                 for protocolId in extraProtocolIds
             ],
             "statusMismatches": statusMismatches,
+            "protocolClassMismatches": protocolClassMismatches,
             "missingDependencies": [
                 buildDependency(parentId, childId)
                 for parentId, childId in missingDependencies
