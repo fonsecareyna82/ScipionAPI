@@ -217,6 +217,29 @@ def getProjectEffectiveSettings(
             detail=f"Failed to load project effective settings: {e}",
         )
 
+
+@router.post(
+    "/{projectId}/consistency/check",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def checkProjectPostgresqlConsistency(
+    projectId: int,
+    refresh: bool = Query(True),
+    checkPid: bool = Query(True),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    return service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        refresh=refresh,
+        checkPid=checkPid,
+    )
+
+
 @router.put("/{projectId}", response_model=Any, status_code=status.HTTP_200_OK)
 def updateProject(
     projectId: int,

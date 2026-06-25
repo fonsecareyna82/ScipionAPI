@@ -2561,6 +2561,209 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            refresh: bool = True,
+            checkPid: bool = True,
+    ) -> Dict[str, Any]:
+        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        self.loadProjectForThumbnails(dbProj)
+
+        def normalizeStatus(value: Any) -> str:
+            return str(value or "").strip().lower()
+
+        def normalizeProtocolId(value: Any) -> str:
+            return str(value).strip()
+
+        def protocolSortKey(value: Any):
+            text = normalizeProtocolId(value)
+            try:
+                return 0, int(text)
+            except Exception:
+                return 1, text
+
+        def dependencySortKey(item: Tuple[str, str]):
+            parentId, childId = item
+            return protocolSortKey(parentId), protocolSortKey(childId)
+
+        def buildDependency(parentId: Any, childId: Any) -> Dict[str, str]:
+            return {
+                "parentId": normalizeProtocolId(parentId),
+                "childId": normalizeProtocolId(childId),
+            }
+
+        runtimeStatuses: Dict[str, str] = {}
+        runtimeDependencies: Set[Tuple[str, str]] = set()
+
+        try:
+            runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
+            nodesDict = getattr(runs, "_nodesDict", {}) or {}
+        except Exception as e:
+            logger.exception(
+                "Failed to load Scipion runtime graph for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load Scipion runtime graph: {e}",
+            )
+
+        for nodeId, nodeObj in nodesDict.items():
+            protocolId = normalizeProtocolId(nodeId)
+            if not protocolId or protocolId == "PROJECT":
+                continue
+
+            protocol = getattr(nodeObj, "run", None)
+            runtimeStatuses[protocolId] = normalizeStatus(
+                self._safeCall(protocol, "getStatus", None)
+            )
+
+            for parent in getattr(nodeObj, "_parents", []) or []:
+                try:
+                    parentId = normalizeProtocolId(parent.getName())
+                except Exception:
+                    parentId = normalizeProtocolId(parent)
+
+                if not parentId or parentId == "PROJECT":
+                    continue
+
+                runtimeDependencies.add((parentId, protocolId))
+
+        try:
+            protocolRows = mapper.getProtocols(projectId) or []
+        except Exception as e:
+            logger.exception(
+                "Failed to load PostgreSQL protocols for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load PostgreSQL protocols: {e}",
+            )
+
+        postgresqlStatuses: Dict[str, str] = {}
+        for row in protocolRows:
+            protocolId = normalizeProtocolId(row.get("protocolId"))
+            if not protocolId:
+                continue
+
+            postgresqlStatuses[protocolId] = normalizeStatus(row.get("status"))
+
+        try:
+            adjacencyMap = mapper.getProjectProtocolAdjacencyMap(projectId) or {}
+        except Exception as e:
+            logger.exception(
+                "Failed to load PostgreSQL protocol dependencies for consistency check. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load PostgreSQL protocol dependencies: {e}",
+            )
+
+        postgresqlDependencies: Set[Tuple[str, str]] = set()
+        for childId, refs in adjacencyMap.items():
+            childProtocolId = normalizeProtocolId(childId)
+            if not childProtocolId or childProtocolId == "PROJECT":
+                continue
+
+            for parentIdValue in refs.get("parents") or []:
+                parentProtocolId = normalizeProtocolId(parentIdValue)
+                if not parentProtocolId or parentProtocolId == "PROJECT":
+                    continue
+
+                postgresqlDependencies.add((parentProtocolId, childProtocolId))
+
+        runtimeProtocolIds = set(runtimeStatuses.keys())
+        postgresqlProtocolIds = set(postgresqlStatuses.keys())
+
+        missingProtocolIds = sorted(
+            runtimeProtocolIds - postgresqlProtocolIds,
+            key=protocolSortKey,
+        )
+        extraProtocolIds = sorted(
+            postgresqlProtocolIds - runtimeProtocolIds,
+            key=protocolSortKey,
+        )
+
+        commonProtocolIds = sorted(
+            runtimeProtocolIds.intersection(postgresqlProtocolIds),
+            key=protocolSortKey,
+        )
+
+        statusMismatches = []
+        for protocolId in commonProtocolIds:
+            runtimeStatus = runtimeStatuses.get(protocolId, "")
+            postgresqlStatus = postgresqlStatuses.get(protocolId, "")
+
+            if runtimeStatus != postgresqlStatus:
+                statusMismatches.append({
+                    "protocolId": protocolId,
+                    "runtimeStatus": runtimeStatus,
+                    "postgresqlStatus": postgresqlStatus,
+                })
+
+        missingDependencies = sorted(
+            runtimeDependencies - postgresqlDependencies,
+            key=dependencySortKey,
+        )
+        extraDependencies = sorted(
+            postgresqlDependencies - runtimeDependencies,
+            key=dependencySortKey,
+        )
+
+        issues = {
+            "missingProtocols": [
+                {
+                    "protocolId": protocolId,
+                    "runtimeStatus": runtimeStatuses.get(protocolId, ""),
+                }
+                for protocolId in missingProtocolIds
+            ],
+            "extraProtocols": [
+                {
+                    "protocolId": protocolId,
+                    "postgresqlStatus": postgresqlStatuses.get(protocolId, ""),
+                }
+                for protocolId in extraProtocolIds
+            ],
+            "statusMismatches": statusMismatches,
+            "missingDependencies": [
+                buildDependency(parentId, childId)
+                for parentId, childId in missingDependencies
+            ],
+            "extraDependencies": [
+                buildDependency(parentId, childId)
+                for parentId, childId in extraDependencies
+            ],
+        }
+
+        issuesCount = sum(len(items) for items in issues.values())
+
+        return {
+            "ok": issuesCount == 0,
+            "projectId": projectId,
+            "checkedAt": datetime.utcnow().isoformat() + "Z",
+            "summary": {
+                "runtimeProtocols": len(runtimeProtocolIds),
+                "postgresqlProtocols": len(postgresqlProtocolIds),
+                "runtimeDependencies": len(runtimeDependencies),
+                "postgresqlDependencies": len(postgresqlDependencies),
+                "issues": issuesCount,
+            },
+            "issues": issues,
+        }
+
     def listProjectWorkflows(self, raw: bool = False):
         """
         Return available workflow templates.
