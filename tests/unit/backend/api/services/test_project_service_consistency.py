@@ -393,9 +393,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
-        "missingParams": [],
-        "extraParams": [],
-        "paramValueMismatches": [],
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 7,
     }
     assert result["issues"] == {
@@ -544,9 +543,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
-        "missingParams": [],
-        "extraParams": [],
-        "paramValueMismatches": [],
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 2,
     }
     assert result["issues"]["missingOutputs"] == [
@@ -657,9 +655,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
         "postgresqlInputRefs": 0,
         "runtimeInputRefDependencies": 0,
         "postgresqlInputRefDependencies": 0,
-        "missingParams": [],
-        "extraParams": [],
-        "paramValueMismatches": [],
+        "runtimeParams": 0,
+        "postgresqlParams": 0,
         "issues": 2,
     }
     assert result["issues"]["missingSteps"] == []
@@ -1065,6 +1062,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["missingInputRefs"] == []
     assert result["issues"]["extraInputRefs"] == []
     assert result["issues"]["inputRefMismatches"] == []
+
 
 def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
     service,
