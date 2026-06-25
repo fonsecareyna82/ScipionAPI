@@ -203,9 +203,9 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlProtocols": 2,
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
-        "issues": 0,
         "runtimeOutputs": 0,
         "postgresqlOutputs": 0,
+        "issues": 0,
     }
     assert result["issues"] == {
         "missingProtocols": [],
@@ -264,9 +264,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlProtocols": 2,
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
-        "issues": 5,
         "runtimeOutputs": 0,
         "postgresqlOutputs": 0,
+        "issues": 5,
     }
     assert result["issues"] == {
         "missingProtocols": [
