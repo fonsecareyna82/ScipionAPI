@@ -1032,6 +1032,51 @@ class ProjectConsistencyService:
                     "stepMismatches": stepMismatches,
                 }
 
+    def compareParams(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
+        postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
+
+        runtimeParams = derivedSets["runtimeParams"]
+        postgresqlParams = derivedSets["postgresqlParams"]
+
+        missingParams = sorted(
+            runtimeParams - postgresqlParams,
+            key=self.paramSortKey,
+        )
+        extraParams = sorted(
+            postgresqlParams - runtimeParams,
+            key=self.paramSortKey,
+        )
+
+        paramValueMismatches = []
+        for key in sorted(runtimeParams.intersection(postgresqlParams), key=self.paramSortKey):
+            protocolId, paramName = key
+
+            runtimeParam = runtimeParamsByProtocolId.get(protocolId, {}).get(paramName, {})
+            postgresqlParam = postgresqlParamsByProtocolId.get(protocolId, {}).get(paramName, {})
+
+            runtimeValue = self.normalizeParamValue(runtimeParam.get("value"))
+            postgresqlValue = self.normalizeParamValue(postgresqlParam.get("value"))
+
+            if runtimeValue != postgresqlValue:
+                paramValueMismatches.append({
+                    "protocolId": protocolId,
+                    "paramName": paramName,
+                    "runtimeValue": runtimeValue,
+                    "postgresqlValue": postgresqlValue,
+                })
+
+        return {
+            "missingParams": missingParams,
+            "extraParams": extraParams,
+            "paramValueMismatches": paramValueMismatches,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1145,32 +1190,15 @@ class ProjectConsistencyService:
             key=self.inputRefSortKey,
         )
 
-        missingParams = sorted(
-            runtimeParams - postgresqlParams,
-            key=self.paramSortKey,
-        )
-        extraParams = sorted(
-            postgresqlParams - runtimeParams,
-            key=self.paramSortKey,
+        paramComparison = self.compareParams(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
         )
 
-        paramValueMismatches = []
-        for key in sorted(runtimeParams.intersection(postgresqlParams), key=self.paramSortKey):
-            protocolId, paramName = key
-
-            runtimeParam = runtimeParamsByProtocolId.get(protocolId, {}).get(paramName, {})
-            postgresqlParam = postgresqlParamsByProtocolId.get(protocolId, {}).get(paramName, {})
-
-            runtimeValue = self.normalizeParamValue(runtimeParam.get("value"))
-            postgresqlValue = self.normalizeParamValue(postgresqlParam.get("value"))
-
-            if runtimeValue != postgresqlValue:
-                paramValueMismatches.append({
-                    "protocolId": protocolId,
-                    "paramName": paramName,
-                    "runtimeValue": runtimeValue,
-                    "postgresqlValue": postgresqlValue,
-                })
+        missingParams = paramComparison["missingParams"]
+        extraParams = paramComparison["extraParams"]
+        paramValueMismatches = paramComparison["paramValueMismatches"]
 
         inputRefMismatches = []
         for key in sorted(runtimeInputRefs.intersection(postgresqlInputRefsKeys), key=self.inputRefSortKey):
