@@ -527,37 +527,11 @@ class ProjectConsistencyService:
             "paramsByProtocolId": runtimeParamsByProtocolId,
         }
 
-    def validateProjectPostgresqlConsistency(
+    def collectPostgresqlSnapshot(
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
-            currentUser: dict,
-            refresh: bool = True,
-            checkPid: bool = True,
     ) -> Dict[str, Any]:
-        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        self.loadProjectForThumbnails(dbProj)
-
-        runtimeSnapshot = self.collectRuntimeSnapshot(
-            projectId=projectId,
-            refresh=refresh,
-            checkPid=checkPid,
-        )
-
-        runtimeStatuses = runtimeSnapshot["statuses"]
-        runtimeClassNames = runtimeSnapshot["classNames"]
-        runtimeDependencies = runtimeSnapshot["dependencies"]
-        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
-        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
-        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
-        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
-
         try:
             protocolRows = mapper.getProtocols(projectId) or []
         except Exception as e:
@@ -683,6 +657,60 @@ class ProjectConsistencyService:
                 "objectClassName": self.normalizeOptionalText(ref.get("objectClassName")),
                 "objectId": self.normalizeOptionalText(ref.get("objectId")),
             }
+
+        return {
+            "statuses": postgresqlStatuses,
+            "classNames": postgresqlClassNames,
+            "dependencies": postgresqlDependencies,
+            "outputsByProtocolId": persistedOutputsByProtocolId,
+            "stepsByProtocolId": normalizedPostgresqlStepsByProtocolId,
+            "inputRefsByKey": postgresqlInputRefsByKey,
+            "paramsByProtocolId": postgresqlParamsByProtocolId,
+        }
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            refresh: bool = True,
+            checkPid: bool = True,
+    ) -> Dict[str, Any]:
+        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        self.loadProjectForThumbnails(dbProj)
+
+        runtimeSnapshot = self.collectRuntimeSnapshot(
+            projectId=projectId,
+            refresh=refresh,
+            checkPid=checkPid,
+        )
+
+        runtimeStatuses = runtimeSnapshot["statuses"]
+        runtimeClassNames = runtimeSnapshot["classNames"]
+        runtimeDependencies = runtimeSnapshot["dependencies"]
+        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
+        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
+        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
+        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
+
+        postgresqlSnapshot = self.collectPostgresqlSnapshot(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        postgresqlStatuses = postgresqlSnapshot["statuses"]
+        postgresqlClassNames = postgresqlSnapshot["classNames"]
+        postgresqlDependencies = postgresqlSnapshot["dependencies"]
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+        normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
+        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
+        postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
 
         runtimeOutputs: Set[Tuple[str, str]] = set()
         for protocolId, outputsByName in runtimeOutputsByProtocolId.items():
