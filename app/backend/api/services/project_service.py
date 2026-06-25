@@ -10770,21 +10770,16 @@ class ProjectService:
     ) -> Dict[str, Any]:
         """
         Return FSC curves for a SetOfFSCs-like output.
-
-        Response shape:
-        {
-          "threshold": 0.143,
-          "rows": [
-            {
-              "label": "No mask",
-              "resolution": 3.21,
-              "x": [0.0, 0.01, 0.02, ...],
-              "y": [1.0, 0.98, 0.95, ...],
-            },
-            ...
-          ],
-        }
         """
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="FSC",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="reader_not_available",
+            )
+
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
