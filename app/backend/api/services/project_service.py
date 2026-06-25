@@ -2696,6 +2696,28 @@ class ProjectService:
                         protocolId,
                         exc_info=True,
                     )
+                runtimeStepsByProtocolId.setdefault(protocolId, {})
+
+                if protocol is not None:
+                    try:
+                        for step in protocol.loadSteps() or []:
+                            stepIndex = toOptionalInt(self._safeCall(step, "getIndex", None))
+                            if stepIndex is None:
+                                continue
+
+                            runtimeStepsByProtocolId[protocolId][stepIndex] = {
+                                "index": stepIndex,
+                                "name": getStepName(step),
+                                "status": normalizeStatus(self._safeCall(step, "getStatus", None)),
+                            }
+                    except Exception:
+                        logger.debug(
+                            "Could not inspect runtime protocol steps during consistency check. "
+                            "projectId=%s protocolId=%s",
+                            projectId,
+                            protocolId,
+                            exc_info=True,
+                        )
 
             for parent in getattr(nodeObj, "_parents", []) or []:
                 try:
@@ -2803,28 +2825,6 @@ class ProjectService:
         for protocolId, outputsByName in persistedOutputsByProtocolId.items():
             for outputName in outputsByName.keys():
                 postgresqlOutputs.add((normalizeProtocolId(protocolId), str(outputName)))
-
-        runtimeStepsByProtocolId.setdefault(protocolId, {})
-        if protocol is not None:
-            try:
-                for step in protocol.loadSteps() or []:
-                    stepIndex = toOptionalInt(self._safeCall(step, "getIndex", None))
-                    if stepIndex is None:
-                        continue
-
-                    runtimeStepsByProtocolId[protocolId][stepIndex] = {
-                        "index": stepIndex,
-                        "name": getStepName(step),
-                        "status": normalizeStatus(self._safeCall(step, "getStatus", None)),
-                    }
-            except Exception:
-                logger.debug(
-                    "Could not inspect runtime protocol steps during consistency check. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    protocolId,
-                    exc_info=True,
-                )
 
         runtimeSteps: Set[Tuple[str, int]] = set()
         for protocolId, stepsByIndex in runtimeStepsByProtocolId.items():
