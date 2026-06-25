@@ -7726,17 +7726,13 @@ class ProjectService:
                 detail="CTF tomo series not found in PostgreSQL metadata",
             )
         if mapper is not None:
-            logger.warning(
-                "PostgreSQL CTFTomo reader is not available. Skipping legacy fallback. "
-                "projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s",
-                projectId,
-                protocolId,
-                outputName,
-                tiltSeriesId,
-            )
-            raise HTTPException(
-                status_code=404,
-                detail="CTF tomo output is not available in PostgreSQL metadata",
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo views",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="views_not_available" if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
             )
 
         protocol, output = self._resolveOutputForCtftomoSeries(
