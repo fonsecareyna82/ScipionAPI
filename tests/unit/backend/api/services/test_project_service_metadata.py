@@ -988,6 +988,120 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     assert selectionFiles[0].read_text(encoding="utf-8") == "3 5 7 "
 
 
+def test_RunMetadataTableActionServiceUsesRuntimeResolverWithMapper(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    outputFile = tmp_path / "metadata.sqlite"
+    outputFile.write_text("placeholder", encoding="utf-8")
+
+    output = FakeOutput(str(outputFile))
+    protocol = FakeProtocol("outputParticles", output)
+    service.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
+
+    table = FakeTable(
+        name="objects",
+        alias="Particles",
+        columns=[],
+        actions=[FakeAction("create subset")],
+    )
+    dao = FakeDao(objectsType={"create subset": "SetOfParticles"})
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": []},
+        dao=dao,
+    )
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    mapper = FakeMapper()
+    resolverCalls = []
+    openTableCalls = []
+
+    def getScipionProtocolForRuntime(mapper, projectId, protocolId):
+        resolverCalls.append(
+            {
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocolId": protocolId,
+            }
+        )
+        return protocol
+
+    def syncProjectProtocolsAndDependencies(
+            mapperArg,
+            projectIdArg,
+            refresh=True,
+            checkPid=True,
+    ):
+        return {
+            "protocols": 2,
+            "dependencies": 1,
+        }
+
+    patchOpenMetadataTable(
+        service,
+        monkeypatch,
+        objMgr,
+        table,
+        calls=openTableCalls,
+    )
+
+    monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
+    monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        getScipionProtocolForRuntime,
+    )
+    monkeypatch.setattr(
+        service,
+        "syncProjectProtocolsAndDependencies",
+        syncProjectProtocolsAndDependencies,
+    )
+
+    result = service.runMetadataTableActionService(
+        projectId=1,
+        protocolId=500,
+        outputName="outputParticles",
+        tableName="objects",
+        action="create subset",
+        subsetName="subset A",
+        ids=[3, 5, 7],
+        currentUser={"id": 1},
+        mapper=mapper,
+    )
+
+    assert result["success"] is True
+    assert resolverCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 500,
+        }
+    ]
+    assert openTableCalls == [
+        {
+            "projectId": 1,
+            "protocolId": 500,
+            "outputName": "outputParticles",
+            "tableName": "objects",
+            "mapper": mapper,
+        }
+    ]
+    assert len(protocol.newProtocolCalls) == 1
+
+
 def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     service,
     projectServiceModule,
