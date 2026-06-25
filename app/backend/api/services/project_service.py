@@ -12068,7 +12068,12 @@ class ProjectService:
                             try:
                                 if self.currentProject is not None:
                                     projPath = LocalPath(self.currentProject.getPath())
-                                    prot = self.currentProject.getProtocol(int(protocolId))
+
+                                    prot = self._getScipionProtocolForRuntime(
+                                        mapper=mapper,
+                                        projectId=projectId,
+                                        protocolId=protocolId,
+                                    )
                                     protPath = LocalPath(prot.getPath())
                             except Exception:
                                 protPath = None

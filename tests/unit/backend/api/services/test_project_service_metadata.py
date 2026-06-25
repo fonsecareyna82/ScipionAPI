@@ -868,6 +868,106 @@ def test_RenderMetadataImageCellServiceReturnsPlaceholderWhenRowMissing(service,
     assert response.media_type == "image/png"
 
 
+def test_RenderMetadataImageCellServiceResolvesProtocolIdForRelativeImagePaths(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    protocolPath = tmp_path / "Runs" / "000010_Prot"
+    protocolPath.mkdir(parents=True)
+
+    imagePath = protocolPath / "thumb.png"
+
+    try:
+        from PIL import Image
+
+        Image.new("L", (4, 4), 128).save(imagePath)
+    except Exception:
+        imagePath.write_bytes(b"")
+
+    class PathRenderer:
+        # pathRenderer
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeProtocolWithPath:
+        # fakeProtocolWithPath
+        def getPath(self):
+            return str(protocolPath)
+
+    class FakeProjectWithoutProtocolLookup:
+        # fakeProjectWithoutProtocolLookup
+        def getPath(self):
+            return str(tmp_path)
+
+        def getProtocol(self, protocolId):
+            raise AssertionError("currentProject.getProtocol should not be used directly")
+
+    columns = [FakeColumn("image", "Image", PathRenderer())]
+    table = FakeTable(name="objects", alias="Particles", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(1, ["thumb.png"])]},
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/1/protocol/500/output/outputParticles",
+    )
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    mapper = FakeMapper()
+    resolverCalls = []
+
+    def getScipionProtocolForRuntime(mapper, projectId, protocolId):
+        resolverCalls.append(
+            {
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocolId": protocolId,
+            }
+        )
+        return FakeProtocolWithPath()
+
+    service.currentProject = FakeProjectWithoutProtocolLookup()
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        getScipionProtocolForRuntime,
+    )
+
+    response = service.renderMetadataImageCellService(
+        projectId=1,
+        protocolId=500,
+        outputName="outputParticles",
+        tableName="objects",
+        rowId=1,
+        rowIndex=None,
+        columnName="image",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        mapper=mapper,
+    )
+
+    assert response.media_type == "image/png"
+    assert response.headers.get("x-image-placeholder") is None
+    assert resolverCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 500,
+        }
+    ]
+
+
 def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     service,
     projectServiceModule,
