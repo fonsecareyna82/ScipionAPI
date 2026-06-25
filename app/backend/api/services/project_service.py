@@ -3836,9 +3836,10 @@ class ProjectService:
             maxProtocols: int = 12,
             maxOutputsPerProtocol: int = 4,
             inlineImages: bool = False,
+            mapper=None,
     ):
         thumbnailService = ThumbnailService(self.currentProject)
-        return thumbnailService.listProtocolThumbnailItems(
+        items = thumbnailService.listProtocolThumbnailItems(
             projectId=projectId,
             force=force,
             size=size,
@@ -3846,6 +3847,65 @@ class ProjectService:
             maxOutputsPerProtocol=maxOutputsPerProtocol,
             inlineImages=inlineImages,
         )
+
+        if mapper is None:
+            return items
+
+        validItems = []
+
+        for group in items or []:
+            if not isinstance(group, dict):
+                continue
+
+            protocolIdValue = group.get("protocolId")
+
+            try:
+                scipionProtocolId = self._resolveScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolIdValue,
+                )
+                protocol = self.currentProject.getProtocol(int(scipionProtocolId))
+            except Exception:
+                logger.warning(
+                    "Skipping thumbnail group because protocol was not found. "
+                    "projectId=%s protocolId=%s group=%s",
+                    projectId,
+                    protocolIdValue,
+                    group,
+                )
+                continue
+
+            validOutputs = []
+
+            for output in group.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
+
+                outputNameValue = output.get("outputName")
+                if not outputNameValue:
+                    continue
+
+                if not hasattr(protocol, str(outputNameValue)):
+                    logger.warning(
+                        "Skipping thumbnail output because it does not belong to protocol. "
+                        "projectId=%s protocolId=%s outputName=%s",
+                        projectId,
+                        protocolIdValue,
+                        outputNameValue,
+                    )
+                    continue
+
+                validOutputs.append(output)
+
+            if not validOutputs:
+                continue
+
+            nextGroup = dict(group)
+            nextGroup["outputs"] = validOutputs
+            validItems.append(nextGroup)
+
+        return validItems
 
     def _buildMissingOutputSyncItems(
             self,

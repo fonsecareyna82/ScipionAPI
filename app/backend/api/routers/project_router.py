@@ -3613,59 +3613,8 @@ def listProjectThumbnailItems(
                 maxProtocols=maxProtocols,
                 maxOutputsPerProtocol=maxOutputsPerProtocol,
                 inlineImages=inlineImages,
+                mapper=mapper,
             )
-
-            validItems = []
-
-            for group in items or []:
-                if not isinstance(group, dict):
-                    continue
-
-                protocolIdValue = group.get("protocolId")
-
-                try:
-                    protocol = service.currentProject.getProtocol(int(protocolIdValue))
-                except Exception:
-                    logger.warning(
-                        "Skipping thumbnail group because protocol was not found. "
-                        "projectId=%s protocolId=%s group=%s",
-                        projectId,
-                        protocolIdValue,
-                        group,
-                    )
-                    continue
-
-                validOutputs = []
-
-                for output in group.get("outputs") or []:
-                    if not isinstance(output, dict):
-                        continue
-
-                    outputNameValue = output.get("outputName")
-                    if not outputNameValue:
-                        continue
-
-                    if not hasattr(protocol, str(outputNameValue)):
-                        logger.warning(
-                            "Skipping thumbnail output because it does not belong to protocol. "
-                            "projectId=%s protocolId=%s outputName=%s",
-                            projectId,
-                            protocolIdValue,
-                            outputNameValue,
-                        )
-                        continue
-
-                    validOutputs.append(output)
-
-                if not validOutputs:
-                    continue
-
-                nextGroup = dict(group)
-                nextGroup["outputs"] = validOutputs
-                validItems.append(nextGroup)
-
-            items = validItems
-
         response = JSONResponse(items)
         response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
         response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
