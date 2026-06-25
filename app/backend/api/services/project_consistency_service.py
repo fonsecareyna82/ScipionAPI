@@ -876,6 +876,108 @@ class ProjectConsistencyService:
             "extraDependencies": extraDependencies,
         }
 
+    def compareOutputs(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+
+        runtimeOutputs = derivedSets["runtimeOutputs"]
+        postgresqlOutputs = derivedSets["postgresqlOutputs"]
+
+        commonOutputs = sorted(
+            runtimeOutputs.intersection(postgresqlOutputs),
+            key=self.dependencySortKey,
+        )
+
+        missingOutputs = sorted(
+            runtimeOutputs - postgresqlOutputs,
+            key=self.dependencySortKey,
+        )
+        extraOutputs = sorted(
+            postgresqlOutputs - runtimeOutputs,
+            key=self.dependencySortKey,
+        )
+
+        outputClassMismatches = []
+        for protocolId, outputName in commonOutputs:
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            postgresqlClassName = self.normalizeOptionalText(postgresqlOutput.get("className"))
+
+            if (
+                    runtimeClassName is not None
+                    and postgresqlClassName is not None
+                    and runtimeClassName != postgresqlClassName
+            ):
+                outputClassMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "runtimeClassName": runtimeClassName,
+                    "postgresqlClassName": postgresqlClassName,
+                    "mapperKind": postgresqlOutput.get("mapperKind"),
+                })
+
+        outputMapperKindMismatches = []
+        for protocolId, outputName in commonOutputs:
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            expectedMapperKind = self.expectedOutputMapperKind(runtimeClassName)
+            postgresqlMapperKind = self.normalizeOptionalText(postgresqlOutput.get("mapperKind"))
+
+            if (
+                    expectedMapperKind is not None
+                    and postgresqlMapperKind is not None
+                    and expectedMapperKind != postgresqlMapperKind
+            ):
+                outputMapperKindMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "className": runtimeClassName,
+                    "expectedMapperKind": expectedMapperKind,
+                    "postgresqlMapperKind": postgresqlMapperKind,
+                })
+
+        outputItemsCountMismatches = []
+        for protocolId, outputName in commonOutputs:
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
+            if self.expectedOutputMapperKind(runtimeClassName) != "flat_set":
+                continue
+
+            runtimeItemsCount = self.toOptionalInt(runtimeOutput.get("itemsCount"))
+            postgresqlItemsCount = self.toOptionalInt(postgresqlOutput.get("itemsCount"))
+
+            if runtimeItemsCount is None or postgresqlItemsCount is None:
+                continue
+
+            if runtimeItemsCount != postgresqlItemsCount:
+                outputItemsCountMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "className": runtimeClassName,
+                    "runtimeItemsCount": runtimeItemsCount,
+                    "postgresqlItemsCount": postgresqlItemsCount,
+                    "mapperKind": postgresqlOutput.get("mapperKind"),
+                })
+
+        return {
+            "missingOutputs": missingOutputs,
+            "extraOutputs": extraOutputs,
+            "outputClassMismatches": outputClassMismatches,
+            "outputMapperKindMismatches": outputMapperKindMismatches,
+            "outputItemsCountMismatches": outputItemsCountMismatches,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -958,82 +1060,17 @@ class ProjectConsistencyService:
         missingDependencies = dependencyComparison["missingDependencies"]
         extraDependencies = dependencyComparison["extraDependencies"]
 
-        missingOutputs = sorted(
-            runtimeOutputs - postgresqlOutputs,
-            key=self.dependencySortKey,
-        )
-        extraOutputs = sorted(
-            postgresqlOutputs - runtimeOutputs,
-            key=self.dependencySortKey,
+        outputComparison = self.compareOutputs(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
         )
 
-        outputClassMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
-            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-
-            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
-            postgresqlClassName = self.normalizeOptionalText(postgresqlOutput.get("className"))
-
-            if (
-                    runtimeClassName is not None
-                    and postgresqlClassName is not None
-                    and runtimeClassName != postgresqlClassName
-            ):
-                outputClassMismatches.append({
-                    "protocolId": protocolId,
-                    "outputName": outputName,
-                    "runtimeClassName": runtimeClassName,
-                    "postgresqlClassName": postgresqlClassName,
-                    "mapperKind": postgresqlOutput.get("mapperKind"),
-                })
-
-        outputMapperKindMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
-            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-
-            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
-            expectedMapperKind = self.expectedOutputMapperKind(runtimeClassName)
-            postgresqlMapperKind = self.normalizeOptionalText(postgresqlOutput.get("mapperKind"))
-
-            if (
-                    expectedMapperKind is not None
-                    and postgresqlMapperKind is not None
-                    and expectedMapperKind != postgresqlMapperKind
-            ):
-                outputMapperKindMismatches.append({
-                    "protocolId": protocolId,
-                    "outputName": outputName,
-                    "className": runtimeClassName,
-                    "expectedMapperKind": expectedMapperKind,
-                    "postgresqlMapperKind": postgresqlMapperKind,
-                })
-
-        outputItemsCountMismatches = []
-        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=self.dependencySortKey):
-            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
-
-            runtimeClassName = self.normalizeOptionalText(runtimeOutput.get("className"))
-            if self.expectedOutputMapperKind(runtimeClassName) != "flat_set":
-                continue
-
-            runtimeItemsCount = self.toOptionalInt(runtimeOutput.get("itemsCount"))
-            postgresqlItemsCount = self.toOptionalInt(postgresqlOutput.get("itemsCount"))
-
-            if runtimeItemsCount is None or postgresqlItemsCount is None:
-                continue
-
-            if runtimeItemsCount != postgresqlItemsCount:
-                outputItemsCountMismatches.append({
-                    "protocolId": protocolId,
-                    "outputName": outputName,
-                    "className": runtimeClassName,
-                    "runtimeItemsCount": runtimeItemsCount,
-                    "postgresqlItemsCount": postgresqlItemsCount,
-                    "mapperKind": postgresqlOutput.get("mapperKind"),
-                })
+        missingOutputs = outputComparison["missingOutputs"]
+        extraOutputs = outputComparison["extraOutputs"]
+        outputClassMismatches = outputComparison["outputClassMismatches"]
+        outputMapperKindMismatches = outputComparison["outputMapperKindMismatches"]
+        outputItemsCountMismatches = outputComparison["outputItemsCountMismatches"]
 
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
