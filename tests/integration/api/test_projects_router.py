@@ -66,6 +66,26 @@ def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProject
     }
 
 
+def test_CheckProjectPostgresqlConsistencyCallsService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/consistency/check?refresh=false&checkPid=false"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.consistencyResult
+    assert fakeProjectService.lastValidateProjectPostgresqlConsistencyCall == {
+        "mapper": fakeProjectService.lastValidateProjectPostgresqlConsistencyCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "refresh": False,
+        "checkPid": False,
+    }
+
+
 def test_LoadProtocolsReturns404WhenProjectDoesNotExist(projectClient, fakeProjectService):
     fakeProjectService.projectByIdResult = None
 
