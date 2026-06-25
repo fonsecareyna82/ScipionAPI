@@ -160,11 +160,6 @@ class FakeProjectService:
                 "issues": 0,
             },
             "issues": {
-                "runtimeDependencies": 1,
-                "postgresqlDependencies": 1,
-                "issues": 0,
-            },
-            "issues": {
                 "missingProtocols": [],
                 "extraProtocols": [],
                 "statusMismatches": [],
