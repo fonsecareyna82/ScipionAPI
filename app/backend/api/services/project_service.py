@@ -9261,6 +9261,17 @@ class ProjectService:
 
                     )
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries image",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+                index=index,
+            )
+
         protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
             protocolId=protocolId,
             outputName=outputName,
