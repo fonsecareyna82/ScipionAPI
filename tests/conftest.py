@@ -136,7 +136,7 @@ class FakeProjectService:
         }
         self.lastPollLogsCall = None
 
-        self.resolveViewerResult = {"handled": True, "viewer": "volume"}
+        self.resolveViewerResult = {"handled": False}
         self.resolveViewerError = None
         self.lastResolveViewerCall = None
 
@@ -305,11 +305,12 @@ class FakeProjectService:
         }
         return self.pollLogsResult
 
-    def resolveAnalyzeViewerDecision(self, projectId, protocolId, ctx):
+    def resolveAnalyzeViewerDecision(self, projectId, protocolId, ctx, mapper=None):
         self.lastResolveViewerCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "ctx": ctx,
+            "mapper": mapper
         }
         if self.resolveViewerError is not None:
             raise self.resolveViewerError
