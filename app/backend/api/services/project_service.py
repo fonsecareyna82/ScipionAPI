@@ -2678,6 +2678,16 @@ class ProjectService:
                 "objectClassName": normalizeOptionalText(payload.get("objectClassName")),
             }
 
+        def expectedOutputMapperKind(className: Any) -> Optional[str]:
+            classNameText = normalizeOptionalText(className)
+            if classNameText is None:
+                return None
+
+            if classNameText.startswith("SetOf"):
+                return "flat_set"
+
+            return "tree"
+
         def iterPointerItems(attr: Any) -> List[Tuple[int, Any]]:
             try:
                 if isinstance(attr, PointerList):
@@ -3219,6 +3229,28 @@ class ProjectService:
                     "mapperKind": postgresqlOutput.get("mapperKind"),
                 })
 
+        outputMapperKindMismatches = []
+        for protocolId, outputName in sorted(runtimeOutputs.intersection(postgresqlOutputs), key=dependencySortKey):
+            runtimeOutput = runtimeOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+            postgresqlOutput = persistedOutputsByProtocolId.get(protocolId, {}).get(outputName, {})
+
+            runtimeClassName = normalizeOptionalText(runtimeOutput.get("className"))
+            expectedMapperKind = expectedOutputMapperKind(runtimeClassName)
+            postgresqlMapperKind = normalizeOptionalText(postgresqlOutput.get("mapperKind"))
+
+            if (
+                    expectedMapperKind is not None
+                    and postgresqlMapperKind is not None
+                    and expectedMapperKind != postgresqlMapperKind
+            ):
+                outputMapperKindMismatches.append({
+                    "protocolId": protocolId,
+                    "outputName": outputName,
+                    "className": runtimeClassName,
+                    "expectedMapperKind": expectedMapperKind,
+                    "postgresqlMapperKind": postgresqlMapperKind,
+                })
+
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
             key=stepSortKey,
@@ -3405,6 +3437,7 @@ class ProjectService:
                 for protocolId, outputName in extraOutputs
             ],
             "outputClassMismatches": outputClassMismatches,
+            "outputMapperKindMismatches": outputMapperKindMismatches,
 
             "missingSteps": [
                 buildStep(
