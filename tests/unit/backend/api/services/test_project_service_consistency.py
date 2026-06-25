@@ -336,6 +336,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "missingParams": [],
         "extraParams": [],
         "paramValueMismatches": [],
+        "outputClassMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -454,6 +455,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "missingParams": [],
         "extraParams": [],
         "paramValueMismatches": [],
+        "outputClassMismatches": [],
     }
 
 
@@ -577,6 +579,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
     assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
     assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["outputClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
@@ -696,6 +699,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
     assert result["issues"]["missingParams"] == []
     assert result["issues"]["extraParams"] == []
     assert result["issues"]["paramValueMismatches"] == []
+    assert result["issues"]["outputClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols(
@@ -795,6 +799,7 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
     assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["outputClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
@@ -937,6 +942,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
     assert result["issues"]["runtimeDependenciesWithoutInputRefs"] == []
     assert result["issues"]["postgresqlInputRefDependenciesMissing"] == []
     assert result["issues"]["postgresqlDependenciesWithoutInputRefs"] == []
+    assert result["issues"]["outputClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatches(
@@ -1065,6 +1071,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["missingInputRefs"] == []
     assert result["issues"]["extraInputRefs"] == []
     assert result["issues"]["inputRefMismatches"] == []
+    assert result["issues"]["outputClassMismatches"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
@@ -1140,5 +1147,77 @@ def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
             "paramName": "boxSize",
             "runtimeValue": 128,
             "postgresqlValue": 256,
+        }
+    ]
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            {
+                "protocolId": "10",
+                "id": 100,
+                "objectId": 200,
+                "outputName": "outputParticles",
+                "setClassName": "Volume",
+                "itemClassName": "Particle",
+                "properties": {"itemsCount": 12},
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["runtimeOutputs"] == 1
+    assert result["summary"]["postgresqlOutputs"] == 1
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["missingOutputs"] == []
+    assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["outputClassMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "runtimeClassName": "SetOfParticles",
+            "postgresqlClassName": "Volume",
+            "mapperKind": "flat_set",
         }
     ]
