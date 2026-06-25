@@ -9906,6 +9906,15 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D points",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
         protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
             protocolId=protocolId,
             outputName=outputName,
@@ -10182,6 +10191,15 @@ class ProjectService:
                 outputName,
                 tomogramId,
                 getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D tomogram slice",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
             )
 
         protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
