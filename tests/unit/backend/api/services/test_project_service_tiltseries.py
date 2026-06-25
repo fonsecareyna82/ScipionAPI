@@ -395,6 +395,40 @@ def test_GetTiltSeriesFramesServiceRequiresPostgresqlWhenMapperIsPresent(
     assert "reader_not_available" in exc.value.detail
 
 
+def test_RenderTiltSeriesImageServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries image fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.renderTiltSeriesImageService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            tiltSeriesId="TS_001",
+            index=0,
+            size=512,
+            fmt="png",
+            applyTransform=True,
+            inline=True,
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries image output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
 def test_ListOutputTiltSeriesServiceBuildsSummaries(service):
     ts1 = FakeTiltSeries(
         tsId="TS_001",
