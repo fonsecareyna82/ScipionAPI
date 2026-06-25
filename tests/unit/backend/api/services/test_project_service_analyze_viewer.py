@@ -30,33 +30,6 @@ import importlib
 class FakeDb:
     def __init__(self):
         self.fetchOneCalls = []
-        self.runtimeProtocolIdByDbId = {}
-
-    def fetchOne(self, query, params=None):
-        self.fetchOneCalls.append({
-            "query": query,
-            "params": params,
-        })
-
-        if params is None:
-            return None
-
-        if len(params) == 3:
-            _projectId, protocolDbIdCandidate, rawProtocolId = params
-            protocolDbIdCandidate = int(protocolDbIdCandidate)
-
-            if protocolDbIdCandidate in self.runtimeProtocolIdByDbId:
-                return {
-                    "protocolId": self.runtimeProtocolIdByDbId[protocolDbIdCandidate],
-                }
-
-            for dbId, runtimeId in self.runtimeProtocolIdByDbId.items():
-                if str(runtimeId) == str(rawProtocolId):
-                    return {
-                        "protocolId": runtimeId,
-                    }
-
-        return None
 
 
 class FakeMapper:
@@ -64,27 +37,7 @@ class FakeMapper:
         self.db = FakeDb()
 
 
-class FakeCurrentProject:
-    def __init__(self):
-        self.protocols = {}
-
-    def getProtocol(self, protocolId):
-        return self.protocols[int(protocolId)]
-
-
-class FakeProtocol:
-    def __init__(self, objId=10):
-        self.objId = objId
-
-    def getObjId(self):
-        return self.objId
-
-
-class FakeOutput:
-    pass
-
-
-def test_ResolveAnalyzeViewerDecisionReturnsFalseForReactViewerWithoutRuntimeLookup(authTestEnv):
+def test_ResolveAnalyzeViewerDecisionReturnsHandledFalse(authTestEnv):
     module = importlib.import_module("app.backend.api.services.project_service")
     service = module.ProjectService()
     mapper = FakeMapper()
@@ -104,18 +57,10 @@ def test_ResolveAnalyzeViewerDecisionReturnsFalseForReactViewerWithoutRuntimeLoo
     assert mapper.db.fetchOneCalls == []
 
 
-def test_ResolveAnalyzeViewerDecisionResolvesPostgresqlProtocolIdWhenOutputNeedsRuntime(authTestEnv):
+def test_ResolveAnalyzeViewerDecisionDoesNotResolveRuntimeObjects(authTestEnv):
     module = importlib.import_module("app.backend.api.services.project_service")
     service = module.ProjectService()
-    service.currentProject = FakeCurrentProject()
-
-    protocol = FakeProtocol(objId=10)
-    protocol.outputCustom = FakeOutput()
-
-    service.currentProject.protocols[10] = protocol
-
     mapper = FakeMapper()
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
 
     result = service.resolveAnalyzeViewerDecision(
         mapper=mapper,
@@ -129,4 +74,4 @@ def test_ResolveAnalyzeViewerDecisionResolvesPostgresqlProtocolIdWhenOutputNeeds
     )
 
     assert result == {"handled": False}
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchOneCalls == []

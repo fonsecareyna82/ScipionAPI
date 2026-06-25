@@ -7482,68 +7482,8 @@ class ProjectService:
             ctx: Dict[str, Any],
             mapper=None,
     ) -> Dict[str, Any]:
-        # resolveAnalyzeViewerDecision
-        ctx = ctx or {}
-
-        outputName = str(ctx.get("outputName") or "").strip()
-        pointerClass = str(ctx.get("pointerClass") or "").strip()
-        paramClass = str(ctx.get("paramClass") or "").strip()
-        info = str(ctx.get("info") or "").strip()
-        value = str(ctx.get("value") or "").strip()
-
-        classText = " ".join(
-            item
-            for item in (
-                outputName,
-                pointerClass,
-                paramClass,
-                info,
-                value,
-            )
-            if item
-        ).replace(" ", "").lower()
-
-        if not outputName:
-            return {"handled": False}
-
-        # These are handled by the React AnalyzeOutputDialog, not by opening a URL.
-        reactViewerClasses = (
-            "volume",
-            "volumemask",
-            "setofvolumes",
-            "setoftiltseries",
-            "setofctftomoseries",
-            "setofcoordinates3d",
-            "setofcoordinates",
-            "setofparticles",
-            "setofclasses2d",
-            "setofclasses3d",
-            "setoffscs",
-            "metadata",
-        )
-
-        if any(token in classText for token in reactViewerClasses):
-            return {"handled": False}
-
-        try:
-            self._getProtocolOutputObject(
-                protocolId=protocolId,
-                outputName=outputName,
-                mapper=mapper,
-                projectId=projectId,
-            )
-        except HTTPException:
-            return {"handled": False}
-        except Exception:
-            logger.debug(
-                "Could not resolve analyze viewer output. projectId=%s protocolId=%s outputName=%s",
-                projectId,
-                protocolId,
-                outputName,
-                exc_info=True,
-            )
-            return {"handled": False}
-
+        # This resolver is reserved for external developer-provided viewers.
+        # Built-in React viewers are selected on the frontend side.
         return {"handled": False}
 
     # ======================================================================

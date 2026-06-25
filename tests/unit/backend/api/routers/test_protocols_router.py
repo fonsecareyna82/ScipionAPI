@@ -202,7 +202,7 @@ def test_LoadNewProtocolReturnsProtocolTemplate(protocolClient, fakeProtocolRout
     }
 
 
-def test_LaunchProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterService):
+def test_LaunchProtocolEndpointIsDisabled(protocolClient):
     response = protocolClient.post(
         "/protocols/launch",
         json={
@@ -212,33 +212,10 @@ def test_LaunchProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterSe
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() is None
-
-    assert fakeProtocolRouterService.lastLaunchProtocolCall == {
-        "protocolId": "10",
-        "protocolClassName": "ProtClass",
-        "params": {"a": 1},
-    }
+    assert response.status_code == 404
 
 
-def test_LaunchProtocolWrapsUnexpectedErrorAs500(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.launchError = RuntimeError("launch failed")
-
-    response = protocolClient.post(
-        "/protocols/launch",
-        json={
-            "protocolId": "10",
-            "protocolClassName": "ProtClass",
-            "params": {"a": 1},
-        },
-    )
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "launch failed"
-
-
-def test_SaveProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterService):
+def test_SaveProtocolEndpointIsDisabled(protocolClient):
     response = protocolClient.post(
         "/protocols/save",
         json={
@@ -248,30 +225,7 @@ def test_SaveProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterServ
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() is None
-
-    assert fakeProtocolRouterService.lastSaveProtocolCall == {
-        "protocolId": "10",
-        "protocolClassName": "ProtClass",
-        "params": {"a": 1},
-    }
-
-
-def test_SaveProtocolWrapsUnexpectedErrorAs500(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.saveError = RuntimeError("save failed")
-
-    response = protocolClient.post(
-        "/protocols/save",
-        json={
-            "protocolId": "10",
-            "protocolClassName": "ProtClass",
-            "params": {"a": 1},
-        },
-    )
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "save failed"
+    assert response.status_code == 404
 
 
 def test_GetProtocolLogsReturns404WhenProjectMissing(protocolClient, fakeProtocolRouterService):

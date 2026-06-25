@@ -159,11 +159,12 @@ def test_ResolveAnalyzeViewerUnwrapsCtx(projectClient, fakeProjectService):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"handled": True, "viewer": "volume"}
+    assert response.json() == {"handled": False}
     assert fakeProjectService.lastResolveViewerCall == {
         "projectId": 1,
         "protocolId": 22,
         "ctx": {"outputName": "particles", "outputClass": "SetOfParticles"},
+        "mapper": fakeProjectService.lastResolveViewerCall["mapper"],
     }
 
 
@@ -179,6 +180,12 @@ def test_ResolveAnalyzeViewerReturnsHandledFalseOnUnexpectedError(projectClient,
     assert response.json() == {
         "handled": False,
         "message": "viewer failed",
+    }
+    assert fakeProjectService.lastResolveViewerCall == {
+        "projectId": 1,
+        "protocolId": 22,
+        "ctx": {"outputName": "particles"},
+        "mapper": fakeProjectService.lastResolveViewerCall["mapper"],
     }
 
 
