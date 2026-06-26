@@ -1185,6 +1185,158 @@ class ProjectConsistencyService:
             "postgresqlDependenciesWithoutInputRefs": postgresqlDependenciesWithoutInputRefs,
         }
 
+    def buildIssues(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            protocolComparison: Dict[str, Any],
+            dependencyComparison: Dict[str, Any],
+            outputComparison: Dict[str, Any],
+            stepComparison: Dict[str, Any],
+            paramComparison: Dict[str, Any],
+            inputRefComparison: Dict[str, Any],
+            inputRefDependencyComparison: Dict[str, Any],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        runtimeStatuses = runtimeSnapshot["statuses"]
+        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
+        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
+        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
+        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
+
+        postgresqlStatuses = postgresqlSnapshot["statuses"]
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+        normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
+        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
+        postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
+
+        missingProtocolIds = protocolComparison["missingProtocolIds"]
+        extraProtocolIds = protocolComparison["extraProtocolIds"]
+        statusMismatches = protocolComparison["statusMismatches"]
+        protocolClassMismatches = protocolComparison["protocolClassMismatches"]
+
+        missingDependencies = dependencyComparison["missingDependencies"]
+        extraDependencies = dependencyComparison["extraDependencies"]
+
+        missingOutputs = outputComparison["missingOutputs"]
+        extraOutputs = outputComparison["extraOutputs"]
+        outputClassMismatches = outputComparison["outputClassMismatches"]
+        outputMapperKindMismatches = outputComparison["outputMapperKindMismatches"]
+        outputItemsCountMismatches = outputComparison["outputItemsCountMismatches"]
+
+        missingSteps = stepComparison["missingSteps"]
+        extraSteps = stepComparison["extraSteps"]
+        stepMismatches = stepComparison["stepMismatches"]
+
+        missingParams = paramComparison["missingParams"]
+        extraParams = paramComparison["extraParams"]
+        paramValueMismatches = paramComparison["paramValueMismatches"]
+
+        missingInputRefs = inputRefComparison["missingInputRefs"]
+        extraInputRefs = inputRefComparison["extraInputRefs"]
+        inputRefMismatches = inputRefComparison["inputRefMismatches"]
+
+        runtimeInputRefDependenciesMissing = inputRefDependencyComparison["runtimeInputRefDependenciesMissing"]
+        runtimeDependenciesWithoutInputRefs = inputRefDependencyComparison["runtimeDependenciesWithoutInputRefs"]
+        postgresqlInputRefDependenciesMissing = inputRefDependencyComparison["postgresqlInputRefDependenciesMissing"]
+        postgresqlDependenciesWithoutInputRefs = inputRefDependencyComparison["postgresqlDependenciesWithoutInputRefs"]
+
+        return {
+            "missingProtocols": [
+                {
+                    "protocolId": protocolId,
+                    "runtimeStatus": runtimeStatuses.get(protocolId, ""),
+                }
+                for protocolId in missingProtocolIds
+            ],
+            "extraProtocols": [
+                {
+                    "protocolId": protocolId,
+                    "postgresqlStatus": postgresqlStatuses.get(protocolId, ""),
+                }
+                for protocolId in extraProtocolIds
+            ],
+            "statusMismatches": statusMismatches,
+            "protocolClassMismatches": protocolClassMismatches,
+            "missingDependencies": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in missingDependencies
+            ],
+            "extraDependencies": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in extraDependencies
+            ],
+            "missingOutputs": [
+                self.buildMissingOutputIssue(
+                    protocolId,
+                    outputName,
+                    runtimeOutputsByProtocolId,
+                )
+                for protocolId, outputName in missingOutputs
+            ],
+            "extraOutputs": [
+                self.buildExtraOutputIssue(
+                    protocolId,
+                    outputName,
+                    persistedOutputsByProtocolId,
+                )
+                for protocolId, outputName in extraOutputs
+            ],
+            "outputClassMismatches": outputClassMismatches,
+            "outputMapperKindMismatches": outputMapperKindMismatches,
+            "outputItemsCountMismatches": outputItemsCountMismatches,
+            "missingSteps": [
+                self.buildStep(
+                    protocolId,
+                    stepIndex,
+                    runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
+                )
+                for protocolId, stepIndex in missingSteps
+            ],
+            "extraSteps": [
+                self.buildStep(
+                    protocolId,
+                    stepIndex,
+                    normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
+                )
+                for protocolId, stepIndex in extraSteps
+            ],
+            "stepMismatches": stepMismatches,
+            "missingInputRefs": [
+                self.buildInputRef(key, runtimeInputRefsByKey.get(key, {}))
+                for key in missingInputRefs
+            ],
+            "extraInputRefs": [
+                self.buildInputRef(key, postgresqlInputRefsByKey.get(key, {}))
+                for key in extraInputRefs
+            ],
+            "inputRefMismatches": inputRefMismatches,
+            "runtimeInputRefDependenciesMissing": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in runtimeInputRefDependenciesMissing
+            ],
+            "runtimeDependenciesWithoutInputRefs": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in runtimeDependenciesWithoutInputRefs
+            ],
+            "postgresqlInputRefDependenciesMissing": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in postgresqlInputRefDependenciesMissing
+            ],
+            "postgresqlDependenciesWithoutInputRefs": [
+                self.buildDependency(parentId, childId)
+                for parentId, childId in postgresqlDependenciesWithoutInputRefs
+            ],
+            "missingParams": [
+                self.buildParamIssue(key, runtimeParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                for key in missingParams
+            ],
+            "extraParams": [
+                self.buildParamIssue(key, postgresqlParamsByProtocolId.get(key[0], {}).get(key[1], {}))
+                for key in extraParams
+            ],
+            "paramValueMismatches": paramValueMismatches,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1320,103 +1472,17 @@ class ProjectConsistencyService:
         postgresqlInputRefDependenciesMissing = inputRefDependencyComparison["postgresqlInputRefDependenciesMissing"]
         postgresqlDependenciesWithoutInputRefs = inputRefDependencyComparison["postgresqlDependenciesWithoutInputRefs"]
 
-        issues = {
-            "missingProtocols": [
-                {
-                    "protocolId": protocolId,
-                    "runtimeStatus": runtimeStatuses.get(protocolId, ""),
-                }
-                for protocolId in missingProtocolIds
-            ],
-            "extraProtocols": [
-                {
-                    "protocolId": protocolId,
-                    "postgresqlStatus": postgresqlStatuses.get(protocolId, ""),
-                }
-                for protocolId in extraProtocolIds
-            ],
-            "statusMismatches": statusMismatches,
-            "protocolClassMismatches": protocolClassMismatches,
-            "missingDependencies": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in missingDependencies
-            ],
-            "extraDependencies": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in extraDependencies
-            ],
-                        "missingOutputs": [
-                self.buildMissingOutputIssue(
-                    protocolId,
-                    outputName,
-                    runtimeOutputsByProtocolId,
-                )
-                for protocolId, outputName in missingOutputs
-            ],
-            "extraOutputs": [
-                self.buildExtraOutputIssue(
-                    protocolId,
-                    outputName,
-                    persistedOutputsByProtocolId,
-                )
-                for protocolId, outputName in extraOutputs
-            ],
-            "outputClassMismatches": outputClassMismatches,
-            "outputMapperKindMismatches": outputMapperKindMismatches,
-            "outputItemsCountMismatches": outputItemsCountMismatches,
-
-            "missingSteps": [
-                self.buildStep(
-                    protocolId,
-                    stepIndex,
-                    runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
-                )
-                for protocolId, stepIndex in missingSteps
-            ],
-            "extraSteps": [
-                self.buildStep(
-                    protocolId,
-                    stepIndex,
-                    normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {}),
-                )
-                for protocolId, stepIndex in extraSteps
-            ],
-            "stepMismatches": stepMismatches,
-            "missingInputRefs": [
-                self.buildInputRef(key, runtimeInputRefsByKey.get(key, {}))
-                for key in missingInputRefs
-            ],
-            "extraInputRefs": [
-                self.buildInputRef(key, postgresqlInputRefsByKey.get(key, {}))
-                for key in extraInputRefs
-            ],
-            "inputRefMismatches": inputRefMismatches,
-            "runtimeInputRefDependenciesMissing": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in runtimeInputRefDependenciesMissing
-            ],
-            "runtimeDependenciesWithoutInputRefs": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in runtimeDependenciesWithoutInputRefs
-            ],
-            "postgresqlInputRefDependenciesMissing": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in postgresqlInputRefDependenciesMissing
-            ],
-            "postgresqlDependenciesWithoutInputRefs": [
-                self.buildDependency(parentId, childId)
-                for parentId, childId in postgresqlDependenciesWithoutInputRefs
-            ],
-            "missingParams": [
-                self.buildParamIssue(key, runtimeParamsByProtocolId.get(key[0], {}).get(key[1], {}))
-                for key in missingParams
-            ],
-            "extraParams": [
-                self.buildParamIssue(key, postgresqlParamsByProtocolId.get(key[0], {}).get(key[1], {}))
-                for key in extraParams
-            ],
-            "paramValueMismatches": paramValueMismatches,
-        }
+        issues = self.buildIssues(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            protocolComparison=protocolComparison,
+            dependencyComparison=dependencyComparison,
+            outputComparison=outputComparison,
+            stepComparison=stepComparison,
+            paramComparison=paramComparison,
+            inputRefComparison=inputRefComparison,
+            inputRefDependencyComparison=inputRefDependencyComparison,
+        )
 
         issuesCount = sum(len(items) for items in issues.values())
 
