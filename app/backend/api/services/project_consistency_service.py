@@ -1148,6 +1148,43 @@ class ProjectConsistencyService:
             "inputRefMismatches": inputRefMismatches,
         }
 
+    def compareInputRefDependencies(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtimeDependencies = runtimeSnapshot["dependencies"]
+        postgresqlDependencies = postgresqlSnapshot["dependencies"]
+
+        runtimeDependenciesFromInputRefs = derivedSets["runtimeDependenciesFromInputRefs"]
+        postgresqlDependenciesFromInputRefs = derivedSets["postgresqlDependenciesFromInputRefs"]
+
+        runtimeInputRefDependenciesMissing = sorted(
+            runtimeDependenciesFromInputRefs - runtimeDependencies,
+            key=self.dependencySortKey,
+        )
+        runtimeDependenciesWithoutInputRefs = sorted(
+            runtimeDependencies - runtimeDependenciesFromInputRefs,
+            key=self.dependencySortKey,
+        )
+
+        postgresqlInputRefDependenciesMissing = sorted(
+            postgresqlDependenciesFromInputRefs - postgresqlDependencies,
+            key=self.dependencySortKey,
+        )
+        postgresqlDependenciesWithoutInputRefs = sorted(
+            postgresqlDependencies - postgresqlDependenciesFromInputRefs,
+            key=self.dependencySortKey,
+        )
+
+        return {
+            "runtimeInputRefDependenciesMissing": runtimeInputRefDependenciesMissing,
+            "runtimeDependenciesWithoutInputRefs": runtimeDependenciesWithoutInputRefs,
+            "postgresqlInputRefDependenciesMissing": postgresqlInputRefDependenciesMissing,
+            "postgresqlDependenciesWithoutInputRefs": postgresqlDependenciesWithoutInputRefs,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1272,23 +1309,16 @@ class ProjectConsistencyService:
         extraInputRefs = inputRefComparison["extraInputRefs"]
         inputRefMismatches = inputRefComparison["inputRefMismatches"]
 
-        runtimeInputRefDependenciesMissing = sorted(
-            runtimeDependenciesFromInputRefs - runtimeDependencies,
-            key=self.dependencySortKey,
-        )
-        runtimeDependenciesWithoutInputRefs = sorted(
-            runtimeDependencies - runtimeDependenciesFromInputRefs,
-            key=self.dependencySortKey,
+        inputRefDependencyComparison = self.compareInputRefDependencies(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
         )
 
-        postgresqlInputRefDependenciesMissing = sorted(
-            postgresqlDependenciesFromInputRefs - postgresqlDependencies,
-            key=self.dependencySortKey,
-        )
-        postgresqlDependenciesWithoutInputRefs = sorted(
-            postgresqlDependencies - postgresqlDependenciesFromInputRefs,
-            key=self.dependencySortKey,
-        )
+        runtimeInputRefDependenciesMissing = inputRefDependencyComparison["runtimeInputRefDependenciesMissing"]
+        runtimeDependenciesWithoutInputRefs = inputRefDependencyComparison["runtimeDependenciesWithoutInputRefs"]
+        postgresqlInputRefDependenciesMissing = inputRefDependencyComparison["postgresqlInputRefDependenciesMissing"]
+        postgresqlDependenciesWithoutInputRefs = inputRefDependencyComparison["postgresqlDependenciesWithoutInputRefs"]
 
         issues = {
             "missingProtocols": [
