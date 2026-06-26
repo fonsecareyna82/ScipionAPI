@@ -979,58 +979,59 @@ class ProjectConsistencyService:
         }
 
     def compareSteps(
-                    self,
-                    runtimeSnapshot: Dict[str, Any],
-                    postgresqlSnapshot: Dict[str, Any],
-                    derivedSets: Dict[str, Any],
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
             ) -> Dict[str, Any]:
-                runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
-                normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
 
-                runtimeSteps = derivedSets["runtimeSteps"]
-                postgresqlSteps = derivedSets["postgresqlSteps"]
+            runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
+            normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
 
-                missingSteps = sorted(
-                    runtimeSteps - postgresqlSteps,
-                    key=self.stepSortKey,
-                )
-                extraSteps = sorted(
-                    postgresqlSteps - runtimeSteps,
-                    key=self.stepSortKey,
-                )
+            runtimeSteps = derivedSets["runtimeSteps"]
+            postgresqlSteps = derivedSets["postgresqlSteps"]
 
-                stepMismatches = []
-                for protocolId, stepIndex in sorted(runtimeSteps.intersection(postgresqlSteps), key=self.stepSortKey):
-                    runtimeStep = runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
-                    postgresqlStep = normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
+            missingSteps = sorted(
+                runtimeSteps - postgresqlSteps,
+                key=self.stepSortKey,
+            )
+            extraSteps = sorted(
+                postgresqlSteps - runtimeSteps,
+                key=self.stepSortKey,
+            )
 
-                    runtimeName = str(runtimeStep.get("name") or "")
-                    postgresqlName = str(postgresqlStep.get("name") or "")
-                    runtimeStatus = self.normalizeStatus(runtimeStep.get("status"))
-                    postgresqlStatus = self.normalizeStatus(postgresqlStep.get("status"))
+            stepMismatches = []
+            for protocolId, stepIndex in sorted(runtimeSteps.intersection(postgresqlSteps), key=self.stepSortKey):
+                runtimeStep = runtimeStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
+                postgresqlStep = normalizedPostgresqlStepsByProtocolId.get(protocolId, {}).get(stepIndex, {})
 
-                    changedFields = []
-                    if runtimeName != postgresqlName:
-                        changedFields.append("name")
-                    if runtimeStatus != postgresqlStatus:
-                        changedFields.append("status")
+                runtimeName = str(runtimeStep.get("name") or "")
+                postgresqlName = str(postgresqlStep.get("name") or "")
+                runtimeStatus = self.normalizeStatus(runtimeStep.get("status"))
+                postgresqlStatus = self.normalizeStatus(postgresqlStep.get("status"))
 
-                    if changedFields:
-                        stepMismatches.append({
-                            "protocolId": protocolId,
-                            "index": int(stepIndex),
-                            "fields": changedFields,
-                            "runtimeName": runtimeName,
-                            "postgresqlName": postgresqlName,
-                            "runtimeStatus": runtimeStatus,
-                            "postgresqlStatus": postgresqlStatus,
-                        })
+                changedFields = []
+                if runtimeName != postgresqlName:
+                    changedFields.append("name")
+                if runtimeStatus != postgresqlStatus:
+                    changedFields.append("status")
 
-                return {
-                    "missingSteps": missingSteps,
-                    "extraSteps": extraSteps,
-                    "stepMismatches": stepMismatches,
-                }
+                if changedFields:
+                    stepMismatches.append({
+                        "protocolId": protocolId,
+                        "index": int(stepIndex),
+                        "fields": changedFields,
+                        "runtimeName": runtimeName,
+                        "postgresqlName": postgresqlName,
+                        "runtimeStatus": runtimeStatus,
+                        "postgresqlStatus": postgresqlStatus,
+                    })
+
+            return {
+                "missingSteps": missingSteps,
+                "extraSteps": extraSteps,
+                "stepMismatches": stepMismatches,
+            }
 
     def compareParams(
             self,
