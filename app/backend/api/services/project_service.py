@@ -2025,6 +2025,7 @@ class ProjectService:
                 s.properties,
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
+                COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
                 COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
                 root_table_stats."rootTableId" AS "rootTableId",
                 COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
@@ -2043,6 +2044,14 @@ class ProjectService:
                    GROUP BY "setId"
               ) items_stats
                 ON items_stats."setId" = s.id
+              LEFT JOIN (
+                    SELECT
+                        "setId",
+                        COUNT(*)::int AS "setColumnsCount"
+                      FROM scipion_set_columns
+                     GROUP BY "setId"
+                ) columns_stats
+                  ON columns_stats."setId" = s.id  
               LEFT JOIN (
                   SELECT
                       t."setId",
@@ -2081,6 +2090,8 @@ class ProjectService:
                 "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
                 "maxItemIdFromItems": toOptionalInt(row.get("maxItemIdFromItems")),
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
+                "setColumnsCount": toOptionalInt(row.get("setColumnsCount")),
                 "rootTablesCount": toOptionalInt(row.get("rootTablesCount")),
                 "rootTableId": toOptionalInt(row.get("rootTableId")),
                 "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),

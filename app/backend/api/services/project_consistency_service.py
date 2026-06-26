@@ -1016,6 +1016,7 @@ class ProjectConsistencyService:
         flatSetItemsCountMismatches = []
         flatSetMaxItemIdMismatches = []
         flatSetRootTableMismatches = []
+        flatSetColumnsCountMismatches = []
 
         for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
             outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
@@ -1083,6 +1084,26 @@ class ProjectConsistencyService:
                             "rootObjectId": payload.get("rootObjectId"),
                             "maxItemId": propertiesMaxItemId,
                             "maxItemIdFromItems": maxItemIdFromItems,
+                            "itemClassName": payload.get("itemClassName"),
+                        })
+
+                    propertiesColumnsCount = self.toOptionalInt(payload.get("columnsCount"))
+                    setColumnsCount = self.toOptionalInt(payload.get("setColumnsCount"))
+
+                    if (
+                            propertiesColumnsCount is not None
+                            and setColumnsCount is not None
+                            and propertiesColumnsCount != setColumnsCount
+                    ):
+                        flatSetColumnsCountMismatches.append({
+                            "protocolId": self.normalizeProtocolId(protocolId),
+                            "outputName": str(outputName),
+                            "mapperKind": mapperKind,
+                            "className": payload.get("className"),
+                            "setId": payload.get("setId"),
+                            "rootObjectId": payload.get("rootObjectId"),
+                            "columnsCount": propertiesColumnsCount,
+                            "setColumnsCount": setColumnsCount,
                             "itemClassName": payload.get("itemClassName"),
                         })
 
@@ -1154,6 +1175,7 @@ class ProjectConsistencyService:
             "postgresqlTreeOutputsWithIncompletePayload": treeOutputsWithIncompletePayload,
             "postgresqlFlatSetItemsCountMismatches": flatSetItemsCountMismatches,
             "postgresqlFlatSetMaxItemIdMismatches": flatSetMaxItemIdMismatches,
+            "postgresqlFlatSetColumnsCountMismatches": flatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": flatSetRootTableMismatches,
         }
 
@@ -1482,6 +1504,10 @@ class ProjectConsistencyService:
             outputPayloadComparison["postgresqlFlatSetMaxItemIdMismatches"]
         )
 
+        postgresqlFlatSetColumnsCountMismatches = (
+            outputPayloadComparison["postgresqlFlatSetColumnsCountMismatches"]
+        )
+
         postgresqlFlatSetRootTableMismatches = (
             outputPayloadComparison["postgresqlFlatSetRootTableMismatches"]
         )
@@ -1587,6 +1613,7 @@ class ProjectConsistencyService:
             ],
             "paramValueMismatches": paramValueMismatches,
             "postgresqlFlatSetMaxItemIdMismatches": postgresqlFlatSetMaxItemIdMismatches,
+            "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
             "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
         }
 
