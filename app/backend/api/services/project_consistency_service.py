@@ -1014,6 +1014,7 @@ class ProjectConsistencyService:
         flatSetOutputsWithIncompletePayload = []
         treeOutputsWithIncompletePayload = []
         flatSetItemsCountMismatches = []
+        flatSetMaxItemIdMismatches = []
 
         for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
             outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
@@ -1064,6 +1065,26 @@ class ProjectConsistencyService:
                             "itemClassName": payload.get("itemClassName"),
                         })
 
+                    propertiesMaxItemId = self.toOptionalInt(payload.get("maxItemId"))
+                    maxItemIdFromItems = self.toOptionalInt(payload.get("maxItemIdFromItems"))
+
+                    if (
+                            propertiesMaxItemId is not None
+                            and maxItemIdFromItems is not None
+                            and propertiesMaxItemId != maxItemIdFromItems
+                    ):
+                        flatSetMaxItemIdMismatches.append({
+                            "protocolId": self.normalizeProtocolId(protocolId),
+                            "outputName": str(outputName),
+                            "mapperKind": mapperKind,
+                            "className": payload.get("className"),
+                            "setId": payload.get("setId"),
+                            "rootObjectId": payload.get("rootObjectId"),
+                            "maxItemId": propertiesMaxItemId,
+                            "maxItemIdFromItems": maxItemIdFromItems,
+                            "itemClassName": payload.get("itemClassName"),
+                        })
+
                 elif mapperKind == "tree":
                     missingFields = []
 
@@ -1086,6 +1107,7 @@ class ProjectConsistencyService:
             "postgresqlFlatSetOutputsWithIncompletePayload": flatSetOutputsWithIncompletePayload,
             "postgresqlTreeOutputsWithIncompletePayload": treeOutputsWithIncompletePayload,
             "postgresqlFlatSetItemsCountMismatches": flatSetItemsCountMismatches,
+            "postgresqlFlatSetMaxItemIdMismatches": flatSetMaxItemIdMismatches,
         }
 
     def compareSteps(self,
@@ -1409,6 +1431,10 @@ class ProjectConsistencyService:
             outputPayloadComparison["postgresqlFlatSetItemsCountMismatches"]
         )
 
+        postgresqlFlatSetMaxItemIdMismatches = (
+            outputPayloadComparison["postgresqlFlatSetMaxItemIdMismatches"]
+        )
+
         return {
             "missingProtocols": [
                 {
@@ -1509,6 +1535,7 @@ class ProjectConsistencyService:
                 for key in extraParams
             ],
             "paramValueMismatches": paramValueMismatches,
+            "postgresqlFlatSetMaxItemIdMismatches": postgresqlFlatSetMaxItemIdMismatches,
         }
 
     def buildSummary(
