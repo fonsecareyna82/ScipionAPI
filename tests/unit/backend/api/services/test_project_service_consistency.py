@@ -777,6 +777,9 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
             ),
         }
     )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=1)),
+    ]
     currentProject.nodes["11"].run.inputs = [
         ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
     ]
@@ -828,6 +831,14 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
                 "objectClassName": "SetOfParticles",
                 "objectId": "100",
             },
+        ],
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=1,
+            ),
         ],
     )
 
@@ -947,8 +958,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         "postgresqlProtocols": 2,
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
-        "runtimeOutputs": 0,
-        "postgresqlOutputs": 0,
+        "runtimeOutputs": 1,
+        "postgresqlOutputs": 1,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
         "runtimeInputRefs": 2,
@@ -957,7 +968,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         "postgresqlInputRefDependencies": 1,
         "runtimeParams": 0,
         "postgresqlParams": 0,
-        "issues": 3,
+        "issues": 5,
     }
 
     assert result["issues"]["missingInputRefs"] == [
@@ -995,6 +1006,27 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
             "runtimeObjectClassName": "SetOfParticles",
             "postgresqlObjectClassName": "SetOfParticles",
         }
+    ]
+    assert result["issues"]["postgresqlInputRefsWithMissingParentProtocols"] == []
+    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputParticles",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "wrongOutput",
+            "objectClassName": "SetOfParticles",
+            "missingParentOutputName": "wrongOutput",
+        },
+        {
+            "protocolId": "11",
+            "inputName": "inputMask",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputMask",
+            "objectClassName": "VolumeMask",
+            "missingParentOutputName": "outputMask",
+        },
     ]
 
     assert result["issues"]["missingProtocols"] == []
@@ -1042,6 +1074,10 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
             ),
         }
     )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=1)),
+        ("outputVolume", FakeOutput("Volume")),
+    ]
     currentProject.nodes["11"].run.inputs = [
         ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
     ]
@@ -1086,6 +1122,30 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
                 "objectId": "101",
             },
         ],
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=1,
+            ),
+        ],
+        treeRows=[
+            {
+                "protocolId": "10",
+                "id": 300,
+                "scipionObjId": 400,
+                "name": "outputVolume",
+                "path": "outputVolume",
+                "className": "Volume",
+                "value": None,
+                "label": None,
+                "comment": None,
+                "metadata": {},
+                "createdAt": None,
+                "updatedAt": None,
+            },
+        ],
     )
 
     result = service.validateProjectPostgresqlConsistency(
@@ -1102,8 +1162,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
         "postgresqlProtocols": 3,
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
-        "runtimeOutputs": 0,
-        "postgresqlOutputs": 0,
+        "runtimeOutputs": 2,
+        "postgresqlOutputs": 2,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
         "runtimeInputRefs": 2,
@@ -1147,6 +1207,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefsDependencyMismatche
     assert result["issues"]["outputMapperKindMismatches"] == []
     assert result["issues"]["outputItemsCountMismatches"] == []
     assert result["issues"]["protocolClassMismatches"] == []
+    assert result["issues"]["postgresqlInputRefsWithMissingParentProtocols"] == []
+    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == []
 
 
 def test_ValidateProjectPostgresqlConsistencyReportsParamMismatches(
