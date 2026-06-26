@@ -1337,6 +1337,31 @@ class ProjectConsistencyService:
             "paramValueMismatches": paramValueMismatches,
         }
 
+    def buildSummary(
+            self,
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+            issuesCount: int,
+    ) -> Dict[str, int]:
+        return {
+            "runtimeProtocols": len(derivedSets["runtimeProtocolIds"]),
+            "postgresqlProtocols": len(derivedSets["postgresqlProtocolIds"]),
+            "runtimeDependencies": len(runtimeSnapshot["dependencies"]),
+            "postgresqlDependencies": len(postgresqlSnapshot["dependencies"]),
+            "runtimeOutputs": len(derivedSets["runtimeOutputs"]),
+            "postgresqlOutputs": len(derivedSets["postgresqlOutputs"]),
+            "runtimeSteps": len(derivedSets["runtimeSteps"]),
+            "postgresqlSteps": len(derivedSets["postgresqlSteps"]),
+            "runtimeInputRefs": len(derivedSets["runtimeInputRefs"]),
+            "postgresqlInputRefs": len(derivedSets["postgresqlInputRefsKeys"]),
+            "runtimeInputRefDependencies": len(derivedSets["runtimeDependenciesFromInputRefs"]),
+            "postgresqlInputRefDependencies": len(derivedSets["postgresqlDependenciesFromInputRefs"]),
+            "runtimeParams": len(derivedSets["runtimeParams"]),
+            "postgresqlParams": len(derivedSets["postgresqlParams"]),
+            "issues": issuesCount,
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1360,44 +1385,15 @@ class ProjectConsistencyService:
             checkPid=checkPid,
         )
 
-        runtimeStatuses = runtimeSnapshot["statuses"]
-        runtimeClassNames = runtimeSnapshot["classNames"]
-        runtimeDependencies = runtimeSnapshot["dependencies"]
-        runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
-        runtimeStepsByProtocolId = runtimeSnapshot["stepsByProtocolId"]
-        runtimeInputRefsByKey = runtimeSnapshot["inputRefsByKey"]
-        runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
-
         postgresqlSnapshot = self.collectPostgresqlSnapshot(
             mapper=mapper,
             projectId=projectId,
         )
 
-        postgresqlStatuses = postgresqlSnapshot["statuses"]
-        postgresqlClassNames = postgresqlSnapshot["classNames"]
-        postgresqlDependencies = postgresqlSnapshot["dependencies"]
-        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
-        normalizedPostgresqlStepsByProtocolId = postgresqlSnapshot["stepsByProtocolId"]
-        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
-        postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
-
         derivedSets = self.buildDerivedSets(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
         )
-
-        runtimeOutputs = derivedSets["runtimeOutputs"]
-        postgresqlOutputs = derivedSets["postgresqlOutputs"]
-        runtimeSteps = derivedSets["runtimeSteps"]
-        postgresqlSteps = derivedSets["postgresqlSteps"]
-        runtimeProtocolIds = derivedSets["runtimeProtocolIds"]
-        postgresqlProtocolIds = derivedSets["postgresqlProtocolIds"]
-        runtimeInputRefs = derivedSets["runtimeInputRefs"]
-        postgresqlInputRefsKeys = derivedSets["postgresqlInputRefsKeys"]
-        runtimeParams = derivedSets["runtimeParams"]
-        postgresqlParams = derivedSets["postgresqlParams"]
-        runtimeDependenciesFromInputRefs = derivedSets["runtimeDependenciesFromInputRefs"]
-        postgresqlDependenciesFromInputRefs = derivedSets["postgresqlDependenciesFromInputRefs"]
 
         protocolComparison = self.compareProtocols(
             runtimeSnapshot=runtimeSnapshot,
@@ -1405,19 +1401,10 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
-        missingProtocolIds = protocolComparison["missingProtocolIds"]
-        extraProtocolIds = protocolComparison["extraProtocolIds"]
-        commonProtocolIds = protocolComparison["commonProtocolIds"]
-        statusMismatches = protocolComparison["statusMismatches"]
-        protocolClassMismatches = protocolComparison["protocolClassMismatches"]
-
         dependencyComparison = self.compareDependencies(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
         )
-
-        missingDependencies = dependencyComparison["missingDependencies"]
-        extraDependencies = dependencyComparison["extraDependencies"]
 
         outputComparison = self.compareOutputs(
             runtimeSnapshot=runtimeSnapshot,
@@ -1425,21 +1412,11 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
-        missingOutputs = outputComparison["missingOutputs"]
-        extraOutputs = outputComparison["extraOutputs"]
-        outputClassMismatches = outputComparison["outputClassMismatches"]
-        outputMapperKindMismatches = outputComparison["outputMapperKindMismatches"]
-        outputItemsCountMismatches = outputComparison["outputItemsCountMismatches"]
-
         stepComparison = self.compareSteps(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
             derivedSets=derivedSets,
         )
-
-        missingSteps = stepComparison["missingSteps"]
-        extraSteps = stepComparison["extraSteps"]
-        stepMismatches = stepComparison["stepMismatches"]
 
         paramComparison = self.compareParams(
             runtimeSnapshot=runtimeSnapshot,
@@ -1447,30 +1424,17 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
-        missingParams = paramComparison["missingParams"]
-        extraParams = paramComparison["extraParams"]
-        paramValueMismatches = paramComparison["paramValueMismatches"]
-
         inputRefComparison = self.compareInputRefs(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
             derivedSets=derivedSets,
         )
 
-        missingInputRefs = inputRefComparison["missingInputRefs"]
-        extraInputRefs = inputRefComparison["extraInputRefs"]
-        inputRefMismatches = inputRefComparison["inputRefMismatches"]
-
         inputRefDependencyComparison = self.compareInputRefDependencies(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
             derivedSets=derivedSets,
         )
-
-        runtimeInputRefDependenciesMissing = inputRefDependencyComparison["runtimeInputRefDependenciesMissing"]
-        runtimeDependenciesWithoutInputRefs = inputRefDependencyComparison["runtimeDependenciesWithoutInputRefs"]
-        postgresqlInputRefDependenciesMissing = inputRefDependencyComparison["postgresqlInputRefDependenciesMissing"]
-        postgresqlDependenciesWithoutInputRefs = inputRefDependencyComparison["postgresqlDependenciesWithoutInputRefs"]
 
         issues = self.buildIssues(
             runtimeSnapshot=runtimeSnapshot,
@@ -1486,26 +1450,17 @@ class ProjectConsistencyService:
 
         issuesCount = sum(len(items) for items in issues.values())
 
+        summary = self.buildSummary(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
+            issuesCount=issuesCount,
+        )
+
         return {
             "ok": issuesCount == 0,
             "projectId": projectId,
             "checkedAt": datetime.utcnow().isoformat() + "Z",
-            "summary": {
-                "runtimeProtocols": len(runtimeProtocolIds),
-                "postgresqlProtocols": len(postgresqlProtocolIds),
-                "runtimeDependencies": len(runtimeDependencies),
-                "postgresqlDependencies": len(postgresqlDependencies),
-                "runtimeOutputs": len(runtimeOutputs),
-                "postgresqlOutputs": len(postgresqlOutputs),
-                "runtimeSteps": len(runtimeSteps),
-                "postgresqlSteps": len(postgresqlSteps),
-                "runtimeInputRefs": len(runtimeInputRefs),
-                "postgresqlInputRefs": len(postgresqlInputRefsKeys),
-                "runtimeInputRefDependencies": len(runtimeDependenciesFromInputRefs),
-                "postgresqlInputRefDependencies": len(postgresqlDependenciesFromInputRefs),
-                "runtimeParams": len(runtimeParams),
-                "postgresqlParams": len(postgresqlParams),
-                "issues": issuesCount,
-            },
+            "summary": summary,
             "issues": issues,
         }
