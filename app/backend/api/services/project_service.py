@@ -2024,20 +2024,39 @@ class ProjectService:
                 s."itemClassName",
                 s.properties,
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
+                items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
+                COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
+                root_table_stats."rootTableId" AS "rootTableId",
+                COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
+                root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
                 s."createdAt",
                 s."updatedAt"
               FROM scipion_sets s
               JOIN protocols p
                 ON p.id = s."protocolDbId"
               LEFT JOIN (
-                SELECT
-                    "setId",
-                    COUNT(*)::int AS "itemsTableCount",
-                    MAX("scipionItemId")::int AS "maxItemIdFromItems"
-                  FROM scipion_set_items
-                 GROUP BY "setId"
-            ) items_stats
-              ON items_stats."setId" = s.id
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "itemsTableCount",
+                      MAX("scipionItemId")::int AS "maxItemIdFromItems"
+                    FROM scipion_set_items
+                   GROUP BY "setId"
+              ) items_stats
+                ON items_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(DISTINCT t.id)::int AS "rootTablesCount",
+                      MIN(t.id)::int AS "rootTableId",
+                      COUNT(ti.id)::int AS "rootTableItemsCount",
+                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_items ti
+                      ON ti."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_stats
+                ON root_table_stats."setId" = s.id
              WHERE s."projectId" = %s
              ORDER BY p."protocolId", s."outputName"
             """,
@@ -2062,6 +2081,10 @@ class ProjectService:
                 "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
                 "maxItemIdFromItems": toOptionalInt(row.get("maxItemIdFromItems")),
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "rootTablesCount": toOptionalInt(row.get("rootTablesCount")),
+                "rootTableId": toOptionalInt(row.get("rootTableId")),
+                "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
+                "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
                 "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
                 "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
