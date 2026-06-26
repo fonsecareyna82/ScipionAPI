@@ -1362,39 +1362,12 @@ class ProjectConsistencyService:
             "issues": issuesCount,
         }
 
-    def validateProjectPostgresqlConsistency(
+    def buildComparisons(
             self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            currentUser: dict,
-            refresh: bool = True,
-            checkPid: bool = True,
-    ) -> Dict[str, Any]:
-        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        self.loadProjectForThumbnails(dbProj)
-
-        runtimeSnapshot = self.collectRuntimeSnapshot(
-            projectId=projectId,
-            refresh=refresh,
-            checkPid=checkPid,
-        )
-
-        postgresqlSnapshot = self.collectPostgresqlSnapshot(
-            mapper=mapper,
-            projectId=projectId,
-        )
-
-        derivedSets = self.buildDerivedSets(
-            runtimeSnapshot=runtimeSnapshot,
-            postgresqlSnapshot=postgresqlSnapshot,
-        )
-
+            runtimeSnapshot: Dict[str, Any],
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
         protocolComparison = self.compareProtocols(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
@@ -1436,16 +1409,59 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
+        return {
+            "protocolComparison": protocolComparison,
+            "dependencyComparison": dependencyComparison,
+            "outputComparison": outputComparison,
+            "stepComparison": stepComparison,
+            "paramComparison": paramComparison,
+            "inputRefComparison": inputRefComparison,
+            "inputRefDependencyComparison": inputRefDependencyComparison,
+        }
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            refresh: bool = True,
+            checkPid: bool = True,
+    ) -> Dict[str, Any]:
+        dbProj = self.getProjectDbRow(mapper, projectId, currentUser)
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        self.loadProjectForThumbnails(dbProj)
+
+        runtimeSnapshot = self.collectRuntimeSnapshot(
+            projectId=projectId,
+            refresh=refresh,
+            checkPid=checkPid,
+        )
+
+        postgresqlSnapshot = self.collectPostgresqlSnapshot(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        derivedSets = self.buildDerivedSets(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+        )
+
+        comparisons = self.buildComparisons(
+            runtimeSnapshot=runtimeSnapshot,
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
+        )
+
         issues = self.buildIssues(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
-            protocolComparison=protocolComparison,
-            dependencyComparison=dependencyComparison,
-            outputComparison=outputComparison,
-            stepComparison=stepComparison,
-            paramComparison=paramComparison,
-            inputRefComparison=inputRefComparison,
-            inputRefDependencyComparison=inputRefDependencyComparison,
+            **comparisons,
         )
 
         issuesCount = sum(len(items) for items in issues.values())
