@@ -2023,11 +2023,20 @@ class ProjectService:
                 s."setClassName",
                 s."itemClassName",
                 s.properties,
+                COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 s."createdAt",
                 s."updatedAt"
               FROM scipion_sets s
               JOIN protocols p
                 ON p.id = s."protocolDbId"
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "itemsTableCount"
+                    FROM scipion_set_items
+                   GROUP BY "setId"
+              ) items_stats
+                ON items_stats."setId" = s.id
              WHERE s."projectId" = %s
              ORDER BY p."protocolId", s."outputName"
             """,
@@ -2049,6 +2058,7 @@ class ProjectService:
                 "className": row.get("setClassName"),
                 "itemClassName": row.get("itemClassName"),
                 "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
                 "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
