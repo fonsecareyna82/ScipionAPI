@@ -380,6 +380,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "protocolClassMismatches": [],
         "postgresqlInputRefsWithMissingParentProtocols": [],
         "postgresqlInputRefsWithMissingParentOutputs": [],
+        "postgresqlFlatSetOutputsWithIncompletePayload": [],
+        "postgresqlTreeOutputsWithIncompletePayload": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -504,6 +506,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "protocolClassMismatches": [],
         "postgresqlInputRefsWithMissingParentProtocols": [],
         "postgresqlInputRefsWithMissingParentOutputs": [],
+        "postgresqlFlatSetOutputsWithIncompletePayload": [],
+        "postgresqlTreeOutputsWithIncompletePayload": [],
 
     }
 
@@ -1715,5 +1719,109 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMissingParentOutput(
             "parentOutputName": "outputParticles",
             "objectClassName": "SetOfParticles",
             "missingParentOutputName": "outputParticles",
+        }
+    ]
+
+def test_ValidateProjectPostgresqlConsistencyReportsIncompletePostgresqlOutputPayloads(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=None)),
+        ("outputVolume", FakeOutput("Volume")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=None,
+            ),
+        ],
+        treeRows=[
+            {
+                "protocolId": "10",
+                "id": None,
+                "scipionObjId": 400,
+                "name": "outputVolume",
+                "path": "outputVolume",
+                "className": "Volume",
+                "value": None,
+                "label": None,
+                "comment": None,
+                "metadata": {},
+                "createdAt": None,
+                "updatedAt": None,
+            },
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["runtimeOutputs"] == 2
+    assert result["summary"]["postgresqlOutputs"] == 2
+    assert result["summary"]["issues"] == 2
+
+    assert result["issues"]["missingOutputs"] == []
+    assert result["issues"]["extraOutputs"] == []
+    assert result["issues"]["outputClassMismatches"] == []
+    assert result["issues"]["outputMapperKindMismatches"] == []
+    assert result["issues"]["outputItemsCountMismatches"] == []
+
+    assert result["issues"]["postgresqlFlatSetOutputsWithIncompletePayload"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "missingFields": ["itemsCount"],
+            "setId": 100,
+            "rootObjectId": 200,
+            "itemsCount": None,
+            "itemClassName": "Particle",
+        }
+    ]
+
+    assert result["issues"]["postgresqlTreeOutputsWithIncompletePayload"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputVolume",
+            "mapperKind": "tree",
+            "className": "Volume",
+            "missingFields": ["rootObjectId"],
+            "rootObjectId": None,
+            "scipionObjId": 400,
         }
     ]
