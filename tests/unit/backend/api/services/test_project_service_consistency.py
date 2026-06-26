@@ -238,6 +238,8 @@ def makeSetRow(
         setClassName="SetOfParticles",
         itemsCount=1,
         itemsTableCount=None,
+        maxItemId=1,
+        maxItemIdFromItems=None,
 ):
     return {
         "protocolId": str(protocolId),
@@ -246,8 +248,12 @@ def makeSetRow(
         "outputName": outputName,
         "setClassName": setClassName,
         "itemClassName": "Particle",
-        "properties": {"itemsCount": itemsCount},
+        "properties": {
+            "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+        },
         "itemsTableCount": itemsCount if itemsTableCount is None else itemsTableCount,
+        "maxItemIdFromItems": maxItemId if maxItemIdFromItems is None else maxItemIdFromItems,
         "createdAt": None,
         "updatedAt": None,
     }
@@ -379,6 +385,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
+        "postgresqlFlatSetMaxItemIdMismatches": [],
         "protocolClassMismatches": [],
         "postgresqlInputRefsWithMissingParentProtocols": [],
         "postgresqlInputRefsWithMissingParentOutputs": [],
@@ -506,6 +513,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "outputClassMismatches": [],
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
+        "postgresqlFlatSetMaxItemIdMismatches": [],
         "protocolClassMismatches": [],
         "postgresqlInputRefsWithMissingParentProtocols": [],
         "postgresqlInputRefsWithMissingParentOutputs": [],
@@ -1903,5 +1911,79 @@ def test_ValidateProjectPostgresqlConsistencyReportsIncompletePostgresqlOutputPa
             "missingFields": ["rootObjectId"],
             "rootObjectId": None,
             "scipionObjId": 400,
+        }
+    ]
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsFlatSetMaxItemIdMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=20,
+                maxItemIdFromItems=30,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetItemsCountMismatches"] == []
+    assert result["issues"]["postgresqlFlatSetMaxItemIdMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "maxItemId": 20,
+            "maxItemIdFromItems": 30,
+            "itemClassName": "Particle",
         }
     ]
