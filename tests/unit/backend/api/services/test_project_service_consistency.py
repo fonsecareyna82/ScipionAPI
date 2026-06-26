@@ -240,7 +240,35 @@ def makeSetRow(
         itemsTableCount=None,
         maxItemId=1,
         maxItemIdFromItems=None,
+        rootTablesCount=1,
+        rootTableId=500,
+        rootTableItemsCount=None,
+        rootTableMaxItemId=None,
 ):
+    resolvedItemsTableCount = (
+        itemsCount if itemsTableCount is None else itemsTableCount
+    )
+    resolvedMaxItemIdFromItems = (
+        maxItemId if maxItemIdFromItems is None else maxItemIdFromItems
+    )
+
+    if rootTablesCount == 0:
+        resolvedRootTableId = None
+        resolvedRootTableItemsCount = 0
+        resolvedRootTableMaxItemId = None
+    else:
+        resolvedRootTableId = rootTableId
+        resolvedRootTableItemsCount = (
+            resolvedItemsTableCount
+            if rootTableItemsCount is None
+            else rootTableItemsCount
+        )
+        resolvedRootTableMaxItemId = (
+            resolvedMaxItemIdFromItems
+            if rootTableMaxItemId is None
+            else rootTableMaxItemId
+        )
+
     return {
         "protocolId": str(protocolId),
         "id": 100,
@@ -252,11 +280,16 @@ def makeSetRow(
             "itemsCount": itemsCount,
             "maxItemId": maxItemId,
         },
-        "itemsTableCount": itemsCount if itemsTableCount is None else itemsTableCount,
-        "maxItemIdFromItems": maxItemId if maxItemIdFromItems is None else maxItemIdFromItems,
+        "itemsTableCount": resolvedItemsTableCount,
+        "maxItemIdFromItems": resolvedMaxItemIdFromItems,
+        "rootTablesCount": rootTablesCount,
+        "rootTableId": resolvedRootTableId,
+        "rootTableItemsCount": resolvedRootTableItemsCount,
+        "rootTableMaxItemId": resolvedRootTableMaxItemId,
         "createdAt": None,
         "updatedAt": None,
     }
+
 
 @pytest.fixture
 def projectServiceModule(authTestEnv):
@@ -392,6 +425,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlFlatSetOutputsWithIncompletePayload": [],
         "postgresqlTreeOutputsWithIncompletePayload": [],
         "postgresqlFlatSetItemsCountMismatches": [],
+        "postgresqlFlatSetRootTableMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -520,6 +554,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlFlatSetOutputsWithIncompletePayload": [],
         "postgresqlTreeOutputsWithIncompletePayload": [],
         "postgresqlFlatSetItemsCountMismatches": [],
+        "postgresqlFlatSetRootTableMismatches": [],
 
     }
 
@@ -1984,6 +2019,88 @@ def test_ValidateProjectPostgresqlConsistencyReportsFlatSetMaxItemIdMismatches(
             "rootObjectId": 200,
             "maxItemId": 20,
             "maxItemIdFromItems": 30,
+            "itemClassName": "Particle",
+        }
+    ]
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootTable(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                rootTablesCount=0,
+                rootTableId=None,
+                rootTableItemsCount=0,
+                rootTableMaxItemId=None,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "rootTableId": None,
+            "fields": ["rootTableMissing"],
+            "rootTablesCount": 0,
+            "itemsTableCount": 3,
+            "rootTableItemsCount": 0,
+            "maxItemIdFromItems": 30,
+            "rootTableMaxItemId": None,
             "itemClassName": "Particle",
         }
     ]
