@@ -1186,6 +1186,47 @@ class ProjectConsistencyService:
             "postgresqlDependenciesWithoutInputRefs": postgresqlDependenciesWithoutInputRefs,
         }
 
+    def comparePostgresqlInputRefTargets(
+            self,
+            postgresqlSnapshot: Dict[str, Any],
+            derivedSets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        postgresqlInputRefsByKey = postgresqlSnapshot["inputRefsByKey"]
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+
+        postgresqlProtocolIds = derivedSets["postgresqlProtocolIds"]
+
+        postgresqlInputRefsWithMissingParentProtocols = []
+        postgresqlInputRefsWithMissingParentOutputs = []
+
+        for key in sorted(postgresqlInputRefsByKey.keys(), key=self.inputRefSortKey):
+            inputRef = postgresqlInputRefsByKey.get(key, {})
+
+            parentProtocolId = self.normalizeOptionalText(inputRef.get("parentProtocolId"))
+            parentOutputName = self.normalizeOptionalText(inputRef.get("parentOutputName"))
+
+            if not parentProtocolId or parentProtocolId == "PROJECT":
+                continue
+
+            if parentProtocolId not in postgresqlProtocolIds:
+                issue = self.buildInputRef(key, inputRef)
+                issue["missingParentProtocolId"] = parentProtocolId
+                postgresqlInputRefsWithMissingParentProtocols.append(issue)
+                continue
+
+            if not parentOutputName:
+                continue
+
+            if parentOutputName not in persistedOutputsByProtocolId.get(parentProtocolId, {}):
+                issue = self.buildInputRef(key, inputRef)
+                issue["missingParentOutputName"] = parentOutputName
+                postgresqlInputRefsWithMissingParentOutputs.append(issue)
+
+        return {
+            "postgresqlInputRefsWithMissingParentProtocols": postgresqlInputRefsWithMissingParentProtocols,
+            "postgresqlInputRefsWithMissingParentOutputs": postgresqlInputRefsWithMissingParentOutputs,
+        }
+
     def buildIssues(
             self,
             runtimeSnapshot: Dict[str, Any],
@@ -1197,6 +1238,7 @@ class ProjectConsistencyService:
             paramComparison: Dict[str, Any],
             inputRefComparison: Dict[str, Any],
             inputRefDependencyComparison: Dict[str, Any],
+            postgresqlInputRefTargetComparison: Dict[str, Any],
     ) -> Dict[str, List[Dict[str, Any]]]:
         runtimeStatuses = runtimeSnapshot["statuses"]
         runtimeOutputsByProtocolId = runtimeSnapshot["outputsByProtocolId"]
@@ -1240,6 +1282,12 @@ class ProjectConsistencyService:
         runtimeDependenciesWithoutInputRefs = inputRefDependencyComparison["runtimeDependenciesWithoutInputRefs"]
         postgresqlInputRefDependenciesMissing = inputRefDependencyComparison["postgresqlInputRefDependenciesMissing"]
         postgresqlDependenciesWithoutInputRefs = inputRefDependencyComparison["postgresqlDependenciesWithoutInputRefs"]
+        postgresqlInputRefsWithMissingParentProtocols = (
+            postgresqlInputRefTargetComparison["postgresqlInputRefsWithMissingParentProtocols"]
+        )
+        postgresqlInputRefsWithMissingParentOutputs = (
+            postgresqlInputRefTargetComparison["postgresqlInputRefsWithMissingParentOutputs"]
+        )
 
         return {
             "missingProtocols": [
@@ -1311,6 +1359,8 @@ class ProjectConsistencyService:
                 for key in extraInputRefs
             ],
             "inputRefMismatches": inputRefMismatches,
+            "postgresqlInputRefsWithMissingParentProtocols": postgresqlInputRefsWithMissingParentProtocols,
+            "postgresqlInputRefsWithMissingParentOutputs": postgresqlInputRefsWithMissingParentOutputs,
             "runtimeInputRefDependenciesMissing": [
                 self.buildDependency(parentId, childId)
                 for parentId, childId in runtimeInputRefDependenciesMissing
@@ -1410,6 +1460,11 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
+        postgresqlInputRefTargetComparison = self.comparePostgresqlInputRefTargets(
+            postgresqlSnapshot=postgresqlSnapshot,
+            derivedSets=derivedSets,
+        )
+
         return {
             "protocolComparison": protocolComparison,
             "dependencyComparison": dependencyComparison,
@@ -1418,6 +1473,7 @@ class ProjectConsistencyService:
             "paramComparison": paramComparison,
             "inputRefComparison": inputRefComparison,
             "inputRefDependencyComparison": inputRefDependencyComparison,
+            "postgresqlInputRefTargetComparison": postgresqlInputRefTargetComparison,
         }
 
     def validateProjectPostgresqlConsistency(

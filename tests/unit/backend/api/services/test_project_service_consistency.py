@@ -231,6 +231,25 @@ class FakeDb:
 
         return []
 
+
+def makeSetRow(
+        protocolId="10",
+        outputName="outputParticles",
+        setClassName="SetOfParticles",
+        itemsCount=1,
+):
+    return {
+        "protocolId": str(protocolId),
+        "id": 100,
+        "objectId": 200,
+        "outputName": outputName,
+        "setClassName": setClassName,
+        "itemClassName": "Particle",
+        "properties": {"itemsCount": itemsCount},
+        "createdAt": None,
+        "updatedAt": None,
+    }
+
 @pytest.fixture
 def projectServiceModule(authTestEnv):
     return importlib.import_module("app.backend.api.services.project_service")
@@ -264,6 +283,9 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
             "11": FakeRunNode("11", status="running", parents=["10"]),
         }
     )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=1)),
+    ]
     currentProject.nodes["11"].run.inputs = [
         ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
     ]
@@ -295,6 +317,14 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
                 "objectId": "100",
             },
         ],
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=1,
+            ),
+        ],
     )
 
     result = service.validateProjectPostgresqlConsistency(
@@ -311,8 +341,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlProtocols": 2,
         "runtimeDependencies": 1,
         "postgresqlDependencies": 1,
-        "runtimeOutputs": 0,
-        "postgresqlOutputs": 0,
+        "runtimeOutputs": 1,
+        "postgresqlOutputs": 1,
         "runtimeSteps": 0,
         "postgresqlSteps": 0,
         "runtimeInputRefs": 1,
@@ -348,6 +378,8 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
         "protocolClassMismatches": [],
+        "postgresqlInputRefsWithMissingParentProtocols": [],
+        "postgresqlInputRefsWithMissingParentOutputs": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -470,6 +502,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "outputMapperKindMismatches": [],
         "outputItemsCountMismatches": [],
         "protocolClassMismatches": [],
+        "postgresqlInputRefsWithMissingParentProtocols": [],
+        "postgresqlInputRefsWithMissingParentOutputs": [],
+
     }
 
 
@@ -845,6 +880,9 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
             ),
         }
     )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=1)),
+    ]
     currentProject.nodes["11"].run.inputs = [
         ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
         ("inputVolume", FakePointer(parentProtocolId=10, outputName="outputVolume", className="Volume")),
@@ -884,6 +922,14 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
                 "objectClassName": "VolumeMask",
                 "objectId": "101",
             },
+        ],
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=1,
+            ),
         ],
     )
 
@@ -1474,5 +1520,138 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolClassMismatches(
             "protocolId": "10",
             "runtimeClassName": "RuntimeProtocolClass",
             "postgresqlClassName": "PostgresqlProtocolClass",
+        }
+    ]
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsInputRefMissingParentProtocol(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "11": FakeRunNode("11", status="running", parents=["PROJECT"]),
+        }
+    )
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
+        ],
+        adjacencyMap={
+            "11": {"parents": [], "children": []},
+        },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "99",
+                "parentOutputName": "outputParticles",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=False,
+        checkPid=False,
+    )
+
+    assert result["ok"] is False
+    assert result["issues"]["postgresqlInputRefsWithMissingParentProtocols"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputParticles",
+            "itemIndex": 0,
+            "parentProtocolId": "99",
+            "parentOutputName": "outputParticles",
+            "objectClassName": "SetOfParticles",
+            "missingParentProtocolId": "99",
+        }
+    ]
+    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == []
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsInputRefMissingParentOutput(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode("10", status="finished", parents=["PROJECT"]),
+            "11": FakeRunNode("11", status="running", parents=["10"]),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles")),
+    ]
+    currentProject.nodes["11"].run.inputs = [
+        ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {"protocolId": "10", "status": "finished", "protocolClassName": "FakeProtocol"},
+            {"protocolId": "11", "status": "running", "protocolClassName": "FakeProtocol"},
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": ["11"]},
+            "11": {"parents": ["10"], "children": []},
+        },
+        inputRefs=[
+            {
+                "protocolId": "11",
+                "inputName": "inputParticles",
+                "itemIndex": 0,
+                "parentProtocolId": "10",
+                "parentOutputName": "outputParticles",
+                "objectClassName": "SetOfParticles",
+                "objectId": "100",
+            },
+        ],
+        setRows=[],
+        treeRows=[],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=False,
+        checkPid=False,
+    )
+
+    assert result["ok"] is False
+    assert result["issues"]["postgresqlInputRefsWithMissingParentProtocols"] == []
+    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == [
+        {
+            "protocolId": "11",
+            "inputName": "inputParticles",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputParticles",
+            "objectClassName": "SetOfParticles",
+            "missingParentOutputName": "outputParticles",
         }
     ]
