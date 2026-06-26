@@ -1011,21 +1011,21 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
     assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == [
         {
             "protocolId": "11",
-            "inputName": "inputParticles",
-            "itemIndex": 0,
-            "parentProtocolId": "10",
-            "parentOutputName": "wrongOutput",
-            "objectClassName": "SetOfParticles",
-            "missingParentOutputName": "wrongOutput",
-        },
-        {
-            "protocolId": "11",
             "inputName": "inputMask",
             "itemIndex": 0,
             "parentProtocolId": "10",
             "parentOutputName": "outputMask",
             "objectClassName": "VolumeMask",
             "missingParentOutputName": "outputMask",
+        },
+        {
+            "protocolId": "11",
+            "inputName": "inputParticles",
+            "itemIndex": 0,
+            "parentProtocolId": "10",
+            "parentOutputName": "wrongOutput",
+            "objectClassName": "SetOfParticles",
+            "missingParentOutputName": "wrongOutput",
         },
     ]
 
