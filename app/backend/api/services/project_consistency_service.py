@@ -1013,6 +1013,7 @@ class ProjectConsistencyService:
 
         flatSetOutputsWithIncompletePayload = []
         treeOutputsWithIncompletePayload = []
+        flatSetItemsCountMismatches = []
 
         for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
             outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
@@ -1043,6 +1044,26 @@ class ProjectConsistencyService:
                             )
                         )
 
+                    propertiesItemsCount = self.toOptionalInt(payload.get("itemsCount"))
+                    itemsTableCount = self.toOptionalInt(payload.get("itemsTableCount"))
+
+                    if (
+                            propertiesItemsCount is not None
+                            and itemsTableCount is not None
+                            and propertiesItemsCount != itemsTableCount
+                    ):
+                        flatSetItemsCountMismatches.append({
+                            "protocolId": self.normalizeProtocolId(protocolId),
+                            "outputName": str(outputName),
+                            "mapperKind": mapperKind,
+                            "className": payload.get("className"),
+                            "setId": payload.get("setId"),
+                            "rootObjectId": payload.get("rootObjectId"),
+                            "itemsCount": propertiesItemsCount,
+                            "itemsTableCount": itemsTableCount,
+                            "itemClassName": payload.get("itemClassName"),
+                        })
+
                 elif mapperKind == "tree":
                     missingFields = []
 
@@ -1064,6 +1085,7 @@ class ProjectConsistencyService:
         return {
             "postgresqlFlatSetOutputsWithIncompletePayload": flatSetOutputsWithIncompletePayload,
             "postgresqlTreeOutputsWithIncompletePayload": treeOutputsWithIncompletePayload,
+            "postgresqlFlatSetItemsCountMismatches": flatSetItemsCountMismatches,
         }
 
     def compareSteps(self,
@@ -1383,6 +1405,10 @@ class ProjectConsistencyService:
             postgresqlInputRefTargetComparison["postgresqlInputRefsWithMissingParentOutputs"]
         )
 
+        postgresqlFlatSetItemsCountMismatches = (
+            outputPayloadComparison["postgresqlFlatSetItemsCountMismatches"]
+        )
+
         return {
             "missingProtocols": [
                 {
@@ -1429,6 +1455,7 @@ class ProjectConsistencyService:
             "outputItemsCountMismatches": outputItemsCountMismatches,
             "postgresqlFlatSetOutputsWithIncompletePayload": postgresqlFlatSetOutputsWithIncompletePayload,
             "postgresqlTreeOutputsWithIncompletePayload": postgresqlTreeOutputsWithIncompletePayload,
+            "postgresqlFlatSetItemsCountMismatches": postgresqlFlatSetItemsCountMismatches,
             "missingSteps": [
                 self.buildStep(
                     protocolId,
