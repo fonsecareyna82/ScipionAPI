@@ -185,6 +185,33 @@ class ProjectConsistencyService:
             .get("className"),
         }
 
+    def buildPostgresqlOutputPayloadIssue(
+            self,
+            protocolId: Any,
+            outputName: Any,
+            payload: Dict[str, Any],
+            missingFields: List[str],
+    ) -> Dict[str, Any]:
+        issue = {
+            "protocolId": self.normalizeProtocolId(protocolId),
+            "outputName": str(outputName),
+            "mapperKind": payload.get("mapperKind"),
+            "className": payload.get("className"),
+            "missingFields": list(missingFields),
+        }
+
+        for fieldName in (
+                "setId",
+                "rootObjectId",
+                "scipionObjId",
+                "itemsCount",
+                "itemClassName",
+        ):
+            if fieldName in payload:
+                issue[fieldName] = payload.get(fieldName)
+
+        return issue
+
     def expectedOutputMapperKind(self, className: Any) -> Optional[str]:
         classNameText = self.normalizeOptionalText(className)
         if classNameText is None:
@@ -978,6 +1005,67 @@ class ProjectConsistencyService:
             "outputItemsCountMismatches": outputItemsCountMismatches,
         }
 
+    def comparePostgresqlOutputPayloads(
+            self,
+            postgresqlSnapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
+
+        flatSetOutputsWithIncompletePayload = []
+        treeOutputsWithIncompletePayload = []
+
+        for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
+            outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
+
+            for outputName in sorted(outputsByName.keys()):
+                payload = outputsByName.get(outputName, {})
+                mapperKind = payload.get("mapperKind")
+
+                if mapperKind == "flat_set":
+                    missingFields = []
+
+                    if payload.get("setId") in (None, ""):
+                        missingFields.append("setId")
+                    if payload.get("rootObjectId") in (None, ""):
+                        missingFields.append("rootObjectId")
+                    if self.normalizeOptionalText(payload.get("className")) is None:
+                        missingFields.append("className")
+                    if payload.get("itemsCount") is None:
+                        missingFields.append("itemsCount")
+
+                    if missingFields:
+                        flatSetOutputsWithIncompletePayload.append(
+                            self.buildPostgresqlOutputPayloadIssue(
+                                protocolId=protocolId,
+                                outputName=outputName,
+                                payload=payload,
+                                missingFields=missingFields,
+                            )
+                        )
+
+                elif mapperKind == "tree":
+                    missingFields = []
+
+                    if payload.get("rootObjectId") in (None, ""):
+                        missingFields.append("rootObjectId")
+                    if self.normalizeOptionalText(payload.get("className")) is None:
+                        missingFields.append("className")
+
+                    if missingFields:
+                        treeOutputsWithIncompletePayload.append(
+                            self.buildPostgresqlOutputPayloadIssue(
+                                protocolId=protocolId,
+                                outputName=outputName,
+                                payload=payload,
+                                missingFields=missingFields,
+                            )
+                        )
+
+        return {
+            "postgresqlFlatSetOutputsWithIncompletePayload": flatSetOutputsWithIncompletePayload,
+            "postgresqlTreeOutputsWithIncompletePayload": treeOutputsWithIncompletePayload,
+        }
+
     def compareSteps(
             self,
             runtimeSnapshot: Dict[str, Any],
@@ -1234,6 +1322,7 @@ class ProjectConsistencyService:
             protocolComparison: Dict[str, Any],
             dependencyComparison: Dict[str, Any],
             outputComparison: Dict[str, Any],
+            outputPayloadComparison: Dict[str, Any],
             stepComparison: Dict[str, Any],
             paramComparison: Dict[str, Any],
             inputRefComparison: Dict[str, Any],
@@ -1265,6 +1354,13 @@ class ProjectConsistencyService:
         outputClassMismatches = outputComparison["outputClassMismatches"]
         outputMapperKindMismatches = outputComparison["outputMapperKindMismatches"]
         outputItemsCountMismatches = outputComparison["outputItemsCountMismatches"]
+
+        postgresqlFlatSetOutputsWithIncompletePayload = (
+            outputPayloadComparison["postgresqlFlatSetOutputsWithIncompletePayload"]
+        )
+        postgresqlTreeOutputsWithIncompletePayload = (
+            outputPayloadComparison["postgresqlTreeOutputsWithIncompletePayload"]
+        )
 
         missingSteps = stepComparison["missingSteps"]
         extraSteps = stepComparison["extraSteps"]
@@ -1333,6 +1429,8 @@ class ProjectConsistencyService:
             "outputClassMismatches": outputClassMismatches,
             "outputMapperKindMismatches": outputMapperKindMismatches,
             "outputItemsCountMismatches": outputItemsCountMismatches,
+            "postgresqlFlatSetOutputsWithIncompletePayload": postgresqlFlatSetOutputsWithIncompletePayload,
+            "postgresqlTreeOutputsWithIncompletePayload": postgresqlTreeOutputsWithIncompletePayload,
             "missingSteps": [
                 self.buildStep(
                     protocolId,
@@ -1436,6 +1534,10 @@ class ProjectConsistencyService:
             derivedSets=derivedSets,
         )
 
+        outputPayloadComparison = self.comparePostgresqlOutputPayloads(
+            postgresqlSnapshot=postgresqlSnapshot,
+        )
+
         stepComparison = self.compareSteps(
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
@@ -1474,6 +1576,7 @@ class ProjectConsistencyService:
             "inputRefComparison": inputRefComparison,
             "inputRefDependencyComparison": inputRefDependencyComparison,
             "postgresqlInputRefTargetComparison": postgresqlInputRefTargetComparison,
+            "outputPayloadComparison": outputPayloadComparison,
         }
 
     def validateProjectPostgresqlConsistency(
