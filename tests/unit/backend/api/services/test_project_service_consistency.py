@@ -258,13 +258,14 @@ def makeSetRow(
         propertiesPayloadCount=None,
         setPropertiesCount=None,
         protocolDbId=1000,
-        rootObjectDbId=None,
+        rootObjectDbId=True,
         rootObjectProjectId=1,
         rootObjectProtocolDbId=None,
         rootObjectParentObjectId=None,
         rootObjectName=None,
         rootObjectPath=None,
         rootObjectClassName=None,
+        rootObjectMissing=False,
 ):
     defaultColumnsSignature = [
         {
@@ -377,21 +378,32 @@ def makeSetRow(
         else setPropertiesCount
     )
 
-    resolvedRootObjectDbId = (
-        200 if rootObjectDbId is None else rootObjectDbId
-    )
-    resolvedRootObjectProtocolDbId = (
-        protocolDbId if rootObjectProtocolDbId is None else rootObjectProtocolDbId
-    )
-    resolvedRootObjectName = (
-        outputName if rootObjectName is None else rootObjectName
-    )
-    resolvedRootObjectPath = (
-        outputName if rootObjectPath is None else rootObjectPath
-    )
-    resolvedRootObjectClassName = (
-        setClassName if rootObjectClassName is None else rootObjectClassName
-    )
+    if rootObjectMissing:
+        resolvedRootObjectDbId = None
+        resolvedRootObjectProjectId = None
+        resolvedRootObjectProtocolDbId = None
+        resolvedRootObjectParentObjectId = None
+        resolvedRootObjectName = None
+        resolvedRootObjectPath = None
+        resolvedRootObjectClassName = None
+    else:
+        resolvedRootObjectDbId = (
+            200 if rootObjectDbId is None else rootObjectDbId
+        )
+        resolvedRootObjectProjectId = rootObjectProjectId
+        resolvedRootObjectProtocolDbId = (
+            protocolDbId if rootObjectProtocolDbId is None else rootObjectProtocolDbId
+        )
+        resolvedRootObjectParentObjectId = rootObjectParentObjectId
+        resolvedRootObjectName = (
+            outputName if rootObjectName is None else rootObjectName
+        )
+        resolvedRootObjectPath = (
+            outputName if rootObjectPath is None else rootObjectPath
+        )
+        resolvedRootObjectClassName = (
+            setClassName if rootObjectClassName is None else rootObjectClassName
+        )
 
     return {
         "protocolId": str(protocolId),
@@ -427,9 +439,9 @@ def makeSetRow(
         "setPropertiesSignature": resolvedSetPropertiesSignature,
         "protocolDbId": protocolDbId,
         "rootObjectDbId": resolvedRootObjectDbId,
-        "rootObjectProjectId": rootObjectProjectId,
+        "rootObjectProjectId": resolvedRootObjectProjectId,
         "rootObjectProtocolDbId": resolvedRootObjectProtocolDbId,
-        "rootObjectParentObjectId": rootObjectParentObjectId,
+        "rootObjectParentObjectId": resolvedRootObjectParentObjectId,
         "rootObjectName": resolvedRootObjectName,
         "rootObjectPath": resolvedRootObjectPath,
         "rootObjectClassName": resolvedRootObjectClassName,
@@ -2918,6 +2930,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsFlatSetRootObjectMismatches(
         }
     ]
 
+
 def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
     service,
     monkeypatch,
@@ -2964,7 +2977,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
                 itemsTableCount=3,
                 maxItemId=30,
                 maxItemIdFromItems=30,
-                rootObjectDbId=200,
+                rootObjectDbId=True,
             ),
         ],
     )
@@ -2990,12 +3003,12 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
             "fields": ["rootObjectMissing"],
             "protocolDbId": 1000,
             "rootObjectDbId": None,
-            "rootObjectProjectId": 1,
-            "rootObjectProtocolDbId": 1000,
+            "rootObjectProjectId": None,
+            "rootObjectProtocolDbId": None,
             "rootObjectParentObjectId": None,
-            "rootObjectName": "outputParticles",
-            "rootObjectPath": "outputParticles",
-            "rootObjectClassName": "SetOfParticles",
+            "rootObjectName": None,
+            "rootObjectPath": None,
+            "rootObjectClassName": None,
             "itemClassName": "Particle",
         }
     ]
