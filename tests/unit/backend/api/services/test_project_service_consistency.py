@@ -249,6 +249,8 @@ def makeSetRow(
         rootTableColumnsCount=None,
         setColumnsSignature=None,
         rootTableColumnsSignature=None,
+        itemsIdSignature="items-1-2-3",
+        rootTableItemsIdSignature=None,
 ):
     resolvedItemsTableCount = (
         itemsCount if itemsTableCount is None else itemsTableCount
@@ -261,12 +263,18 @@ def makeSetRow(
         columnsCount if setColumnsCount is None else setColumnsCount
     )
 
+    resolvedRootTableItemsIdSignature = (
+        itemsIdSignature
+        if rootTableItemsIdSignature is None
+        else rootTableItemsIdSignature
+    )
+
     if rootTablesCount == 0:
         resolvedRootTableId = None
         resolvedRootTableItemsCount = 0
         resolvedRootTableMaxItemId = None
         resolvedRootTableColumnsCount = 0
-        resolvedRootTableColumnsSignature = []
+        resolvedRootTableColumnsSignature = None
     else:
         resolvedRootTableId = rootTableId
         resolvedRootTableItemsCount = (
@@ -334,6 +342,8 @@ def makeSetRow(
         "updatedAt": None,
         "setColumnsSignature": resolvedSetColumnsSignature,
         "rootTableColumnsSignature": resolvedRootTableColumnsSignature,
+        "itemsIdSignature": itemsIdSignature,
+        "rootTableItemsIdSignature": resolvedRootTableItemsIdSignature,
     }
 
 
@@ -2454,3 +2464,90 @@ def test_ValidateProjectPostgresqlConsistencyReportsRootTableColumnSchemaMismatc
         }
     ]
 
+
+def test_ValidateProjectPostgresqlConsistencyReportsRootTableItemsIdSignatureMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                rootTablesCount=1,
+                rootTableId=500,
+                rootTableItemsCount=3,
+                rootTableMaxItemId=30,
+                itemsIdSignature="items-10-20-30",
+                rootTableItemsIdSignature="items-10-25-30",
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "rootTableId": 500,
+            "fields": ["rootTableItemsIdSignature"],
+            "rootTablesCount": 1,
+            "itemsTableCount": 3,
+            "rootTableItemsCount": 3,
+            "maxItemIdFromItems": 30,
+            "rootTableMaxItemId": 30,
+            "setColumnsCount": 2,
+            "rootTableColumnsCount": 2,
+            "itemsIdSignature": "items-10-20-30",
+            "rootTableItemsIdSignature": "items-10-25-30",
+            "itemClassName": "Particle",
+        }
+    ]
