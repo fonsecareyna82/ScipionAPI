@@ -564,7 +564,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlTreeOutputsWithIncompletePayload": [],
         "postgresqlFlatSetItemsCountMismatches": [],
         "postgresqlFlatSetRootTableMismatches": [],
-
+        "postgresqlFlatSetColumnsCountMismatches": [],
     }
 
 

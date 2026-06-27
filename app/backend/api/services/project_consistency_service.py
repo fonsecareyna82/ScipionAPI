@@ -1613,7 +1613,7 @@ class ProjectConsistencyService:
             ],
             "paramValueMismatches": paramValueMismatches,
             "postgresqlFlatSetMaxItemIdMismatches": postgresqlFlatSetMaxItemIdMismatches,
-            "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
+            "postgresqlFlatSetColumnsCountMismatches": postgresqlFlatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
         }
 
