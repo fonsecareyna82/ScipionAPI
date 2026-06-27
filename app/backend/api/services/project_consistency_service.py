@@ -1111,6 +1111,7 @@ class ProjectConsistencyService:
                     rootTableId = self.toOptionalInt(payload.get("rootTableId"))
                     rootTableItemsCount = self.toOptionalInt(payload.get("rootTableItemsCount"))
                     rootTableMaxItemId = self.toOptionalInt(payload.get("rootTableMaxItemId"))
+                    rootTableColumnsCount = self.toOptionalInt(payload.get("rootTableColumnsCount"))
 
                     changedFields = []
 
@@ -1134,6 +1135,13 @@ class ProjectConsistencyService:
                             ):
                                 changedFields.append("rootTableMaxItemId")
 
+                            if (
+                                    setColumnsCount is not None
+                                    and rootTableColumnsCount is not None
+                                    and setColumnsCount != rootTableColumnsCount
+                            ):
+                                changedFields.append("rootTableColumnsCount")
+
                     if changedFields:
                         flatSetRootTableMismatches.append({
                             "protocolId": self.normalizeProtocolId(protocolId),
@@ -1149,6 +1157,8 @@ class ProjectConsistencyService:
                             "rootTableItemsCount": rootTableItemsCount,
                             "maxItemIdFromItems": maxItemIdFromItems,
                             "rootTableMaxItemId": rootTableMaxItemId,
+                            "setColumnsCount": setColumnsCount,
+                            "rootTableColumnsCount": rootTableColumnsCount,
                             "itemClassName": payload.get("itemClassName"),
                         })
 
