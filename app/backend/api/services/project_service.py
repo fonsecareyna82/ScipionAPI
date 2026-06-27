@@ -1868,7 +1868,16 @@ class ProjectService:
 
         return {"success": True}
 
-    def getProjectById(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser, refresh=True, checkPid=True) -> Optional[dict]:
+    def getProjectById(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser,
+            refresh=True,
+            checkPid=True,
+            validateConsistency: bool = False,
+            failOnConsistencyError: bool = False,
+    ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
         dbProj = mapper.getProject(projectId=projectId, userId=userId)
@@ -1878,7 +1887,48 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        return self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
+        project = self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
+
+        if validateConsistency:
+            try:
+                from app.backend.api.services.project_consistency_service import (
+                    ProjectConsistencyService,
+                )
+
+                consistencyService = ProjectConsistencyService(self)
+                project["postgresqlConsistency"] = (
+                    consistencyService.validateProjectPostgresqlConsistency(
+                        mapper=mapper,
+                        projectId=projectId,
+                        currentUser=currentUser,
+                        refresh=refresh,
+                        checkPid=checkPid,
+                    )
+                )
+            except HTTPException:
+                if failOnConsistencyError:
+                    raise
+                logger.exception(
+                    "PostgreSQL consistency validation failed. projectId=%s",
+                    projectId,
+                )
+                project["postgresqlConsistency"] = {
+                    "ok": False,
+                    "error": "PostgreSQL consistency validation failed",
+                }
+            except Exception as e:
+                if failOnConsistencyError:
+                    raise
+                logger.exception(
+                    "PostgreSQL consistency validation failed. projectId=%s",
+                    projectId,
+                )
+                project["postgresqlConsistency"] = {
+                    "ok": False,
+                    "error": str(e),
+                }
+
+        return project
 
     def getProjectEffectiveSettings(
             self,
@@ -1998,6 +2048,117 @@ class ProjectService:
 
         return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
 
+    def _loadPersistedOutputSummariesByProtocolId(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        def toOptionalInt(value: Any) -> Optional[int]:
+            if value is None or value == "":
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+             WHERE s."projectId" = %s
+             ORDER BY p."protocolId", s."outputName"
+            """,
+            (projectId,),
+        )
+
+        for row in setRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("outputName") or "")
+            if not protocolId or not outputName:
+                continue
+
+            properties = row.get("properties") or {}
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "flat_set",
+                "setId": row.get("id"),
+                "rootObjectId": row.get("objectId"),
+                "className": row.get("setClassName"),
+                "itemClassName": row.get("itemClassName"),
+                "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
+                "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
+                "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
+                "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                o.id,
+                o."scipionObjId",
+                o.name,
+                o.path,
+                o."className",
+                o.value,
+                o.label,
+                o.comment,
+                o.metadata,
+                o."createdAt",
+                o."updatedAt"
+              FROM scipion_objects o
+              JOIN protocols p
+                ON p.id = o."protocolDbId"
+             WHERE o."projectId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+             ORDER BY p."protocolId", o.path
+            """,
+            (projectId,),
+        )
+
+        for row in treeRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("path") or row.get("name") or "")
+            if not protocolId or not outputName:
+                continue
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "tree",
+                "rootObjectId": row.get("id"),
+                "scipionObjId": row.get("scipionObjId"),
+                "className": row.get("className"),
+                "value": row.get("value"),
+                "label": row.get("label"),
+                "comment": row.get("comment"),
+                "metadata": row.get("metadata") or {},
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        return result
+
     def _loadPersistedOutputsByProtocolId(
             self,
             mapper: PostgresqlFlatMapper,
@@ -2057,29 +2218,35 @@ class ProjectService:
               LEFT JOIN scipion_objects root_object
                 ON root_object.id = s."objectId"
               LEFT JOIN (
-                SELECT
-                  "setId",
-                  COUNT(*)::int AS "itemsTableCount",
-                  MAX("scipionItemId")::int AS "maxItemIdFromItems",
-                  md5(string_agg("scipionItemId"::text, ',' ORDER BY "scipionItemId")) AS "itemsIdSignature",
-                  md5(
-                      string_agg(
-                          jsonb_build_object(
-                              'scipionItemId', "scipionItemId",
-                              'enabled', enabled,
-                              'label', label,
-                              'comment', comment,
-                              'creation', creation,
-                              'values', "values"
-                          )::text,
-                          ','
-                          ORDER BY "scipionItemId"
-                      )
-                  ) AS "itemsValueSignature"
-                FROM scipion_set_items
-               GROUP BY "setId"
-            ) items_stats
-              ON items_stats."setId" = s.id
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "itemsTableCount",
+                      MAX("scipionItemId")::int AS "maxItemIdFromItems",
+                      md5(
+                          string_agg(
+                              "scipionItemId"::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', "scipionItemId",
+                                  'enabled', enabled,
+                                  'label', label,
+                                  'comment', comment,
+                                  'creation', creation,
+                                  'values', "values"
+                              )::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsValueSignature"
+                    FROM scipion_set_items
+                   GROUP BY "setId"
+              ) items_stats
+                ON items_stats."setId" = s.id
               LEFT JOIN (
                   SELECT
                       "setId",
@@ -2097,38 +2264,43 @@ class ProjectService:
                       ) AS "setColumnsSignature"
                     FROM scipion_set_columns
                    GROUP BY "setId"
-            ) columns_stats
-              ON columns_stats."setId" = s.id  
+              ) columns_stats
+                ON columns_stats."setId" = s.id
               LEFT JOIN (
-                    SELECT
-                        t."setId",
-                        COUNT(DISTINCT t.id)::int AS "rootTablesCount",
-                        MIN(t.id)::int AS "rootTableId",
-                        COUNT(ti.id)::int AS "rootTableItemsCount",
-                        MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
-                        md5(string_agg(ti."scipionItemId"::text, ',' ORDER BY ti."scipionItemId"))
-                            FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsIdSignature",
-                        md5(
-                            string_agg(
-                                jsonb_build_object(
-                                    'scipionItemId', ti."scipionItemId",
-                                    'enabled', ti.enabled,
-                                    'label', ti.label,
-                                    'comment', ti.comment,
-                                    'creation', ti.creation,
-                                    'values', ti."values"
-                                )::text,
-                                ','
-                                ORDER BY ti."scipionItemId"
-                            )
-                        ) FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsValueSignature"
-                      FROM scipion_set_tables t
-                      LEFT JOIN scipion_set_table_items ti
-                        ON ti."tableId" = t.id
-                     WHERE t."tableKind" = 'root'
-                     GROUP BY t."setId"
-                ) root_table_stats
-                  ON root_table_stats."setId" = s.id
+                  SELECT
+                      t."setId",
+                      COUNT(DISTINCT t.id)::int AS "rootTablesCount",
+                      MIN(t.id)::int AS "rootTableId",
+                      COUNT(ti.id)::int AS "rootTableItemsCount",
+                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
+                      md5(
+                          string_agg(
+                              ti."scipionItemId"::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', ti."scipionItemId",
+                                  'enabled', ti.enabled,
+                                  'label', ti.label,
+                                  'comment', ti.comment,
+                                  'creation', ti.creation,
+                                  'values', ti."values"
+                              )::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsValueSignature"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_items ti
+                      ON ti."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_stats
+                ON root_table_stats."setId" = s.id
               LEFT JOIN (
                   SELECT
                       t."setId",
@@ -2173,26 +2345,26 @@ class ProjectService:
                    GROUP BY s2.id
               ) properties_payload_stats
                 ON properties_payload_stats."setId" = s.id
-            LEFT JOIN (
-                SELECT
-                    "setId",
-                    COUNT(*)::int AS "setPropertiesCount",
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'key', key,
-                            'value', value
-                        )
-                        ORDER BY key ASC
-                    ) AS "setPropertiesSignature"
-                  FROM scipion_set_properties
-                 WHERE key IN (
-                     'columnsCount',
-                     'itemsCount',
-                     'nestedTablesVersion'
-                 )
-                 GROUP BY "setId"
-            ) set_properties_stats
-              ON set_properties_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setPropertiesCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', key,
+                              'value', value
+                          )
+                          ORDER BY key ASC
+                      ) AS "setPropertiesSignature"
+                    FROM scipion_set_properties
+                   WHERE key IN (
+                       'columnsCount',
+                       'itemsCount',
+                       'nestedTablesVersion'
+                   )
+                   GROUP BY "setId"
+              ) set_properties_stats
+                ON set_properties_stats."setId" = s.id
              WHERE s."projectId" = %s
              ORDER BY p."protocolId", s."outputName"
             """,
@@ -2715,7 +2887,7 @@ class ProjectService:
         persistedOutputsByProtocolId = {}
         if mapper is not None:
             try:
-                persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
+                persistedOutputsByProtocolId = self._loadPersistedOutputSummariesByProtocolId(
                     mapper,
                     dbProj['id'],
                 )
