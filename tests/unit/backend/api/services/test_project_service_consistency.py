@@ -253,6 +253,10 @@ def makeSetRow(
         rootTableItemsIdSignature=None,
         itemsValueSignature="values-1-2-3",
         rootTableItemsValueSignature=None,
+        propertiesPayloadSignature=None,
+        setPropertiesSignature=None,
+        propertiesPayloadCount=None,
+        setPropertiesCount=None,
 ):
     defaultColumnsSignature = [
         {
@@ -329,6 +333,42 @@ def makeSetRow(
             else rootTableItemsValueSignature
         )
 
+    defaultPropertiesSignature = [
+        {
+            "key": "columnsCount",
+            "value": str(columnsCount),
+        },
+        {
+            "key": "itemsCount",
+            "value": str(itemsCount),
+        },
+        {
+            "key": "nestedTablesVersion",
+            "value": "14",
+        },
+    ]
+
+    resolvedPropertiesPayloadSignature = (
+        defaultPropertiesSignature
+        if propertiesPayloadSignature is None
+        else propertiesPayloadSignature
+    )
+    resolvedSetPropertiesSignature = (
+        resolvedPropertiesPayloadSignature
+        if setPropertiesSignature is None
+        else setPropertiesSignature
+    )
+    resolvedPropertiesPayloadCount = (
+        len(resolvedPropertiesPayloadSignature)
+        if propertiesPayloadCount is None
+        else propertiesPayloadCount
+    )
+    resolvedSetPropertiesCount = (
+        len(resolvedSetPropertiesSignature)
+        if setPropertiesCount is None
+        else setPropertiesCount
+    )
+
     return {
         "protocolId": str(protocolId),
         "id": 100,
@@ -357,6 +397,10 @@ def makeSetRow(
         "updatedAt": None,
         "itemsValueSignature": itemsValueSignature,
         "rootTableItemsValueSignature": resolvedRootTableItemsValueSignature,
+        "propertiesPayloadCount": resolvedPropertiesPayloadCount,
+        "propertiesPayloadSignature": resolvedPropertiesPayloadSignature,
+        "setPropertiesCount": resolvedSetPropertiesCount,
+        "setPropertiesSignature": resolvedSetPropertiesSignature,
     }
 
 
@@ -496,6 +540,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlFlatSetItemsCountMismatches": [],
         "postgresqlFlatSetRootTableMismatches": [],
         "postgresqlFlatSetColumnsCountMismatches": [],
+        "postgresqlFlatSetPropertiesMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -626,6 +671,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlFlatSetItemsCountMismatches": [],
         "postgresqlFlatSetRootTableMismatches": [],
         "postgresqlFlatSetColumnsCountMismatches": [],
+        "postgresqlFlatSetPropertiesMismatches": [],
     }
 
 
@@ -2650,6 +2696,112 @@ def test_ValidateProjectPostgresqlConsistencyReportsRootTableItemsValueSignature
             "rootTableColumnsCount": 2,
             "itemsValueSignature": "values-original",
             "rootTableItemsValueSignature": "values-corrupted",
+            "itemClassName": "Particle",
+        }
+    ]
+
+def test_ValidateProjectPostgresqlConsistencyReportsFlatSetPropertiesMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    propertiesPayloadSignature = [
+        {
+            "key": "columnsCount",
+            "value": "2",
+        },
+        {
+            "key": "itemsCount",
+            "value": "3",
+        },
+        {
+            "key": "nestedTablesVersion",
+            "value": "14",
+        },
+    ]
+    setPropertiesSignature = [
+        {
+            "key": "columnsCount",
+            "value": "2",
+        },
+        {
+            "key": "itemsCount",
+            "value": "4",
+        },
+        {
+            "key": "nestedTablesVersion",
+            "value": "14",
+        },
+    ]
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                propertiesPayloadSignature=propertiesPayloadSignature,
+                setPropertiesSignature=setPropertiesSignature,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetPropertiesMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "fields": ["setPropertiesSignature"],
+            "propertiesPayloadCount": 3,
+            "setPropertiesCount": 3,
+            "propertiesPayloadSignature": propertiesPayloadSignature,
+            "setPropertiesSignature": setPropertiesSignature,
             "itemClassName": "Particle",
         }
     ]

@@ -1017,6 +1017,7 @@ class ProjectConsistencyService:
         flatSetMaxItemIdMismatches = []
         flatSetRootTableMismatches = []
         flatSetColumnsCountMismatches = []
+        flatSetPropertiesMismatches = []
 
         for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
             outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
@@ -1106,6 +1107,43 @@ class ProjectConsistencyService:
                             "rootObjectId": payload.get("rootObjectId"),
                             "columnsCount": propertiesColumnsCount,
                             "setColumnsCount": setColumnsCount,
+                            "itemClassName": payload.get("itemClassName"),
+                        })
+
+                    propertiesPayloadCount = self.toOptionalInt(payload.get("propertiesPayloadCount"))
+                    setPropertiesCount = self.toOptionalInt(payload.get("setPropertiesCount"))
+                    propertiesPayloadSignature = payload.get("propertiesPayloadSignature") or []
+                    setPropertiesSignature = payload.get("setPropertiesSignature") or []
+
+                    propertiesChangedFields = []
+
+                    if (
+                            propertiesPayloadCount is not None
+                            and setPropertiesCount is not None
+                            and propertiesPayloadCount != setPropertiesCount
+                    ):
+                        propertiesChangedFields.append("setPropertiesCount")
+
+                    if (
+                            propertiesPayloadSignature
+                            and setPropertiesSignature
+                            and propertiesPayloadSignature != setPropertiesSignature
+                    ):
+                        propertiesChangedFields.append("setPropertiesSignature")
+
+                    if propertiesChangedFields:
+                        flatSetPropertiesMismatches.append({
+                            "protocolId": self.normalizeProtocolId(protocolId),
+                            "outputName": str(outputName),
+                            "mapperKind": mapperKind,
+                            "className": payload.get("className"),
+                            "setId": payload.get("setId"),
+                            "rootObjectId": payload.get("rootObjectId"),
+                            "fields": propertiesChangedFields,
+                            "propertiesPayloadCount": propertiesPayloadCount,
+                            "setPropertiesCount": setPropertiesCount,
+                            "propertiesPayloadSignature": propertiesPayloadSignature,
+                            "setPropertiesSignature": setPropertiesSignature,
                             "itemClassName": payload.get("itemClassName"),
                         })
 
@@ -1230,6 +1268,7 @@ class ProjectConsistencyService:
             "postgresqlFlatSetMaxItemIdMismatches": flatSetMaxItemIdMismatches,
             "postgresqlFlatSetColumnsCountMismatches": flatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": flatSetRootTableMismatches,
+            "postgresqlFlatSetPropertiesMismatches": flatSetPropertiesMismatches,
         }
 
     def compareSteps(self,
@@ -1526,6 +1565,10 @@ class ProjectConsistencyService:
             outputPayloadComparison["postgresqlTreeOutputsWithIncompletePayload"]
         )
 
+        postgresqlFlatSetPropertiesMismatches = (
+            outputPayloadComparison["postgresqlFlatSetPropertiesMismatches"]
+        )
+
         missingSteps = stepComparison["missingSteps"]
         extraSteps = stepComparison["extraSteps"]
         stepMismatches = stepComparison["stepMismatches"]
@@ -1668,6 +1711,7 @@ class ProjectConsistencyService:
             "postgresqlFlatSetMaxItemIdMismatches": postgresqlFlatSetMaxItemIdMismatches,
             "postgresqlFlatSetColumnsCountMismatches": postgresqlFlatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
+            "postgresqlFlatSetPropertiesMismatches": postgresqlFlatSetPropertiesMismatches,
         }
 
     def buildSummary(
