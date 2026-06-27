@@ -156,12 +156,20 @@ def importProject(
 
 @router.get("/{projectId}", response_model=Any)
 def getProject(
-    projectId: int,  # id in the DB
+    projectId: int,
+    validateConsistency: bool = Query(False),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=True)
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=validateConsistency,
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
