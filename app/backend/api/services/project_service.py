@@ -2026,11 +2026,13 @@ class ProjectService:
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
                 COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
+                columns_stats."setColumnsSignature" AS "setColumnsSignature",
                 COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
                 root_table_stats."rootTableId" AS "rootTableId",
                 COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
                 root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
                 COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
+                root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
                 s."createdAt",
                 s."updatedAt"
               FROM scipion_sets s
@@ -2046,13 +2048,24 @@ class ProjectService:
               ) items_stats
                 ON items_stats."setId" = s.id
               LEFT JOIN (
-                    SELECT
-                        "setId",
-                        COUNT(*)::int AS "setColumnsCount"
-                      FROM scipion_set_columns
-                     GROUP BY "setId"
-                ) columns_stats
-                  ON columns_stats."setId" = s.id  
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', "labelProperty",
+                              'columnName', "columnName",
+                              'className', "className",
+                              'valueType', "valueType",
+                              'position', position,
+                              'indexed', indexed
+                          )
+                          ORDER BY position ASC, "labelProperty" ASC
+                      ) AS "setColumnsSignature"
+                    FROM scipion_set_columns
+                   GROUP BY "setId"
+            ) columns_stats
+              ON columns_stats."setId" = s.id  
               LEFT JOIN (
                   SELECT
                       t."setId",
@@ -2070,7 +2083,18 @@ class ProjectService:
               LEFT JOIN (
                   SELECT
                       t."setId",
-                      COUNT(tc.id)::int AS "rootTableColumnsCount"
+                      COUNT(tc.id)::int AS "rootTableColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', tc."labelProperty",
+                              'columnName', tc."columnName",
+                              'className', tc."className",
+                              'valueType', tc."valueType",
+                              'position', tc.position,
+                              'indexed', tc.indexed
+                          )
+                          ORDER BY tc.position ASC, tc."labelProperty" ASC
+                      ) FILTER (WHERE tc.id IS NOT NULL) AS "rootTableColumnsSignature"
                     FROM scipion_set_tables t
                     LEFT JOIN scipion_set_table_columns tc
                       ON tc."tableId" = t.id
@@ -2104,11 +2128,13 @@ class ProjectService:
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
                 "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
                 "setColumnsCount": toOptionalInt(row.get("setColumnsCount")),
+                "setColumnsSignature": row.get("setColumnsSignature") or [],
                 "rootTablesCount": toOptionalInt(row.get("rootTablesCount")),
                 "rootTableId": toOptionalInt(row.get("rootTableId")),
                 "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
                 "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
                 "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
+                "rootTableColumnsSignature": row.get("rootTableColumnsSignature") or [],
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
                 "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
                 "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,

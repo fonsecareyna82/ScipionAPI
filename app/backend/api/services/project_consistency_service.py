@@ -1112,6 +1112,8 @@ class ProjectConsistencyService:
                     rootTableItemsCount = self.toOptionalInt(payload.get("rootTableItemsCount"))
                     rootTableMaxItemId = self.toOptionalInt(payload.get("rootTableMaxItemId"))
                     rootTableColumnsCount = self.toOptionalInt(payload.get("rootTableColumnsCount"))
+                    setColumnsSignature = payload.get("setColumnsSignature") or []
+                    rootTableColumnsSignature = payload.get("rootTableColumnsSignature") or []
 
                     changedFields = []
 
@@ -1142,8 +1144,15 @@ class ProjectConsistencyService:
                             ):
                                 changedFields.append("rootTableColumnsCount")
 
+                            if (
+                                    setColumnsSignature
+                                    and rootTableColumnsSignature
+                                    and setColumnsSignature != rootTableColumnsSignature
+                            ):
+                                changedFields.append("rootTableColumnsSignature")
+
                     if changedFields:
-                        flatSetRootTableMismatches.append({
+                        issue = {
                             "protocolId": self.normalizeProtocolId(protocolId),
                             "outputName": str(outputName),
                             "mapperKind": mapperKind,
@@ -1160,7 +1169,13 @@ class ProjectConsistencyService:
                             "setColumnsCount": setColumnsCount,
                             "rootTableColumnsCount": rootTableColumnsCount,
                             "itemClassName": payload.get("itemClassName"),
-                        })
+                        }
+
+                        if "rootTableColumnsSignature" in changedFields:
+                            issue["setColumnsSignature"] = setColumnsSignature
+                            issue["rootTableColumnsSignature"] = rootTableColumnsSignature
+
+                        flatSetRootTableMismatches.append(issue)
 
                 elif mapperKind == "tree":
                     missingFields = []

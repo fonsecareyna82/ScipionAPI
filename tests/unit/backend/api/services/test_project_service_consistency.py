@@ -247,6 +247,8 @@ def makeSetRow(
         rootTableItemsCount=None,
         rootTableMaxItemId=None,
         rootTableColumnsCount=None,
+        setColumnsSignature=None,
+        rootTableColumnsSignature=None,
 ):
     resolvedItemsTableCount = (
         itemsCount if itemsTableCount is None else itemsTableCount
@@ -264,6 +266,7 @@ def makeSetRow(
         resolvedRootTableItemsCount = 0
         resolvedRootTableMaxItemId = None
         resolvedRootTableColumnsCount = 0
+        resolvedRootTableColumnsSignature = []
     else:
         resolvedRootTableId = rootTableId
         resolvedRootTableItemsCount = (
@@ -282,6 +285,30 @@ def makeSetRow(
             if rootTableColumnsCount is None
             else rootTableColumnsCount
         )
+
+    resolvedSetColumnsSignature = setColumnsSignature or [
+        {
+            "labelProperty": "_id",
+            "columnName": "id",
+            "className": "Integer",
+            "valueType": "int",
+            "position": 0,
+            "indexed": True,
+        },
+        {
+            "labelProperty": "_enabled",
+            "columnName": "enabled",
+            "className": "Boolean",
+            "valueType": "bool",
+            "position": 1,
+            "indexed": False,
+        },
+    ]
+    resolvedRootTableColumnsSignature = (
+        resolvedSetColumnsSignature
+        if rootTableColumnsSignature is None
+        else rootTableColumnsSignature
+    )
 
     return {
         "protocolId": str(protocolId),
@@ -305,6 +332,8 @@ def makeSetRow(
         "rootTableColumnsCount": resolvedRootTableColumnsCount,
         "createdAt": None,
         "updatedAt": None,
+        "setColumnsSignature": resolvedSetColumnsSignature,
+        "rootTableColumnsSignature": resolvedRootTableColumnsSignature,
     }
 
 
@@ -2296,3 +2325,132 @@ def test_ValidateProjectPostgresqlConsistencyReportsRootTableColumnsCountMismatc
     assert result["issues"]["postgresqlFlatSetColumnsCountMismatches"] == []
     assert result["issues"]["postgresqlFlatSetItemsCountMismatches"] == []
     assert result["issues"]["postgresqlFlatSetMaxItemIdMismatches"] == []
+
+def test_ValidateProjectPostgresqlConsistencyReportsRootTableColumnSchemaMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    setColumnsSignature = [
+        {
+            "labelProperty": "_id",
+            "columnName": "id",
+            "className": "Integer",
+            "valueType": "int",
+            "position": 0,
+            "indexed": True,
+        },
+        {
+            "labelProperty": "_enabled",
+            "columnName": "enabled",
+            "className": "Boolean",
+            "valueType": "bool",
+            "position": 1,
+            "indexed": False,
+        },
+    ]
+
+    rootTableColumnsSignature = [
+        {
+            "labelProperty": "_id",
+            "columnName": "id",
+            "className": "Integer",
+            "valueType": "int",
+            "position": 0,
+            "indexed": True,
+        },
+        {
+            "labelProperty": "_enabled",
+            "columnName": "wrong_enabled",
+            "className": "Boolean",
+            "valueType": "bool",
+            "position": 1,
+            "indexed": False,
+        },
+    ]
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                columnsCount=2,
+                setColumnsCount=2,
+                rootTablesCount=1,
+                rootTableId=500,
+                rootTableItemsCount=3,
+                rootTableMaxItemId=30,
+                rootTableColumnsCount=2,
+                setColumnsSignature=setColumnsSignature,
+                rootTableColumnsSignature=rootTableColumnsSignature,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "rootTableId": 500,
+            "fields": ["rootTableColumnsSignature"],
+            "rootTablesCount": 1,
+            "itemsTableCount": 3,
+            "rootTableItemsCount": 3,
+            "maxItemIdFromItems": 30,
+            "rootTableMaxItemId": 30,
+            "setColumnsCount": 2,
+            "rootTableColumnsCount": 2,
+            "setColumnsSignature": setColumnsSignature,
+            "rootTableColumnsSignature": rootTableColumnsSignature,
+            "itemClassName": "Particle",
+        }
+    ]
+
