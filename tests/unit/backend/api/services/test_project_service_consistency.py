@@ -258,7 +258,7 @@ def makeSetRow(
         propertiesPayloadCount=None,
         setPropertiesCount=None,
         protocolDbId=1000,
-        rootObjectDbId=True,
+        rootObjectDbId=None,
         rootObjectProjectId=1,
         rootObjectProtocolDbId=None,
         rootObjectParentObjectId=None,
@@ -2977,7 +2977,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
                 itemsTableCount=3,
                 maxItemId=30,
                 maxItemIdFromItems=30,
-                rootObjectDbId=True,
+                rootObjectMissing=True,
             ),
         ],
     )
