@@ -252,49 +252,7 @@ def makeSetRow(
         itemsIdSignature="items-1-2-3",
         rootTableItemsIdSignature=None,
 ):
-    resolvedItemsTableCount = (
-        itemsCount if itemsTableCount is None else itemsTableCount
-    )
-    resolvedMaxItemIdFromItems = (
-        maxItemId if maxItemIdFromItems is None else maxItemIdFromItems
-    )
-
-    resolvedSetColumnsCount = (
-        columnsCount if setColumnsCount is None else setColumnsCount
-    )
-
-    resolvedRootTableItemsIdSignature = (
-        itemsIdSignature
-        if rootTableItemsIdSignature is None
-        else rootTableItemsIdSignature
-    )
-
-    if rootTablesCount == 0:
-        resolvedRootTableId = None
-        resolvedRootTableItemsCount = 0
-        resolvedRootTableMaxItemId = None
-        resolvedRootTableColumnsCount = 0
-        resolvedRootTableColumnsSignature = None
-    else:
-        resolvedRootTableId = rootTableId
-        resolvedRootTableItemsCount = (
-            resolvedItemsTableCount
-            if rootTableItemsCount is None
-            else rootTableItemsCount
-        )
-        resolvedRootTableMaxItemId = (
-            resolvedMaxItemIdFromItems
-            if rootTableMaxItemId is None
-            else rootTableMaxItemId
-        )
-
-        resolvedRootTableColumnsCount = (
-            resolvedSetColumnsCount
-            if rootTableColumnsCount is None
-            else rootTableColumnsCount
-        )
-
-    resolvedSetColumnsSignature = setColumnsSignature or [
+    defaultColumnsSignature = [
         {
             "labelProperty": "_id",
             "columnName": "id",
@@ -312,11 +270,56 @@ def makeSetRow(
             "indexed": False,
         },
     ]
-    resolvedRootTableColumnsSignature = (
-        resolvedSetColumnsSignature
-        if rootTableColumnsSignature is None
-        else rootTableColumnsSignature
+
+    resolvedItemsTableCount = (
+        itemsCount if itemsTableCount is None else itemsTableCount
     )
+    resolvedMaxItemIdFromItems = (
+        maxItemId if maxItemIdFromItems is None else maxItemIdFromItems
+    )
+    resolvedSetColumnsCount = (
+        columnsCount if setColumnsCount is None else setColumnsCount
+    )
+    resolvedSetColumnsSignature = (
+        defaultColumnsSignature
+        if setColumnsSignature is None
+        else setColumnsSignature
+    )
+
+    if rootTablesCount == 0:
+        resolvedRootTableId = None
+        resolvedRootTableItemsCount = 0
+        resolvedRootTableMaxItemId = None
+        resolvedRootTableColumnsCount = 0
+        resolvedRootTableColumnsSignature = []
+        resolvedRootTableItemsIdSignature = None
+    else:
+        resolvedRootTableId = rootTableId
+        resolvedRootTableItemsCount = (
+            resolvedItemsTableCount
+            if rootTableItemsCount is None
+            else rootTableItemsCount
+        )
+        resolvedRootTableMaxItemId = (
+            resolvedMaxItemIdFromItems
+            if rootTableMaxItemId is None
+            else rootTableMaxItemId
+        )
+        resolvedRootTableColumnsCount = (
+            resolvedSetColumnsCount
+            if rootTableColumnsCount is None
+            else rootTableColumnsCount
+        )
+        resolvedRootTableColumnsSignature = (
+            resolvedSetColumnsSignature
+            if rootTableColumnsSignature is None
+            else rootTableColumnsSignature
+        )
+        resolvedRootTableItemsIdSignature = (
+            itemsIdSignature
+            if rootTableItemsIdSignature is None
+            else rootTableItemsIdSignature
+        )
 
     return {
         "protocolId": str(protocolId),
@@ -332,18 +335,18 @@ def makeSetRow(
         },
         "itemsTableCount": resolvedItemsTableCount,
         "maxItemIdFromItems": resolvedMaxItemIdFromItems,
+        "itemsIdSignature": itemsIdSignature,
         "setColumnsCount": resolvedSetColumnsCount,
+        "setColumnsSignature": resolvedSetColumnsSignature,
         "rootTablesCount": rootTablesCount,
         "rootTableId": resolvedRootTableId,
         "rootTableItemsCount": resolvedRootTableItemsCount,
         "rootTableMaxItemId": resolvedRootTableMaxItemId,
+        "rootTableItemsIdSignature": resolvedRootTableItemsIdSignature,
         "rootTableColumnsCount": resolvedRootTableColumnsCount,
+        "rootTableColumnsSignature": resolvedRootTableColumnsSignature,
         "createdAt": None,
         "updatedAt": None,
-        "setColumnsSignature": resolvedSetColumnsSignature,
-        "rootTableColumnsSignature": resolvedRootTableColumnsSignature,
-        "itemsIdSignature": itemsIdSignature,
-        "rootTableItemsIdSignature": resolvedRootTableItemsIdSignature,
     }
 
 
