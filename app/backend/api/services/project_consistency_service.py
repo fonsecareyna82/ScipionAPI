@@ -1069,6 +1069,7 @@ class ProjectConsistencyService:
 
                     propertiesMaxItemId = self.toOptionalInt(payload.get("maxItemId"))
                     maxItemIdFromItems = self.toOptionalInt(payload.get("maxItemIdFromItems"))
+                    itemsIdSignature = self.normalizeOptionalText(payload.get("itemsIdSignature"))
 
                     if (
                             propertiesMaxItemId is not None
@@ -1114,6 +1115,7 @@ class ProjectConsistencyService:
                     rootTableColumnsCount = self.toOptionalInt(payload.get("rootTableColumnsCount"))
                     setColumnsSignature = payload.get("setColumnsSignature") or []
                     rootTableColumnsSignature = payload.get("rootTableColumnsSignature") or []
+                    rootTableItemsIdSignature = self.normalizeOptionalText(payload.get("rootTableItemsIdSignature"))
 
                     changedFields = []
 
@@ -1136,6 +1138,13 @@ class ProjectConsistencyService:
                                     and maxItemIdFromItems != rootTableMaxItemId
                             ):
                                 changedFields.append("rootTableMaxItemId")
+
+                            if (
+                                    itemsIdSignature is not None
+                                    and rootTableItemsIdSignature is not None
+                                    and itemsIdSignature != rootTableItemsIdSignature
+                            ):
+                                changedFields.append("rootTableItemsIdSignature")
 
                             if (
                                     setColumnsCount is not None
@@ -1170,6 +1179,10 @@ class ProjectConsistencyService:
                             "rootTableColumnsCount": rootTableColumnsCount,
                             "itemClassName": payload.get("itemClassName"),
                         }
+
+                        if "rootTableItemsIdSignature" in changedFields:
+                            issue["itemsIdSignature"] = itemsIdSignature
+                            issue["rootTableItemsIdSignature"] = rootTableItemsIdSignature
 
                         if "rootTableColumnsSignature" in changedFields:
                             issue["setColumnsSignature"] = setColumnsSignature

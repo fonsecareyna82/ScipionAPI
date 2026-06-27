@@ -2025,12 +2025,14 @@ class ProjectService:
                 s.properties,
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
+                items_stats."itemsIdSignature" AS "itemsIdSignature",
                 COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
                 columns_stats."setColumnsSignature" AS "setColumnsSignature",
                 COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
                 root_table_stats."rootTableId" AS "rootTableId",
                 COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
                 root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
+                root_table_stats."rootTableItemsIdSignature" AS "rootTableItemsIdSignature",
                 COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
                 root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
                 s."createdAt",
@@ -2040,11 +2042,12 @@ class ProjectService:
                 ON p.id = s."protocolDbId"
               LEFT JOIN (
                   SELECT
-                      "setId",
-                      COUNT(*)::int AS "itemsTableCount",
-                      MAX("scipionItemId")::int AS "maxItemIdFromItems"
-                    FROM scipion_set_items
-                   GROUP BY "setId"
+                    "setId",
+                    COUNT(*)::int AS "itemsTableCount",
+                    MAX("scipionItemId")::int AS "maxItemIdFromItems",
+                    md5(string_agg("scipionItemId"::text, ',' ORDER BY "scipionItemId")) AS "itemsIdSignature"
+                  FROM scipion_set_items
+                 GROUP BY "setId"
               ) items_stats
                 ON items_stats."setId" = s.id
               LEFT JOIN (
@@ -2072,7 +2075,9 @@ class ProjectService:
                       COUNT(DISTINCT t.id)::int AS "rootTablesCount",
                       MIN(t.id)::int AS "rootTableId",
                       COUNT(ti.id)::int AS "rootTableItemsCount",
-                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId"
+                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
+                      md5(string_agg(ti."scipionItemId"::text, ',' ORDER BY ti."scipionItemId"))
+                          FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsIdSignature"
                     FROM scipion_set_tables t
                     LEFT JOIN scipion_set_table_items ti
                       ON ti."tableId" = t.id
@@ -2125,6 +2130,7 @@ class ProjectService:
                 "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
                 "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
                 "maxItemIdFromItems": toOptionalInt(row.get("maxItemIdFromItems")),
+                "itemsIdSignature": row.get("itemsIdSignature"),
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
                 "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
                 "setColumnsCount": toOptionalInt(row.get("setColumnsCount")),
@@ -2133,6 +2139,7 @@ class ProjectService:
                 "rootTableId": toOptionalInt(row.get("rootTableId")),
                 "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
                 "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
+                "rootTableItemsIdSignature": row.get("rootTableItemsIdSignature"),
                 "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
                 "rootTableColumnsSignature": row.get("rootTableColumnsSignature") or [],
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
