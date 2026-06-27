@@ -1825,6 +1825,7 @@ class ProjectConsistencyService:
             runtimeSnapshot: Dict[str, Any],
             postgresqlSnapshot: Dict[str, Any],
             derivedSets: Dict[str, Any],
+            projectId: Optional[int] = None,
     ) -> Dict[str, Dict[str, Any]]:
         protocolComparison = self.compareProtocols(
             runtimeSnapshot=runtimeSnapshot,
@@ -1845,6 +1846,7 @@ class ProjectConsistencyService:
 
         outputPayloadComparison = self.comparePostgresqlOutputPayloads(
             postgresqlSnapshot=postgresqlSnapshot,
+            projectId=projectId,
         )
 
         stepComparison = self.compareSteps(
@@ -1925,6 +1927,7 @@ class ProjectConsistencyService:
             runtimeSnapshot=runtimeSnapshot,
             postgresqlSnapshot=postgresqlSnapshot,
             derivedSets=derivedSets,
+            projectId=projectId,
         )
 
         issues = self.buildIssues(

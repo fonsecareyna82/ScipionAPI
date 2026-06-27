@@ -743,17 +743,12 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputMismatches(
             "10": {"parents": [], "children": []},
         },
         setRows=[
-            {
-                "protocolId": "10",
-                "id": 100,
-                "objectId": 200,
-                "outputName": "outputParticles",
-                "setClassName": "SetOfParticles",
-                "itemClassName": "Particle",
-                "properties": {"itemsCount": 12},
-                "createdAt": None,
-                "updatedAt": None,
-            }
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=12,
+            ),
         ],
         treeRows=[
             {
@@ -1525,17 +1520,12 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputClassMismatches(
             "10": {"parents": [], "children": []},
         },
         setRows=[
-            {
-                "protocolId": "10",
-                "id": 100,
-                "objectId": 200,
-                "outputName": "outputParticles",
-                "setClassName": "Volume",
-                "itemClassName": "Particle",
-                "properties": {"itemsCount": 12},
-                "createdAt": None,
-                "updatedAt": None,
-            }
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="Volume",
+                itemsCount=12,
+            ),
         ],
     )
 
@@ -1685,19 +1675,12 @@ def test_ValidateProjectPostgresqlConsistencyReportsOutputItemsCountMismatches(
             "10": {"parents": [], "children": []},
         },
         setRows=[
-            {
-                "protocolId": "10",
-                "id": 100,
-                "objectId": 200,
-                "outputName": "outputParticles",
-                "setClassName": "SetOfParticles",
-                "itemClassName": "Particle",
-                "properties": {
-                    "itemsCount": 10,
-                },
-                "createdAt": None,
-                "updatedAt": None,
-            }
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=10,
+            ),
         ],
     )
 
@@ -2981,7 +2964,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
                 itemsTableCount=3,
                 maxItemId=30,
                 maxItemIdFromItems=30,
-                rootObjectDbId=None,
+                rootObjectDbId=200,
             ),
         ],
     )
