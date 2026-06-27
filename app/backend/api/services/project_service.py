@@ -2037,6 +2037,10 @@ class ProjectService:
                 root_table_stats."rootTableItemsValueSignature" AS "rootTableItemsValueSignature",
                 COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
                 root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
+                COALESCE(properties_payload_stats."propertiesPayloadCount", 0) AS "propertiesPayloadCount",
+                properties_payload_stats."propertiesPayloadSignature" AS "propertiesPayloadSignature",
+                COALESCE(set_properties_stats."setPropertiesCount", 0) AS "setPropertiesCount",
+                set_properties_stats."setPropertiesSignature" AS "setPropertiesSignature",
                 s."createdAt",
                 s."updatedAt"
               FROM scipion_sets s
@@ -2137,6 +2141,48 @@ class ProjectService:
                    GROUP BY t."setId"
               ) root_table_columns_stats
                 ON root_table_columns_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      s2.id AS "setId",
+                      COUNT(*)::int AS "propertiesPayloadCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', stable_keys.key,
+                              'value', s2.properties ->> stable_keys.key
+                          )
+                          ORDER BY stable_keys.key ASC
+                      ) AS "propertiesPayloadSignature"
+                    FROM scipion_sets s2
+                    CROSS JOIN (
+                        VALUES
+                            ('columnsCount'),
+                            ('itemsCount'),
+                            ('nestedTablesVersion')
+                    ) AS stable_keys(key)
+                   WHERE s2.properties ? stable_keys.key
+                   GROUP BY s2.id
+              ) properties_payload_stats
+                ON properties_payload_stats."setId" = s.id
+            LEFT JOIN (
+                SELECT
+                    "setId",
+                    COUNT(*)::int AS "setPropertiesCount",
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'key', key,
+                            'value', value
+                        )
+                        ORDER BY key ASC
+                    ) AS "setPropertiesSignature"
+                  FROM scipion_set_properties
+                 WHERE key IN (
+                     'columnsCount',
+                     'itemsCount',
+                     'nestedTablesVersion'
+                 )
+                 GROUP BY "setId"
+            ) set_properties_stats
+              ON set_properties_stats."setId" = s.id
              WHERE s."projectId" = %s
              ORDER BY p."protocolId", s."outputName"
             """,
@@ -2174,6 +2220,10 @@ class ProjectService:
                 "rootTableItemsValueSignature": row.get("rootTableItemsValueSignature"),
                 "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
                 "rootTableColumnsSignature": row.get("rootTableColumnsSignature") or [],
+                "propertiesPayloadCount": toOptionalInt(row.get("propertiesPayloadCount")),
+                "propertiesPayloadSignature": row.get("propertiesPayloadSignature") or [],
+                "setPropertiesCount": toOptionalInt(row.get("setPropertiesCount")),
+                "setPropertiesSignature": row.get("setPropertiesSignature") or [],
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
                 "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
                 "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
