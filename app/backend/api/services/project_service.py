@@ -2026,6 +2026,7 @@ class ProjectService:
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
                 items_stats."itemsIdSignature" AS "itemsIdSignature",
+                items_stats."itemsValueSignature" AS "itemsValueSignature",
                 COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
                 columns_stats."setColumnsSignature" AS "setColumnsSignature",
                 COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
@@ -2033,6 +2034,7 @@ class ProjectService:
                 COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
                 root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
                 root_table_stats."rootTableItemsIdSignature" AS "rootTableItemsIdSignature",
+                root_table_stats."rootTableItemsValueSignature" AS "rootTableItemsValueSignature",
                 COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
                 root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
                 s."createdAt",
@@ -2041,15 +2043,29 @@ class ProjectService:
               JOIN protocols p
                 ON p.id = s."protocolDbId"
               LEFT JOIN (
-                  SELECT
-                    "setId",
-                    COUNT(*)::int AS "itemsTableCount",
-                    MAX("scipionItemId")::int AS "maxItemIdFromItems",
-                    md5(string_agg("scipionItemId"::text, ',' ORDER BY "scipionItemId")) AS "itemsIdSignature"
-                  FROM scipion_set_items
-                 GROUP BY "setId"
-              ) items_stats
-                ON items_stats."setId" = s.id
+                SELECT
+                  "setId",
+                  COUNT(*)::int AS "itemsTableCount",
+                  MAX("scipionItemId")::int AS "maxItemIdFromItems",
+                  md5(string_agg("scipionItemId"::text, ',' ORDER BY "scipionItemId")) AS "itemsIdSignature",
+                  md5(
+                      string_agg(
+                          jsonb_build_object(
+                              'scipionItemId', "scipionItemId",
+                              'enabled', enabled,
+                              'label', label,
+                              'comment', comment,
+                              'creation', creation,
+                              'values', "values"
+                          )::text,
+                          ','
+                          ORDER BY "scipionItemId"
+                      )
+                  ) AS "itemsValueSignature"
+                FROM scipion_set_items
+               GROUP BY "setId"
+            ) items_stats
+              ON items_stats."setId" = s.id
               LEFT JOIN (
                   SELECT
                       "setId",
@@ -2070,21 +2086,35 @@ class ProjectService:
             ) columns_stats
               ON columns_stats."setId" = s.id  
               LEFT JOIN (
-                  SELECT
-                      t."setId",
-                      COUNT(DISTINCT t.id)::int AS "rootTablesCount",
-                      MIN(t.id)::int AS "rootTableId",
-                      COUNT(ti.id)::int AS "rootTableItemsCount",
-                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
-                      md5(string_agg(ti."scipionItemId"::text, ',' ORDER BY ti."scipionItemId"))
-                          FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsIdSignature"
-                    FROM scipion_set_tables t
-                    LEFT JOIN scipion_set_table_items ti
-                      ON ti."tableId" = t.id
-                   WHERE t."tableKind" = 'root'
-                   GROUP BY t."setId"
-              ) root_table_stats
-                ON root_table_stats."setId" = s.id
+                    SELECT
+                        t."setId",
+                        COUNT(DISTINCT t.id)::int AS "rootTablesCount",
+                        MIN(t.id)::int AS "rootTableId",
+                        COUNT(ti.id)::int AS "rootTableItemsCount",
+                        MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
+                        md5(string_agg(ti."scipionItemId"::text, ',' ORDER BY ti."scipionItemId"))
+                            FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsIdSignature",
+                        md5(
+                            string_agg(
+                                jsonb_build_object(
+                                    'scipionItemId', ti."scipionItemId",
+                                    'enabled', ti.enabled,
+                                    'label', ti.label,
+                                    'comment', ti.comment,
+                                    'creation', ti.creation,
+                                    'values', ti."values"
+                                )::text,
+                                ','
+                                ORDER BY ti."scipionItemId"
+                            )
+                        ) FILTER (WHERE ti.id IS NOT NULL) AS "rootTableItemsValueSignature"
+                      FROM scipion_set_tables t
+                      LEFT JOIN scipion_set_table_items ti
+                        ON ti."tableId" = t.id
+                     WHERE t."tableKind" = 'root'
+                     GROUP BY t."setId"
+                ) root_table_stats
+                  ON root_table_stats."setId" = s.id
               LEFT JOIN (
                   SELECT
                       t."setId",
@@ -2131,6 +2161,7 @@ class ProjectService:
                 "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
                 "maxItemIdFromItems": toOptionalInt(row.get("maxItemIdFromItems")),
                 "itemsIdSignature": row.get("itemsIdSignature"),
+                "itemsValueSignature": row.get("itemsValueSignature"),
                 "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
                 "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
                 "setColumnsCount": toOptionalInt(row.get("setColumnsCount")),
@@ -2140,6 +2171,7 @@ class ProjectService:
                 "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
                 "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
                 "rootTableItemsIdSignature": row.get("rootTableItemsIdSignature"),
+                "rootTableItemsValueSignature": row.get("rootTableItemsValueSignature"),
                 "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
                 "rootTableColumnsSignature": row.get("rootTableColumnsSignature") or [],
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
