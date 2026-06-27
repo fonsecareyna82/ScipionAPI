@@ -257,6 +257,14 @@ def makeSetRow(
         setPropertiesSignature=None,
         propertiesPayloadCount=None,
         setPropertiesCount=None,
+        protocolDbId=1000,
+        rootObjectDbId=None,
+        rootObjectProjectId=1,
+        rootObjectProtocolDbId=None,
+        rootObjectParentObjectId=None,
+        rootObjectName=None,
+        rootObjectPath=None,
+        rootObjectClassName=None,
 ):
     defaultColumnsSignature = [
         {
@@ -369,6 +377,22 @@ def makeSetRow(
         else setPropertiesCount
     )
 
+    resolvedRootObjectDbId = (
+        200 if rootObjectDbId is None else rootObjectDbId
+    )
+    resolvedRootObjectProtocolDbId = (
+        protocolDbId if rootObjectProtocolDbId is None else rootObjectProtocolDbId
+    )
+    resolvedRootObjectName = (
+        outputName if rootObjectName is None else rootObjectName
+    )
+    resolvedRootObjectPath = (
+        outputName if rootObjectPath is None else rootObjectPath
+    )
+    resolvedRootObjectClassName = (
+        setClassName if rootObjectClassName is None else rootObjectClassName
+    )
+
     return {
         "protocolId": str(protocolId),
         "id": 100,
@@ -401,6 +425,14 @@ def makeSetRow(
         "propertiesPayloadSignature": resolvedPropertiesPayloadSignature,
         "setPropertiesCount": resolvedSetPropertiesCount,
         "setPropertiesSignature": resolvedSetPropertiesSignature,
+        "protocolDbId": protocolDbId,
+        "rootObjectDbId": resolvedRootObjectDbId,
+        "rootObjectProjectId": rootObjectProjectId,
+        "rootObjectProtocolDbId": resolvedRootObjectProtocolDbId,
+        "rootObjectParentObjectId": rootObjectParentObjectId,
+        "rootObjectName": resolvedRootObjectName,
+        "rootObjectPath": resolvedRootObjectPath,
+        "rootObjectClassName": resolvedRootObjectClassName,
     }
 
 
@@ -541,6 +573,7 @@ def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
         "postgresqlFlatSetRootTableMismatches": [],
         "postgresqlFlatSetColumnsCountMismatches": [],
         "postgresqlFlatSetPropertiesMismatches": [],
+        "postgresqlFlatSetRootObjectMismatches": [],
     }
     assert currentProject.lastRefresh is False
     assert currentProject.lastCheckPids is False
@@ -672,6 +705,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsProtocolAndDependencyMismatc
         "postgresqlFlatSetRootTableMismatches": [],
         "postgresqlFlatSetColumnsCountMismatches": [],
         "postgresqlFlatSetPropertiesMismatches": [],
+        "postgresqlFlatSetRootObjectMismatches": [],
     }
 
 
@@ -2802,6 +2836,183 @@ def test_ValidateProjectPostgresqlConsistencyReportsFlatSetPropertiesMismatches(
             "setPropertiesCount": 3,
             "propertiesPayloadSignature": propertiesPayloadSignature,
             "setPropertiesSignature": setPropertiesSignature,
+            "itemClassName": "Particle",
+        }
+    ]
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsFlatSetRootObjectMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "id": 1000,
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                protocolDbId=1000,
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                rootObjectProjectId=2,
+                rootObjectProtocolDbId=9999,
+                rootObjectParentObjectId=123,
+                rootObjectName="wrongName",
+                rootObjectPath="wrongPath",
+                rootObjectClassName="WrongSetClass",
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootObjectMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "fields": [
+                "rootObjectProjectId",
+                "rootObjectProtocolDbId",
+                "rootObjectParentObjectId",
+                "rootObjectName",
+                "rootObjectPath",
+                "rootObjectClassName",
+            ],
+            "protocolDbId": 1000,
+            "rootObjectDbId": 200,
+            "rootObjectProjectId": 2,
+            "rootObjectProtocolDbId": 9999,
+            "rootObjectParentObjectId": 123,
+            "rootObjectName": "wrongName",
+            "rootObjectPath": "wrongPath",
+            "rootObjectClassName": "WrongSetClass",
+            "itemClassName": "Particle",
+        }
+    ]
+
+def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootObject(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "id": 1000,
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                protocolDbId=1000,
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                rootObjectDbId=None,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootObjectMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "fields": ["rootObjectMissing"],
+            "protocolDbId": 1000,
+            "rootObjectDbId": None,
+            "rootObjectProjectId": 1,
+            "rootObjectProtocolDbId": 1000,
+            "rootObjectParentObjectId": None,
+            "rootObjectName": "outputParticles",
+            "rootObjectPath": "outputParticles",
+            "rootObjectClassName": "SetOfParticles",
             "itemClassName": "Particle",
         }
     ]

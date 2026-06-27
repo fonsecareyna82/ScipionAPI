@@ -1008,6 +1008,7 @@ class ProjectConsistencyService:
     def comparePostgresqlOutputPayloads(
             self,
             postgresqlSnapshot: Dict[str, Any],
+            projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
         persistedOutputsByProtocolId = postgresqlSnapshot["outputsByProtocolId"]
 
@@ -1018,6 +1019,7 @@ class ProjectConsistencyService:
         flatSetRootTableMismatches = []
         flatSetColumnsCountMismatches = []
         flatSetPropertiesMismatches = []
+        flatSetRootObjectMismatches = []
 
         for protocolId in sorted(persistedOutputsByProtocolId.keys(), key=self.protocolSortKey):
             outputsByName = persistedOutputsByProtocolId.get(protocolId, {})
@@ -1147,6 +1149,79 @@ class ProjectConsistencyService:
                             "itemClassName": payload.get("itemClassName"),
                         })
 
+                    protocolDbId = self.toOptionalInt(payload.get("protocolDbId"))
+                    setId = self.toOptionalInt(payload.get("setId"))
+                    rootObjectId = self.toOptionalInt(payload.get("rootObjectId"))
+                    rootObjectDbId = self.toOptionalInt(payload.get("rootObjectDbId"))
+                    rootObjectProjectId = self.toOptionalInt(payload.get("rootObjectProjectId"))
+                    rootObjectProtocolDbId = self.toOptionalInt(payload.get("rootObjectProtocolDbId"))
+                    rootObjectParentObjectId = self.toOptionalInt(payload.get("rootObjectParentObjectId"))
+                    rootObjectName = self.normalizeOptionalText(payload.get("rootObjectName"))
+                    rootObjectPath = self.normalizeOptionalText(payload.get("rootObjectPath"))
+                    rootObjectClassName = self.normalizeOptionalText(payload.get("rootObjectClassName"))
+                    setClassName = self.normalizeOptionalText(payload.get("className"))
+
+                    rootObjectChangedFields = []
+
+                    if rootObjectId is not None and rootObjectDbId is None:
+                        rootObjectChangedFields.append("rootObjectMissing")
+                    else:
+                        if (
+                                rootObjectProjectId is not None
+                                and projectId is not None
+                                and rootObjectProjectId != projectId
+                        ):
+                            rootObjectChangedFields.append("rootObjectProjectId")
+
+                        if (
+                                rootObjectProtocolDbId is not None
+                                and protocolDbId is not None
+                                and rootObjectProtocolDbId != protocolDbId
+                        ):
+                            rootObjectChangedFields.append("rootObjectProtocolDbId")
+
+                        if rootObjectParentObjectId is not None:
+                            rootObjectChangedFields.append("rootObjectParentObjectId")
+
+                        if (
+                                rootObjectName is not None
+                                and str(outputName) != rootObjectName
+                        ):
+                            rootObjectChangedFields.append("rootObjectName")
+
+                        if (
+                                rootObjectPath is not None
+                                and str(outputName) != rootObjectPath
+                        ):
+                            rootObjectChangedFields.append("rootObjectPath")
+
+                        if (
+                                setClassName is not None
+                                and rootObjectClassName is not None
+                                and setClassName != rootObjectClassName
+                        ):
+                            rootObjectChangedFields.append("rootObjectClassName")
+
+                    if rootObjectChangedFields:
+                        flatSetRootObjectMismatches.append({
+                            "protocolId": self.normalizeProtocolId(protocolId),
+                            "outputName": str(outputName),
+                            "mapperKind": mapperKind,
+                            "className": payload.get("className"),
+                            "setId": setId,
+                            "rootObjectId": rootObjectId,
+                            "fields": rootObjectChangedFields,
+                            "protocolDbId": protocolDbId,
+                            "rootObjectDbId": rootObjectDbId,
+                            "rootObjectProjectId": rootObjectProjectId,
+                            "rootObjectProtocolDbId": rootObjectProtocolDbId,
+                            "rootObjectParentObjectId": rootObjectParentObjectId,
+                            "rootObjectName": rootObjectName,
+                            "rootObjectPath": rootObjectPath,
+                            "rootObjectClassName": rootObjectClassName,
+                            "itemClassName": payload.get("itemClassName"),
+                        })
+
                     rootTablesCount = self.toOptionalInt(payload.get("rootTablesCount"))
                     rootTableId = self.toOptionalInt(payload.get("rootTableId"))
                     rootTableItemsCount = self.toOptionalInt(payload.get("rootTableItemsCount"))
@@ -1269,6 +1344,7 @@ class ProjectConsistencyService:
             "postgresqlFlatSetColumnsCountMismatches": flatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": flatSetRootTableMismatches,
             "postgresqlFlatSetPropertiesMismatches": flatSetPropertiesMismatches,
+            "postgresqlFlatSetRootObjectMismatches": flatSetRootObjectMismatches,
         }
 
     def compareSteps(self,
@@ -1608,6 +1684,10 @@ class ProjectConsistencyService:
             outputPayloadComparison["postgresqlFlatSetRootTableMismatches"]
         )
 
+        postgresqlFlatSetRootObjectMismatches = (
+            outputPayloadComparison["postgresqlFlatSetRootObjectMismatches"]
+        )
+
         return {
             "missingProtocols": [
                 {
@@ -1712,6 +1792,7 @@ class ProjectConsistencyService:
             "postgresqlFlatSetColumnsCountMismatches": postgresqlFlatSetColumnsCountMismatches,
             "postgresqlFlatSetRootTableMismatches": postgresqlFlatSetRootTableMismatches,
             "postgresqlFlatSetPropertiesMismatches": postgresqlFlatSetPropertiesMismatches,
+            "postgresqlFlatSetRootObjectMismatches": postgresqlFlatSetRootObjectMismatches,
         }
 
     def buildSummary(
