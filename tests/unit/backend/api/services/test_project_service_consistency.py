@@ -251,6 +251,8 @@ def makeSetRow(
         rootTableColumnsSignature=None,
         itemsIdSignature="items-1-2-3",
         rootTableItemsIdSignature=None,
+        itemsValueSignature="values-1-2-3",
+        rootTableItemsValueSignature=None,
 ):
     defaultColumnsSignature = [
         {
@@ -293,6 +295,7 @@ def makeSetRow(
         resolvedRootTableColumnsCount = 0
         resolvedRootTableColumnsSignature = []
         resolvedRootTableItemsIdSignature = None
+        resolvedRootTableItemsValueSignature = None
     else:
         resolvedRootTableId = rootTableId
         resolvedRootTableItemsCount = (
@@ -319,6 +322,11 @@ def makeSetRow(
             itemsIdSignature
             if rootTableItemsIdSignature is None
             else rootTableItemsIdSignature
+        )
+        resolvedRootTableItemsValueSignature = (
+            itemsValueSignature
+            if rootTableItemsValueSignature is None
+            else rootTableItemsValueSignature
         )
 
     return {
@@ -347,6 +355,8 @@ def makeSetRow(
         "rootTableColumnsSignature": resolvedRootTableColumnsSignature,
         "createdAt": None,
         "updatedAt": None,
+        "itemsValueSignature": itemsValueSignature,
+        "rootTableItemsValueSignature": resolvedRootTableItemsValueSignature,
     }
 
 
@@ -2551,6 +2561,95 @@ def test_ValidateProjectPostgresqlConsistencyReportsRootTableItemsIdSignatureMis
             "rootTableColumnsCount": 2,
             "itemsIdSignature": "items-10-20-30",
             "rootTableItemsIdSignature": "items-10-25-30",
+            "itemClassName": "Particle",
+        }
+    ]
+
+def test_ValidateProjectPostgresqlConsistencyReportsRootTableItemsValueSignatureMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                rootTablesCount=1,
+                rootTableId=500,
+                rootTableItemsCount=3,
+                rootTableMaxItemId=30,
+                itemsIdSignature="items-10-20-30",
+                rootTableItemsIdSignature="items-10-20-30",
+                itemsValueSignature="values-original",
+                rootTableItemsValueSignature="values-corrupted",
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "rootTableId": 500,
+            "fields": ["rootTableItemsValueSignature"],
+            "rootTablesCount": 1,
+            "itemsTableCount": 3,
+            "rootTableItemsCount": 3,
+            "maxItemIdFromItems": 30,
+            "rootTableMaxItemId": 30,
+            "setColumnsCount": 2,
+            "rootTableColumnsCount": 2,
+            "itemsValueSignature": "values-original",
+            "rootTableItemsValueSignature": "values-corrupted",
             "itemClassName": "Particle",
         }
     ]
