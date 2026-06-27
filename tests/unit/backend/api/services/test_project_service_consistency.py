@@ -246,6 +246,7 @@ def makeSetRow(
         rootTableId=500,
         rootTableItemsCount=None,
         rootTableMaxItemId=None,
+        rootTableColumnsCount=None,
 ):
     resolvedItemsTableCount = (
         itemsCount if itemsTableCount is None else itemsTableCount
@@ -262,6 +263,7 @@ def makeSetRow(
         resolvedRootTableId = None
         resolvedRootTableItemsCount = 0
         resolvedRootTableMaxItemId = None
+        resolvedRootTableColumnsCount = 0
     else:
         resolvedRootTableId = rootTableId
         resolvedRootTableItemsCount = (
@@ -273,6 +275,12 @@ def makeSetRow(
             resolvedMaxItemIdFromItems
             if rootTableMaxItemId is None
             else rootTableMaxItemId
+        )
+
+        resolvedRootTableColumnsCount = (
+            resolvedSetColumnsCount
+            if rootTableColumnsCount is None
+            else rootTableColumnsCount
         )
 
     return {
@@ -294,6 +302,7 @@ def makeSetRow(
         "rootTableId": resolvedRootTableId,
         "rootTableItemsCount": resolvedRootTableItemsCount,
         "rootTableMaxItemId": resolvedRootTableMaxItemId,
+        "rootTableColumnsCount": resolvedRootTableColumnsCount,
         "createdAt": None,
         "updatedAt": None,
     }
@@ -2081,6 +2090,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootTable(
                 rootTableId=None,
                 rootTableItemsCount=0,
                 rootTableMaxItemId=None,
+                rootTableColumnsCount=0,
             ),
         ],
     )
@@ -2110,6 +2120,8 @@ def test_ValidateProjectPostgresqlConsistencyReportsMissingFlatSetRootTable(
             "rootTableItemsCount": 0,
             "maxItemIdFromItems": 30,
             "rootTableMaxItemId": None,
+            "setColumnsCount": 2,
+            "rootTableColumnsCount": 0,
             "itemClassName": "Particle",
         }
     ]
@@ -2194,3 +2206,93 @@ def test_ValidateProjectPostgresqlConsistencyReportsFlatSetColumnsCountMismatche
     assert result["issues"]["postgresqlFlatSetItemsCountMismatches"] == []
     assert result["issues"]["postgresqlFlatSetMaxItemIdMismatches"] == []
     assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == []
+
+
+def test_ValidateProjectPostgresqlConsistencyReportsRootTableColumnsCountMismatches(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    currentProject = FakeCurrentProject(
+        nodes={
+            "PROJECT": FakeRunNode("PROJECT"),
+            "10": FakeRunNode(
+                "10",
+                status="finished",
+                parents=["PROJECT"],
+            ),
+        }
+    )
+    currentProject.nodes["10"].run.outputs = [
+        ("outputParticles", FakeOutput("SetOfParticles", itemsCount=3)),
+    ]
+    patchRuntimeProject(service, monkeypatch, currentProject)
+
+    mapper = FakeMapper(
+        projectRow={
+            "id": 1,
+            "ownerId": 7,
+            "name": str(tmp_path),
+        },
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "status": "finished",
+            },
+        ],
+        adjacencyMap={
+            "10": {"parents": [], "children": []},
+        },
+        setRows=[
+            makeSetRow(
+                protocolId="10",
+                outputName="outputParticles",
+                setClassName="SetOfParticles",
+                itemsCount=3,
+                itemsTableCount=3,
+                maxItemId=30,
+                maxItemIdFromItems=30,
+                columnsCount=5,
+                setColumnsCount=5,
+                rootTablesCount=1,
+                rootTableId=500,
+                rootTableItemsCount=3,
+                rootTableMaxItemId=30,
+                rootTableColumnsCount=4,
+            ),
+        ],
+    )
+
+    result = service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 7},
+        refresh=True,
+        checkPid=True,
+    )
+
+    assert result["ok"] is False
+    assert result["summary"]["issues"] == 1
+    assert result["issues"]["postgresqlFlatSetRootTableMismatches"] == [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "mapperKind": "flat_set",
+            "className": "SetOfParticles",
+            "setId": 100,
+            "rootObjectId": 200,
+            "rootTableId": 500,
+            "fields": ["rootTableColumnsCount"],
+            "rootTablesCount": 1,
+            "itemsTableCount": 3,
+            "rootTableItemsCount": 3,
+            "maxItemIdFromItems": 30,
+            "rootTableMaxItemId": 30,
+            "setColumnsCount": 5,
+            "rootTableColumnsCount": 4,
+            "itemClassName": "Particle",
+        }
+    ]
+    assert result["issues"]["postgresqlFlatSetColumnsCountMismatches"] == []
+    assert result["issues"]["postgresqlFlatSetItemsCountMismatches"] == []
+    assert result["issues"]["postgresqlFlatSetMaxItemIdMismatches"] == []

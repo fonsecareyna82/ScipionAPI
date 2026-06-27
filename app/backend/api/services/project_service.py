@@ -2030,6 +2030,7 @@ class ProjectService:
                 root_table_stats."rootTableId" AS "rootTableId",
                 COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
                 root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
+                COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
                 s."createdAt",
                 s."updatedAt"
               FROM scipion_sets s
@@ -2066,6 +2067,17 @@ class ProjectService:
                    GROUP BY t."setId"
               ) root_table_stats
                 ON root_table_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(tc.id)::int AS "rootTableColumnsCount"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_columns tc
+                      ON tc."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_columns_stats
+                ON root_table_columns_stats."setId" = s.id
              WHERE s."projectId" = %s
              ORDER BY p."protocolId", s."outputName"
             """,
@@ -2096,6 +2108,7 @@ class ProjectService:
                 "rootTableId": toOptionalInt(row.get("rootTableId")),
                 "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
                 "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
+                "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
                 "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
                 "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
                 "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
