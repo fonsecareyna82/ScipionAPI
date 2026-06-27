@@ -2016,6 +2016,7 @@ class ProjectService:
         setRows = mapper.db.fetchAll(
             """
             SELECT
+                p.id AS "protocolDbId",
                 p."protocolId",
                 s.id,
                 s."objectId",
@@ -2023,6 +2024,13 @@ class ProjectService:
                 s."setClassName",
                 s."itemClassName",
                 s.properties,
+                root_object.id AS "rootObjectDbId",
+                root_object."projectId" AS "rootObjectProjectId",
+                root_object."protocolDbId" AS "rootObjectProtocolDbId",
+                root_object."parentObjectId" AS "rootObjectParentObjectId",
+                root_object.name AS "rootObjectName",
+                root_object.path AS "rootObjectPath",
+                root_object."className" AS "rootObjectClassName",
                 COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
                 items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
                 items_stats."itemsIdSignature" AS "itemsIdSignature",
@@ -2046,6 +2054,8 @@ class ProjectService:
               FROM scipion_sets s
               JOIN protocols p
                 ON p.id = s."protocolDbId"
+              LEFT JOIN scipion_objects root_object
+                ON root_object.id = s."objectId"
               LEFT JOIN (
                 SELECT
                   "setId",
@@ -2200,7 +2210,15 @@ class ProjectService:
             result.setdefault(protocolId, {})[outputName] = {
                 "mapperKind": "flat_set",
                 "setId": row.get("id"),
+                "protocolDbId": toOptionalInt(row.get("protocolDbId")),
                 "rootObjectId": row.get("objectId"),
+                "rootObjectDbId": toOptionalInt(row.get("rootObjectDbId")),
+                "rootObjectProjectId": toOptionalInt(row.get("rootObjectProjectId")),
+                "rootObjectProtocolDbId": toOptionalInt(row.get("rootObjectProtocolDbId")),
+                "rootObjectParentObjectId": toOptionalInt(row.get("rootObjectParentObjectId")),
+                "rootObjectName": row.get("rootObjectName"),
+                "rootObjectPath": row.get("rootObjectPath"),
+                "rootObjectClassName": row.get("rootObjectClassName"),
                 "className": row.get("setClassName"),
                 "itemClassName": row.get("itemClassName"),
                 "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
