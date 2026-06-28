@@ -217,7 +217,7 @@ class ProjectConsistencyService:
         if classNameText is None:
             return None
 
-        if classNameText.startswith("SetOf"):
+        if classNameText.startswith("SetOf") or "SetOf" in classNameText:
             return "flat_set"
 
         return "tree"
@@ -1575,6 +1575,7 @@ class ProjectConsistencyService:
 
         postgresqlInputRefsWithMissingParentProtocols = []
         postgresqlInputRefsWithMissingParentOutputs = []
+        runtimeOutputs = derivedSets.get("runtimeOutputs", set())
 
         for key in sorted(postgresqlInputRefsByKey.keys(), key=self.inputRefSortKey):
             inputRef = postgresqlInputRefsByKey.get(key, {})
@@ -1595,6 +1596,11 @@ class ProjectConsistencyService:
                 continue
 
             if parentOutputName not in persistedOutputsByProtocolId.get(parentProtocolId, {}):
+                runtimeOutputKey = (parentProtocolId, parentOutputName)
+
+                if runtimeOutputKey not in runtimeOutputs:
+                    continue
+
                 issue = self.buildInputRef(key, inputRef)
                 issue["missingParentOutputName"] = parentOutputName
                 postgresqlInputRefsWithMissingParentOutputs.append(issue)
