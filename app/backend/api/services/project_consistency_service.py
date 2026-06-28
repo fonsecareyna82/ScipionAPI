@@ -1406,6 +1406,16 @@ class ProjectConsistencyService:
             postgresqlSnapshot: Dict[str, Any],
             derivedSets: Dict[str, Any],
     ) -> Dict[str, Any]:
+
+        if not derivedSets["runtimeParams"]:
+            return {
+                "missingParams": [],
+                "extraParams": [],
+                "paramValueMismatches": [],
+                "skipped": True,
+                "reason": "Runtime protocol params could not be extracted",
+            }
+
         runtimeParamsByProtocolId = runtimeSnapshot["paramsByProtocolId"]
         postgresqlParamsByProtocolId = postgresqlSnapshot["paramsByProtocolId"]
 
