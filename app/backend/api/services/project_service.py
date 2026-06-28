@@ -1207,6 +1207,169 @@ class ProjectService:
 
         return refs
 
+    def _safeProtocolStepValue(self, value: Any, default=None):
+        try:
+            if value is None:
+                return default
+
+            if hasattr(value, "hasValue") and not value.hasValue():
+                return default
+
+            if hasattr(value, "get"):
+                try:
+                    return value.get(default)
+                except TypeError:
+                    return value.get()
+
+            return value
+        except Exception:
+            return default
+
+    def _safeProtocolStepCall(self, step: Any, methodName: str, default=None):
+        try:
+            method = getattr(step, methodName, None)
+            if not callable(method):
+                return default
+            value = method()
+            return value if value is not None else default
+        except Exception:
+            return default
+
+    def _safeProtocolStepJsonValue(self, value: Any):
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, (dict, list, tuple)):
+            return value
+
+        try:
+            return json.loads(str(value))
+        except Exception:
+            return str(value)
+
+    def _loadProtocolStepsForPostgresql(self, protocol: Any) -> List[Any]:
+        for methodName in ("loadSteps", "getSteps"):
+            try:
+                method = getattr(protocol, methodName, None)
+                if not callable(method):
+                    continue
+
+                steps = method() or []
+                steps = list(steps)
+                if steps:
+                    return steps
+            except Exception:
+                logger.debug(
+                    "Could not load protocol steps using %s.",
+                    methodName,
+                    exc_info=True,
+                )
+
+        for attrName in ("_steps", "steps"):
+            try:
+                steps = getattr(protocol, attrName, None)
+                if not steps:
+                    continue
+
+                if isinstance(steps, dict):
+                    steps = list(steps.values())
+                else:
+                    steps = list(steps)
+
+                if steps:
+                    return steps
+            except Exception:
+                logger.debug(
+                    "Could not load protocol steps from attribute %s.",
+                    attrName,
+                    exc_info=True,
+                )
+
+        return []
+
+    def _buildProtocolStepsForPostgresql(self, protocol: Any) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+
+        steps = self._loadProtocolStepsForPostgresql(protocol)
+        if not steps:
+            return result
+
+        for step in steps:
+            try:
+                stepIndex = self._safeProtocolStepCall(step, "getIndex", None)
+                if stepIndex is None:
+                    continue
+
+                elapsedSeconds = None
+                elapsed = self._safeProtocolStepCall(step, "getElapsedTime", None)
+                try:
+                    if elapsed is not None:
+                        elapsedSeconds = elapsed.total_seconds()
+                except Exception:
+                    elapsedSeconds = None
+
+                stepName = self._safeProtocolStepValue(
+                    getattr(step, "funcName", None),
+                    None,
+                )
+
+                if not stepName:
+                    stepName = self._safeProtocolStepCall(step, "getClassName", "")
+
+                prerequisites = []
+                rawPrerequisites = self._safeProtocolStepCall(
+                    step,
+                    "getPrerequisites",
+                    [],
+                )
+
+                try:
+                    prerequisites = [
+                        int(prerequisite)
+                        for prerequisite in (rawPrerequisites or [])
+                    ]
+                except Exception:
+                    prerequisites = []
+
+                rawArgs = self._safeProtocolStepValue(
+                    getattr(step, "argsStr", None),
+                    None,
+                )
+
+                needsGpu = self._safeProtocolStepCall(step, "needsGPU", None)
+                if needsGpu is None:
+                    needsGpu = True
+
+                result.append({
+                    "index": int(stepIndex),
+                    "name": str(stepName or ""),
+                    "status": self._safeProtocolStepCall(step, "getStatus", ""),
+                    "prerequisites": prerequisites,
+                    "args": self._safeProtocolStepJsonValue(rawArgs),
+                    "initTime": self._safeProtocolStepValue(
+                        getattr(step, "initTime", None),
+                        None,
+                    ),
+                    "endTime": self._safeProtocolStepValue(
+                        getattr(step, "endTime", None),
+                        None,
+                    ),
+                    "elapsedSeconds": elapsedSeconds,
+                    "error": self._safeProtocolStepCall(step, "getErrorMessage", None),
+                    "interactive": bool(
+                        self._safeProtocolStepCall(step, "isInteractive", False)
+                    ),
+                    "needsGpu": bool(needsGpu),
+                    "event": "snapshot",
+                })
+            except Exception:
+                logger.debug(
+                    "Could not serialize protocol step for PostgreSQL.",
+                    exc_info=True,
+                )
+
+        return result
+
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1232,6 +1395,10 @@ class ProjectService:
         outputSyncDeclared: List[Dict[str, Any]] = []
         outputSyncMissing: List[Dict[str, Any]] = []
 
+        stepsSyncCount = 0
+        stepsSyncProtocolsCount = 0
+        stepsSyncErrors: List[Dict[str, Any]] = []
+
         # 1) Save all protocol nodes that are currently present in the real Scipion graph
         for nodeId, nodeObj in nodesDict.items():
             nodeIdText = str(nodeId)
@@ -1247,6 +1414,31 @@ class ProjectService:
 
             protocolContext = self._buildProtocolContext(projectId, protocol)
             protocolDbId = mapper.saveProtocol(protocolContext)
+
+            try:
+                protocolSteps = self._buildProtocolStepsForPostgresql(protocol)
+                protocolScipionId = self._getScipionObjectId(protocol)
+
+                if protocolSteps and protocolScipionId is not None:
+                    mapper.replaceProtocolSteps(
+                        projectId=projectId,
+                        protocolDbId=int(protocolDbId),
+                        protocolId=int(protocolScipionId),
+                        steps=protocolSteps,
+                    )
+
+                    stepsSyncCount += len(protocolSteps)
+                    stepsSyncProtocolsCount += 1
+            except Exception as exc:
+                stepsSyncErrors.append({
+                    "protocolId": nodeIdText,
+                    "error": str(exc),
+                })
+                logger.exception(
+                    "Failed to sync protocol steps. projectId=%s protocolId=%s",
+                    projectId,
+                    nodeIdText,
+                )
 
             if self._shouldRegisterProtocolOutputs(protocol):
                 try:
@@ -1362,6 +1554,9 @@ class ProjectService:
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
             "inputRefs": int(savedInputRefs),
+            "steps": int(stepsSyncCount),
+            "stepsProtocols": int(stepsSyncProtocolsCount),
+            "stepErrors": stepsSyncErrors,
             "outputsDeclared": len(outputSyncDeclared),
             "outputs": len(outputSyncResults),
             "outputsMissing": len(outputSyncMissing),

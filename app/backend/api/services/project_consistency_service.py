@@ -521,15 +521,15 @@ class ProjectConsistencyService:
                 runtimeStepsByProtocolId.setdefault(protocolId, {})
 
                 try:
-                    for step in protocol.loadSteps() or []:
-                        stepIndex = self.toOptionalInt(self._safeCall(step, "getIndex", None))
+                    for stepPayload in self._buildProtocolStepsForPostgresql(protocol):
+                        stepIndex = self.toOptionalInt(stepPayload.get("index"))
                         if stepIndex is None:
                             continue
 
                         runtimeStepsByProtocolId[protocolId][stepIndex] = {
                             "index": stepIndex,
-                            "name": self.getStepName(step),
-                            "status": self.normalizeStatus(self._safeCall(step, "getStatus", None)),
+                            "name": str(stepPayload.get("name") or ""),
+                            "status": self.normalizeStatus(stepPayload.get("status")),
                         }
                 except Exception:
                     logger.debug(
@@ -1357,6 +1357,15 @@ class ProjectConsistencyService:
 
         runtimeSteps = derivedSets["runtimeSteps"]
         postgresqlSteps = derivedSets["postgresqlSteps"]
+
+        if not runtimeSteps:
+            return {
+                "missingSteps": [],
+                "extraSteps": [],
+                "stepMismatches": [],
+                "skipped": True,
+                "reason": "Runtime protocol steps could not be extracted",
+            }
 
         missingSteps = sorted(
             runtimeSteps - postgresqlSteps,
