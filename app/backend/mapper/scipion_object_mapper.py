@@ -386,7 +386,7 @@ class ScipionObjectPostgresqlMapper:
         className = self._getClassName(scipionObj) or ""
         if self._isPointer(scipionObj):
             return "pointer"
-        if className.startswith("SetOf"):
+        if className.startswith("SetOf") or "SetOf" in className:
             return "flat_set"
         if self._getAttributesToStore(scipionObj):
             return "tree"
