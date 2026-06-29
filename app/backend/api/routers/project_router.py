@@ -742,11 +742,21 @@ def deleteProtocol(
                          "workflow": []},
             )
 
-        service.deleteProtocol(mapper, projectId, protocolIds)
+        result = service.deleteProtocol(mapper, projectId, protocolIds) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        if isinstance(result, dict):
+            if "protocolsCount" in result:
+                response["protocolsCount"] = result["protocolsCount"]
+            if "dependenciesCount" in result:
+                response["dependenciesCount"] = result["dependenciesCount"]
+
+        return response
 
     except HTTPException as e:
         return JSONResponse(
