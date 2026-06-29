@@ -69,6 +69,64 @@ def test_LoadProtocolReturnsParams(projectClient, fakeProjectService):
     }
 
 
+def test_LoadProtocolsReturns404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    fakeProjectMapper,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get("/projects/1/protocols")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    assert fakeProjectService.lastGetProjectDbRowCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_LoadProtocolsUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+    fakeProjectMapper,
+):
+    response = projectClient.get("/projects/1/protocols")
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.protocolsResult
+
+    assert fakeProjectService.lastGetProjectDbRowCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
+    assert fakeProjectService.lastGetProtocolsCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
 def test_LoadNewProtocolReturnsParams(projectClient, fakeProjectService):
     response = projectClient.get("/projects/1/protclass/MyProtClass")
 

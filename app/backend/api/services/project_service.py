@@ -6031,13 +6031,31 @@ class ProjectService:
                 if isinstance(item, dict):
                     self.replaceDefaultProtocolText(item, resolverFn)
 
+    def _getProtocolClassForTreeLabel(self, protClassName: str):
+        try:
+            if self.currentProject is not None:
+                domain = self.currentProject.getDomain()
+                protocolClass = domain.getProtocols().get(protClassName, None)
+                if protocolClass is not None:
+                    return protocolClass
+        except Exception:
+            pass
+
+        try:
+            return Config.getDomain().getProtocols().get(protClassName, None)
+        except Exception:
+            logger.warning(
+                "Protocol className '%s' not found while resolving protocol tree label.",
+                protClassName,
+            )
+            return None
+
     def getProtocolName(self, node):
         text = node.get('text')
         if text:
             value = node.get('value') if node.get('value') is not None else text
             protClassName = value.split('.')[-1]
-            emProtocolsDict = self.currentProject.getDomain().getProtocols()
-            prot = emProtocolsDict.get(protClassName, None)
+            prot = self._getProtocolClassForTreeLabel(protClassName)
 
             if node.get('tag') == 'protocol' and text == 'default':
                 if prot is None:
