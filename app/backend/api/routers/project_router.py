@@ -1908,7 +1908,7 @@ def listOutputTiltSeries(
     """
     List tilt series for a SetOfTiltSeries-like output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1945,7 +1945,7 @@ def getTiltSeriesFrames(
     """
     Return metadata for all tilt images in one tilt series.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2178,7 +2178,7 @@ def listCtftomoSeries(
     """
     List CTFTomoSeries entries for a CTFTomo output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2206,7 +2206,7 @@ def getCtftomoSeriesViews(
     """
     Return all CTF measurements for one tilt-series (identified by tiltSeriesId).
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 

@@ -556,3 +556,97 @@ def test_VolumeReadEndpointsReturn404WhenProjectMissing(
     assert response.json()["detail"] == "Project not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_ListOutputTiltSeriesUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/tiltseries"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.tiltSeriesResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListOutputTiltSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastListOutputTiltSeriesCall["mapper"],
+    }
+
+
+def test_GetTiltSeriesFramesUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/frames"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.tiltSeriesFramesResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetTiltSeriesFramesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tiltSeriesId": "TS_001",
+        "mapper": fakeProjectService.lastGetTiltSeriesFramesCall["mapper"],
+    }
+
+
+def test_ListCtftomoSeriesUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/ctftomo"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.ctftomoSeriesResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListOutputCtftomoSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastListOutputCtftomoSeriesCall["mapper"],
+    }
+
+
+def test_GetCtftomoSeriesViewsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/ctftomo/TS_001/views"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.ctftomoSeriesViewsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetCtftomoSeriesViewsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tiltSeriesId": "TS_001",
+        "mapper": fakeProjectService.lastGetCtftomoSeriesViewsCall["mapper"],
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/projects/1/protocols/2/outputs/out/tiltseries",
+        "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/frames",
+        "/projects/1/protocols/2/outputs/out/ctftomo",
+        "/projects/1/protocols/2/outputs/out/ctftomo/TS_001/views",
+    ],
+)
+def test_TomographyReadEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    url,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None

@@ -323,6 +323,44 @@ class FakeProjectService:
         }
         self.lastGetVolumeHistogramCall = None
 
+        self.tiltSeriesResult = [
+            {
+                "tiltSeriesId": "TS_001",
+                "label": "TS_001",
+                "nViews": 3,
+            }
+        ]
+        self.lastListOutputTiltSeriesCall = None
+
+        self.tiltSeriesFramesResult = {
+            "tiltSeriesId": "TS_001",
+            "label": "TS_001",
+            "frames": [
+                {"index": 0, "tiltAngle": -1.0},
+                {"index": 1, "tiltAngle": 0.0},
+            ],
+        }
+        self.lastGetTiltSeriesFramesCall = None
+
+        self.ctftomoSeriesResult = [
+            {
+                "tiltSeriesId": "TS_001",
+                "label": "TS_001",
+                "nViews": 3,
+            }
+        ]
+        self.lastListOutputCtftomoSeriesCall = None
+
+        self.ctftomoSeriesViewsResult = {
+            "tiltSeriesId": "TS_001",
+            "label": "TS_001",
+            "frames": [
+                {"index": 0, "defocusU": 10000.0},
+                {"index": 1, "defocusU": 11000.0},
+            ],
+        }
+        self.lastGetCtftomoSeriesViewsCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -823,6 +861,70 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.volumeHistogramResult
+
+    def listOutputTiltSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputTiltSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesResult
+
+    def getTiltSeriesFramesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            mapper=None,
+    ):
+        self.lastGetTiltSeriesFramesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesFramesResult
+
+    def listOutputCtftomoSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputCtftomoSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.ctftomoSeriesResult
+
+    def getCtftomoSeriesViewsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            mapper=None,
+    ):
+        self.lastGetCtftomoSeriesViewsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "mapper": mapper,
+        }
+        return self.ctftomoSeriesViewsResult
 
 
 @pytest.fixture
