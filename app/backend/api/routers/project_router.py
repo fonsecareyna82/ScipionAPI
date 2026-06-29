@@ -3018,7 +3018,7 @@ def renderMetadataImageCell(
     """
     Render one image cell from a metadata table using the same logic as ImageRenderer.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 

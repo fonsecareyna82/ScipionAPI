@@ -45,6 +45,10 @@ import pytest
             "get",
             "/projects/1/protocols/2/outputs/out/metadata/tables/objects/export",
         ),
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image?column=stack",
+        ),
     ],
 )
 def test_MetadataReadEndpointsReturn404WhenProjectMissing(
@@ -462,6 +466,8 @@ def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProj
 
     assert response.status_code == 200
     assert response.text == "image-bytes"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
     call = fakeProjectService.lastRenderMetadataImageCellCall
     assert str(call["rowId"]) == "7"
