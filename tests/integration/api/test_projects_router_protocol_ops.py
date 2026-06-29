@@ -723,6 +723,52 @@ def test_DeleteProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
+def test_DeleteProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.deleteProtocolError = HTTPException(
+        status_code=500,
+        detail="Failed to delete protocols",
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Failed to delete protocols"],
+        "workflow": [],
+    }
+
+
+def test_DeleteProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeDeleteProtocol(mapper, projectId, protocolIds):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "deleteProtocol",
+        fakeDeleteProtocol,
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_RestartProtocolAllReturnsErrorsWhenServiceRaisesHttpException(projectClient, fakeProjectService):
     fakeProjectService.restartProtocolAllError = HTTPException(
         status_code=422,
