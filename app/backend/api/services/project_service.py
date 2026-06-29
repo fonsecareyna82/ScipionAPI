@@ -6292,6 +6292,9 @@ class ProjectService:
         logPath = protocol.getStdoutLog()
         errLogPath = protocol.getStderrLog()
         scheduleLogPath = protocol.getScheduleLog()
+        offset = max(0, int(offset or 0))
+        errOffset = max(0, int(errOffset or 0))
+        scheduleOffset = max(0, int(scheduleOffset or 0))
 
         stdoutContent, stderrContent, scheduleContent = "", "", ""
         newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
