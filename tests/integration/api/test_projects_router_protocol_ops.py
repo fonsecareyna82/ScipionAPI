@@ -260,6 +260,8 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "status": 0,
         "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastRenameProtocolCall == {
