@@ -479,3 +479,80 @@ def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProj
         "fmt": "jpeg",
         "mapper": call["mapper"],
     }
+
+
+def test_ListOutputVolumesUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.volumeItemsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListOutputVolumesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastListOutputVolumesCall["mapper"],
+    }
+
+
+def test_GetVolumeInfoUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/info"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.volumeInfoResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetVolumeInfoCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "volumeId": "vol-1",
+        "mapper": fakeProjectService.lastGetVolumeInfoCall["mapper"],
+    }
+
+
+def test_GetVolumeHistogramUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/histogram?bins=32"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.volumeHistogramResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetVolumeHistogramCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "volumeId": "vol-1",
+        "bins": 32,
+        "mapper": fakeProjectService.lastGetVolumeHistogramCall["mapper"],
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/projects/1/protocols/2/outputs/out/volumes",
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/info",
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/histogram",
+    ],
+)
+def test_VolumeReadEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    url,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None

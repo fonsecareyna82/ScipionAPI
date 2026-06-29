@@ -301,6 +301,27 @@ class FakeProjectService:
 
         self.stopProtocolError = None
         self.lastStopProtocolCall = None
+        self.volumeItemsResult = [
+            {
+                "id": "vol-1",
+                "label": "Volume 1",
+                "fileName": "/tmp/volume.mrc",
+            }
+        ]
+        self.lastListOutputVolumesCall = None
+
+        self.volumeInfoResult = {
+            "id": "vol-1",
+            "label": "Volume 1",
+            "dimensions": [64, 64, 64],
+        }
+        self.lastGetVolumeInfoCall = None
+
+        self.volumeHistogramResult = {
+            "binEdges": [0.0, 1.0],
+            "counts": [10],
+        }
+        self.lastGetVolumeHistogramCall = None
 
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
@@ -751,6 +772,57 @@ class FakeProjectService:
         }
         if self.stopProtocolError is not None:
             raise self.stopProtocolError
+
+    def listOutputVolumesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputVolumesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.volumeItemsResult
+
+    def getVolumeInfoService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            mapper=None,
+    ):
+        self.lastGetVolumeInfoCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "mapper": mapper,
+        }
+        return self.volumeInfoResult
+
+    def getVolumeHistogramService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            bins=128,
+            mapper=None,
+    ):
+        self.lastGetVolumeHistogramCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "bins": bins,
+            "mapper": mapper,
+        }
+        return self.volumeHistogramResult
 
 
 @pytest.fixture
