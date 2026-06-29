@@ -281,6 +281,8 @@ def test_ResolveAnalyzeViewerReturnsHandledFalseOnUnexpectedError(projectClient,
         "handled": False,
         "message": "viewer failed",
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastResolveViewerCall == {
         "projectId": 1,
         "protocolId": 22,
@@ -973,3 +975,64 @@ def test_RenderCoords3dTomogramSliceReturns404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastRenderCoords3dTomogramSliceCall is None
+
+
+def resolveAnalyzeViewerDecision(
+        self,
+        projectId,
+        protocolId,
+        ctx,
+        mapper=None,
+):
+    self.lastResolveAnalyzeViewerDecisionCall = {
+        "projectId": projectId,
+        "protocolId": protocolId,
+        "ctx": ctx,
+        "mapper": mapper,
+    }
+    return self.resolveAnalyzeViewerDecisionResult
+
+
+def test_ResolveAnalyzeViewerUnwrapsCtxAndUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/viewer/resolve",
+        json={
+            "ctx": {
+                "outputName": "out",
+                "objectId": "tomo-1",
+                "objectKind": "tomogram",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"handled": False}
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastResolveViewerCall == {
+        "projectId": 1,
+        "protocolId": 22,
+        "ctx": {"outputName": "particles", "outputClass": "SetOfParticles"},
+        "mapper": fakeProjectService.lastResolveViewerCall["mapper"],
+    }
+
+
+def test_ResolveAnalyzeViewerReturns404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/viewer/resolve",
+        json={"outputName": "out"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastResolveAnalyzeViewerDecisionCall is None
