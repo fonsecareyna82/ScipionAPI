@@ -63,6 +63,8 @@ def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProject
         },
         "refresh": True,
         "checkPid": True,
+        "validateConsistency": True,
+        "failOnConsistencyError": False,
     }
 
 

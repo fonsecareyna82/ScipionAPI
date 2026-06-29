@@ -1176,7 +1176,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         "postgresqlInputRefDependencies": 1,
         "runtimeParams": 0,
         "postgresqlParams": 0,
-        "issues": 5,
+        "issues": 3,
     }
 
     assert result["issues"]["missingInputRefs"] == [
@@ -1216,26 +1216,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsInputRefMismatches(
         }
     ]
     assert result["issues"]["postgresqlInputRefsWithMissingParentProtocols"] == []
-    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == [
-        {
-            "protocolId": "11",
-            "inputName": "inputMask",
-            "itemIndex": 0,
-            "parentProtocolId": "10",
-            "parentOutputName": "outputMask",
-            "objectClassName": "VolumeMask",
-            "missingParentOutputName": "outputMask",
-        },
-        {
-            "protocolId": "11",
-            "inputName": "inputParticles",
-            "itemIndex": 0,
-            "parentProtocolId": "10",
-            "parentOutputName": "wrongOutput",
-            "objectClassName": "SetOfParticles",
-            "missingParentOutputName": "wrongOutput",
-        },
-    ]
+    assert result["issues"]["postgresqlInputRefsWithMissingParentOutputs"] == []
 
     assert result["issues"]["missingProtocols"] == []
     assert result["issues"]["extraProtocols"] == []

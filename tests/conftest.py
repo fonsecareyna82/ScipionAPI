@@ -294,13 +294,24 @@ class FakeProjectService:
             raise self.listProjectWorkflowsError
         return self.listProjectWorkflowsResult
 
-    def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
+    def getProjectById(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            validateConsistency=False,
+            failOnConsistencyError=False,
+    ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
             "refresh": refresh,
             "checkPid": checkPid,
+            "validateConsistency": validateConsistency,
+            "failOnConsistencyError": failOnConsistencyError,
         }
         return self.projectByIdResult
 
