@@ -1230,6 +1230,7 @@ def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch
     "executeMode, expectedRunMode",
     [
         ("launch", "resume-mode"),
+        ("resume", "resume-mode"),
         ("restart", "restart-mode"),
     ],
 )

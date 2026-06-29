@@ -5628,6 +5628,11 @@ class ProjectService:
         Save, validate, and execute a protocol action.
         Supported execute modes: launch, restart, schedule, stop.
         """
+        modeAliases = {
+            "resume": "launch",
+        }
+
+        executeMode = modeAliases.get(executeMode, executeMode)
         allowedModes = {"launch", "restart", "schedule", "stop"}
         if executeMode not in allowedModes:
             raise HTTPException(
