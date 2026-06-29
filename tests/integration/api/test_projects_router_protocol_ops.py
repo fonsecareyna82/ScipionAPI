@@ -321,6 +321,38 @@ def test_DuplicateProtocolDelegatesToService(projectClient, fakeProjectService):
     assert items[1].name is None
 
 
+def test_DuplicateProtocolReturnsSyncCounts(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.duplicateProtocolResult = {
+        "status": 0,
+        "errors": [],
+        "duplicated": [{"sourceId": "10", "newId": "20"}],
+        "protocolsCount": 4,
+        "dependenciesCount": 3,
+    }
+
+    response = projectClient.post(
+        "/projects/1/protocols/duplicate",
+        json={
+            "items": [
+                {"id": "10", "name": "Copy 1"},
+            ]
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "duplicated": [{"sourceId": "10", "newId": "20"}],
+        "protocolsCount": 4,
+        "dependenciesCount": 3,
+    }
+
+
 def test_DeleteProtocolRejectsMissingProtocolIds(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/delete",
