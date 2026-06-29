@@ -643,3 +643,42 @@ def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(
         "projectId": 1,
         "protocolIds": ["10"],
     }
+
+
+def test_DeleteProtocolReturnsSyncCounts(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeDeleteProtocol(mapper, projectId, protocolIds):
+        fakeProjectService.lastDeleteProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
+        return {
+            "protocolsCount": 3,
+            "dependenciesCount": 2,
+        }
+
+    monkeypatch.setattr(fakeProjectService, "deleteProtocol", fakeDeleteProtocol)
+
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "protocolsCount": 3,
+        "dependenciesCount": 2,
+    }
+
+    assert fakeProjectService.lastDeleteProtocolCall == {
+        "mapper": fakeProjectService.lastDeleteProtocolCall["mapper"],
+        "projectId": 1,
+        "protocolIds": ["10"],
+    }
