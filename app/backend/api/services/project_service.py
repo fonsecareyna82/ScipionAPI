@@ -5629,9 +5629,9 @@ class ProjectService:
         Supported execute modes: launch, restart, schedule, stop.
         """
         modeAliases = {
+            None: "launch",
             "resume": "launch",
         }
-
         executeMode = modeAliases.get(executeMode, executeMode)
         allowedModes = {"launch", "restart", "schedule", "stop"}
         if executeMode not in allowedModes:
