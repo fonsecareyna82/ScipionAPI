@@ -560,6 +560,7 @@ def test_RenameProtocolWrapsHttpException(
         "workflow": [],
     }
 
+
 def test_DuplicateProtocolRejectsMissingItems(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/duplicate",
@@ -631,6 +632,60 @@ def test_DuplicateProtocolReturnsSyncCounts(
         "duplicated": [{"sourceId": "10", "newId": "20"}],
         "protocolsCount": 4,
         "dependenciesCount": 3,
+    }
+
+
+def test_DuplicateProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.duplicateProtocolError = HTTPException(
+        status_code=500,
+        detail="Failed to duplicate protocols: copy failed",
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/duplicate",
+        json={
+            "items": [
+                {"id": "10", "name": "Copy 1"},
+            ]
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Failed to duplicate protocols: copy failed"],
+        "workflow": [],
+    }
+
+
+def test_DuplicateProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeDuplicateProtocol(mapper, projectId, items):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "duplicateProtocol",
+        fakeDuplicateProtocol,
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/duplicate",
+        json={
+            "items": [
+                {"id": "10", "name": "Copy 1"},
+            ]
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
     }
 
 
