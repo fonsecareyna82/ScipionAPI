@@ -132,6 +132,26 @@ def test_LaunchProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
+def test_LaunchProtocolDefaultsMissingModeToLaunch(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastLaunchProtocolCall["executeMode"] is None
+
+
 def test_LaunchProtocolReturnsSyncCounts(
     projectClient,
     fakeProjectService,

@@ -1229,6 +1229,7 @@ def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch
 @pytest.mark.parametrize(
     "executeMode, expectedRunMode",
     [
+        (None, "resume-mode"),
         ("launch", "resume-mode"),
         ("resume", "resume-mode"),
         ("restart", "restart-mode"),
