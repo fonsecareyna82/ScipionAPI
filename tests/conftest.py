@@ -474,6 +474,14 @@ class FakeProjectService:
         )
         self.lastRenderCoords3dTomogramSliceCall = None
 
+        self.resolveAnalyzeViewerDecisionResult = {
+            "handled": False,
+        }
+        self.resolveViewerError = None
+
+        self.lastResolveViewerCall = None
+        self.lastResolveAnalyzeViewerDecisionCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -541,17 +549,6 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.pollLogsResult
-
-    def resolveAnalyzeViewerDecision(self, projectId, protocolId, ctx, mapper=None):
-        self.lastResolveViewerCall = {
-            "projectId": projectId,
-            "protocolId": protocolId,
-            "ctx": ctx,
-            "mapper": mapper
-        }
-        if self.resolveViewerError is not None:
-            raise self.resolveViewerError
-        return self.resolveViewerResult
 
     def listOutputMetadataTablesService(
             self,
@@ -1204,6 +1201,28 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.coords3dSliceResponse
+
+    def resolveAnalyzeViewerDecision(
+            self,
+            projectId,
+            protocolId,
+            ctx,
+            mapper=None,
+    ):
+        call = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "ctx": ctx,
+            "mapper": mapper,
+        }
+
+        self.lastResolveViewerCall = call
+        self.lastResolveAnalyzeViewerDecisionCall = call
+
+        if self.resolveViewerError is not None:
+            raise self.resolveViewerError
+
+        return self.resolveAnalyzeViewerDecisionResult
 
 
 @pytest.fixture
