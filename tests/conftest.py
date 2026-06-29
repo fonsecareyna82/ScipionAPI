@@ -361,6 +361,40 @@ class FakeProjectService:
         }
         self.lastGetCtftomoSeriesViewsCall = None
 
+        self.coords3dTomogramsResult = [
+            {
+                "id": "tomo-1",
+                "name": "Tomogram 1",
+                "label": "tomo-1",
+                "dims": [64, 64, 64],
+                "voxelSize": [1.0, 1.0, 1.0],
+            }
+        ]
+        self.lastListCoordinates3dTomogramsCall = None
+
+        self.coords3dPointsResult = [
+            {
+                "id": 1,
+                "x": 10.0,
+                "y": 20.0,
+                "z": 30.0,
+                "tomoId": "tomo-1",
+            }
+        ]
+        self.lastGetCoordinates3dPointsCall = None
+
+        self.integratedAnalyzeContextResult = {
+            "root": {
+                "projectId": 1,
+                "protocolId": 2,
+                "outputName": "out",
+            },
+            "links": {},
+            "summaries": {},
+            "relations": {"items": []},
+        }
+        self.lastGetIntegratedAnalyzeContextCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -926,6 +960,53 @@ class FakeProjectService:
         }
         return self.ctftomoSeriesViewsResult
 
+    def listCoordinates3dTomogramsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListCoordinates3dTomogramsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.coords3dTomogramsResult
+
+    def getCoordinates3dPointsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tomogramId,
+            mapper=None,
+    ):
+        self.lastGetCoordinates3dPointsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tomogramId": tomogramId,
+            "mapper": mapper,
+        }
+        return self.coords3dPointsResult
+
+    def getIntegratedAnalyzeContextService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastGetIntegratedAnalyzeContextCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.integratedAnalyzeContextResult
+
 
 @pytest.fixture
 def authTestEnv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -1182,3 +1263,4 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         yield client
 
     app.dependency_overrides.clear()
+

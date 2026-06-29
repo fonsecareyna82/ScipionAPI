@@ -650,3 +650,78 @@ def test_TomographyReadEndpointsReturn404WhenProjectMissing(
     assert response.json()["detail"] == "Project not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_ListCoordinates3dTomogramsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.coords3dTomogramsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListCoordinates3dTomogramsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastListCoordinates3dTomogramsCall["mapper"],
+    }
+
+
+def test_GetCoordinates3dPointsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms/tomo-1"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.coords3dPointsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetCoordinates3dPointsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tomogramId": "tomo-1",
+        "mapper": fakeProjectService.lastGetCoordinates3dPointsCall["mapper"],
+    }
+
+
+def test_GetIntegratedAnalyzeContextUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/integrated-context"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.integratedAnalyzeContextResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetIntegratedAnalyzeContextCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastGetIntegratedAnalyzeContextCall["mapper"],
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms",
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms/tomo-1",
+        "/projects/1/protocols/2/outputs/out/integrated-context",
+    ],
+)
+def test_Coordinates3dReadEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    url,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None

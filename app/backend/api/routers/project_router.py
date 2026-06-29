@@ -2372,7 +2372,7 @@ def listCoordinates3dTomograms(
     """
     List tomograms referenced by a SetOfCoordinates3D output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2411,7 +2411,7 @@ def getCoordinates3dPoints(
     """
     Return all 3D coordinates for one tomogram inside a SetOfCoordinates3D.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2588,7 +2588,7 @@ def getIntegratedAnalyzeContext(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
