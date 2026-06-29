@@ -445,6 +445,19 @@ class FakeProjectService:
         }
         self.lastGetContextMenuVisibilityPolicyCall = None
 
+        self.fscRowsResult = {
+            "threshold": 0.143,
+            "curves": [
+                {
+                    "label": "FSC 1",
+                    "resolution": 3.2,
+                    "x": [0.01, 0.02],
+                    "y": [0.95, 0.87],
+                }
+            ],
+        }
+        self.lastGetFscRowsCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1115,6 +1128,21 @@ class FakeProjectService:
     def getContextMenuVisibilityPolicy(self):
         self.lastGetContextMenuVisibilityPolicyCall = {}
         return self.contextMenuVisibilityResult
+
+    def getFscRowsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastGetFscRowsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.fscRowsResult
 
 
 @pytest.fixture

@@ -857,3 +857,33 @@ def test_TagAndContextMenuEndpointsReturn404WhenProjectMissing(
     assert response.json()["detail"] == "Project not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_GetFscRowsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/fsc/rows"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.fscRowsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetFscRowsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "mapper": fakeProjectService.lastGetFscRowsCall["mapper"],
+    }
+
+
+def test_GetFscRowsReturns404WhenProjectMissing(projectClient, fakeProjectService):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/fsc/rows"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
