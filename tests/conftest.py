@@ -260,6 +260,7 @@ class FakeProjectService:
         self.lastSaveProtocolCall = None
 
         self.nextProtocolSuggestionsResult = [{"id": "next-1", "name": "Next protocol"}]
+        self.nextProtocolSuggestionsError = None
         self.lastGetNextProtocolSuggestionsCall = None
 
         self.renameProtocolError = None
@@ -627,6 +628,8 @@ class FakeProjectService:
             "mapper": mapper,
             "projectId": projectId,
         }
+        if self.nextProtocolSuggestionsError is not None:
+            raise self.nextProtocolSuggestionsError
         return self.nextProtocolSuggestionsResult
 
     def renameProtocol(self, mapper, projectId, protocolId, newName, newComment=""):

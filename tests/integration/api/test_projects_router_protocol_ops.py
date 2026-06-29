@@ -412,6 +412,46 @@ def test_SuggestionProtocolReturnsSuggestions(projectClient, fakeProjectService)
     }
 
 
+def test_SuggestionProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.nextProtocolSuggestionsError = HTTPException(
+        status_code=404,
+        detail="Protocol not found",
+    )
+
+    response = projectClient.get("/projects/1/protocols/10/suggestions/next")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Protocol not found"],
+        "workflow": [],
+    }
+
+
+def test_SuggestionProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeGetNextProtocolSuggestions(mapper, projectId, protocolId):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "getNextProtocolSuggestions",
+        fakeGetNextProtocolSuggestions,
+    )
+
+    response = projectClient.get("/projects/1/protocols/10/suggestions/next")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_RenameProtocolRejectsBlankName(projectClient):
     response = projectClient.put(
         "/projects/1/protocols/10/rename",

@@ -595,11 +595,30 @@ def suggestionProtocol(
                      "errors": ["Project not found"],
                      "workflow": []},
         )
-    return service.getNextProtocolSuggestions(
-        mapper=mapper,
-        projectId=projectId,
-        protocolId=protocolId,
-    )
+    try:
+        return service.getNextProtocolSuggestions(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(e.detail),
+                "workflow": [],
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": 1,
+                "errors": [str(e)],
+                "workflow": [],
+            },
+        )
 
 
 @router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
