@@ -1303,6 +1303,22 @@ class PostgresqlFlatMapper(Mapper):
             (projectId,),
         )
 
+    def countProjectProtocols(self, projectId: int) -> int:
+        row = self.db.fetchOne(
+            """
+            SELECT COUNT(*) AS count
+              FROM protocols
+             WHERE "projectId" = %s
+            """,
+            (projectId,),
+        )
+
+        if not row:
+            return 0
+
+        value = row.get("count") if isinstance(row, dict) else row[0]
+        return int(value or 0)
+
     def updateProtocol(self, protocol: Dict[str, Any]) -> None:
         """Update protocol fields dynamically."""
         updates = []

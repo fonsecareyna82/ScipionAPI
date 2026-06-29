@@ -1908,6 +1908,8 @@ class ProjectService:
             if not storedProjectPath:
                 continue
 
+            projectId = dbProj["id"]
+
             storedPathObj = Path(storedProjectPath).expanduser()
             if not storedPathObj.is_absolute():
                 storedPathObj = Path(self.manager.getProjectPath(str(storedPathObj)))
@@ -1917,7 +1919,6 @@ class ProjectService:
             try:
                 realProjectPathObj = storedPathObj.resolve(strict=True)
             except FileNotFoundError:
-                # Broken entry or missing project on disk; keep it visible but degraded
                 realProjectPathObj = storedPathObj
             except Exception:
                 realProjectPathObj = storedPathObj
@@ -1930,16 +1931,28 @@ class ProjectService:
             except Exception:
                 sizeGB = 0.0
 
-            try:
-                protCount = self.countProtocols(runsPath)
-            except Exception:
-                protCount = 0
+            protCount = None
+
+            countProjectProtocols = getattr(mapper, "countProjectProtocols", None)
+            if callable(countProjectProtocols):
+                try:
+                    protCount = int(countProjectProtocols(projectId) or 0)
+                except Exception:
+                    logger.exception(
+                        "Failed to count project protocols from PostgreSQL. projectId=%s",
+                        projectId,
+                    )
+
+            if protCount is None:
+                try:
+                    protCount = self.countProtocols(runsPath)
+                except Exception:
+                    protCount = 0
 
             isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUser["id"])
             isShared = dbProj.get("isShared", False)
             permission = dbProj.get("permission", "owner" if isOwner else "full")
             projectOwnerId = dbProj.get("ownerId")
-            projectId = dbProj["id"]
             updatedAt = dbProj.get("updatedAt")
 
             thumbnailVersion = self._buildProjectThumbnailVersion(
