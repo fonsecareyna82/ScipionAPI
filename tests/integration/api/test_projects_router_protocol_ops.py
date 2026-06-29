@@ -327,7 +327,7 @@ def test_DeleteProtocolRejectsMissingProtocolIds(projectClient):
         json={"protocolIds": []},
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 422
     assert response.json() == {
         "status": 1,
         "errors": ["Missing protocolIds"],
