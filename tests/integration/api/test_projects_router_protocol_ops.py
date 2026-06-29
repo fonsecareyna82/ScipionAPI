@@ -909,6 +909,46 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
     }
 
 
+def test_ResetProtocolFromWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.resetProtocolFromError = HTTPException(
+        status_code=422,
+        detail=["cannot reset", "blocked"],
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/reset-from")
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["cannot reset", "blocked"],
+        "workflow": [],
+    }
+
+
+def test_ResetProtocolFromWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeResetProtocolFrom(mapper, projectId, protocolId):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "resetProtocolFrom",
+        fakeResetProtocolFrom,
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/reset-from")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
     response = projectClient.post("/projects/1/protocols/10/reset-from")
 
