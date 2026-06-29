@@ -482,6 +482,26 @@ class FakeProjectService:
         self.lastResolveViewerCall = None
         self.lastResolveAnalyzeViewerDecisionCall = None
 
+        self.volumeSliceResponse = Response(
+            content=b"volume-slice-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderVolumeSliceCall = None
+
+        self.volumeData3dResult = {
+            "dims": [2, 2, 2],
+            "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        }
+        self.lastGetVolumeData3dCall = None
+
+        self.volumeSurfaceMeshResult = {
+            "vertices": [[0.0, 0.0, 0.0]],
+            "faces": [[0, 0, 0]],
+            "level": 0.5,
+            "volumeId": "vol-1",
+        }
+        self.lastGetVolumeSurfaceMeshCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1223,6 +1243,91 @@ class FakeProjectService:
             raise self.resolveViewerError
 
         return self.resolveAnalyzeViewerDecisionResult
+
+    def renderVolumeSliceService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            sliceIndex,
+            axis,
+            colormap,
+            normalize,
+            scale,
+            inline,
+            fmt="webp",
+            thumb=None,
+            fast=True,
+            quality=75,
+            mapper=None,
+    ):
+        self.lastRenderVolumeSliceCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "sliceIndex": sliceIndex,
+            "axis": axis,
+            "colormap": colormap,
+            "normalize": normalize,
+            "scale": scale,
+            "inline": inline,
+            "fmt": fmt,
+            "thumb": thumb,
+            "fast": fast,
+            "quality": quality,
+            "mapper": mapper,
+        }
+        return self.volumeSliceResponse
+
+    def getVolumeData3dService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            maxDim=160,
+            method="binning",
+            mapper=None,
+    ):
+        self.lastGetVolumeData3dCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "maxDim": maxDim,
+            "method": method,
+            "mapper": mapper,
+        }
+        return self.volumeData3dResult
+
+    def getVolumeSurfaceMesh(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            level=None,
+            maxDim=192,
+            method="stride",
+            maxTriangles=350000,
+            currentUser=None,
+            mapper=None,
+    ):
+        self.lastGetVolumeSurfaceMeshCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "level": level,
+            "maxDim": maxDim,
+            "method": method,
+            "maxTriangles": maxTriangles,
+            "currentUser": currentUser,
+            "mapper": mapper,
+        }
+        return self.volumeSurfaceMeshResult
 
 
 @pytest.fixture

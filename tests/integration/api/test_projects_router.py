@@ -1042,3 +1042,108 @@ def test_ResolveAnalyzeViewerReturns404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastResolveAnalyzeViewerDecisionCall is None
+
+
+def test_RenderVolumeSliceUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/slice"
+        "?index=4&axis=y&cmap=gray&normalize=zscore&scale=1.5"
+        "&inline=false&format=png&thumb=128&fast=false&quality=80"
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"volume-slice-bytes"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderVolumeSliceCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "volumeId": "vol-1",
+        "sliceIndex": 4,
+        "axis": "y",
+        "colormap": "gray",
+        "normalize": "zscore",
+        "scale": 1.5,
+        "inline": False,
+        "fmt": "png",
+        "thumb": 128,
+        "fast": False,
+        "quality": 80,
+        "mapper": fakeProjectService.lastRenderVolumeSliceCall["mapper"],
+    }
+
+
+def test_GetVolumeData3dUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/data3d"
+        "?maxDim=96&method=stride"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.volumeData3dResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetVolumeData3dCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "volumeId": "vol-1",
+        "maxDim": 96,
+        "method": "stride",
+        "mapper": fakeProjectService.lastGetVolumeData3dCall["mapper"],
+    }
+
+
+def test_GetVolumeSurfaceMeshUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/surface"
+        "?level=0.5&maxDim=96&method=stride&maxTriangles=1234"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.volumeSurfaceMeshResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetVolumeSurfaceMeshCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "volumeId": "vol-1",
+        "level": 0.5,
+        "maxDim": 96,
+        "method": "stride",
+        "maxTriangles": 1234,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "mapper": fakeProjectService.lastGetVolumeSurfaceMeshCall["mapper"],
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/slice?index=4",
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/data3d",
+        "/projects/1/protocols/2/outputs/out/volumes/vol-1/surface",
+    ],
+)
+def test_VolumeRenderEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    url,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderVolumeSliceCall is None
+    assert fakeProjectService.lastGetVolumeData3dCall is None
+    assert fakeProjectService.lastGetVolumeSurfaceMeshCall is None
