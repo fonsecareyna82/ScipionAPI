@@ -3220,7 +3220,7 @@ def listProjectTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3240,7 +3240,7 @@ def createProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3272,7 +3272,7 @@ def updateProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3298,7 +3298,7 @@ def deleteProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3319,7 +3319,7 @@ def listProtocolTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3345,7 +3345,7 @@ def setProtocolTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3369,7 +3369,7 @@ async def getContextMenuVisibilityPolicy(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return service.getContextMenuVisibilityPolicy()
