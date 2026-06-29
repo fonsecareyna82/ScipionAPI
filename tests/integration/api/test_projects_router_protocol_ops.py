@@ -535,6 +535,31 @@ def test_RenameProtocolWrapsUnexpectedException(
     }
 
 
+def test_RenameProtocolWrapsHttpException(
+    projectClient,
+    fakeProjectService,
+):
+    patchRenameProtocolFake(fakeProjectService)
+    fakeProjectService.renameProtocolError = HTTPException(
+        status_code=404,
+        detail="Protocol not found",
+    )
+
+    response = projectClient.put(
+        "/projects/1/protocols/10/rename",
+        json={
+            "runName": "Renamed protocol",
+            "comment": "Updated comment",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Protocol not found"],
+        "workflow": [],
+    }
+
 def test_DuplicateProtocolRejectsMissingItems(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/duplicate",
