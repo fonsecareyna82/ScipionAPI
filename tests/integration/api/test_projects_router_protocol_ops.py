@@ -616,3 +616,30 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "refresh": True,
         "checkPid": True,
     }
+
+def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.deleteProtocolError = HTTPException(
+        status_code=422,
+        detail=["cannot delete protocol"],
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/delete",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["cannot delete protocol"],
+        "workflow": [],
+    }
+
+    assert fakeProjectService.lastDeleteProtocolCall == {
+        "mapper": fakeProjectService.lastDeleteProtocolCall["mapper"],
+        "projectId": 1,
+        "protocolIds": ["10"],
+    }

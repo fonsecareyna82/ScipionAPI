@@ -748,12 +748,24 @@ def deleteProtocol(
                 "errors": [],
                 "workflow": []}
 
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(e.detail),
+                "workflow": [],
+            },
+        )
+
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": 1,
-                     "errors": _normalizeErrors(str(e)),
-                     "workflow": []},
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(str(e)),
+                "workflow": [],
+            },
         )
 
 
