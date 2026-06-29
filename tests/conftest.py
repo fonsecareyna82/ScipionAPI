@@ -97,6 +97,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+
 def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):
     # makeProjectOut
     payload = {
@@ -125,6 +126,10 @@ class FakeProjectService:
 
         self.projectByIdResult = makeProjectOut()
         self.lastGetProjectByIdCall = None
+
+        self.projectDbRowResult = makeProjectOut()
+        self.lastGetProjectDbRowCall = None
+        self.lastGetProtocolsCall = None
 
         self.protocolsResult = [{"id": 11, "name": "Prot A"}]
 
@@ -316,6 +321,14 @@ class FakeProjectService:
         }
         return self.projectByIdResult
 
+    def getProjectDbRow(self, mapper, projectId, currentUser):
+        self.lastGetProjectDbRowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectDbRowResult
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper,
@@ -332,9 +345,6 @@ class FakeProjectService:
             "checkPid": checkPid,
         }
         return self.consistencyResult
-
-    def getProtocols(self, mapper, projectId, currentUser):
-        return self.protocolsResult
 
     def listProjectLogChannelsService(self, projectId, protocolId):
         return self.logChannelsResult
@@ -559,6 +569,14 @@ class FakeProjectService:
             "currentUser": currentUser,
         }
         return self.projectSharesResult
+
+    def getProtocols(self, mapper, projectId, currentUser):
+        self.lastGetProtocolsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.protocolsResult
 
     def syncProjectGraphAfterMutation(self, mapper, projectId, actionLabel, refresh=True, checkPid=True):
         self.lastSyncProjectGraphAfterMutationCall = {
