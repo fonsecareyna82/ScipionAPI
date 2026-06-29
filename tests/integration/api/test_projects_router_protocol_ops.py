@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
 from fastapi import HTTPException
 
 
@@ -80,6 +81,65 @@ def test_LoadNewProtocolReturnsParams(projectClient, fakeProjectService):
     assert fakeProjectService.lastGetNewProtocolParamsCall == {
         "projectId": 1,
         "protClassName": "MyProtClass",
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload"),
+    [
+        (
+            "post",
+            "/projects/1/protocols/duplicate",
+            {"items": [{"id": "10", "name": "Copy 1"}]},
+        ),
+        (
+            "post",
+            "/projects/1/protocols/delete",
+            {"protocolIds": ["10"]},
+        ),
+        (
+            "post",
+            "/projects/1/protocols/10/restart-all",
+            None,
+        ),
+        (
+            "post",
+            "/projects/1/protocols/10/continue-all",
+            None,
+        ),
+        (
+            "post",
+            "/projects/1/protocols/10/reset-from",
+            None,
+        ),
+        (
+            "post",
+            "/projects/1/protocols/stop",
+            {"protocolIds": ["10"]},
+        ),
+    ],
+)
+def test_ProtocolOperationsReturn404EnvelopeWhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    method,
+    url,
+    payload,
+):
+    fakeProjectService.projectByIdResult = None
+
+    request = getattr(projectClient, method)
+    kwargs = {}
+    if payload is not None:
+        kwargs["json"] = payload
+
+    response = request(url, **kwargs)
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Project not found"],
+        "workflow": [],
     }
 
 
@@ -1188,6 +1248,7 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "refresh": True,
         "checkPid": True,
     }
+
 
 def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(
     projectClient,
