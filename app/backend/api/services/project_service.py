@@ -6292,9 +6292,23 @@ class ProjectService:
         logPath = protocol.getStdoutLog()
         errLogPath = protocol.getStderrLog()
         scheduleLogPath = protocol.getScheduleLog()
-        offset = max(0, int(offset or 0))
-        errOffset = max(0, int(errOffset or 0))
-        scheduleOffset = max(0, int(scheduleOffset or 0))
+
+        def normalizeOffset(value, filePath):
+            safeOffset = max(0, int(value or 0))
+
+            if filePath and os.path.exists(filePath):
+                try:
+                    fileSize = os.path.getsize(filePath)
+                    if safeOffset > fileSize:
+                        return 0
+                except Exception:
+                    pass
+
+            return safeOffset
+
+        offset = normalizeOffset(offset, logPath)
+        errOffset = normalizeOffset(errOffset, errLogPath)
+        scheduleOffset = normalizeOffset(scheduleOffset, scheduleLogPath)
 
         stdoutContent, stderrContent, scheduleContent = "", "", ""
         newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
