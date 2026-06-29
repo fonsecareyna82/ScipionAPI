@@ -2487,7 +2487,7 @@ def renderCoords3dTomogramSlice(
     """
     Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 

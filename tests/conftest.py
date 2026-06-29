@@ -11,7 +11,7 @@ from fastapi import HTTPException
 import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from starlette.responses import PlainTextResponse
+from starlette.responses import PlainTextResponse, Response
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -467,6 +467,12 @@ class FakeProjectService:
             },
         }
         self.lastGetProjectEffectiveSettingsCall = None
+
+        self.coords3dSliceResponse = Response(
+            content=b"slice-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderCoords3dTomogramSliceCall = None
 
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
@@ -1161,6 +1167,43 @@ class FakeProjectService:
             "currentUser": currentUser,
         }
         return self.projectEffectiveSettingsResult
+
+    def renderCoords3dTomogramSliceService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tomogramId,
+            sliceIndex,
+            axis="z",
+            colormap=None,
+            normalize="minmax",
+            scale=1.0,
+            inline=True,
+            fmt="webp",
+            thumb=None,
+            fast=True,
+            quality=75,
+            mapper=None,
+    ):
+        self.lastRenderCoords3dTomogramSliceCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tomogramId": tomogramId,
+            "sliceIndex": sliceIndex,
+            "axis": axis,
+            "colormap": colormap,
+            "normalize": normalize,
+            "scale": scale,
+            "inline": inline,
+            "fmt": fmt,
+            "thumb": thumb,
+            "fast": fast,
+            "quality": quality,
+            "mapper": mapper,
+        }
+        return self.coords3dSliceResponse
 
 
 @pytest.fixture

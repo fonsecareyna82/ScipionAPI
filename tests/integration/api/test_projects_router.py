@@ -923,3 +923,53 @@ def test_GetProjectEffectiveSettingsReturns404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastGetProjectEffectiveSettingsCall is None
+
+
+def test_RenderCoords3dTomogramSliceUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms/tomo-1/slice"
+        "?index=4&axis=y&cmap=gray&normalize=zscore&scale=1.5"
+        "&inline=false&format=png&thumb=128&fast=false&quality=80"
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"slice-bytes"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderCoords3dTomogramSliceCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tomogramId": "tomo-1",
+        "sliceIndex": 4,
+        "axis": "y",
+        "colormap": "gray",
+        "normalize": "zscore",
+        "scale": 1.5,
+        "inline": False,
+        "fmt": "png",
+        "thumb": 128,
+        "fast": False,
+        "quality": 80,
+        "mapper": fakeProjectService.lastRenderCoords3dTomogramSliceCall["mapper"],
+    }
+
+
+def test_RenderCoords3dTomogramSliceReturns404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/coords3d/tomograms/tomo-1/slice?index=4"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderCoords3dTomogramSliceCall is None
