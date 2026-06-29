@@ -307,6 +307,29 @@ def test_SaveProtocolReturnsStatusOneWhenServiceReturnsErrors(projectClient, fak
     }
 
 
+def test_SaveProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.saveProtocolError = HTTPException(
+        status_code=500,
+        detail="Protocol was saved in Scipion but graph sync to PostgreSQL failed",
+    )
+
+    response = projectClient.post(
+        "/projects/1/save",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Protocol was saved in Scipion but graph sync to PostgreSQL failed"],
+        "workflow": [],
+    }
+
+
 def test_SuggestionProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
     fakeProjectService.projectByIdResult = None
 
