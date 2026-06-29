@@ -483,7 +483,7 @@ async def launchProtocol(
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={
-                    "status": 0,
+                    "status": 1,
                     "errors": ["Project not found"],
                     "workflow": [],
                 },
@@ -510,7 +510,7 @@ async def launchProtocol(
         return JSONResponse(
             status_code=e.status_code,
             content={
-                "status": 0,
+                "status": 1,
                 "errors": _normalizeErrors(e.detail),
                 "workflow": [],
             },
@@ -520,7 +520,7 @@ async def launchProtocol(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "status": 0,
+                "status": 1,
                 "errors": ["Internal server error"],
                 "workflow": [],
             },
