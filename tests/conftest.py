@@ -525,6 +525,13 @@ class FakeProjectService:
         }
         self.lastRenderTiltSeriesImagesBatchCall = None
 
+        self.ctftomoPsdResponse = Response(
+            content=b"ctftomo-psd-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderCtfTomoPsdImageCall = None
+        self.renderCtfTomoPsdImageError = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1409,6 +1416,43 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.tiltSeriesBatchResult
+
+    def renderCtfTomoPsdImageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            psdPath,
+            size=1024,
+            fmt="png",
+            inline=True,
+            index=0,
+            quality=75,
+            applyTransform=False,
+            rot=None,
+            shifts=None,
+            mapper=None,
+    ):
+        self.lastRenderCtfTomoPsdImageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "psdPath": psdPath,
+            "size": size,
+            "fmt": fmt,
+            "inline": inline,
+            "index": index,
+            "quality": quality,
+            "applyTransform": applyTransform,
+            "rot": rot,
+            "shifts": shifts,
+            "mapper": mapper,
+        }
+
+        if self.renderCtfTomoPsdImageError is not None:
+            raise self.renderCtfTomoPsdImageError
+
+        return self.ctftomoPsdResponse
 
 
 @pytest.fixture

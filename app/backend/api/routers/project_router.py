@@ -2310,13 +2310,7 @@ def renderCtftomoPsdImage(
     Render a PSD image for a CTF-tomography view, given a stack spec
     (for example '3@/path/to/TS_1.mrc').
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2338,6 +2332,8 @@ def renderCtftomoPsdImage(
         )
         resp.headers["Vary"] = "Authorization"
         return resp
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in renderCtftomoPsdImage: %s", e)
         raise HTTPException(
