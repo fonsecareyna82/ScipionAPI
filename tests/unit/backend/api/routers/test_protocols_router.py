@@ -133,9 +133,6 @@ def protocolClient(
     fakeProtocolRouterService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
-    # protocolClient
-    monkeypatch.setattr(protocolRouterModule, "service", fakeProtocolRouterService)
-
     app = FastAPI()
     app.include_router(protocolRouterModule.router)
 
@@ -145,6 +142,9 @@ def protocolClient(
         "email": "user@example.com",
         "role": "user",
     }
+    app.dependency_overrides[protocolRouterModule.getProjectService] = (
+        lambda: fakeProtocolRouterService
+    )
 
     with TestClient(app) as client:
         yield client
