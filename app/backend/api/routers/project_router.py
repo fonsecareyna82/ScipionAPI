@@ -2707,7 +2707,7 @@ def listOutputMetadataTables(
     """
     List logical metadata tables (blocks) associated with a given output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2744,7 +2744,7 @@ def getMetadataTableSchema(
     """
     Return logical schema for one metadata table: columns, renderers, flags.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2873,7 +2873,7 @@ def getMetadataTablePage(
     """
     Return one logical page of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2932,7 +2932,7 @@ def exportMetadataTable(
     """
     Export a metadata table (full or subset) as CSV/XLSX.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
