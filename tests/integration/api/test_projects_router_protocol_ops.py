@@ -330,6 +330,39 @@ def test_SaveProtocolWrapsHttpException(projectClient, fakeProjectService):
     }
 
 
+def test_SaveProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeSaveProtocol(
+        mapper,
+        projectId,
+        protocolId,
+        protocolClassName,
+        params,
+    ):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fakeProjectService, "saveProtocol", fakeSaveProtocol)
+
+    response = projectClient.post(
+        "/projects/1/save",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_SuggestionProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
     fakeProjectService.projectByIdResult = None
 
