@@ -284,6 +284,29 @@ def test_SaveProtocolReturnsSuccessWhenNoErrors(projectClient, fakeProjectServic
     }
 
 
+def test_SaveProtocolReturns404EnvelopeWhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.projectByIdResult = None
+
+    response = projectClient.post(
+        "/projects/1/save",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Project not found"],
+        "workflow": [],
+    }
+
+
 def test_SaveProtocolReturnsStatusOneWhenServiceReturnsErrors(projectClient, fakeProjectService):
     fakeProjectService.saveProtocolResult = (
         {"protocolId": "10"},
