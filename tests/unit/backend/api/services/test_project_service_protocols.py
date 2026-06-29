@@ -2406,3 +2406,26 @@ def test_GetNewProtocolParamsCacheIsScopedByProject(
     assert first["info"]["projectId"] == 1
     assert second["info"]["projectId"] == 2
     assert buildCalls == [1, 2]
+
+def test_DuplicateProtocolWrapsCopyErrorAsHttpException(service, mapper):
+    protocol = FakeProtocol(objId=10)
+    service.currentProject.protocols[10] = protocol
+
+    def fakeCopyProtocol(protocols):
+        raise RuntimeError("copy failed")
+
+    service.currentProject.copyProtocol = fakeCopyProtocol
+
+    class DuplicateItem:
+        def __init__(self, itemId):
+            self.id = itemId
+
+    with pytest.raises(HTTPException) as exc:
+        service.duplicateProtocol(
+            mapper=mapper,
+            projectId=1,
+            protocols=[DuplicateItem("10")],
+        )
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "Failed to duplicate protocols: copy failed"

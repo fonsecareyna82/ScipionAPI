@@ -6412,19 +6412,17 @@ class ProjectService:
                 protId = str(prot.getObjId())
                 duplicated.append({"sourceId": sourceIds[index], "newId": protId})
 
-        except Exception as e:
-            errors.append("Failed to duplicate protocols. projectId=%s protocolIds=%s" %projectId,
-                [getattr(p, "getObjId", lambda: None)() for p in protocolList])
 
-            logger.exception(
-                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
-                projectId,
-                [getattr(p, "getObjId", lambda: None)() for p in protocolList],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to duplicate protocols: {e}",
-            )
+        except Exception as e:
+            protocolIds = [
+                getattr(p, "getObjId", lambda: None)()
+                for p in protocolList
+            ]
+            logger.exception("Failed to duplicate protocols. projectId=%s protocolIds=%s",
+                             projectId, protocolIds,)
+
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Failed to duplicate protocols: {e}",)
 
         try:
             syncResult = self.syncProjectProtocolsAndDependencies(
