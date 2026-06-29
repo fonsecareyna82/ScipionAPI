@@ -23,6 +23,46 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/metadata/tables",
+        ),
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/schema",
+        ),
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/page",
+        ),
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/export",
+        ),
+    ],
+)
+def test_MetadataReadEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    method,
+    url,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = getattr(projectClient, method)(url)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
+
 def test_ListProjectWorkflowsReturnsServiceResult(projectClient):
     response = projectClient.get("/projects/workflows")
 
@@ -242,6 +282,8 @@ def test_ListMetadataTablesDelegatesMapperToService(projectClient, fakeProjectSe
         "outputName": "out",
         "mapper": fakeProjectService.lastListOutputMetadataTablesCall["mapper"],
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_GetMetadataTableSchemaDelegatesMapperToService(projectClient, fakeProjectService):
@@ -266,6 +308,8 @@ def test_GetMetadataTableSchemaDelegatesMapperToService(projectClient, fakeProje
         "tableName": "objects",
         "mapper": fakeProjectService.lastGetMetadataTableSchemaCall["mapper"],
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_RunMetadataTableActionRejectsMissingIds(projectClient):
@@ -343,6 +387,8 @@ def test_GetMetadataTablePageDelegatesMapperToService(projectClient, fakeProject
         "selectionOnly": True,
         "mapper": fakeProjectService.lastGetMetadataTablePageCall["mapper"],
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_ExportMetadataTableRejectsInvalidIds(projectClient):
@@ -372,6 +418,8 @@ def test_ExportMetadataTableParsesIdsAndDelegatesToService(projectClient, fakePr
         "ids": [1, 2, 3],
         "mapper": fakeProjectService.lastExportMetadataTableCall["mapper"],
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProjectService):
