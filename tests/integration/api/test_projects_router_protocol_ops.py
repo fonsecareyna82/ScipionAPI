@@ -98,7 +98,7 @@ def test_LaunchProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeP
 
     assert response.status_code == 404
     assert response.json() == {
-        "status": 0,
+        "status": 1,
         "errors": ["Project not found"],
         "workflow": [],
     }
@@ -215,7 +215,7 @@ def test_LaunchProtocolWrapsHttpException(projectClient, fakeProjectService):
 
     assert response.status_code == 409
     assert response.json() == {
-        "status": 0,
+        "status": 1,
         "errors": ["conflict", "busy"],
         "workflow": [],
     }
