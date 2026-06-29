@@ -221,6 +221,41 @@ def test_LaunchProtocolWrapsHttpException(projectClient, fakeProjectService):
     }
 
 
+def test_LaunchProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeLaunchProtocol(
+        mapper,
+        projectId,
+        protocolId,
+        protocolClassName,
+        params,
+        executeMode,
+    ):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fakeProjectService, "launchProtocol", fakeLaunchProtocol)
+
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+            "mode": "resume",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["Internal server error"],
+        "workflow": [],
+    }
+
+
 def test_SaveProtocolReturnsSuccessWhenNoErrors(projectClient, fakeProjectService):
     fakeProjectService.saveProtocolResult = ({"protocolId": "10"}, [])
 
