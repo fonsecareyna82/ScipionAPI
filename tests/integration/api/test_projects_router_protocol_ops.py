@@ -785,6 +785,30 @@ def test_RestartProtocolAllReturnsErrorsWhenServiceRaisesHttpException(projectCl
     }
 
 
+def test_RestartProtocolAllWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeRestartProtocolAll(mapper, projectId, protocolId):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "restartProtocolAll",
+        fakeRestartProtocolAll,
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/restart-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
     fakeProjectService.restartProtocolAllResult = []
 
