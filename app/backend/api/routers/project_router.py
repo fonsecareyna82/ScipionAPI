@@ -50,6 +50,20 @@ def getProjectService() -> ProjectService:
     """Return a fresh ProjectService per request to avoid shared state."""
     return ProjectService()
 
+def _appendProtocolSyncCounts(response: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    if not isinstance(result, dict):
+        return response
+
+    protocolsCount = result.get("protocolsCount", result.get("protocols"))
+    dependenciesCount = result.get("dependenciesCount", result.get("dependencies"))
+
+    if protocolsCount is not None:
+        response["protocolsCount"] = protocolsCount
+    if dependenciesCount is not None:
+        response["dependenciesCount"] = dependenciesCount
+
+    return response
+
 # ======================================================================
 #                           PROJECT WORKFLOWS
 # ======================================================================
@@ -701,12 +715,7 @@ def duplicateProtocol(
             "duplicated": result.get("duplicated", []),
         }
 
-        if "protocolsCount" in result:
-            response["protocolsCount"] = result["protocolsCount"]
-        if "dependenciesCount" in result:
-            response["dependenciesCount"] = result["dependenciesCount"]
-
-        return response
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -759,13 +768,7 @@ def deleteProtocol(
             "workflow": [],
         }
 
-        if isinstance(result, dict):
-            if "protocolsCount" in result:
-                response["protocolsCount"] = result["protocolsCount"]
-            if "dependenciesCount" in result:
-                response["dependenciesCount"] = result["dependenciesCount"]
-
-        return response
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -825,13 +828,7 @@ def restartProtocolAll(
             "workflow": [],
         }
 
-        if isinstance(syncResult, dict):
-            if "protocols" in syncResult:
-                response["protocolsCount"] = syncResult["protocols"]
-            if "dependencies" in syncResult:
-                response["dependenciesCount"] = syncResult["dependencies"]
-
-        return response
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -884,13 +881,7 @@ def continueProtocolAll(
             "workflow": [],
         }
 
-        if isinstance(syncResult, dict):
-            if "protocols" in syncResult:
-                response["protocolsCount"] = syncResult["protocols"]
-            if "dependencies" in syncResult:
-                response["dependenciesCount"] = syncResult["dependencies"]
-
-        return response
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -939,13 +930,7 @@ def resetProtocolFrom(
             "workflow": [],
         }
 
-        if isinstance(syncResult, dict):
-            if "protocols" in syncResult:
-                response["protocolsCount"] = syncResult["protocols"]
-            if "dependencies" in syncResult:
-                response["dependenciesCount"] = syncResult["dependencies"]
-
-        return response
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1001,13 +986,7 @@ def stopProtocol(
             "workflow": [],
         }
 
-        if isinstance(syncResult, dict):
-            if "protocols" in syncResult:
-                response["protocolsCount"] = syncResult["protocols"]
-            if "dependencies" in syncResult:
-                response["dependenciesCount"] = syncResult["dependencies"]
-
-        return response
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
