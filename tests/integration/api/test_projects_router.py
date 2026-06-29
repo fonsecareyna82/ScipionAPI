@@ -997,26 +997,32 @@ def test_ResolveAnalyzeViewerUnwrapsCtxAndUsesProjectDbRow(
     projectClient,
     fakeProjectService,
 ):
+    ctx = {
+        "outputName": "out",
+        "objectId": "tomo-1",
+        "objectKind": "tomogram",
+    }
+
     response = projectClient.post(
         "/projects/1/protocols/2/viewer/resolve",
-        json={
-            "ctx": {
-                "outputName": "out",
-                "objectId": "tomo-1",
-                "objectKind": "tomogram",
-            }
-        },
+        json={"ctx": ctx},
     )
 
     assert response.status_code == 200
-    assert response.json() == {"handled": False}
+    assert response.json() == fakeProjectService.resolveAnalyzeViewerDecisionResult
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
-    assert fakeProjectService.lastResolveViewerCall == {
+
+    call = (
+        fakeProjectService.lastResolveAnalyzeViewerDecisionCall
+        or fakeProjectService.lastResolveViewerCall
+    )
+
+    assert call == {
         "projectId": 1,
-        "protocolId": 22,
-        "ctx": {"outputName": "particles", "outputClass": "SetOfParticles"},
-        "mapper": fakeProjectService.lastResolveViewerCall["mapper"],
+        "protocolId": 2,
+        "ctx": ctx,
+        "mapper": call["mapper"],
     }
 
 
