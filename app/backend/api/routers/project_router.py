@@ -736,7 +736,7 @@ def deleteProtocol(
         protocolIds = getattr(payload, "protocolIds", None) if payload is not None else None
         if not protocolIds:
             return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"status": 1,
                          "errors": ["Missing protocolIds"],
                          "workflow": []},
