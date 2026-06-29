@@ -811,17 +811,27 @@ def restartProtocolAll(
 
     try:
         service.restartProtocolAll(mapper, projectId, protocolId)
-        service.syncProjectGraphAfterMutation(
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="restart protocol subtree",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        if isinstance(syncResult, dict):
+            if "protocols" in syncResult:
+                response["protocolsCount"] = syncResult["protocols"]
+            if "dependencies" in syncResult:
+                response["dependenciesCount"] = syncResult["dependencies"]
+
+        return response
 
     except HTTPException as e:
         return JSONResponse(
