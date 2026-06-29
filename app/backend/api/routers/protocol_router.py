@@ -30,11 +30,13 @@ from typing import Any
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.database import getMapper
 from app.backend.api.services.project_service import ProjectService
-from app.backend.models.protocol_model import ProtocolRequest
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 router = APIRouter(prefix="/protocols", tags=["protocols"])
-service = ProjectService()
+
+
+def getProjectService() -> ProjectService:
+    return ProjectService()
 
 
 @router.get("/{projectId}/{protocolId}", response_model=Any)
@@ -42,7 +44,8 @@ async def loadProtocol(
     projectId: int,
     protocolId: int,
     currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper)
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
@@ -60,7 +63,8 @@ async def loadNewProtocol(
     projectId: int,
     protClassName: str,
     currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper)
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
@@ -99,7 +103,8 @@ async def getProtocolLogs(
     errOffset: int = 0,
     scheduleOffset: int = 0,
     currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper)
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
 ):
     project = service.getProjectById(mapper, projectId, currentUser)
     if not project:
