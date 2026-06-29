@@ -731,3 +731,129 @@ def test_Coordinates3dReadEndpointsReturn404WhenProjectMissing(
     assert response.json()["detail"] == "Project not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_ListProjectTagsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/tags")
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.projectTagsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListProjectTagsCall["projectId"] == 1
+
+
+def test_CreateProjectTagUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/tags",
+        json={
+            "title": "New tag",
+            "description": None,
+            "color": "#ff0000",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == fakeProjectService.createProjectTagResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastCreateProjectTagCall["projectId"] == 1
+    assert fakeProjectService.lastCreateProjectTagCall["payload"].title == "New tag"
+
+
+def test_UpdateProjectTagUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.put(
+        "/projects/1/tags/tag-1",
+        json={
+            "title": "Updated tag",
+            "description": "Updated",
+            "color": "#0000ff",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.updateProjectTagResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastUpdateProjectTagCall["projectId"] == 1
+    assert fakeProjectService.lastUpdateProjectTagCall["tagId"] == "tag-1"
+
+
+def test_DeleteProjectTagUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.delete("/projects/1/tags/tag-1")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastDeleteProjectTagCall["projectId"] == 1
+    assert fakeProjectService.lastDeleteProjectTagCall["tagId"] == "tag-1"
+
+
+def test_ListProtocolTagsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/2/tags")
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.protocolTagsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListProtocolTagsCall["projectId"] == 1
+    assert fakeProjectService.lastListProtocolTagsCall["protocolId"] == 2
+
+
+def test_SetProtocolTagsUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.put(
+        "/projects/1/protocols/2/tags",
+        json={"tagIds": ["tag-1", "tag-2"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.setProtocolTagsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastSetProtocolTagsCall["projectId"] == 1
+    assert fakeProjectService.lastSetProtocolTagsCall["protocolId"] == 2
+    assert fakeProjectService.lastSetProtocolTagsCall["tagIds"] == ["tag-1", "tag-2"]
+
+
+def test_GetContextMenuVisibilityUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/context-menu-visibility")
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.contextMenuVisibilityResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetContextMenuVisibilityPolicyCall == {}
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload"),
+    [
+        ("get", "/projects/1/tags", None),
+        ("post", "/projects/1/tags", {"title": "New tag"}),
+        ("put", "/projects/1/tags/tag-1", {"title": "Updated"}),
+        ("delete", "/projects/1/tags/tag-1", None),
+        ("get", "/projects/1/protocols/2/tags", None),
+        ("put", "/projects/1/protocols/2/tags", {"tagIds": ["tag-1"]}),
+        ("get", "/projects/1/context-menu-visibility", None),
+    ],
+)
+def test_TagAndContextMenuEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    method,
+    url,
+    payload,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    request = getattr(projectClient, method)
+    if payload is None:
+        response = request(url)
+    else:
+        response = request(url, json=payload)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None

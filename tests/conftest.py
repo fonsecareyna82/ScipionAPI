@@ -395,6 +395,56 @@ class FakeProjectService:
         }
         self.lastGetIntegratedAnalyzeContextCall = None
 
+        self.projectTagsResult = [
+            {
+                "id": "tag-1",
+                "title": "Good",
+                "description": "Good protocols",
+                "color": "#00ff00",
+            }
+        ]
+        self.lastListProjectTagsCall = None
+
+        self.createProjectTagResult = {
+            "id": "tag-2",
+            "title": "New tag",
+            "description": None,
+            "color": "#ff0000",
+        }
+        self.lastCreateProjectTagCall = None
+
+        self.updateProjectTagResult = {
+            "id": "tag-1",
+            "title": "Updated tag",
+            "description": "Updated",
+            "color": "#0000ff",
+        }
+        self.lastUpdateProjectTagCall = None
+
+        self.deleteProjectTagResult = True
+        self.lastDeleteProjectTagCall = None
+
+        self.protocolTagsResult = {
+            "protocolId": "2",
+            "protocolDbId": 22,
+            "tagIds": ["tag-1"],
+        }
+        self.lastListProtocolTagsCall = None
+
+        self.setProtocolTagsResult = {
+            "protocolId": "2",
+            "protocolDbId": 22,
+            "tagIds": ["tag-1", "tag-2"],
+        }
+        self.lastSetProtocolTagsCall = None
+
+        self.contextMenuVisibilityResult = {
+            "open": True,
+            "delete": True,
+            "manageTags": True,
+        }
+        self.lastGetContextMenuVisibilityPolicyCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1006,6 +1056,65 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.integratedAnalyzeContextResult
+
+    def listProjectTags(self, mapper, projectId, currentUser):
+        self.lastListProjectTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectTagsResult
+
+    def createProjectTag(self, mapper, projectId, currentUser, payload):
+        self.lastCreateProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "payload": payload,
+        }
+        return self.createProjectTagResult
+
+    def updateProjectTag(self, mapper, projectId, tagId, currentUser, payload):
+        self.lastUpdateProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "tagId": tagId,
+            "currentUser": currentUser,
+            "payload": payload,
+        }
+        return self.updateProjectTagResult
+
+    def deleteProjectTag(self, mapper, projectId, tagId, currentUser):
+        self.lastDeleteProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "tagId": tagId,
+            "currentUser": currentUser,
+        }
+        return self.deleteProjectTagResult
+
+    def listProtocolTags(self, mapper, projectId, protocolId, currentUser):
+        self.lastListProtocolTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "currentUser": currentUser,
+        }
+        return self.protocolTagsResult
+
+    def setProtocolTags(self, mapper, projectId, protocolId, tagIds, currentUser):
+        self.lastSetProtocolTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "tagIds": tagIds,
+            "currentUser": currentUser,
+        }
+        return self.setProtocolTagsResult
+
+    def getContextMenuVisibilityPolicy(self):
+        self.lastGetContextMenuVisibilityPolicyCall = {}
+        return self.contextMenuVisibilityResult
 
 
 @pytest.fixture
