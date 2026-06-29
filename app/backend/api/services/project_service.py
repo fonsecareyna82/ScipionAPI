@@ -5154,7 +5154,7 @@ class ProjectService:
         # getNewProtocolParams
         _invalidateNewProtocolCacheIfNeeded()
 
-        key = str(protocolClassName)
+        key = "%s:%s" % (str(projectId), str(protocolClassName))
 
         with _newProtocolLock:
             cached = _newProtocolCache.get(key)
