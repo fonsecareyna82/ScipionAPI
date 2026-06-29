@@ -735,3 +735,35 @@ def test_WriteRemoteFileServiceResolvesPostgresqlProtocolId(service, tmp_path):
     }
     assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
 
+
+def test_GetProtocolLogsNormalizesNegativeOffsets(service, tmp_path):
+    stdoutLog = tmp_path / "stdout.log"
+    stderrLog = tmp_path / "stderr.log"
+    scheduleLog = tmp_path / "schedule.log"
+
+    stdoutLog.write_text("abc\n", encoding="utf-8")
+    stderrLog.write_text("ERR\n", encoding="utf-8")
+    scheduleLog.write_text("SCH\n", encoding="utf-8")
+
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(stdoutLog),
+        stderrLog=str(stderrLog),
+        scheduleLog=str(scheduleLog),
+    )
+
+    result = service.getProtocolLogs(
+        projectId=1,
+        protocolId=10,
+        offset=-10,
+        errOffset=-5,
+        scheduleOffset=-1,
+    )
+
+    assert result == {
+        "stdoutLog": "abc\n",
+        "stderrLog": "ERR\n",
+        "stdoutOffset": 4,
+        "stderrOffset": 4,
+        "scheduleLog": "SCH\n",
+        "scheduleOffset": 4,
+    }
