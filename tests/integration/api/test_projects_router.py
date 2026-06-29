@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import pytest
+from fastapi import HTTPException
 
 
 @pytest.mark.parametrize(
@@ -1244,3 +1245,72 @@ def test_TiltSeriesRenderEndpointsReturn404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastRenderTiltSeriesImageCall is None
     assert fakeProjectService.lastRenderTiltSeriesImagesBatchCall is None
+
+
+def test_RenderCtftomoPsdImageUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/ctftomo/psd"
+        "?spec=3%40%2Ftmp%2Fpsd.mrc&size=256&fmt=webp"
+        "&applyTransform=true&inline=false"
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"ctftomo-psd-bytes"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderCtfTomoPsdImageCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "psdPath": "3@/tmp/psd.mrc",
+        "size": 256,
+        "fmt": "webp",
+        "inline": False,
+        "index": 0,
+        "quality": 75,
+        "applyTransform": True,
+        "rot": None,
+        "shifts": None,
+        "mapper": fakeProjectService.lastRenderCtfTomoPsdImageCall["mapper"],
+    }
+
+
+def test_RenderCtftomoPsdImageReturns404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/ctftomo/psd"
+        "?spec=3%40%2Ftmp%2Fpsd.mrc"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderCtfTomoPsdImageCall is None
+
+
+def test_RenderCtftomoPsdImagePreservesHttpException(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.renderCtfTomoPsdImageError = HTTPException(
+        status_code=404,
+        detail="PSD image file not found",
+    )
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/ctftomo/psd"
+        "?spec=3%40%2Ftmp%2Fpsd.mrc"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "PSD image file not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
