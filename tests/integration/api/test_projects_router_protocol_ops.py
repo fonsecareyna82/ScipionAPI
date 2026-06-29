@@ -633,6 +633,8 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "status": 0,
         "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastStopProtocolCall == {
