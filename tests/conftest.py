@@ -205,6 +205,13 @@ class FakeProjectService:
                 }
             ],
         }
+        self.metadataTableWindowResult = {
+            "offset": 10,
+            "limit": 25,
+            "totalRows": 1,
+            "rows": [{"id": 1, "values": ["row-1"]}],
+        }
+        self.lastGetMetadataTableWindowCall = None
         self.lastGetMetadataTablePageCall = None
 
         self.renderMetadataImageCellResponse = PlainTextResponse(
@@ -432,6 +439,33 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.metadataTablePageResult
+
+    def getMetadataTableWindowService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            offset,
+            limit,
+            selectionOnly,
+            sortBy,
+            asc,
+            mapper,
+    ):
+        self.lastGetMetadataTableWindowCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "offset": offset,
+            "limit": limit,
+            "selectionOnly": selectionOnly,
+            "sortBy": sortBy,
+            "asc": asc,
+            "mapper": mapper,
+        }
+        return self.metadataTableWindowResult
 
     def renderMetadataImageCellService(
             self,

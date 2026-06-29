@@ -3081,7 +3081,7 @@ def getMetadataTableWindow(
     """
     Return a window (offset + limit) of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 

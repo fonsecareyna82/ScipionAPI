@@ -63,6 +63,37 @@ def test_MetadataReadEndpointsReturn404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectByIdCall is None
 
 
+def test_GetMetadataTableWindowDelegatesMapperToService(projectClient, fakeProjectService):
+    fakeProjectService.metadataTableWindowResult = {
+        "offset": 10,
+        "limit": 25,
+        "totalRows": 1,
+        "rows": [{"id": 1, "values": ["row-1"]}],
+    }
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/rows"
+        "?offset=10&limit=25&sortBy=id&asc=false&selectionOnly=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.metadataTableWindowResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetMetadataTableWindowCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tableName": "objects",
+        "offset": 10,
+        "limit": 25,
+        "selectionOnly": True,
+        "sortBy": "id",
+        "asc": False,
+        "mapper": fakeProjectService.lastGetMetadataTableWindowCall["mapper"],
+    }
+
+
 def test_ListProjectWorkflowsReturnsServiceResult(projectClient):
     response = projectClient.get("/projects/workflows")
 
