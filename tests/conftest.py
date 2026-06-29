@@ -502,6 +502,29 @@ class FakeProjectService:
         }
         self.lastGetVolumeSurfaceMeshCall = None
 
+        self.tiltSeriesImageResponse = Response(
+            content=b"tilt-image-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderTiltSeriesImageCall = None
+
+        self.tiltSeriesBatchResult = {
+            "tiltSeriesId": "TS_001",
+            "size": 256,
+            "fmt": "webp",
+            "applyTransform": True,
+            "items": [
+                {
+                    "index": 0,
+                    "contentType": "image/png",
+                    "dataUrl": "data:image/png;base64,AAAA",
+                    "cache": "MISS",
+                }
+            ],
+            "errors": [],
+        }
+        self.lastRenderTiltSeriesImagesBatchCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1328,6 +1351,64 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.volumeSurfaceMeshResult
+
+    def renderTiltSeriesImageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            index=0,
+            size=1024,
+            fmt="png",
+            applyTransform=True,
+            inline=True,
+            requestHeaders=None,
+            mapper=None,
+    ):
+        self.lastRenderTiltSeriesImageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "index": index,
+            "size": size,
+            "fmt": fmt,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "requestHeaders": requestHeaders,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesImageResponse
+
+    def renderTiltSeriesImagesBatchService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            indices,
+            size=512,
+            fmt="webp",
+            applyTransform=True,
+            inline=True,
+            requestHeaders=None,
+            mapper=None,
+    ):
+        self.lastRenderTiltSeriesImagesBatchCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "indices": indices,
+            "size": size,
+            "fmt": fmt,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "requestHeaders": requestHeaders,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesBatchResult
 
 
 @pytest.fixture

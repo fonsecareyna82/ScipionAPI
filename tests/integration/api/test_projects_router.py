@@ -1147,3 +1147,100 @@ def test_VolumeRenderEndpointsReturn404WhenProjectMissing(
     assert fakeProjectService.lastRenderVolumeSliceCall is None
     assert fakeProjectService.lastGetVolumeData3dCall is None
     assert fakeProjectService.lastGetVolumeSurfaceMeshCall is None
+
+
+def test_RenderTiltSeriesImageUsesProjectDbRow(projectClient, fakeProjectService):
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/tilt"
+        "?index=3&size=256&fmt=webp&applyTransform=true&inline=false"
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"tilt-image-bytes"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderTiltSeriesImageCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tiltSeriesId": "TS_001",
+        "index": 3,
+        "size": 256,
+        "fmt": "webp",
+        "applyTransform": True,
+        "inline": False,
+        "requestHeaders": None,
+        "mapper": fakeProjectService.lastRenderTiltSeriesImageCall["mapper"],
+    }
+
+
+def test_RenderTiltSeriesImagesBatchUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/tilt/batch",
+        json={
+            "indices": [0, 2, 4],
+            "size": 256,
+            "fmt": "webp",
+            "applyTransform": True,
+            "inline": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.tiltSeriesBatchResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderTiltSeriesImagesBatchCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tiltSeriesId": "TS_001",
+        "indices": [0, 2, 4],
+        "size": 256,
+        "fmt": "webp",
+        "applyTransform": True,
+        "inline": False,
+        "requestHeaders": None,
+        "mapper": fakeProjectService.lastRenderTiltSeriesImagesBatchCall["mapper"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload"),
+    [
+        (
+            "get",
+            "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/tilt?index=3",
+            None,
+        ),
+        (
+            "post",
+            "/projects/1/protocols/2/outputs/out/tiltseries/TS_001/tilt/batch",
+            {"indices": [0, 2]},
+        ),
+    ],
+)
+def test_TiltSeriesRenderEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    method,
+    url,
+    payload,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    request = getattr(projectClient, method)
+    if payload is None:
+        response = request(url)
+    else:
+        response = request(url, json=payload)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRenderTiltSeriesImageCall is None
+    assert fakeProjectService.lastRenderTiltSeriesImagesBatchCall is None
