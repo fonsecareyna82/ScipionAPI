@@ -89,12 +89,13 @@ def test_CheckProjectPostgresqlConsistencyCallsService(projectClient, fakeProjec
 
 
 def test_LoadProtocolsReturns404WhenProjectDoesNotExist(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.projectDbRowResult = None
 
     response = projectClient.get("/projects/1/protocols")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_LoadProtocolsReturns404WhenProtocolsAreMissing(projectClient, fakeProjectService):
@@ -113,6 +114,8 @@ def test_LoadProtocolsReturnsProtocols(projectClient, fakeProjectService):
 
     assert response.status_code == 200
     assert response.json() == [{"id": 11, "name": "Prot A"}]
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_ListProtocolLogChannelsNormalizesStringAndDictItems(projectClient, fakeProjectService):
