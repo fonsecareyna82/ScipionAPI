@@ -837,6 +837,46 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
     }
 
 
+def test_ContinueProtocolAllWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.continueProtocolAllError = HTTPException(
+        status_code=422,
+        detail=["cannot continue", "blocked"],
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/continue-all")
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["cannot continue", "blocked"],
+        "workflow": [],
+    }
+
+
+def test_ContinueProtocolAllWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeContinueProtocolAll(mapper, projectId, protocolId, currentUser):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "continueProtocolAll",
+        fakeContinueProtocolAll,
+    )
+
+    response = projectClient.post("/projects/1/protocols/10/continue-all")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService):
     response = projectClient.post("/projects/1/protocols/10/continue-all")
 
