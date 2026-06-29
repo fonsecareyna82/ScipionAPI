@@ -503,6 +503,38 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
+def test_RenameProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeRenameProtocol(
+        mapper,
+        projectId,
+        protocolId,
+        newName,
+        newComment,
+    ):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fakeProjectService, "renameProtocol", fakeRenameProtocol)
+
+    response = projectClient.put(
+        "/projects/1/protocols/10/rename",
+        json={
+            "runName": "Renamed protocol",
+            "comment": "Updated comment",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_DuplicateProtocolRejectsMissingItems(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/duplicate",
