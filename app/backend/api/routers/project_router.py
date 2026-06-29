@@ -211,13 +211,7 @@ def getProjectEffectiveSettings(
 
     The project must be accessible by the authenticated user.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

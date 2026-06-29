@@ -2145,13 +2145,7 @@ class ProjectService:
             currentUser: Any,
     ) -> Dict[str, Any]:
         # getProjectEffectiveSettings
-        project = self.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
-        )
+        project = self.getProjectDbRow(mapper, projectId, currentUser)
         if not project:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
