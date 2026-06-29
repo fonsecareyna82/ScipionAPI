@@ -471,6 +471,8 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
         "status": 0,
         "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastResetProtocolFromCall == {
