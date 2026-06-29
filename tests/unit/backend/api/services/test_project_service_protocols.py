@@ -2367,3 +2367,42 @@ def test_ApplyParamsToProtocolResolvesPostgresqlMultiPointerParentIds(
     assert mapper.db.fetchOneCalls[1]["params"] == (1, 501, "501")
 
 
+def test_GetNewProtocolParamsCacheIsScopedByProject(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    projectServiceModule._newProtocolCache.clear()
+
+    class FakeProtocolClass:
+        pass
+
+    service.currentProject.protocolFactories = {
+        "ProtClass": FakeProtocolClass,
+    }
+
+    buildCalls = []
+
+    def fakeBuildProtocolContext(projectId, protocol):
+        buildCalls.append(projectId)
+        return {
+            "info": {
+                "projectId": projectId,
+                "protocolClassName": "ProtClass",
+            },
+            "form": {},
+            "values": {},
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_buildProtocolContext",
+        fakeBuildProtocolContext,
+    )
+
+    first = service.getNewProtocolParams(1, "ProtClass")
+    second = service.getNewProtocolParams(2, "ProtClass")
+
+    assert first["info"]["projectId"] == 1
+    assert second["info"]["projectId"] == 2
+    assert buildCalls == [1, 2]
