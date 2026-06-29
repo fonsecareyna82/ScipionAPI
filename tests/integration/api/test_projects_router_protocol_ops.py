@@ -1075,6 +1075,52 @@ def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProj
     }
 
 
+def test_StopProtocolWrapsHttpException(projectClient, fakeProjectService):
+    fakeProjectService.stopProtocolError = HTTPException(
+        status_code=422,
+        detail=["cannot stop", "blocked"],
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/stop",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": 1,
+        "errors": ["cannot stop", "blocked"],
+        "workflow": [],
+    }
+
+
+def test_StopProtocolWrapsUnexpectedException(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeStopProtocol(mapper, projectId, protocolIds):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        fakeProjectService,
+        "stopProtocol",
+        fakeStopProtocol,
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/stop",
+        json={"protocolIds": ["10"]},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "status": 1,
+        "errors": ["boom"],
+        "workflow": [],
+    }
+
+
 def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
