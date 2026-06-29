@@ -458,6 +458,16 @@ class FakeProjectService:
         }
         self.lastGetFscRowsCall = None
 
+        self.projectEffectiveSettingsResult = {
+            "projectId": 1,
+            "settings": {
+                "user": {"protocolView": "tree"},
+                "instance": {"executionMode": "local"},
+                "host": {"queueSystem": "slurm"},
+            },
+        }
+        self.lastGetProjectEffectiveSettingsCall = None
+
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
@@ -1143,6 +1153,14 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.fscRowsResult
+
+    def getProjectEffectiveSettings(self, mapper, projectId, currentUser):
+        self.lastGetProjectEffectiveSettingsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectEffectiveSettingsResult
 
 
 @pytest.fixture

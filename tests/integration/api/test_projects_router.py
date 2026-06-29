@@ -887,3 +887,39 @@ def test_GetFscRowsReturns404WhenProjectMissing(projectClient, fakeProjectServic
     assert response.json()["detail"] == "Project not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_GetProjectEffectiveSettingsUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get("/projects/1/effective-settings")
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.projectEffectiveSettingsResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetProjectEffectiveSettingsCall == {
+        "mapper": fakeProjectService.lastGetProjectEffectiveSettingsCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
+def test_GetProjectEffectiveSettingsReturns404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get("/projects/1/effective-settings")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetProjectEffectiveSettingsCall is None
