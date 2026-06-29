@@ -157,7 +157,7 @@ def importProject(
 @router.get("/{projectId}", response_model=Any)
 def getProject(
     projectId: int,
-    validateConsistency: bool = Query(True),
+    validateConsistency: bool = Query(False),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
