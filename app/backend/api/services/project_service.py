@@ -5639,13 +5639,12 @@ class ProjectService:
             try:
                 self.stopProtocol(mapper, projectId, [protocolId])
 
-                self.syncProjectProtocolsAndDependencies(
+                return self.syncProjectProtocolsAndDependencies(
                     mapper,
                     projectId,
                     refresh=True,
                     checkPid=True,
                 )
-                return
             except HTTPException:
                 raise
             except Exception as e:
@@ -5731,7 +5730,7 @@ class ProjectService:
 
                 self.currentProject.launchProtocol(protocol)
 
-            self.syncProjectProtocolsAndDependencies(
+            return self.syncProjectProtocolsAndDependencies(
                 mapper,
                 projectId,
                 refresh=True,

@@ -489,20 +489,22 @@ async def launchProtocol(
                 },
             )
 
-        service.launchProtocol(
+        result = service.launchProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=request.getProtocolId(),
             protocolClassName=request.getProtocolClassName(),
             params=request.getParams(),
             executeMode=request.getMode(),
-        )
+        ) or {}
 
-        return {
+        response = {
             "status": 0,
             "errors": [],
             "workflow": [],
         }
+
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(

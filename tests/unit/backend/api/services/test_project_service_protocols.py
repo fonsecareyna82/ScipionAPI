@@ -1171,13 +1171,28 @@ def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
 def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
     calls = []
 
+    def fakeStopProtocol(mapper, projectId, protocolIds):
+        calls.append(protocolIds)
+
+    def fakeSyncProjectProtocolsAndDependencies(
+        mapper,
+        projectId,
+        refresh=False,
+        checkPid=False,
+    ):
+        return {
+            "protocols": 1,
+            "dependencies": 0,
+        }
+
+    monkeypatch.setattr(service, "stopProtocol", fakeStopProtocol)
     monkeypatch.setattr(
         service,
-        "stopProtocol",
-        lambda mapper, projectId, protocolIds: calls.append(protocolIds),
+        "syncProjectProtocolsAndDependencies",
+        fakeSyncProjectProtocolsAndDependencies,
     )
 
-    service.launchProtocol(
+    result = service.launchProtocol(
         mapper=mapper,
         projectId=1,
         protocolId="10",
@@ -1187,6 +1202,10 @@ def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch)
     )
 
     assert calls == [["10"]]
+    assert result == {
+        "protocols": 1,
+        "dependencies": 0,
+    }
 
 
 def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch):

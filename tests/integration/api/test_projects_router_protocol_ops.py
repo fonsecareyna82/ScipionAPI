@@ -132,6 +132,54 @@ def test_LaunchProtocolDelegatesToService(projectClient, fakeProjectService):
     }
 
 
+def test_LaunchProtocolReturnsSyncCounts(
+    projectClient,
+    fakeProjectService,
+    monkeypatch,
+):
+    def fakeLaunchProtocol(
+        mapper,
+        projectId,
+        protocolId,
+        protocolClassName,
+        params,
+        executeMode,
+    ):
+        fakeProjectService.lastLaunchProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "protocolClassName": protocolClassName,
+            "params": params,
+            "executeMode": executeMode,
+        }
+        return {
+            "protocols": 2,
+            "dependencies": 1,
+        }
+
+    monkeypatch.setattr(fakeProjectService, "launchProtocol", fakeLaunchProtocol)
+
+    response = projectClient.post(
+        "/projects/1/launch",
+        json={
+            "protocolId": "10",
+            "protocolClassName": "ProtClass",
+            "params": {"a": 1},
+            "mode": "resume",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "protocolsCount": 2,
+        "dependenciesCount": 1,
+    }
+
+
 def test_LaunchProtocolWrapsHttpException(projectClient, fakeProjectService):
     fakeProjectService.launchProtocolError = HTTPException(status_code=409, detail=["conflict", "busy"])
 
