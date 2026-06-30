@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -170,11 +171,65 @@ class PostgresqlFscReader:
 
         return None
 
+    def _parseDelimitedXYText(self, raw: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+
+        lines = [
+            line.strip()
+            for line in text.replace(";", "\n").splitlines()
+            if line.strip()
+        ]
+
+        if len(lines) >= 2:
+            # Two-row format:
+            # "0.01,0.02,0.03\n0.9,0.5,0.1"
+            first = self._parseNumericSequence(lines[0])
+            second = self._parseNumericSequence(lines[1])
+            if first is not None and second is not None:
+                parsed = self._cleanXY(first, second)
+                if parsed is not None:
+                    return parsed
+
+        rows: List[List[float]] = []
+        for line in lines:
+            tokens = [
+                token
+                for token in re.split(r"[\s,]+", line.strip())
+                if token.strip()
+            ]
+            if len(tokens) < 2:
+                continue
+
+            try:
+                row = [float(token) for token in tokens]
+            except Exception:
+                continue
+
+            if len(row) >= 2:
+                rows.append(row)
+
+        if rows:
+            try:
+                arr = np.asarray(rows, dtype=float)
+                if arr.ndim == 2 and arr.shape[1] >= 2:
+                    return self._cleanXY(arr[:, 0], arr[:, 1])
+            except Exception:
+                pass
+
+        return None
+
     def _parseDataPayload(self, raw: Any) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         parsed = self._parseJsonValue(raw)
 
         if parsed is None:
             return None
+
+        if isinstance(parsed, str):
+            parsedFromText = self._parseDelimitedXYText(parsed)
+            if parsedFromText is not None:
+                return parsedFromText
 
         if isinstance(parsed, dict):
             xRaw = self._firstValueByNormalizedName(
@@ -262,18 +317,79 @@ class PostgresqlFscReader:
         return None
 
     def _buildXYFromArrays(self, xRaw: Any, yRaw: Any) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        x = self._parseNumericSequence(xRaw)
+        y = self._parseNumericSequence(yRaw)
+
+        if x is None or y is None:
+            return None
+
+        return self._cleanXY(x, y)
+
+    def _parseNumericSequence(self, raw: Any) -> Optional[np.ndarray]:
+        parsed = self._parseJsonValue(raw)
+
+        if isinstance(parsed, np.ndarray):
+            return self._arrayFromAny(parsed)
+
+        if isinstance(parsed, (list, tuple)):
+            return self._arrayFromAny(parsed)
+
+        if isinstance(parsed, str):
+            text = parsed.strip()
+            if not text:
+                return None
+
+            # Common PostgreSQL/Scipion flat values:
+            # "0.01,0.02,0.03"
+            # "0.01, 0.02, 0.03"
+            # "[0.01,0.02,0.03]" if it was not valid JSON for some reason
+            # "0.01 0.02 0.03"
+            cleaned = text.strip()
+            cleaned = cleaned.strip("[]()")
+
+            if not cleaned:
+                return None
+
+            tokens = [
+                token
+                for token in re.split(r"[\s,;]+", cleaned)
+                if token.strip()
+            ]
+
+            if len(tokens) <= 1:
+                return self._arrayFromAny([cleaned])
+
+            values: List[float] = []
+            for token in tokens:
+                try:
+                    value = float(token)
+                except Exception:
+                    return None
+
+                if np.isfinite(value):
+                    values.append(value)
+
+            if not values:
+                return None
+
+            return np.asarray(values, dtype=float)
+
+        return self._arrayFromAny(parsed)
+
+    @staticmethod
+    def _arrayFromAny(raw: Any) -> Optional[np.ndarray]:
         try:
-            x = np.asarray(self._parseJsonValue(xRaw), dtype=float)
-            y = np.asarray(self._parseJsonValue(yRaw), dtype=float)
+            array = np.asarray(raw, dtype=float)
         except Exception:
             return None
 
-        if x.ndim != 1:
-            x = x.ravel()
-        if y.ndim != 1:
-            y = y.ravel()
+        if array.ndim != 1:
+            array = array.ravel()
 
-        return self._cleanXY(x, y)
+        if array.size == 0:
+            return None
+
+        return array
 
     def _cleanXY(self, xRaw: Any, yRaw: Any) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         try:

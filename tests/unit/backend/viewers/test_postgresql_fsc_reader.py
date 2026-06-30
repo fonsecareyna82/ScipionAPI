@@ -161,3 +161,82 @@ def test_PostgresqlFscReaderReturnsNoneWhenRowsAreNotParseable(authTestEnv):
     assert reader.hasOutput() is True
     assert reader.getFscRows() is None
     assert reader.lastSkipReason == "fsc_rows_not_found"
+
+
+def test_PostgresqlFscReaderBuildsRowsFromCommaSeparatedXYStrings(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_fsc_reader")
+
+    storedSet = {
+        "id": 1,
+        "setClassName": "SetOfFSCs",
+        "itemClassName": "FSC",
+        "items": [
+            {
+                "id": 10,
+                "scipionItemId": 101,
+                "label": "Half maps",
+                "values": {
+                    "x": "0.01,0.02,0.03",
+                    "y": "0.9,0.5,0.1",
+                },
+            }
+        ],
+    }
+
+    reader = module.PostgresqlFscReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputFsc",
+    )
+    reader.setMapper = FakeSetMapper(storedSet)
+
+    assert reader.getFscRows() == {
+        "threshold": 0.143,
+        "rows": [
+            {
+                "label": "Half maps",
+                "resolution": 3.5,
+                "x": [0.01, 0.02, 0.03],
+                "y": [0.9, 0.5, 0.1],
+            }
+        ],
+    }
+
+
+def test_PostgresqlFscReaderBuildsRowsFromDelimitedDataText(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_fsc_reader")
+
+    storedSet = {
+        "id": 1,
+        "setClassName": "SetOfFSCs",
+        "itemClassName": "FSC",
+        "items": [
+            {
+                "id": 10,
+                "scipionItemId": 101,
+                "label": "FSC text",
+                "values": {
+                        "data": "0.01,0.02,0.03\n0.9,0.5,0.1",
+                        "resolution": 3.5,
+                        },
+            }
+        ],
+
+    }
+
+    reader = module.PostgresqlFscReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputFsc",
+    )
+    reader.setMapper = FakeSetMapper(storedSet)
+
+    result = reader.getFscRows()
+
+    assert result is not None
+    assert result["rows"][0]["label"] == "FSC text"
+    assert result["rows"][0]["x"] == [0.01, 0.02, 0.03]
+    assert result["rows"][0]["y"] == [0.9, 0.5, 0.1]
+    assert result["rows"][0]["resolution"] == 3.5
