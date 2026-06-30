@@ -140,6 +140,7 @@ class FakeProjectService:
             }
         }
         self.lastPollLogsCall = None
+        self.lastListProtocolLogChannelsCall = None
 
         self.resolveViewerResult = {"handled": False}
         self.resolveViewerError = None
@@ -586,10 +587,31 @@ class FakeProjectService:
     def listProjectLogChannelsService(self, projectId, protocolId):
         return self.logChannelsResult
 
-    def listProtocolLogChannelsService(self, projectId, protocolId, mapper=None):
+    def listProtocolLogChannelsService(
+            self,
+            projectId,
+            protocolId,
+            mapper=None,
+            currentUser=None,
+    ):
+        self.lastListProtocolLogChannelsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "mapper": mapper,
+            "currentUser": currentUser,
+        }
         return self.logChannelsResult
 
-    def pollProtocolLogsService(self, projectId, protocolId, offsets, maxBytes, maxLines, mapper=None):
+    def pollProtocolLogsService(
+            self,
+            projectId,
+            protocolId,
+            offsets,
+            maxBytes,
+            maxLines,
+            mapper=None,
+            currentUser=None,
+    ):
         self.lastPollLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
@@ -597,6 +619,7 @@ class FakeProjectService:
             "maxBytes": maxBytes,
             "maxLines": maxLines,
             "mapper": mapper,
+            "currentUser": currentUser,
         }
         return self.pollLogsResult
 

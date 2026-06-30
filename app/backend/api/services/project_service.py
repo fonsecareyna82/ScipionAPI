@@ -6063,15 +6063,404 @@ class ProjectService:
 
         return 'default'
 
+    def _resolvePostgresqlProjectPathForFilesystem(
+            self,
+            mapper,
+            projectId: int,
+    ) -> Optional[str]:
+        if mapper is None or not hasattr(mapper, "db"):
+            return None
+
+        try:
+            row = mapper.db.fetchOne(
+                """
+                SELECT name
+                  FROM projects
+                 WHERE id = %s
+                """,
+                (projectId,),
+            )
+        except Exception:
+            logger.debug(
+                "Could not resolve project path from PostgreSQL. projectId=%s",
+                projectId,
+                exc_info=True,
+            )
+            return None
+
+        if not row:
+            return None
+
+        rawPath = row.get("name") if isinstance(row, dict) else row[0]
+        if not rawPath:
+            return None
+
+        try:
+            path = self._normalizeProjectPath(str(rawPath))
+        except Exception:
+            path = str(rawPath)
+
+        if not os.path.isabs(path):
+            try:
+                path = self.manager.getProjectPath(path)
+            except Exception:
+                pass
+
+        return os.path.realpath(path)
+
+    def _resolvePostgresqlProtocolRunPath(
+            self,
+            mapper,
+            projectId: int,
+            scipionProtocolId: Union[int, str],
+    ) -> Optional[str]:
+        projectPath = self._resolvePostgresqlProjectPathForFilesystem(
+            mapper=mapper,
+            projectId=projectId,
+        )
+        if not projectPath:
+            return None
+
+        runsPath = os.path.join(projectPath, "Runs")
+        if not os.path.isdir(runsPath):
+            return None
+
+        runtimeIdText = str(scipionProtocolId).strip()
+        runtimeIdInt = None
+        try:
+            runtimeIdInt = int(runtimeIdText)
+        except Exception:
+            pass
+
+        matches: List[str] = []
+
+        try:
+            for entry in os.scandir(runsPath):
+                if not entry.is_dir():
+                    continue
+
+                name = entry.name
+
+                if name.startswith("%s_" % runtimeIdText):
+                    matches.append(entry.path)
+                    continue
+
+                if runtimeIdInt is not None:
+                    match = re.match(r"^0*(\d+)_", name)
+                    if match and int(match.group(1)) == runtimeIdInt:
+                        matches.append(entry.path)
+                        continue
+        except Exception:
+            logger.debug(
+                "Could not scan Runs folder for protocol logs. runsPath=%s",
+                runsPath,
+                exc_info=True,
+            )
+            return None
+
+        if not matches:
+            return None
+
+        return sorted(matches)[0]
+
+    @staticmethod
+    def _firstExistingLogPath(
+            protocolPath: str,
+            candidates: List[str],
+    ) -> Optional[str]:
+        for candidate in candidates:
+            path = os.path.join(protocolPath, candidate)
+            if os.path.exists(path):
+                return path
+
+        return None
+
+    def _resolvePostgresqlProtocolLogPaths(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ) -> Optional[Dict[str, Any]]:
+        if mapper is None:
+            return None
+
+        try:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        except Exception:
+            logger.debug(
+                "Could not resolve PostgreSQL protocol id for logs. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+                exc_info=True,
+            )
+            return None
+
+        protocolPath = self._resolvePostgresqlProtocolRunPath(
+            mapper=mapper,
+            projectId=projectId,
+            scipionProtocolId=scipionProtocolId,
+        )
+        if not protocolPath:
+            return None
+
+        logCandidates = {
+            "stdout": [
+                "logs/run.stdout",
+                "logs/stdout.log",
+                "logs/stdout.txt",
+                "run.stdout",
+                "stdout.log",
+                "stdout.txt",
+            ],
+            "stderr": [
+                "logs/run.stderr",
+                "logs/stderr.log",
+                "logs/stderr.txt",
+                "run.stderr",
+                "stderr.log",
+                "stderr.txt",
+            ],
+            "schedule": [
+                "logs/schedule.log",
+                "logs/schedule.txt",
+                "logs/run.schedule",
+                "schedule.log",
+                "schedule.txt",
+                "run.schedule",
+            ],
+        }
+
+        paths = {
+            channelId: self._firstExistingLogPath(protocolPath, candidates)
+            for channelId, candidates in logCandidates.items()
+        }
+
+        # If we cannot find any known log file, do not guess. Let runtime fallback
+        # resolve the exact Scipion log paths.
+        if not any(paths.values()):
+            return None
+
+        return {
+            "protocolId": scipionProtocolId,
+            "protocolPath": protocolPath,
+            "paths": paths,
+        }
+
+    def _ensureRuntimeProjectForLogs(
+            self,
+            mapper,
+            projectId: int,
+            currentUser: Optional[dict],
+    ) -> None:
+        if getattr(self, "currentProject", None) is not None:
+            return
+
+        if currentUser is None:
+            return
+
+        self.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+    @staticmethod
+    def _buildProtocolLogChannel(
+            channelId: str,
+            label: str,
+            order: int,
+            filePath: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            "id": channelId,
+            "label": label,
+            "order": order,
+        }
+
+    def _buildProtocolLogChannelsPayload(
+            self,
+            projectId: int,
+            protocolId: Union[int, str],
+            logPaths: Dict[str, Optional[str]],
+    ) -> Dict[str, Any]:
+        return {
+            "projectId": projectId,
+            "protocolId": int(protocolId),
+            "channels": [
+                self._buildProtocolLogChannel("stdout", "Output", 1, logPaths.get("stdout")),
+                self._buildProtocolLogChannel("stderr", "Errors", 2, logPaths.get("stderr")),
+                self._buildProtocolLogChannel("schedule", "Schedule", 3, logPaths.get("schedule")),
+            ],
+        }
+
+    @staticmethod
+    def _normalizeProtocolLogOffsets(rawOffsets: Dict[str, int]) -> Dict[str, int]:
+        if not isinstance(rawOffsets, dict):
+            return {"stdout": 0, "stderr": 0, "schedule": 0}
+
+        keyMap = {
+            "stdout": "stdout",
+            "stdoutLog": "stdout",
+            "out": "stdout",
+            "stderr": "stderr",
+            "stderrLog": "stderr",
+            "err": "stderr",
+            "schedule": "schedule",
+            "scheduleLog": "schedule",
+        }
+
+        normalized = {"stdout": 0, "stderr": 0, "schedule": 0}
+        for key, value in rawOffsets.items():
+            canonical = keyMap.get(str(key), None)
+            if canonical is None:
+                continue
+
+            try:
+                normalized[canonical] = max(0, int(value))
+            except Exception:
+                normalized[canonical] = 0
+
+        return normalized
+
+    @staticmethod
+    def _readProtocolLogChunk(
+            filePath: Optional[str],
+            startOffset: int,
+            maxBytes: Optional[int] = 65536,
+            maxLines: Optional[int] = 2000,
+    ) -> Dict[str, Any]:
+        if not filePath or not os.path.exists(filePath):
+            return {
+                "content": "",
+                "offset": int(startOffset or 0),
+            }
+
+        try:
+            sizeBytes = int(os.path.getsize(filePath))
+        except Exception:
+            sizeBytes = 0
+
+        safeOffset = int(startOffset or 0)
+        if safeOffset < 0:
+            safeOffset = 0
+
+        if safeOffset > sizeBytes:
+            safeOffset = 0
+
+        bytesCap = None if maxBytes is None else max(1, int(maxBytes))
+        linesCap = None if maxLines is None else max(1, int(maxLines))
+
+        contentParts: List[str] = []
+        bytesRead = 0
+        linesRead = 0
+
+        try:
+            with open(filePath, "rb") as handle:
+                handle.seek(safeOffset)
+
+                while True:
+                    if linesCap is not None and linesRead >= linesCap:
+                        break
+                    if bytesCap is not None and bytesRead >= bytesCap:
+                        break
+
+                    posBefore = handle.tell()
+                    lineBytes = handle.readline()
+                    if not lineBytes:
+                        break
+
+                    if bytesCap is not None and (bytesRead + len(lineBytes)) > bytesCap:
+                        handle.seek(posBefore)
+                        break
+
+                    contentParts.append(lineBytes.decode("utf-8", errors="ignore"))
+                    bytesRead += len(lineBytes)
+                    linesRead += 1
+
+                newOffset = handle.tell()
+
+        except Exception as e:
+            return {
+                "content": "",
+                "offset": safeOffset,
+                "error": str(e),
+            }
+
+        return {
+            "content": "".join(contentParts),
+            "offset": int(newOffset),
+        }
+
+    def _pollProtocolLogPaths(
+            self,
+            projectId: int,
+            protocolId: Union[int, str],
+            logPaths: Dict[str, Optional[str]],
+            offsets: Dict[str, int],
+            maxBytes: Optional[int] = 65536,
+            maxLines: Optional[int] = 2000,
+    ) -> Dict[str, Any]:
+        normalizedOffsets = self._normalizeProtocolLogOffsets(offsets or {})
+
+        return {
+            "projectId": projectId,
+            "protocolId": int(protocolId),
+            "channels": {
+                "stdout": self._readProtocolLogChunk(
+                    logPaths.get("stdout"),
+                    normalizedOffsets.get("stdout", 0),
+                    maxBytes=maxBytes,
+                    maxLines=maxLines,
+                ),
+                "stderr": self._readProtocolLogChunk(
+                    logPaths.get("stderr"),
+                    normalizedOffsets.get("stderr", 0),
+                    maxBytes=maxBytes,
+                    maxLines=maxLines,
+                ),
+                "schedule": self._readProtocolLogChunk(
+                    logPaths.get("schedule"),
+                    normalizedOffsets.get("schedule", 0),
+                    maxBytes=maxBytes,
+                    maxLines=maxLines,
+                ),
+            },
+        }
+
     def listProtocolLogChannelsService(
             self,
             projectId: int,
             protocolId: int,
             mapper=None,
+            currentUser: Optional[dict] = None,
     ):
         """
         Return available log channels for a protocol, including paths and basic file stats.
         """
+        pgLogs = self._resolvePostgresqlProtocolLogPaths(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+        if pgLogs is not None:
+            return self._buildProtocolLogChannelsPayload(
+                projectId=projectId,
+                protocolId=pgLogs["protocolId"],
+                logPaths=pgLogs["paths"],
+            )
+
+        self._ensureRuntimeProjectForLogs(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+
         scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
@@ -6133,10 +6522,32 @@ class ProjectService:
             maxBytes: Optional[int] = 65536,
             maxLines: Optional[int] = 2000,
             mapper=None,
+            currentUser: Optional[dict] = None,
     ):
         """
         Incrementally read protocol logs from the given offsets, applying maxBytes and maxLines limits.
         """
+        pgLogs = self._resolvePostgresqlProtocolLogPaths(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+        if pgLogs is not None:
+            return self._pollProtocolLogPaths(
+                projectId=projectId,
+                protocolId=pgLogs["protocolId"],
+                logPaths=pgLogs["paths"],
+                offsets=offsets,
+                maxBytes=maxBytes,
+                maxLines=maxLines,
+            )
+
+        self._ensureRuntimeProjectForLogs(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+
         scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,

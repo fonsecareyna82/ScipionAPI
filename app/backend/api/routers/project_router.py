@@ -1115,7 +1115,7 @@ def listProtocolLogChannels(
     service: ProjectService = Depends(getProjectService),
 ):
     # listProtocolLogChannels
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1124,6 +1124,7 @@ def listProtocolLogChannels(
             projectId=projectId,
             protocolId=protocolId,
             mapper=mapper,
+            currentUser=currentUser,
         )
 
         # normalizeChannels
@@ -1166,7 +1167,7 @@ def pollProtocolLogs(
     service: ProjectService = Depends(getProjectService),
 ):
     # pollProtocolLogs
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1188,6 +1189,7 @@ def pollProtocolLogs(
             maxBytes=maxBytes,
             maxLines=maxLines,
             mapper=mapper,
+            currentUser=currentUser,
         )
 
         # normalizePollResponse
