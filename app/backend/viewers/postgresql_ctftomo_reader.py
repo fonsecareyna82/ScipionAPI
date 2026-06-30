@@ -42,6 +42,7 @@ class PostgresqlCtftomoReader:
         self._storedSet = None
         self._logicalTables = None
         self._associatedTiltSeriesFramesBySeriesId = {}
+        self.lastSkipReason = None
 
     def hasOutput(self) -> bool:
         return self._getStoredSet() is not None
@@ -59,8 +60,13 @@ class PostgresqlCtftomoReader:
         return result
 
     def getCtftomoSeriesViews(self, tiltSeriesId: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
         seriesItem = self._findCtftomoSeriesItem(tiltSeriesId)
         if seriesItem is None:
+            self.lastSkipReason = (
+                    "ctftomo_series_item_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
             return None
 
         summary = self._buildCtftomoSeriesSummary(seriesItem, 0)
@@ -409,7 +415,7 @@ class PostgresqlCtftomoReader:
 
         dims = self._extractDims(values)
         if dims is not None:
-            summary["dims"] = dimsf
+            summary["dims"] = dims
 
         pixelSize = self._extractSamplingRate(values)
         if pixelSize is not None:
