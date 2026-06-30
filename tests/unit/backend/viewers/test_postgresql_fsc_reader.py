@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import importlib
-
+import pytest
 
 class FakeSetMapper:
     def __init__(self, storedSet):
@@ -57,9 +57,10 @@ def test_PostgresqlFscReaderBuildsRowsFromExplicitXY(authTestEnv):
                 "scipionItemId": 101,
                 "label": "Half maps",
                 "values": {
-                    "x": [0.01, 0.02, 0.03],
-                    "y": [0.9, 0.5, 0.1],
-                },
+                            "x": [0.01, 0.02, 0.03],
+                            "y": [0.9, 0.5, 0.1],
+                            "resolution": 3.5,
+                        },
             }
         ],
     }
@@ -178,6 +179,7 @@ def test_PostgresqlFscReaderBuildsRowsFromCommaSeparatedXYStrings(authTestEnv):
                 "values": {
                     "x": "0.01,0.02,0.03",
                     "y": "0.9,0.5,0.1",
+                    "resolution": 3.5,
                 },
             }
         ],
@@ -240,3 +242,37 @@ def test_PostgresqlFscReaderBuildsRowsFromDelimitedDataText(authTestEnv):
     assert result["rows"][0]["x"] == [0.01, 0.02, 0.03]
     assert result["rows"][0]["y"] == [0.9, 0.5, 0.1]
     assert result["rows"][0]["resolution"] == 3.5
+
+
+def test_PostgresqlFscReaderEstimatesResolutionWhenMissing(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_fsc_reader")
+
+    storedSet = {
+        "id": 1,
+        "setClassName": "SetOfFSCs",
+        "itemClassName": "FSC",
+        "items": [
+            {
+                "id": 10,
+                "scipionItemId": 101,
+                "label": "Half maps",
+                "values": {
+                    "x": "0.01,0.02,0.03",
+                    "y": "0.9,0.5,0.1",
+                },
+            }
+        ],
+    }
+
+    reader = module.PostgresqlFscReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputFsc",
+    )
+    reader.setMapper = FakeSetMapper(storedSet)
+
+    result = reader.getFscRows()
+
+    assert result is not None
+    assert result["rows"][0]["resolution"] == pytest.approx(34.57216940363008)

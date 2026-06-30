@@ -11985,11 +11985,14 @@ class ProjectService:
                 getattr(pgReader, "lastSkipReason", None),
             )
 
-        self._ensureRuntimeProjectForFscRows(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-        )
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="FSC",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
 
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
