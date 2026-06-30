@@ -1,5 +1,5 @@
 import json
-import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -544,6 +544,9 @@ class PostgresqlVolumeReader:
                 "dimensions",
                 "volumeDim",
                 "volumeDims",
+                "xyzDims",
+                "size",
+                "_dim",
             ],
         )
 
@@ -555,16 +558,18 @@ class PostgresqlVolumeReader:
                 parsed.get("z") or parsed.get("Z") or parsed.get("nz"),
             ]
 
-        if isinstance(parsed, (list, tuple)) and len(parsed) >= 3:
-            dims = []
-            for value in parsed[:3]:
-                intValue = self._toOptionalInt(value)
-                if intValue is None:
-                    return None
-                dims.append(intValue)
-            return dims
+        numbers = self._parseNumericSequence(parsed)
+        if numbers is None or len(numbers) < 3:
+            return None
 
-        return None
+        dims: List[int] = []
+        for value in numbers[:3]:
+            intValue = self._toOptionalInt(value)
+            if intValue is None or intValue <= 0:
+                return None
+            dims.append(intValue)
+
+        return dims
 
     def _extractSamplingRate(self, values: Any) -> Optional[float]:
         if isinstance(values, dict):
@@ -576,6 +581,7 @@ class PostgresqlVolumeReader:
                     "voxelSize",
                     "sampling",
                     "apix",
+                    "_samplingRate",
                 ],
             )
         else:
@@ -591,8 +597,9 @@ class PostgresqlVolumeReader:
                     return number
             return None
 
-        if isinstance(parsed, (list, tuple)) and parsed:
-            return self._toOptionalFloat(parsed[0])
+        numbers = self._parseNumericSequence(parsed)
+        if numbers:
+            return self._toOptionalFloat(numbers[0])
 
         return self._toOptionalFloat(parsed)
 
@@ -706,6 +713,53 @@ class PostgresqlVolumeReader:
         if isinstance(parsed, dict):
             return parsed
         return {}
+
+    def _parseNumericSequence(self, value: Any) -> Optional[List[float]]:
+        parsed = self._parseJsonValue(value)
+
+        if parsed is None or parsed == "":
+            return None
+
+        if isinstance(parsed, np.ndarray):
+            rawValues = parsed.ravel().tolist()
+        elif isinstance(parsed, (list, tuple)):
+            rawValues = list(parsed)
+        elif isinstance(parsed, str):
+            text = parsed.strip()
+            if not text:
+                return None
+
+            cleaned = text.strip("[]()")
+            if not cleaned:
+                return None
+
+            # Accept:
+            #   "128,128,64"
+            #   "128 128 64"
+            #   "128;128;64"
+            #   "128x128x64"
+            tokens = [
+                token.strip()
+                for token in re.split(r"[\s,;xX]+", cleaned)
+                if token.strip()
+            ]
+            rawValues = tokens
+        else:
+            rawValues = [parsed]
+
+        values: List[float] = []
+        for rawValue in rawValues:
+            try:
+                number = float(rawValue)
+            except Exception:
+                return None
+
+            if not np.isfinite(number):
+                return None
+
+            values.append(number)
+
+        return values or None
 
     def _parseJsonValue(self, value: Any) -> Any:
         if isinstance(value, (dict, list, tuple)):
