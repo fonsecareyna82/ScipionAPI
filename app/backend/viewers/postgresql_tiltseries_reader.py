@@ -26,6 +26,7 @@
 import ast
 import json
 import math
+import re
 
 from typing import Any, Dict, List, Optional
 
@@ -133,6 +134,77 @@ class PostgresqlTiltSeriesReader:
                 )
         return self._logicalTables
 
+    def _extractDims(self, values: Dict[str, Any]) -> Optional[List[int]]:
+        raw = self._firstValueBySuffix(
+            values,
+            [
+                "dim",
+                "dims",
+                "dimensions",
+                "imageDim",
+                "imageDims",
+                "xDim",
+                "xyDim",
+                "_dim",
+            ],
+        )
+
+        numbers = self._parseNumericSequence(raw)
+        if numbers is None or len(numbers) < 2:
+            return None
+
+        dims: List[int] = []
+        for value in numbers[:3]:
+            intValue = self._toOptionalInt(value)
+            if intValue is None or intValue <= 0:
+                return None
+            dims.append(intValue)
+
+        return dims
+
+    def _parseNumericSequence(self, value: Any) -> Optional[List[float]]:
+        if value is None or value == "":
+            return None
+
+        if isinstance(value, (list, tuple)):
+            rawValues = list(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+
+            parsed = None
+            if text.startswith("[") or text.startswith("("):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    try:
+                        parsed = ast.literal_eval(text)
+                    except Exception:
+                        parsed = None
+
+            if isinstance(parsed, (list, tuple)):
+                rawValues = list(parsed)
+            else:
+                cleaned = text.strip("[]()")
+                tokens = [
+                    token.strip()
+                    for token in re.split(r"[\s,;xX]+", cleaned)
+                    if token.strip()
+                ]
+                rawValues = tokens
+        else:
+            rawValues = [value]
+
+        values: List[float] = []
+        for rawValue in rawValues:
+            number = self._toOptionalFloat(rawValue)
+            if number is None:
+                return None
+            values.append(number)
+
+        return values or None
+
     def _buildTiltSeriesSummary(self, item: Dict[str, Any], index: int) -> Dict[str, Any]:
         values = item.get("values") or {}
         itemId = item.get("scipionItemId")
@@ -154,10 +226,7 @@ class PostgresqlTiltSeriesReader:
             childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
             summary["nViews"] = len(childItems)
 
-        dims = self._firstValueBySuffix(
-            values,
-            ["dim", "dims", "dimensions"],
-        )
+        dims = self._extractDims(values)
         if dims is not None:
             summary["dims"] = dims
 
@@ -321,9 +390,9 @@ class PostgresqlTiltSeriesReader:
             result["shiftY"] = flat[5]
 
         try:
-            if isinstance(matrix, list) and len(matrix) >= 2:
-                m00 = float(matrix[0][0])
-                m10 = float(matrix[1][0])
+            if len(flat) >= 4:
+                m00 = float(flat[0])
+                m10 = float(flat[3]) if len(flat) >= 6 else float(flat[2])
                 result["rot"] = math.degrees(-math.atan2(m10, m00))
         except Exception:
             pass
@@ -346,14 +415,39 @@ class PostgresqlTiltSeriesReader:
                 return None
 
             try:
-                return json.loads(text)
+                parsed = json.loads(text)
+                if isinstance(parsed, (list, tuple)):
+                    return list(parsed)
             except Exception:
                 pass
 
             try:
-                return ast.literal_eval(text)
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, (list, tuple)):
+                    return list(parsed)
             except Exception:
+                pass
+
+            numbers = self._parseNumericSequence(text)
+            if numbers is None:
                 return None
+
+            # IMOD/Scipion-like affine 2D matrix usually appears as:
+            #   a11,a12,shiftX,a21,a22,shiftY
+            if len(numbers) >= 6:
+                return [
+                    [numbers[0], numbers[1], numbers[2]],
+                    [numbers[3], numbers[4], numbers[5]],
+                ]
+
+            # Sometimes only the linear part is stored.
+            if len(numbers) >= 4:
+                return [
+                    [numbers[0], numbers[1]],
+                    [numbers[2], numbers[3]],
+                ]
+
+            return None
 
         return None
 
