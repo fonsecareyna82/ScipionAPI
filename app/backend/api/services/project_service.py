@@ -8855,10 +8855,15 @@ class ProjectService:
             if payload is not None:
                 return payload
 
-            raise HTTPException(
-                status_code=404,
-                detail="CTF tomo series not found in PostgreSQL metadata",
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo views",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) or "views_not_available",
+                tiltSeriesId=tiltSeriesId,
             )
+
         if mapper is not None:
             self._raisePostgresqlViewerUnavailable(
                 viewerName="CTFTomo views",

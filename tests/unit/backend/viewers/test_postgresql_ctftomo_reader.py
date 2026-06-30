@@ -115,3 +115,27 @@ def test_PostgresqlCtftomoReaderRejectsInvalidDims(authTestEnv):
     assert reader._extractDims({"dims": "4096,foo"}) is None
     assert reader._extractDims({"dims": "4096"}) is None
     assert reader._extractDims({"dims": "4096,0"}) is None
+
+
+def test_PostgresqlCtftomoReaderStoresSkipReasonWhenSeriesIsMissing(authTestEnv, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_ctftomo_reader")
+
+    reader = module.PostgresqlCtftomoReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputCTF",
+    )
+
+    monkeypatch.setattr(
+        reader,
+        "_getStoredSet",
+        lambda: {
+            "items": [],
+        },
+    )
+
+    result = reader.getCtftomoSeriesViews("TS_999")
+
+    assert result is None
+    assert reader.lastSkipReason == "ctftomo_series_item_not_found tiltSeriesId=TS_999"
