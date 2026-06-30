@@ -136,7 +136,7 @@ def test_GetFscRowsServiceUsesPostgresqlReaderWhenAvailable(
     }
 
 
-def test_GetFscRowsServiceFallsBackToRuntimeWhenPostgresqlReaderHasNoRows(
+def test_GetFscRowsServiceRaisesWhenPostgresqlReaderHasNoRowsAndMapperIsPresent(
     service,
     monkeypatch,
 ):
@@ -146,51 +146,28 @@ def test_GetFscRowsServiceFallsBackToRuntimeWhenPostgresqlReaderHasNoRows(
         def getFscRows(self):
             return None
 
-    fscOutput = FakeFscOutput(items=[FakeFsc(label="Half maps")])
-    protocol = FakeProtocol("outputFsc", fscOutput)
-    mapper = object()
-    calls = {}
-
     monkeypatch.setattr(
         service,
         "_getPostgresqlFscReaderIfAvailable",
         lambda **kwargs: FakePgReader(),
     )
 
-    def fakeRuntimeProtocol(**kwargs):
-        calls.update(kwargs)
-        return protocol
+    def failRuntime(**kwargs):
+        raise AssertionError("runtime should not be used when mapper is present")
 
-    monkeypatch.setattr(
-        service,
-        "_getScipionProtocolForRuntime",
-        fakeRuntimeProtocol,
-    )
+    monkeypatch.setattr(service, "_getScipionProtocolForRuntime", failRuntime)
 
-    result = service.getFscRowsService(
-        projectId=1,
-        protocolId=10,
-        outputName="outputFsc",
-        mapper=mapper,
-    )
+    with pytest.raises(HTTPException) as exc:
+        service.getFscRowsService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputFsc",
+            mapper=object(),
+        )
 
-    assert result == {
-        "threshold": 0.143,
-        "rows": [
-            {
-                "label": "Half maps",
-                "resolution": 3.5,
-                "x": [0.01, 0.02, 0.03],
-                "y": [0.9, 0.5, 0.1],
-            }
-        ],
-    }
-
-    assert calls == {
-        "mapper": mapper,
-        "projectId": 1,
-        "protocolId": 10,
-    }
+    assert exc.value.status_code == 404
+    assert "FSC output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "fsc_rows_not_found" in exc.value.detail
 
 
 def test_GetFscRowsServiceBuildsRowsWithoutMapper(service):
@@ -215,3 +192,31 @@ def test_GetFscRowsServiceBuildsRowsWithoutMapper(service):
             }
         ],
     }
+
+
+def test_GetFscRowsServiceUsesRuntimeWhenMapperIsMissing(
+    service,
+    monkeypatch,
+):
+    fscOutput = FakeFscOutput(items=[FakeFsc(label="Half maps")])
+    protocol = FakeProtocol("outputFsc", fscOutput)
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlFscReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        lambda **kwargs: protocol,
+    )
+
+    result = service.getFscRowsService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputFsc",
+        mapper=None,
+    )
+
+    assert result["rows"][0]["label"] == "Half maps"
