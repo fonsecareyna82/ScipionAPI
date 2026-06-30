@@ -85,26 +85,112 @@ def service(projectServiceModule):
     return instance
 
 
-def test_GetFscRowsServiceRequiresPostgresqlWhenMapperIsPresent(
+def test_GetFscRowsServiceUsesPostgresqlReaderWhenAvailable(
     service,
     monkeypatch,
 ):
-    def failRuntimeFallback(**kwargs):
-        raise AssertionError("Legacy FSC fallback should not be used")
+    class FakePgReader:
+        lastSkipReason = None
 
-    monkeypatch.setattr(service, "_getScipionProtocolForRuntime", failRuntimeFallback)
+        def getFscRows(self):
+            return {
+                "threshold": 0.143,
+                "rows": [
+                    {
+                        "label": "PG FSC",
+                        "resolution": 3.1,
+                        "x": [0.01, 0.02],
+                        "y": [0.9, 0.2],
+                    }
+                ],
+            }
 
-    with pytest.raises(HTTPException) as exc:
-        service.getFscRowsService(
-            projectId=1,
-            protocolId=10,
-            outputName="outputFsc",
-            mapper=object(),
-        )
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlFscReaderIfAvailable",
+        lambda **kwargs: FakePgReader(),
+    )
 
-    assert exc.value.status_code == 404
-    assert "FSC output is not available in PostgreSQL metadata" in exc.value.detail
-    assert "reader_not_available" in exc.value.detail
+    def failRuntime(**kwargs):
+        raise AssertionError("runtime should not be used when PostgreSQL FSC rows are available")
+
+    monkeypatch.setattr(service, "_getScipionProtocolForRuntime", failRuntime)
+
+    result = service.getFscRowsService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputFsc",
+        mapper=object(),
+    )
+
+    assert result == {
+        "threshold": 0.143,
+        "rows": [
+            {
+                "label": "PG FSC",
+                "resolution": 3.1,
+                "x": [0.01, 0.02],
+                "y": [0.9, 0.2],
+            }
+        ],
+    }
+
+
+def test_GetFscRowsServiceFallsBackToRuntimeWhenPostgresqlReaderHasNoRows(
+    service,
+    monkeypatch,
+):
+    class FakePgReader:
+        lastSkipReason = "fsc_rows_not_found"
+
+        def getFscRows(self):
+            return None
+
+    fscOutput = FakeFscOutput(items=[FakeFsc(label="Half maps")])
+    protocol = FakeProtocol("outputFsc", fscOutput)
+    mapper = object()
+    calls = {}
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlFscReaderIfAvailable",
+        lambda **kwargs: FakePgReader(),
+    )
+
+    def fakeRuntimeProtocol(**kwargs):
+        calls.update(kwargs)
+        return protocol
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        fakeRuntimeProtocol,
+    )
+
+    result = service.getFscRowsService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputFsc",
+        mapper=mapper,
+    )
+
+    assert result == {
+        "threshold": 0.143,
+        "rows": [
+            {
+                "label": "Half maps",
+                "resolution": 3.5,
+                "x": [0.01, 0.02, 0.03],
+                "y": [0.9, 0.5, 0.1],
+            }
+        ],
+    }
+
+    assert calls == {
+        "mapper": mapper,
+        "projectId": 1,
+        "protocolId": 10,
+    }
 
 
 def test_GetFscRowsServiceBuildsRowsWithoutMapper(service):

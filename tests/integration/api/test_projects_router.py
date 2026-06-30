@@ -883,7 +883,14 @@ def test_GetFscRowsUsesProjectDbRow(projectClient, fakeProjectService):
         "protocolId": 2,
         "outputName": "out",
         "mapper": fakeProjectService.lastGetFscRowsCall["mapper"],
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
     }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
 
 def test_GetFscRowsReturns404WhenProjectMissing(projectClient, fakeProjectService):
@@ -1414,3 +1421,29 @@ def test_ProtocolLogEndpointsReturn404WhenProjectMissing(
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastListProtocolLogChannelsCall is None
     assert fakeProjectService.lastPollLogsCall is None
+
+
+def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get(
+        "/projects/1/protocols/22/outputs/outputFsc/fsc/rows"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.fscRowsResult
+
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
+    call = fakeProjectService.lastGetFscRowsCall
+    assert call["projectId"] == 1
+    assert call["protocolId"] == 22
+    assert call["outputName"] == "outputFsc"
+    assert call["mapper"] is not None
+    assert call["currentUser"] == {
+        "id": 1,
+        "email": "user@example.com",
+        "role": "user",
+    }
