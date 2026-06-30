@@ -11895,24 +11895,101 @@ class ProjectService:
     # ======================================================================
     # Internal helpers for FSCs
     # ======================================================================
+    def _getPostgresqlFscReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_fsc_reader import PostgresqlFscReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlFscReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL FSC reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def _ensureRuntimeProjectForFscRows(
+            self,
+            mapper,
+            projectId: int,
+            currentUser: Optional[dict] = None,
+    ) -> None:
+        if getattr(self, "currentProject", None) is not None:
+            return
+
+        if mapper is None or currentUser is None:
+            return
+
+        self.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
     def getFscRowsService(
             self,
             projectId: int,
             protocolId: int,
             outputName: str,
             mapper=None,
+            currentUser: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Return FSC curves for a SetOfFSCs-like output.
         """
-        if mapper is not None:
-            self._raisePostgresqlViewerUnavailable(
-                viewerName="FSC",
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-                reason="reader_not_available",
+        pgReader = self._getPostgresqlFscReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getFscRows()
+            if payload is not None and payload.get("rows"):
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL FSC reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
             )
+
+        self._ensureRuntimeProjectForFscRows(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
 
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,

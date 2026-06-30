@@ -448,7 +448,7 @@ class FakeProjectService:
 
         self.fscRowsResult = {
             "threshold": 0.143,
-            "curves": [
+            "rows": [
                 {
                     "label": "FSC 1",
                     "resolution": 3.2,
@@ -1221,12 +1221,14 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            currentUser=None,
     ):
         self.lastGetFscRowsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "outputName": outputName,
             "mapper": mapper,
+            "currentUser": currentUser,
         }
         return self.fscRowsResult
 
