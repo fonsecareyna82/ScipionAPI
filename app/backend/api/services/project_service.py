@@ -8003,12 +8003,30 @@ class ProjectService:
 
     def outputPreview(
             self,
-            protocolId,
-            outputName,
-            requestHeaders=None,
-            colormap=None,
+            protocolId: Union[int, str],
+            outputName: str,
+            requestHeaders: Optional[Dict[str, Any]] = None,
+            colormap: Optional[str] = None,
             mapper=None,
-            projectId=None,
+            projectId: Optional[int] = None,
+    ):
+        return self._outputPreviewRuntime(
+            protocolId=protocolId,
+            outputName=outputName,
+            requestHeaders=requestHeaders,
+            colormap=colormap,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+    def _outputPreviewRuntime(
+            self,
+            protocolId: Union[int, str],
+            outputName: str,
+            requestHeaders: Optional[Dict[str, Any]] = None,
+            colormap: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
     ):
         scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
@@ -8016,27 +8034,51 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        if not hasattr(protocol, outputName):
+        if self.currentProject is None:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output '{outputName}' not found in protocol",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
             )
 
-        output = getattr(protocol, outputName)
-        outputPath = output.getFileName()
+        try:
+            protocol = self.currentProject.getProtocol(int(scipionProtocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol {scipionProtocolId} not found: {e}",
+            )
 
-        preview = OutputsPreview(
+        output = getattr(protocol, outputName, None)
+        if output is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol {scipionProtocolId}",
+            )
+
+        outputPath = None
+        getFileName = getattr(output, "getFileName", None)
+        if callable(getFileName):
+            try:
+                outputPath = getFileName()
+            except Exception:
+                outputPath = None
+
+        if not outputPath:
+            outputPath = str(output)
+
+        objMgr = self._createObjectManager()
+
+        return OutputsPreview(
             self.currentProject,
             protocol,
             output,
             requestHeaders=requestHeaders,
             colormapOverride=colormap,
+        ).preview(
+            int(scipionProtocolId),
+            outputPath,
+            objMgr,
         )
-
-        objMgr = self._createObjectManager()
-        return preview.preview(scipionProtocolId, outputPath, objMgr)
 
     def buildProtocolThumbnail(
             self,
