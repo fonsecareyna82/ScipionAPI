@@ -11,7 +11,7 @@ from fastapi import HTTPException
 import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from starlette.responses import PlainTextResponse
+from starlette.responses import PlainTextResponse, Response
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -97,6 +97,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+
 def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):
     # makeProjectOut
     payload = {
@@ -126,6 +127,10 @@ class FakeProjectService:
         self.projectByIdResult = makeProjectOut()
         self.lastGetProjectByIdCall = None
 
+        self.projectDbRowResult = makeProjectOut()
+        self.lastGetProjectDbRowCall = None
+        self.lastGetProtocolsCall = None
+
         self.protocolsResult = [{"id": 11, "name": "Prot A"}]
 
         self.logChannelsResult = [{"id": "stdout", "label": "Output"}]
@@ -135,8 +140,9 @@ class FakeProjectService:
             }
         }
         self.lastPollLogsCall = None
+        self.lastListProtocolLogChannelsCall = None
 
-        self.resolveViewerResult = {"handled": True, "viewer": "volume"}
+        self.resolveViewerResult = {"handled": False}
         self.resolveViewerError = None
         self.lastResolveViewerCall = None
 
@@ -148,6 +154,72 @@ class FakeProjectService:
             media_type="text/csv",
         )
         self.lastExportMetadataTableCall = None
+
+        self.consistencyResult = {
+            "ok": True,
+            "projectId": 1,
+            "summary": {
+                "runtimeProtocols": 2,
+                "postgresqlProtocols": 2,
+                "runtimeDependencies": 1,
+                "postgresqlDependencies": 1,
+                "issues": 0,
+            },
+            "issues": {
+                "missingProtocols": [],
+                "extraProtocols": [],
+                "statusMismatches": [],
+                "missingDependencies": [],
+                "extraDependencies": [],
+            },
+        }
+        self.lastValidateProjectPostgresqlConsistencyCall = None
+
+        self.metadataTablesResult = [
+            {
+                "name": "objects",
+                "alias": "Particles",
+                "rowCount": 1,
+                "hasColumnId": True,
+            }
+        ]
+
+        self.lastListOutputMetadataTablesCall = None
+
+        self.metadataTableSchemaResult = {
+            "name": "objects",
+            "alias": "Particles",
+            "hasColumnId": True,
+            "actions": ["Particle"],
+            "columns": [],
+        }
+        self.lastGetMetadataTableSchemaCall = None
+
+        self.metadataTablePageResult = {
+            "pageNumber": 1,
+            "pageSize": 20,
+            "totalRows": 1,
+            "rows": [
+                {
+                    "id": 1,
+                    "values": ["row-1"],
+                }
+            ],
+        }
+        self.metadataTableWindowResult = {
+            "offset": 10,
+            "limit": 25,
+            "totalRows": 1,
+            "rows": [{"id": 1, "values": ["row-1"]}],
+        }
+        self.lastGetMetadataTableWindowCall = None
+        self.lastGetMetadataTablePageCall = None
+
+        self.renderMetadataImageCellResponse = PlainTextResponse(
+            "image-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderMetadataImageCellCall = None
 
         self.listProjectsResult = [makeProjectOut()]
         self.lastListProjectsCall = None
@@ -201,6 +273,7 @@ class FakeProjectService:
         self.lastSaveProtocolCall = None
 
         self.nextProtocolSuggestionsResult = [{"id": "next-1", "name": "Next protocol"}]
+        self.nextProtocolSuggestionsError = None
         self.lastGetNextProtocolSuggestionsCall = None
 
         self.renameProtocolError = None
@@ -229,50 +302,443 @@ class FakeProjectService:
 
         self.stopProtocolError = None
         self.lastStopProtocolCall = None
+        self.volumeItemsResult = [
+            {
+                "id": "vol-1",
+                "label": "Volume 1",
+                "fileName": "/tmp/volume.mrc",
+            }
+        ]
+        self.lastListOutputVolumesCall = None
+
+        self.volumeInfoResult = {
+            "id": "vol-1",
+            "label": "Volume 1",
+            "dimensions": [64, 64, 64],
+        }
+        self.lastGetVolumeInfoCall = None
+
+        self.volumeHistogramResult = {
+            "binEdges": [0.0, 1.0],
+            "counts": [10],
+        }
+        self.lastGetVolumeHistogramCall = None
+
+        self.tiltSeriesResult = [
+            {
+                "tiltSeriesId": "TS_001",
+                "label": "TS_001",
+                "nViews": 3,
+            }
+        ]
+        self.lastListOutputTiltSeriesCall = None
+
+        self.tiltSeriesFramesResult = {
+            "tiltSeriesId": "TS_001",
+            "label": "TS_001",
+            "frames": [
+                {"index": 0, "tiltAngle": -1.0},
+                {"index": 1, "tiltAngle": 0.0},
+            ],
+        }
+        self.lastGetTiltSeriesFramesCall = None
+
+        self.ctftomoSeriesResult = [
+            {
+                "tiltSeriesId": "TS_001",
+                "label": "TS_001",
+                "nViews": 3,
+            }
+        ]
+        self.lastListOutputCtftomoSeriesCall = None
+
+        self.ctftomoSeriesViewsResult = {
+            "tiltSeriesId": "TS_001",
+            "label": "TS_001",
+            "frames": [
+                {"index": 0, "defocusU": 10000.0},
+                {"index": 1, "defocusU": 11000.0},
+            ],
+        }
+        self.lastGetCtftomoSeriesViewsCall = None
+
+        self.coords3dTomogramsResult = [
+            {
+                "id": "tomo-1",
+                "name": "Tomogram 1",
+                "label": "tomo-1",
+                "dims": [64, 64, 64],
+                "voxelSize": [1.0, 1.0, 1.0],
+            }
+        ]
+        self.lastListCoordinates3dTomogramsCall = None
+
+        self.coords3dPointsResult = [
+            {
+                "id": 1,
+                "x": 10.0,
+                "y": 20.0,
+                "z": 30.0,
+                "tomoId": "tomo-1",
+            }
+        ]
+        self.lastGetCoordinates3dPointsCall = None
+
+        self.integratedAnalyzeContextResult = {
+            "root": {
+                "projectId": 1,
+                "protocolId": 2,
+                "outputName": "out",
+            },
+            "links": {},
+            "summaries": {},
+            "relations": {"items": []},
+        }
+        self.lastGetIntegratedAnalyzeContextCall = None
+
+        self.projectTagsResult = [
+            {
+                "id": "tag-1",
+                "title": "Good",
+                "description": "Good protocols",
+                "color": "#00ff00",
+            }
+        ]
+        self.lastListProjectTagsCall = None
+
+        self.createProjectTagResult = {
+            "id": "tag-2",
+            "title": "New tag",
+            "description": None,
+            "color": "#ff0000",
+        }
+        self.lastCreateProjectTagCall = None
+
+        self.updateProjectTagResult = {
+            "id": "tag-1",
+            "title": "Updated tag",
+            "description": "Updated",
+            "color": "#0000ff",
+        }
+        self.lastUpdateProjectTagCall = None
+
+        self.deleteProjectTagResult = True
+        self.lastDeleteProjectTagCall = None
+
+        self.protocolTagsResult = {
+            "protocolId": "2",
+            "protocolDbId": 22,
+            "tagIds": ["tag-1"],
+        }
+        self.lastListProtocolTagsCall = None
+
+        self.setProtocolTagsResult = {
+            "protocolId": "2",
+            "protocolDbId": 22,
+            "tagIds": ["tag-1", "tag-2"],
+        }
+        self.lastSetProtocolTagsCall = None
+
+        self.contextMenuVisibilityResult = {
+            "open": True,
+            "delete": True,
+            "manageTags": True,
+        }
+        self.lastGetContextMenuVisibilityPolicyCall = None
+
+        self.fscRowsResult = {
+            "threshold": 0.143,
+            "curves": [
+                {
+                    "label": "FSC 1",
+                    "resolution": 3.2,
+                    "x": [0.01, 0.02],
+                    "y": [0.95, 0.87],
+                }
+            ],
+        }
+        self.lastGetFscRowsCall = None
+
+        self.projectEffectiveSettingsResult = {
+            "projectId": 1,
+            "settings": {
+                "user": {"protocolView": "tree"},
+                "instance": {"executionMode": "local"},
+                "host": {"queueSystem": "slurm"},
+            },
+        }
+        self.lastGetProjectEffectiveSettingsCall = None
+
+        self.coords3dSliceResponse = Response(
+            content=b"slice-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderCoords3dTomogramSliceCall = None
+
+        self.resolveAnalyzeViewerDecisionResult = {
+            "handled": False,
+        }
+        self.resolveViewerError = None
+
+        self.lastResolveViewerCall = None
+        self.lastResolveAnalyzeViewerDecisionCall = None
+
+        self.volumeSliceResponse = Response(
+            content=b"volume-slice-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderVolumeSliceCall = None
+
+        self.volumeData3dResult = {
+            "dims": [2, 2, 2],
+            "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        }
+        self.lastGetVolumeData3dCall = None
+
+        self.volumeSurfaceMeshResult = {
+            "vertices": [[0.0, 0.0, 0.0]],
+            "faces": [[0, 0, 0]],
+            "level": 0.5,
+            "volumeId": "vol-1",
+        }
+        self.lastGetVolumeSurfaceMeshCall = None
+
+        self.tiltSeriesImageResponse = Response(
+            content=b"tilt-image-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderTiltSeriesImageCall = None
+
+        self.tiltSeriesBatchResult = {
+            "tiltSeriesId": "TS_001",
+            "size": 256,
+            "fmt": "webp",
+            "applyTransform": True,
+            "items": [
+                {
+                    "index": 0,
+                    "contentType": "image/png",
+                    "dataUrl": "data:image/png;base64,AAAA",
+                    "cache": "MISS",
+                }
+            ],
+            "errors": [],
+        }
+        self.lastRenderTiltSeriesImagesBatchCall = None
+
+        self.ctftomoPsdResponse = Response(
+            content=b"ctftomo-psd-bytes",
+            media_type="image/png",
+        )
+        self.lastRenderCtfTomoPsdImageCall = None
+        self.renderCtfTomoPsdImageError = None
 
     def listProjectWorkflows(self):
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
         return self.listProjectWorkflowsResult
 
-    def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
+    def getProjectById(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            validateConsistency=False,
+            failOnConsistencyError=False,
+    ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
             "refresh": refresh,
             "checkPid": checkPid,
+            "validateConsistency": validateConsistency,
+            "failOnConsistencyError": failOnConsistencyError,
         }
         return self.projectByIdResult
 
-    def getProtocols(self, mapper, projectId, currentUser):
-        return self.protocolsResult
+    def getProjectDbRow(self, mapper, projectId, currentUser):
+        self.lastGetProjectDbRowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectDbRowResult
+
+    def validateProjectPostgresqlConsistency(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=True,
+            checkPid=True,
+    ):
+        self.lastValidateProjectPostgresqlConsistencyCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "refresh": refresh,
+            "checkPid": checkPid,
+        }
+        return self.consistencyResult
 
     def listProjectLogChannelsService(self, projectId, protocolId):
         return self.logChannelsResult
 
-    def listProtocolLogChannelsService(self, projectId, protocolId):
+    def listProtocolLogChannelsService(
+            self,
+            projectId,
+            protocolId,
+            mapper=None,
+            currentUser=None,
+    ):
+        self.lastListProtocolLogChannelsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "mapper": mapper,
+            "currentUser": currentUser,
+        }
         return self.logChannelsResult
 
-    def pollProtocolLogsService(self, projectId, protocolId, offsets, maxBytes, maxLines):
+    def pollProtocolLogsService(
+            self,
+            projectId,
+            protocolId,
+            offsets,
+            maxBytes,
+            maxLines,
+            mapper=None,
+            currentUser=None,
+    ):
         self.lastPollLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "offsets": dict(offsets),
             "maxBytes": maxBytes,
             "maxLines": maxLines,
+            "mapper": mapper,
+            "currentUser": currentUser,
         }
         return self.pollLogsResult
 
-    def resolveAnalyzeViewerDecision(self, projectId, protocolId, ctx):
-        self.lastResolveViewerCall = {
+    def listOutputMetadataTablesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper,
+    ):
+        self.lastListOutputMetadataTablesCall = {
             "projectId": projectId,
             "protocolId": protocolId,
-            "ctx": ctx,
+            "outputName": outputName,
+            "mapper": mapper,
         }
-        if self.resolveViewerError is not None:
-            raise self.resolveViewerError
-        return self.resolveViewerResult
+        return self.metadataTablesResult
+
+    def getMetadataTableSchemaService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            mapper,
+    ):
+        self.lastGetMetadataTableSchemaCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "mapper": mapper,
+        }
+        return self.metadataTableSchemaResult
+
+    def getMetadataTablePageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            page,
+            pageSize,
+            sortBy,
+            asc,
+            selectionOnly,
+            mapper,
+    ):
+        self.lastGetMetadataTablePageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "page": page,
+            "pageSize": pageSize,
+            "sortBy": sortBy,
+            "asc": asc,
+            "selectionOnly": selectionOnly,
+            "mapper": mapper,
+        }
+        return self.metadataTablePageResult
+
+    def getMetadataTableWindowService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            offset,
+            limit,
+            selectionOnly,
+            sortBy,
+            asc,
+            mapper,
+    ):
+        self.lastGetMetadataTableWindowCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "offset": offset,
+            "limit": limit,
+            "selectionOnly": selectionOnly,
+            "sortBy": sortBy,
+            "asc": asc,
+            "mapper": mapper,
+        }
+        return self.metadataTableWindowResult
+
+    def renderMetadataImageCellService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            rowId,
+            rowIndex,
+            columnName,
+            size,
+            applyTransform,
+            inline,
+            fmt,
+            mapper,
+    ):
+        self.lastRenderMetadataImageCellCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "rowId": rowId,
+            "rowIndex": rowIndex,
+            "columnName": columnName,
+            "size": size,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "fmt": fmt,
+            "mapper": mapper,
+        }
+        return self.renderMetadataImageCellResponse
 
     def runMetadataTableActionService(
             self,
@@ -308,6 +774,7 @@ class FakeProjectService:
             fmt,
             selectionOnly,
             ids,
+            mapper,
     ):
         self.lastExportMetadataTableCall = {
             "projectId": projectId,
@@ -317,6 +784,7 @@ class FakeProjectService:
             "fmt": fmt,
             "selectionOnly": selectionOnly,
             "ids": ids,
+            "mapper": mapper,
         }
         return self.exportMetadataTableResponse
 
@@ -378,6 +846,14 @@ class FakeProjectService:
         }
         return self.projectSharesResult
 
+    def getProtocols(self, mapper, projectId, currentUser):
+        self.lastGetProtocolsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.protocolsResult
+
     def syncProjectGraphAfterMutation(self, mapper, projectId, actionLabel, refresh=True, checkPid=True):
         self.lastSyncProjectGraphAfterMutationCall = {
             "mapper": mapper,
@@ -401,10 +877,11 @@ class FakeProjectService:
             raise self.applyWorkflowError
         return self.applyWorkflowResult
 
-    def getProtocolParams(self, projectId, protocolId):
+    def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
+            "mapper": mapper,
         }
         return self.protocolParamsResult
 
@@ -439,14 +916,23 @@ class FakeProjectService:
             raise self.saveProtocolError
         return self.saveProtocolResult
 
-    def getNextProtocolSuggestions(self, protocolId):
-        self.lastGetNextProtocolSuggestionsCall = {"protocolId": protocolId}
+    def getNextProtocolSuggestions(self, protocolId, mapper=None, projectId=None):
+        self.lastGetNextProtocolSuggestionsCall = {
+            "protocolId": protocolId,
+            "mapper": mapper,
+            "projectId": projectId,
+        }
+        if self.nextProtocolSuggestionsError is not None:
+            raise self.nextProtocolSuggestionsError
         return self.nextProtocolSuggestionsResult
 
-    def renameProtocol(self, protocolId, newName):
+    def renameProtocol(self, mapper, projectId, protocolId, newName, newComment=""):
         self.lastRenameProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
             "protocolId": protocolId,
             "newName": newName,
+            "newComment": newComment,
         }
         if self.renameProtocolError is not None:
             raise self.renameProtocolError
@@ -470,8 +956,12 @@ class FakeProjectService:
         if self.deleteProtocolError is not None:
             raise self.deleteProtocolError
 
-    def restartProtocolAll(self, protocolId):
-        self.lastRestartProtocolAllCall = {"protocolId": protocolId}
+    def restartProtocolAll(self, mapper, projectId, protocolId):
+        self.lastRestartProtocolAllCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        }
         if self.restartProtocolAllError is not None:
             raise self.restartProtocolAllError
         return self.restartProtocolAllResult
@@ -486,15 +976,506 @@ class FakeProjectService:
         if self.continueProtocolAllError is not None:
             raise self.continueProtocolAllError
 
-    def resetProtocolFrom(self, protocolId):
-        self.lastResetProtocolFromCall = {"protocolId": protocolId}
+    def resetProtocolFrom(self, mapper, projectId, protocolId):
+        self.lastResetProtocolFromCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        }
         if self.resetProtocolFromError is not None:
             raise self.resetProtocolFromError
 
-    def stopProtocol(self, protocolIds):
-        self.lastStopProtocolCall = {"protocolIds": protocolIds}
+    def stopProtocol(self, mapper, projectId, protocolIds):
+        self.lastStopProtocolCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
         if self.stopProtocolError is not None:
             raise self.stopProtocolError
+
+    def listOutputVolumesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputVolumesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.volumeItemsResult
+
+    def getVolumeInfoService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            mapper=None,
+    ):
+        self.lastGetVolumeInfoCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "mapper": mapper,
+        }
+        return self.volumeInfoResult
+
+    def getVolumeHistogramService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            bins=128,
+            mapper=None,
+    ):
+        self.lastGetVolumeHistogramCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "bins": bins,
+            "mapper": mapper,
+        }
+        return self.volumeHistogramResult
+
+    def listOutputTiltSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputTiltSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesResult
+
+    def getTiltSeriesFramesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            mapper=None,
+    ):
+        self.lastGetTiltSeriesFramesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesFramesResult
+
+    def listOutputCtftomoSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListOutputCtftomoSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.ctftomoSeriesResult
+
+    def getCtftomoSeriesViewsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            mapper=None,
+    ):
+        self.lastGetCtftomoSeriesViewsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "mapper": mapper,
+        }
+        return self.ctftomoSeriesViewsResult
+
+    def listCoordinates3dTomogramsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastListCoordinates3dTomogramsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.coords3dTomogramsResult
+
+    def getCoordinates3dPointsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tomogramId,
+            mapper=None,
+    ):
+        self.lastGetCoordinates3dPointsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tomogramId": tomogramId,
+            "mapper": mapper,
+        }
+        return self.coords3dPointsResult
+
+    def getIntegratedAnalyzeContextService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastGetIntegratedAnalyzeContextCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.integratedAnalyzeContextResult
+
+    def listProjectTags(self, mapper, projectId, currentUser):
+        self.lastListProjectTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectTagsResult
+
+    def createProjectTag(self, mapper, projectId, currentUser, payload):
+        self.lastCreateProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "payload": payload,
+        }
+        return self.createProjectTagResult
+
+    def updateProjectTag(self, mapper, projectId, tagId, currentUser, payload):
+        self.lastUpdateProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "tagId": tagId,
+            "currentUser": currentUser,
+            "payload": payload,
+        }
+        return self.updateProjectTagResult
+
+    def deleteProjectTag(self, mapper, projectId, tagId, currentUser):
+        self.lastDeleteProjectTagCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "tagId": tagId,
+            "currentUser": currentUser,
+        }
+        return self.deleteProjectTagResult
+
+    def listProtocolTags(self, mapper, projectId, protocolId, currentUser):
+        self.lastListProtocolTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "currentUser": currentUser,
+        }
+        return self.protocolTagsResult
+
+    def setProtocolTags(self, mapper, projectId, protocolId, tagIds, currentUser):
+        self.lastSetProtocolTagsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "tagIds": tagIds,
+            "currentUser": currentUser,
+        }
+        return self.setProtocolTagsResult
+
+    def getContextMenuVisibilityPolicy(self):
+        self.lastGetContextMenuVisibilityPolicyCall = {}
+        return self.contextMenuVisibilityResult
+
+    def getFscRowsService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            mapper=None,
+    ):
+        self.lastGetFscRowsCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+        return self.fscRowsResult
+
+    def getProjectEffectiveSettings(self, mapper, projectId, currentUser):
+        self.lastGetProjectEffectiveSettingsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectEffectiveSettingsResult
+
+    def renderCoords3dTomogramSliceService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tomogramId,
+            sliceIndex,
+            axis="z",
+            colormap=None,
+            normalize="minmax",
+            scale=1.0,
+            inline=True,
+            fmt="webp",
+            thumb=None,
+            fast=True,
+            quality=75,
+            mapper=None,
+    ):
+        self.lastRenderCoords3dTomogramSliceCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tomogramId": tomogramId,
+            "sliceIndex": sliceIndex,
+            "axis": axis,
+            "colormap": colormap,
+            "normalize": normalize,
+            "scale": scale,
+            "inline": inline,
+            "fmt": fmt,
+            "thumb": thumb,
+            "fast": fast,
+            "quality": quality,
+            "mapper": mapper,
+        }
+        return self.coords3dSliceResponse
+
+    def resolveAnalyzeViewerDecision(
+            self,
+            projectId,
+            protocolId,
+            ctx,
+            mapper=None,
+    ):
+        call = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "ctx": ctx,
+            "mapper": mapper,
+        }
+
+        self.lastResolveViewerCall = call
+        self.lastResolveAnalyzeViewerDecisionCall = call
+
+        if self.resolveViewerError is not None:
+            raise self.resolveViewerError
+
+        return self.resolveAnalyzeViewerDecisionResult
+
+    def renderVolumeSliceService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            sliceIndex,
+            axis,
+            colormap,
+            normalize,
+            scale,
+            inline,
+            fmt="webp",
+            thumb=None,
+            fast=True,
+            quality=75,
+            mapper=None,
+    ):
+        self.lastRenderVolumeSliceCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "sliceIndex": sliceIndex,
+            "axis": axis,
+            "colormap": colormap,
+            "normalize": normalize,
+            "scale": scale,
+            "inline": inline,
+            "fmt": fmt,
+            "thumb": thumb,
+            "fast": fast,
+            "quality": quality,
+            "mapper": mapper,
+        }
+        return self.volumeSliceResponse
+
+    def getVolumeData3dService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            maxDim=160,
+            method="binning",
+            mapper=None,
+    ):
+        self.lastGetVolumeData3dCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "maxDim": maxDim,
+            "method": method,
+            "mapper": mapper,
+        }
+        return self.volumeData3dResult
+
+    def getVolumeSurfaceMesh(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            level=None,
+            maxDim=192,
+            method="stride",
+            maxTriangles=350000,
+            currentUser=None,
+            mapper=None,
+    ):
+        self.lastGetVolumeSurfaceMeshCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "level": level,
+            "maxDim": maxDim,
+            "method": method,
+            "maxTriangles": maxTriangles,
+            "currentUser": currentUser,
+            "mapper": mapper,
+        }
+        return self.volumeSurfaceMeshResult
+
+    def renderTiltSeriesImageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            index=0,
+            size=1024,
+            fmt="png",
+            applyTransform=True,
+            inline=True,
+            requestHeaders=None,
+            mapper=None,
+    ):
+        self.lastRenderTiltSeriesImageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "index": index,
+            "size": size,
+            "fmt": fmt,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "requestHeaders": requestHeaders,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesImageResponse
+
+    def renderTiltSeriesImagesBatchService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            indices,
+            size=512,
+            fmt="webp",
+            applyTransform=True,
+            inline=True,
+            requestHeaders=None,
+            mapper=None,
+    ):
+        self.lastRenderTiltSeriesImagesBatchCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tiltSeriesId": tiltSeriesId,
+            "indices": indices,
+            "size": size,
+            "fmt": fmt,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "requestHeaders": requestHeaders,
+            "mapper": mapper,
+        }
+        return self.tiltSeriesBatchResult
+
+    def renderCtfTomoPsdImageService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            psdPath,
+            size=1024,
+            fmt="png",
+            inline=True,
+            index=0,
+            quality=75,
+            applyTransform=False,
+            rot=None,
+            shifts=None,
+            mapper=None,
+    ):
+        self.lastRenderCtfTomoPsdImageCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "psdPath": psdPath,
+            "size": size,
+            "fmt": fmt,
+            "inline": inline,
+            "index": index,
+            "quality": quality,
+            "applyTransform": applyTransform,
+            "rot": rot,
+            "shifts": shifts,
+            "mapper": mapper,
+        }
+
+        if self.renderCtfTomoPsdImageError is not None:
+            raise self.renderCtfTomoPsdImageError
+
+        return self.ctftomoPsdResponse
 
 
 @pytest.fixture
@@ -752,3 +1733,4 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         yield client
 
     app.dependency_overrides.clear()
+

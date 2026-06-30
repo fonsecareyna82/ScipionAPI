@@ -69,10 +69,11 @@ class FakeProtocolRouterService:
         }
         return self.projectByIdResult
 
-    def getProtocolParams(self, projectId, protocolId):
+    def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
+            "mapper": mapper,
         }
         return self.protocolParamsResult
 
@@ -101,13 +102,14 @@ class FakeProtocolRouterService:
         if self.saveError is not None:
             raise self.saveError
 
-    def getProtocolLogs(self, projectId, protocolId, offset, errOffset, scheduleOffset):
+    def getProtocolLogs(self, projectId, protocolId, offset, errOffset, scheduleOffset, mapper=None):
         self.lastGetProtocolLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
             "offset": offset,
             "errOffset": errOffset,
             "scheduleOffset": scheduleOffset,
+            "mapper": mapper,
         }
         return self.protocolLogsResult
 
@@ -131,9 +133,6 @@ def protocolClient(
     fakeProtocolRouterService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
-    # protocolClient
-    monkeypatch.setattr(protocolRouterModule, "service", fakeProtocolRouterService)
-
     app = FastAPI()
     app.include_router(protocolRouterModule.router)
 
@@ -143,6 +142,9 @@ def protocolClient(
         "email": "user@example.com",
         "role": "user",
     }
+    app.dependency_overrides[protocolRouterModule.getProjectService] = (
+        lambda: fakeProtocolRouterService
+    )
 
     with TestClient(app) as client:
         yield client
@@ -172,6 +174,7 @@ def test_LoadProtocolReturnsProtocolParams(protocolClient, fakeProtocolRouterSer
     assert fakeProtocolRouterService.lastGetProtocolParamsCall == {
         "projectId": 1,
         "protocolId": 10,
+        "mapper": fakeProtocolRouterService.lastGetProtocolParamsCall["mapper"],
     }
 
 
@@ -199,7 +202,7 @@ def test_LoadNewProtocolReturnsProtocolTemplate(protocolClient, fakeProtocolRout
     }
 
 
-def test_LaunchProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterService):
+def test_LaunchProtocolEndpointIsDisabled(protocolClient):
     response = protocolClient.post(
         "/protocols/launch",
         json={
@@ -209,33 +212,10 @@ def test_LaunchProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterSe
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() is None
-
-    assert fakeProtocolRouterService.lastLaunchProtocolCall == {
-        "protocolId": "10",
-        "protocolClassName": "ProtClass",
-        "params": {"a": 1},
-    }
+    assert response.status_code == 404
 
 
-def test_LaunchProtocolWrapsUnexpectedErrorAs500(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.launchError = RuntimeError("launch failed")
-
-    response = protocolClient.post(
-        "/protocols/launch",
-        json={
-            "protocolId": "10",
-            "protocolClassName": "ProtClass",
-            "params": {"a": 1},
-        },
-    )
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "launch failed"
-
-
-def test_SaveProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterService):
+def test_SaveProtocolEndpointIsDisabled(protocolClient):
     response = protocolClient.post(
         "/protocols/save",
         json={
@@ -245,30 +225,7 @@ def test_SaveProtocolReturnsNullOnSuccess(protocolClient, fakeProtocolRouterServ
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() is None
-
-    assert fakeProtocolRouterService.lastSaveProtocolCall == {
-        "protocolId": "10",
-        "protocolClassName": "ProtClass",
-        "params": {"a": 1},
-    }
-
-
-def test_SaveProtocolWrapsUnexpectedErrorAs500(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.saveError = RuntimeError("save failed")
-
-    response = protocolClient.post(
-        "/protocols/save",
-        json={
-            "protocolId": "10",
-            "protocolClassName": "ProtClass",
-            "params": {"a": 1},
-        },
-    )
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "save failed"
+    assert response.status_code == 404
 
 
 def test_GetProtocolLogsReturns404WhenProjectMissing(protocolClient, fakeProtocolRouterService):
@@ -296,4 +253,5 @@ def test_GetProtocolLogsReturnsPayload(protocolClient, fakeProtocolRouterService
         "offset": 5,
         "errOffset": 7,
         "scheduleOffset": 9,
+        "mapper": fakeProtocolRouterService.lastGetProtocolLogsCall["mapper"],
     }

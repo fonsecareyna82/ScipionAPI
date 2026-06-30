@@ -281,6 +281,154 @@ def service(projectServiceModule):
     return instance
 
 
+def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlTiltSeriesReader:
+        # fakePostgresqlTiltSeriesReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_tiltseries_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlTiltSeriesReader",
+        FakePostgresqlTiltSeriesReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 321,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlTiltSeriesReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+    )
+
+    assert reader is createdReaders[0]
+    assert createdReaders[0].db is mapper.db
+    assert createdReaders[0].projectId == 1
+    assert createdReaders[0].protocolId == 321
+    assert createdReaders[0].outputName == "outputTiltSeries"
+
+def test_ListOutputTiltSeriesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.listOutputTiltSeriesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_GetTiltSeriesFramesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.getTiltSeriesFramesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            tiltSeriesId="TS_001",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries frames output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_RenderTiltSeriesImageServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy TiltSeries image fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForTiltSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.renderTiltSeriesImageService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputTiltSeries",
+            tiltSeriesId="TS_001",
+            index=0,
+            size=512,
+            fmt="png",
+            applyTransform=True,
+            inline=True,
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "TiltSeries image output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
 def test_ListOutputTiltSeriesServiceBuildsSummaries(service):
     ts1 = FakeTiltSeries(
         tsId="TS_001",
@@ -495,6 +643,143 @@ def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectS
     assert createdOutputSet._dim == [128, 128, 40]
 
 
+def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    storedCalls = []
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeScipionSetPostgresqlMapper:
+        # fakeScipionSetPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
+            storedCalls.append(
+                {
+                    "projectId": projectId,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "scipionSet": scipionSet,
+                }
+            )
+            return {
+                "stored": True,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            }
+
+    class FakeCreatedTiltSeries:
+        # fakeCreatedTiltSeries
+        def __init__(self):
+            self._items = []
+            self._dim = None
+            self._anglesCount = None
+            self._written = False
+
+        def copyInfo(self, tiltSeries):
+            self._copiedInfoFrom = tiltSeries
+
+        def append(self, item):
+            self._items.append(item)
+
+        def setEnabled(self, value):
+            self._enabled = value
+
+        def getSize(self):
+            return len(self._items)
+
+        def setDim(self, dim):
+            self._dim = dim
+
+        def setAnglesCount(self, count):
+            self._anglesCount = count
+
+        def write(self):
+            self._written = True
+
+    class FakeSetOfTiltSeriesFactory:
+        # fakeSetOfTiltSeriesFactory
+        @staticmethod
+        def create(projectPath, suffix):
+            return createdOutputSet
+
+    createdOutputSet = FakeCreatedTiltSeriesOutputSet()
+    createdOutputSet.update = lambda item: None
+    createdOutputSet.remove = lambda item: None
+
+    tiltSeries = FakeTiltSeries(
+        tsId="TS_001",
+        size=0,
+        dims=[128, 128, 40],
+        samplingRate=1.5,
+        tiltAxisAngle=90.0,
+        items=[],
+    )
+    inputSet = FakeTiltSeriesSet(
+        items=[tiltSeries],
+        hasOddEven=False,
+        dims=[128, 128, 40],
+    )
+    protocol = FakeProtocol("outputTiltSeries", inputSet)
+    service.currentProject = FakeCurrentProject(protocol)
+
+    scipionSetMapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+
+    monkeypatch.setattr(
+        scipionSetMapperModule,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(projectServiceModule, "SetOfTiltSeries", FakeSetOfTiltSeriesFactory)
+    monkeypatch.setattr(projectServiceModule, "TiltSeries", FakeCreatedTiltSeries)
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 321,
+    )
+
+    mapper = FakeMapper()
+
+    result = service.createNewSetOfTiltSeriesService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputTiltSeries",
+        exclusions={},
+        restack=False,
+        mapper=mapper,
+    )
+
+    assert result["status"] == 0
+    assert result["outputName"] == "TiltSeries_0"
+    assert result["postgresqlSync"] == {
+        "stored": True,
+        "protocolDbId": 321,
+        "outputName": "TiltSeries_0",
+    }
+    assert result["postgresqlError"] is None
+    assert storedCalls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 321,
+            "outputName": "TiltSeries_0",
+            "scipionSet": createdOutputSet,
+        }
+    ]
+
 def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
     class BrokenCurrentProject:
         # brokenCurrentProject
@@ -507,4 +792,4 @@ def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
         service._resolveOutputForTiltSeries(10, "outputTiltSeries")
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found"
+    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime:")

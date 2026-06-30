@@ -372,6 +372,148 @@ def test_ListOutputCtftomoSeriesServiceBuildsSummaries(service, tmp_path):
     ]
 
 
+def test_GetCtftomoSeriesViewsServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlCtftomoReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy CTFTomo views fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.getCtftomoSeriesViewsService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCtftomo",
+            tiltSeriesId="TS_001",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "CTFTomo views output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_ListOutputCtftomoSeriesServiceRequiresPostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlCtftomoReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy CTFTomo fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.listOutputCtftomoSeriesService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCtftomo",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "CTFTomo output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
+
+
+def test_RenderCtfTomoPsdImageServiceRequiresPostgresqlPathWhenMapperIsPresent(
+    service,
+    monkeypatch,
+):
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy CTFTomo PSD fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(Exception) as exc:
+        service.renderCtfTomoPsdImageService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCtftomo",
+            psdPath="relative/psd.mrc",
+            size=512,
+            fmt="png",
+            inline=True,
+            index=0,
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "CTFTomo PSD output is not available in PostgreSQL metadata" in exc.value.detail
+    assert "psd_file_not_available" in exc.value.detail
+
+
+def test_GetPostgresqlCtftomoReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlCtftomoReader:
+        # fakePostgresqlCtftomoReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_ctftomo_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlCtftomoReader",
+        FakePostgresqlCtftomoReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 654,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlCtftomoReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputCtftomo",
+    )
+
+    assert reader is createdReaders[0]
+    assert createdReaders[0].db is mapper.db
+    assert createdReaders[0].projectId == 1
+    assert createdReaders[0].protocolId == 654
+    assert createdReaders[0].outputName == "outputCtftomo"
+
+
 def test_GetCtftomoSeriesViewsServiceBuildsFrames(service, tmp_path):
     associatedTs = FakeAssociatedTiltSeries(
         items={
@@ -541,6 +683,116 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
     }
 
 
+def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    storedCalls = []
+
+    class FakeDb:
+        # fakeDb
+        def fetchOne(self, *args, **kwargs):
+            return None
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeScipionSetPostgresqlMapper:
+        # fakeScipionSetPostgresqlMapper
+        def __init__(self, db):
+            self.db = db
+
+        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
+            storedCalls.append(
+                {
+                    "projectId": projectId,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "scipionSet": scipionSet,
+                }
+            )
+            return {
+                "stored": True,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            }
+
+    scipionSetMapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+    monkeypatch.setattr(
+        scipionSetMapperModule,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 654,
+    )
+
+    associatedTs = FakeAssociatedTiltSeries()
+    ctf1 = FakeCtfMeasurement(
+        objId=100,
+        index=1,
+        defocusU=12000.0,
+        defocusV=11000.0,
+        defocusAngle=45.0,
+        resolution=3.2,
+        phaseShift=0.15,
+        acquisitionOrder=1,
+        psdFile="psd1.mrc",
+        enabled=True,
+    )
+    inputSeries = FakeCtftomoSeries(
+        tsId="TS_001",
+        label="Series 1",
+        tiltSeries=associatedTs,
+        items=[ctf1],
+    )
+    inputSet = FakeCtftomoOutputSet(
+        seriesList=[inputSeries],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    protocol = FakeProtocol("outputCtftomo", inputSet, "/tmp/fake-protocol")
+    service.currentProject = FakeCurrentProject(protocol)
+
+    mapper = FakeMapper()
+
+    result = service.createNewSetOfCtftomoSeriesService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCtftomo",
+        exclusions={
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [],
+            }
+        },
+        restack=False,
+        mapper=mapper,
+    )
+
+    assert result["status"] == 0
+    assert result["outputName"] == "CTFTomoSeries_0"
+    assert result["postgresqlSync"] == {
+        "stored": True,
+        "protocolDbId": 654,
+        "outputName": "CTFTomoSeries_0",
+    }
+    assert result["postgresqlError"] is None
+    assert storedCalls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 654,
+            "outputName": "CTFTomoSeries_0",
+            "scipionSet": protocol._definedOutputs["CTFTomoSeries_0"],
+        }
+    ]
+
+
 def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_path):
     associatedTs = FakeAssociatedTiltSeries()
     ctf1 = FakeCtfMeasurement(
@@ -590,12 +842,12 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
         restack=False,
     )
 
-    assert result == {
-        "status": 0,
-        "outputName": "CTFTomoSeries_0",
-        "createdSeries": 1,
-        "restack": False,
-    }
+    assert result["status"] == 0
+    assert result["outputName"] == "CTFTomoSeries_0"
+    assert result["createdSeries"] == 1
+    assert result["restack"] is False
+    assert result["postgresqlSync"] is None
+    assert result["postgresqlError"] is None
     assert "CTFTomoSeries_0" in protocol._definedOutputs
     createdSet = protocol._definedOutputs["CTFTomoSeries_0"]
     assert createdSet.isEmpty() is False

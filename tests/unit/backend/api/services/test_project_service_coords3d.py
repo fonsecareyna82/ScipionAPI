@@ -300,6 +300,132 @@ def test_ListCoordinates3dTomogramsServiceBuildsTomogramList(service, tmp_path):
     assert service.tomoList["TS_002"] is tomo2
 
 
+def test_GetPostgresqlCoords3dReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlCoords3dReader:
+        # fakePostgresqlCoords3dReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    readerModule = importlib.import_module(
+        "app.backend.viewers.postgresql_coords3d_reader"
+    )
+
+    monkeypatch.setattr(
+        readerModule,
+        "PostgresqlCoords3dReader",
+        FakePostgresqlCoords3dReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 987,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlCoords3dReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputCoords3d",
+    )
+
+    assert reader is createdReaders[0]
+    assert createdReaders[0].db is mapper.db
+    assert createdReaders[0].projectId == 1
+    assert createdReaders[0].protocolId == 987
+    assert createdReaders[0].outputName == "outputCoords3d"
+
+
+@pytest.mark.parametrize(
+    "serviceCall, expectedDetail",
+    [
+        (
+            lambda service, mapper: service.listCoordinates3dTomogramsService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputCoords3d",
+                mapper=mapper,
+            ),
+            "Coordinates3D output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.getCoordinates3dPointsService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputCoords3d",
+                tomogramId="TS_001",
+                mapper=mapper,
+            ),
+            "Coordinates3D points output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.renderCoords3dTomogramSliceService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputCoords3d",
+                tomogramId="TS_001",
+                sliceIndex=0,
+                axis="z",
+                colormap=None,
+                normalize="minmax",
+                scale=1.0,
+                inline=True,
+                fmt="png",
+                thumb=None,
+                fast=True,
+                quality=75,
+                mapper=mapper,
+            ),
+            "Coordinates3D tomogram slice output is not available in PostgreSQL metadata",
+        ),
+    ],
+)
+def test_Coordinates3dServicesRequirePostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+    serviceCall,
+    expectedDetail,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlCoords3dReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy Coordinates3D fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForCoordinates3d", failRuntimeFallback)
+
+    with pytest.raises(HTTPException) as exc:
+        serviceCall(service, object())
+
+    assert exc.value.status_code == 404
+    assert expectedDetail in exc.value.detail
+
+
 def test_GetCoordinates3dPointsServiceBuildsPointPayload(service, tmp_path):
     tomoPath = tmp_path / "tomo1.mrc"
     tomoPath.write_text("placeholder", encoding="utf-8")
@@ -482,16 +608,14 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
         payload=payload,
     )
 
-    assert result == {
-        "success": True,
-        "outputName": "outputCoords3d_edited",
-        "message": "Created new coords3d output 'outputCoords3d_edited'",
-        "data": {
-            "sourceOutputName": "outputCoords3d",
-            "replacedPoints": 2,
-            "copiedPoints": 0,
-        },
-    }
+    assert result["success"] is True
+    assert result["outputName"] == "outputCoords3d_edited"
+    assert result["message"] == "Created new coords3d output 'outputCoords3d_edited'"
+    assert result["data"]["sourceOutputName"] == "outputCoords3d"
+    assert result["data"]["replacedPoints"] == 2
+    assert result["data"]["copiedPoints"] == 0
+    assert result["data"]["postgresqlStored"] is False
+    assert result["data"]["postgresqlError"] is None
 
     assert "outputCoords3d_edited" in protocol.definedOutputs
     createdSet = protocol.definedOutputs["outputCoords3d_edited"]

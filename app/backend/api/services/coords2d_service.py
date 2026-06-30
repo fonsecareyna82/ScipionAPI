@@ -66,26 +66,11 @@ class Coords2dService:
                 detail="Project not found",
             )
 
-        currentProject = self.projectService.currentProject
-        if currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Project could not be loaded",
-            )
-
-        try:
-            protocol = currentProject.getProtocol(int(protocolId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol '{protocolId}' not found: {e}",
-            )
-
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol '{protocolId}' not found",
-            )
+        protocol = self.projectService._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -295,6 +280,45 @@ class Coords2dService:
         except Exception:
             return counts
 
+    def _getPostgresqlCoords2dReaderIfAvailable(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_coords2d_reader import PostgresqlCoords2dReader
+
+            readerProtocolId = self.projectService._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlCoords2dReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL Coords2D reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
     def listMicrographs(
         self,
         mapper: PostgresqlFlatMapper,
@@ -303,6 +327,29 @@ class Coords2dService:
         protocolId: int,
         outputName: str,
     ) -> Dict[str, Any]:
+        pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listMicrographs()
+            if payload is not None:
+                return payload
+
+        if mapper is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Coordinates2D output is not available in PostgreSQL metadata"
+                    if pgReader is None
+                    else "Coordinates2D micrographs are not available in PostgreSQL metadata: %s"
+                         % getattr(pgReader, "lastSkipReason", None)
+                ),
+            )
+
         _, coordinatesSet = self._loadCoordinatesOutput(
             mapper,
             projectId,
@@ -357,14 +404,37 @@ class Coords2dService:
         return micrograph
 
     def listCoordinatesForMicrograph(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        currentUser: Any,
-        protocolId: int,
-        outputName: str,
-        micId: str,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: Any,
+            protocolId: int,
+            outputName: str,
+            micId: str,
     ) -> Dict[str, Any]:
+        pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listCoordinatesForMicrograph(micId)
+            if payload is not None:
+                return payload
+
+        if mapper is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Coordinates2D output is not available in PostgreSQL metadata"
+                    if pgReader is None
+                    else "Coordinates2D coordinates are not available in PostgreSQL metadata: %s"
+                         % getattr(pgReader, "lastSkipReason", None)
+                ),
+            )
+
         _, coordinatesSet = self._loadCoordinatesOutput(
             mapper,
             projectId,

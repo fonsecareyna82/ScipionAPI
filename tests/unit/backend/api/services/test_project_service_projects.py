@@ -93,6 +93,8 @@ class FakeMapper:
     def __init__(self):
         self.projectsById = {}
         self.projectsListResult = []
+        self.projectProtocolCounts = {}
+        self.lastCountProjectProtocolsCall = None
         self.insertProjectResult = 101
         self.updateProjectResult = {
             "id": 1,
@@ -136,6 +138,10 @@ class FakeMapper:
     def listProjects(self, ownerId=None):
         self.lastListProjectsCall = {"ownerId": ownerId}
         return self.projectsListResult
+
+    def countProjectProtocols(self, projectId):
+        self.lastCountProjectProtocolsCall = {"projectId": projectId}
+        return self.projectProtocolCounts.get(projectId, 0)
 
     def insertProject(self, ownerId, name, description, status):
         self.lastInsertProjectCall = {
@@ -488,7 +494,8 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
     ]
 
     monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
-    monkeypatch.setattr(service, "countProtocols", lambda path: 7)
+    mapper.projectProtocolCounts[1] = 7
+    monkeypatch.setattr(service, "countProtocols", lambda path: 999)
     monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
 
     result = service.listProjects(mapper, currentUser)
@@ -513,6 +520,42 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "thumbnailVersion": "thumb-v1",
         }
     ]
+    assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
+
+
+def test_ListProjectsFallsBackToFilesystemProtocolCountWhenPostgresqlCountFails(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    storedPath = Path(service.manager.PROJECTS) / "demo-project"
+    storedPath.mkdir(parents=True, exist_ok=True)
+
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": str(storedPath),
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+        }
+    ]
+
+    def failCountProjectProtocols(projectId):
+        raise RuntimeError("postgresql count failed")
+
+    mapper.countProjectProtocols = failCountProjectProtocols
+
+    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
+    monkeypatch.setattr(service, "countProtocols", lambda path: 7)
+    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
+
+    result = service.listProjects(mapper, currentUser)
+
+    assert result[0]["protocolsCount"] == "7"
 
 
 def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser, monkeypatch):
