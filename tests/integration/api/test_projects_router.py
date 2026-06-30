@@ -239,6 +239,8 @@ def test_PollProtocolLogsNormalizesOffsetsAndIncludesDynamicChannels(projectClie
         ]
     }
 
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastPollLogsCall == {
         "projectId": 1,
         "protocolId": 22,
@@ -250,6 +252,11 @@ def test_PollProtocolLogsNormalizesOffsetsAndIncludesDynamicChannels(projectClie
         "maxBytes": 123,
         "maxLines": 45,
         "mapper": fakeProjectService.lastPollLogsCall["mapper"],
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
     }
 
 
@@ -1314,3 +1321,96 @@ def test_RenderCtftomoPsdImagePreservesHttpException(
     assert response.json()["detail"] == "PSD image file not found"
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+
+
+def test_ListProtocolLogChannelsUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get("/projects/1/protocols/2/logs/channels")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "channels": fakeProjectService.logChannelsResult,
+    }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListProtocolLogChannelsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "mapper": fakeProjectService.lastListProtocolLogChannelsCall["mapper"],
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
+def test_PollProtocolLogsUsesProjectDbRow(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/logs/chunk",
+        json={
+            "offsets": {
+                "stdout": 0,
+            },
+            "maxBytes": 32,
+            "maxLines": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "chunks": [
+            {
+                "channel": "stdout",
+                "content": "hello",
+                "offset": 5,
+            }
+        ]
+    }
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastPollLogsCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "offsets": {"stdout": 0},
+        "maxBytes": 32,
+        "maxLines": 10,
+        "mapper": fakeProjectService.lastPollLogsCall["mapper"],
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload"),
+    [
+        ("get", "/projects/1/protocols/2/logs/channels", None),
+        ("post", "/projects/1/protocols/2/logs/chunk", {"offsets": {"stdout": 0}}),
+    ],
+)
+def test_ProtocolLogEndpointsReturn404WhenProjectMissing(
+    projectClient,
+    fakeProjectService,
+    method,
+    url,
+    payload,
+):
+    fakeProjectService.projectDbRowResult = None
+
+    request = getattr(projectClient, method)
+    response = request(url) if payload is None else request(url, json=payload)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListProtocolLogChannelsCall is None
+    assert fakeProjectService.lastPollLogsCall is None

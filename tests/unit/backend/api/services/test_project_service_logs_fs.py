@@ -144,6 +144,35 @@ class FakeFileHandlers:
             "inline": inline,
         }
 
+class FakePgDb:
+    def __init__(self, projectPath, runtimeProtocolIdByDbId=None):
+        self.projectPath = projectPath
+        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+        self.fetchCalls = []
+
+    def fetchOne(self, query, params):
+        self.fetchCalls.append({"query": query, "params": params})
+
+        if "FROM projects" in query:
+            return {"name": str(self.projectPath)}
+
+        if "FROM protocols" in query:
+            protocolDbId = params[1]
+            runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+            if runtimeProtocolId is None:
+                return None
+            return {"protocolId": runtimeProtocolId}
+
+        return None
+
+
+class FakePgMapper:
+    def __init__(self, projectPath, runtimeProtocolIdByDbId=None):
+        self.db = FakePgDb(
+            projectPath=projectPath,
+            runtimeProtocolIdByDbId=runtimeProtocolIdByDbId,
+        )
+
 
 @pytest.fixture
 def projectServiceModule(authTestEnv):
@@ -766,4 +795,137 @@ def test_GetProtocolLogsNormalizesNegativeOffsets(service, tmp_path):
         "stderrOffset": 4,
         "scheduleLog": "SCH\n",
         "scheduleOffset": 4,
+    }
+
+
+def test_ListProtocolLogChannelsServiceUsesPostgresqlPathsBeforeRuntime(
+    service,
+    tmp_path,
+):
+    projectPath = tmp_path / "DemoProject"
+    protocolPath = projectPath / "Runs" / "000010_ProtImport"
+    logsPath = protocolPath / "logs"
+    logsPath.mkdir(parents=True, exist_ok=True)
+
+    (logsPath / "run.stdout").write_text("hello\n", encoding="utf-8")
+    (logsPath / "run.stderr").write_text("error\n", encoding="utf-8")
+    (logsPath / "schedule.log").write_text("schedule\n", encoding="utf-8")
+
+    mapper = FakePgMapper(
+        projectPath=projectPath,
+        runtimeProtocolIdByDbId={500: 10},
+    )
+
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("runtime should not be used")
+
+    service._getScipionProtocolByRuntimeId = failRuntime
+
+    result = service.listProtocolLogChannelsService(
+        projectId=1,
+        protocolId=500,
+        mapper=mapper,
+    )
+
+    assert result == {
+        "projectId": 1,
+        "protocolId": 10,
+        "channels": [
+            {"id": "stdout", "label": "Output", "order": 1},
+            {"id": "stderr", "label": "Errors", "order": 2},
+            {"id": "schedule", "label": "Schedule", "order": 3},
+        ],
+    }
+
+
+def test_PollProtocolLogsServiceUsesPostgresqlPathsBeforeRuntime(
+    service,
+    tmp_path,
+):
+    projectPath = tmp_path / "DemoProject"
+    protocolPath = projectPath / "Runs" / "000010_ProtImport"
+    logsPath = protocolPath / "logs"
+    logsPath.mkdir(parents=True, exist_ok=True)
+
+    (logsPath / "run.stdout").write_text("line1\nline2\nline3\n", encoding="utf-8")
+    (logsPath / "run.stderr").write_text("err1\nerr2\n", encoding="utf-8")
+    (logsPath / "schedule.log").write_text("sched1\nsched2\n", encoding="utf-8")
+
+    mapper = FakePgMapper(
+        projectPath=projectPath,
+        runtimeProtocolIdByDbId={500: 10},
+    )
+
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("runtime should not be used")
+
+    service._getScipionProtocolByRuntimeId = failRuntime
+
+    result = service.pollProtocolLogsService(
+        projectId=1,
+        protocolId=500,
+        offsets={
+            "stdoutLog": 6,
+            "err": 0,
+            "schedule": 7,
+        },
+        maxBytes=64,
+        maxLines=1,
+        mapper=mapper,
+    )
+
+    assert result == {
+        "projectId": 1,
+        "protocolId": 10,
+        "channels": {
+            "stdout": {
+                "content": "line2\n",
+                "offset": 12,
+            },
+            "stderr": {
+                "content": "err1\n",
+                "offset": 5,
+            },
+            "schedule": {
+                "content": "sched2\n",
+                "offset": 14,
+            },
+        },
+    }
+
+
+def test_ProtocolLogsFallbackToRuntimeWhenPostgresqlLogsAreMissing(
+    service,
+    tmp_path,
+):
+    projectPath = tmp_path / "DemoProject"
+    protocolPath = projectPath / "Runs" / "000010_ProtImport"
+    protocolPath.mkdir(parents=True, exist_ok=True)
+
+    runtimeStdout = tmp_path / "runtime.stdout"
+    runtimeStdout.write_text("runtime\n", encoding="utf-8")
+
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(runtimeStdout),
+        stderrLog=str(tmp_path / "missing.stderr"),
+        scheduleLog=str(tmp_path / "missing.schedule"),
+    )
+
+    mapper = FakePgMapper(
+        projectPath=projectPath,
+        runtimeProtocolIdByDbId={500: 10},
+    )
+
+    result = service.pollProtocolLogsService(
+        projectId=1,
+        protocolId=500,
+        offsets={"stdout": 0},
+        maxBytes=64,
+        maxLines=10,
+        mapper=mapper,
+    )
+
+    assert result["channels"]["stdout"] == {
+        "content": "runtime\n",
+        "offset": len("runtime\n"),
     }
