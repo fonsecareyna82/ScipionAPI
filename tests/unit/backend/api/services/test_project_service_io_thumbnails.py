@@ -842,3 +842,32 @@ def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
 
     assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
     assert mapper.db.fetchCalls[1]["params"] == (1, 501, "501")
+
+
+def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
+    captured = {}
+
+    def fakeRuntime(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_outputPreviewRuntime", fakeRuntime)
+
+    result = service.outputPreview(
+        protocolId=500,
+        outputName="outputMetadata",
+        requestHeaders={"x-preview-colormap": "viridis"},
+        colormap="plasma",
+        mapper="mapper",
+        projectId=1,
+    )
+
+    assert result == {"ok": True}
+    assert captured == {
+        "protocolId": 500,
+        "outputName": "outputMetadata",
+        "requestHeaders": {"x-preview-colormap": "viridis"},
+        "colormap": "plasma",
+        "mapper": "mapper",
+        "projectId": 1,
+    }
