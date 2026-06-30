@@ -26,7 +26,7 @@ from app.backend.api.schemas.protocols_schema import (
     WorkflowImportRequest,
 )
 from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTagUpdateIn, ProtocolTagsSetIn
-from app.backend.database import getMapper
+from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
@@ -49,6 +49,20 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 def getProjectService() -> ProjectService:
     """Return a fresh ProjectService per request to avoid shared state."""
     return ProjectService()
+
+def _appendProtocolSyncCounts(response: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    if not isinstance(result, dict):
+        return response
+
+    protocolsCount = result.get("protocolsCount", result.get("protocols"))
+    dependenciesCount = result.get("dependenciesCount", result.get("dependencies"))
+
+    if protocolsCount is not None:
+        response["protocolsCount"] = protocolsCount
+    if dependenciesCount is not None:
+        response["dependenciesCount"] = dependenciesCount
+
+    return response
 
 # ======================================================================
 #                           PROJECT WORKFLOWS
@@ -156,12 +170,20 @@ def importProject(
 
 @router.get("/{projectId}", response_model=Any)
 def getProject(
-    projectId: int,  # id in the DB
+    projectId: int,
+    validateConsistency: bool = Query(False),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=True)
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=validateConsistency,
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
@@ -189,13 +211,7 @@ def getProjectEffectiveSettings(
 
     The project must be accessible by the authenticated user.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -216,6 +232,29 @@ def getProjectEffectiveSettings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load project effective settings: {e}",
         )
+
+
+@router.post(
+    "/{projectId}/consistency/check",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def checkProjectPostgresqlConsistency(
+    projectId: int,
+    refresh: bool = Query(True),
+    checkPid: bool = Query(True),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    return service.validateProjectPostgresqlConsistency(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        refresh=refresh,
+        checkPid=checkPid,
+    )
+
 
 @router.put("/{projectId}", response_model=Any, status_code=status.HTTP_200_OK)
 def updateProject(
@@ -320,7 +359,7 @@ def loadProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -345,7 +384,11 @@ async def loadProtocol(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.getProtocolParams(projectId, protocolId)
+    return service.getProtocolParams(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+    )
 
 
 class ProtocolStepStatusUpdate(BaseModel):
@@ -360,7 +403,7 @@ def listProtocolSteps(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -434,32 +477,34 @@ async def launchProtocol(
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={
-                    "status": 0,
+                    "status": 1,
                     "errors": ["Project not found"],
                     "workflow": [],
                 },
             )
 
-        service.launchProtocol(
+        result = service.launchProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=request.getProtocolId(),
             protocolClassName=request.getProtocolClassName(),
             params=request.getParams(),
             executeMode=request.getMode(),
-        )
+        ) or {}
 
-        return {
+        response = {
             "status": 0,
             "errors": [],
             "workflow": [],
         }
 
+        return _appendProtocolSyncCounts(response, result)
+
     except HTTPException as e:
         return JSONResponse(
             status_code=e.status_code,
             content={
-                "status": 0,
+                "status": 1,
                 "errors": _normalizeErrors(e.detail),
                 "workflow": [],
             },
@@ -469,7 +514,7 @@ async def launchProtocol(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "status": 0,
+                "status": 1,
                 "errors": ["Internal server error"],
                 "workflow": [],
             },
@@ -544,7 +589,30 @@ def suggestionProtocol(
                      "errors": ["Project not found"],
                      "workflow": []},
         )
-    return service.getNextProtocolSuggestions(protocolId)
+    try:
+        return service.getNextProtocolSuggestions(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(e.detail),
+                "workflow": [],
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "status": 1,
+                "errors": [str(e)],
+                "workflow": [],
+            },
+        )
 
 
 @router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
@@ -592,21 +660,27 @@ def renameProtocol(
             )
 
         service.renameProtocol(
+            mapper,
+            projectId,
             protocolId,
             newNameText.strip(),
             str(newComment or "").strip(),
         )
-        service.syncProjectGraphAfterMutation(
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="rename protocol",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -651,12 +725,16 @@ def duplicateProtocol(
                          "workflow": []},
             )
 
-        result = service.duplicateProtocol(mapper, projectId, items)
+        result = service.duplicateProtocol(mapper, projectId, items) or {}
         # Keep 201 on success, but still return unified schema
-        return {"status": result['status'],
-                "errors": result['errors'],
-                "workflow": [],
-                "duplicated": result['duplicated']}
+        response = {
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": [],
+            "duplicated": result.get("duplicated", []),
+        }
+
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -695,24 +773,40 @@ def deleteProtocol(
         protocolIds = getattr(payload, "protocolIds", None) if payload is not None else None
         if not protocolIds:
             return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 content={"status": 1,
                          "errors": ["Missing protocolIds"],
                          "workflow": []},
             )
 
-        service.deleteProtocol(mapper, projectId, protocolIds)
+        result = service.deleteProtocol(mapper, projectId, protocolIds) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, result)
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(e.detail),
+                "workflow": [],
+            },
+        )
 
     except Exception as e:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": 1,
-                     "errors": _normalizeErrors(str(e)),
-                     "workflow": []},
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(str(e)),
+                "workflow": [],
+            },
         )
 
 
@@ -738,18 +832,22 @@ def restartProtocolAll(
         )
 
     try:
-        service.restartProtocolAll(protocolId)
-        service.syncProjectGraphAfterMutation(
+        service.restartProtocolAll(mapper, projectId, protocolId)
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="restart protocol subtree",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -788,15 +886,21 @@ def continueProtocolAll(
 
     try:
         service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
-        service.syncProjectGraphAfterMutation(
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="continue protocol subtree",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0, "errors": [], "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -830,16 +934,22 @@ def resetProtocolFrom(
         )
 
     try:
-        service.resetProtocolFrom(protocolId)
-        service.syncProjectGraphAfterMutation(
+        service.resetProtocolFrom(mapper, projectId, protocolId)
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="reset protocol from node",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0, "errors": [], "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -880,18 +990,22 @@ def stopProtocol(
                          "workflow": []},
             )
 
-        service.stopProtocol(protocolIds)
-        service.syncProjectGraphAfterMutation(
+        service.stopProtocol(mapper, projectId, protocolIds)
+        syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
             actionLabel="stop protocol",
             refresh=True,
             checkPid=True,
-        )
+        ) or {}
 
-        return {"status": 0,
-                "errors": [],
-                "workflow": []}
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1001,7 +1115,7 @@ def listProtocolLogChannels(
     service: ProjectService = Depends(getProjectService),
 ):
     # listProtocolLogChannels
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1009,6 +1123,8 @@ def listProtocolLogChannels(
         channels = service.listProtocolLogChannelsService(
             projectId=projectId,
             protocolId=protocolId,
+            mapper=mapper,
+            currentUser=currentUser,
         )
 
         # normalizeChannels
@@ -1051,7 +1167,7 @@ def pollProtocolLogs(
     service: ProjectService = Depends(getProjectService),
 ):
     # pollProtocolLogs
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1072,6 +1188,8 @@ def pollProtocolLogs(
             offsets=offsets,
             maxBytes=maxBytes,
             maxLines=maxLines,
+            mapper=mapper,
+            currentUser=currentUser,
         )
 
         # normalizePollResponse
@@ -1183,7 +1301,11 @@ async def getProtocolPath(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.getProtocolPath(protocolId)
+    return service.getProtocolPath(
+        protocolId=protocolId,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
@@ -1203,7 +1325,12 @@ async def listProtocolDir(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.listProtocolDir(protocolId, path)
+    return service.listProtocolDir(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
@@ -1216,7 +1343,12 @@ async def previewProtocolText(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolTextFile(protocolId, path)
+    return service.previewProtocolTextFile(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
@@ -1237,7 +1369,12 @@ def previewRemoteEntry(
         refresh=False,
         checkPid=False,
     )
-    return service.previewRemoteEntry(protocolId, path)
+    return service.previewRemoteEntry(
+        protocolId=protocolId,
+        path=path,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
@@ -1251,7 +1388,13 @@ async def previewProtocolImageFile(
     service: ProjectService = Depends(getProjectService),
 ):
     _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolImageFile(protocolId, path, inline)
+    return service.previewProtocolImageFile(
+        protocolId=protocolId,
+        path=path,
+        inline=inline,
+        mapper=mapper,
+        projectId=projectId,
+    )
 
 
 @router.post(
@@ -1406,6 +1549,8 @@ async def writeRemoteFile(
         return service.writeRemoteFileService(
             protocolId=protocolId,
             payload=payload,
+            mapper=mapper,
+            projectId=projectId,
         )
     except HTTPException:
         raise
@@ -1445,6 +1590,8 @@ async def previewOutput(
         outputName=outputName,
         requestHeaders=dict(request.headers),
         colormap=cmapHeader or cmapQuery,
+        mapper=mapper,
+        projectId=projectId,
     )
 
 
@@ -1468,7 +1615,7 @@ def resolveAnalyzeViewer(
     service: ProjectService = Depends(getProjectService),
 ):
     # resolveAnalyzeViewer
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1481,7 +1628,7 @@ def resolveAnalyzeViewer(
             projectId=projectId,
             protocolId=protocolId,
             ctx=payload,
-
+            mapper=mapper,
         )
         return decision or {"handled": False}
     except Exception as e:
@@ -1506,11 +1653,14 @@ def listOutputVolumes(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    items = service.listOutputVolumesService(projectId, protocolId, outputName)
+    items = service.listOutputVolumesService(projectId,
+                                             protocolId,
+                                             outputName,
+                                             mapper=mapper)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(items)
@@ -1535,11 +1685,15 @@ def getVolumeInfo(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    info = service.getVolumeInfoService(projectId, protocolId, outputName, volumeId)
+    info = service.getVolumeInfoService(projectId,
+                                        protocolId,
+                                        outputName,
+                                        volumeId,
+                                        mapper=mapper,)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(info)
@@ -1572,7 +1726,7 @@ def getVolumeHistogram(
     """
     Return intensity histogram for one volume.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1582,6 +1736,7 @@ def getVolumeHistogram(
         outputName=outputName,
         volumeId=volumeId,
         bins=bins,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -1608,7 +1763,7 @@ def renderVolumeSlice(
     colormapParam: Optional[str] = Query(None, alias="colormap"),
     formatParam: Optional[str] = Query(None, alias="format"),
     fmtParam: Optional[str] = Query(None, alias="fmt"),
-    normalize: Optional[str] = Query(None),
+    normalize: Optional[str] = Query("minmax"),
     scale: float = Query(1.0, gt=0),
     inline: bool = Query(True),
     thumb: Optional[int] = Query(None, ge=32, le=2048),
@@ -1618,11 +1773,11 @@ def renderVolumeSlice(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    cmap = cmapParam or colormapParam or "viridis"
+    cmap = cmapParam or colormapParam
     fmt = fmtParam or formatParam or "webp"
 
     resp = service.renderVolumeSliceService(
@@ -1640,6 +1795,7 @@ def renderVolumeSlice(
         thumb=thumb,
         fast=fast,
         quality=quality,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -1662,7 +1818,7 @@ def getVolumeData3d(
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1673,6 +1829,7 @@ def getVolumeData3d(
         volumeId=volumeId,
         maxDim=maxDim,
         method=method,
+        mapper=mapper,
     )
 
 @router.get(
@@ -1694,20 +1851,22 @@ def getVolumeSurfaceMesh(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     try:
 
-        return service.getVolumeSurfaceMesh(protocolId=protocolId,
+        return service.getVolumeSurfaceMesh(projectId=projectId,
+                                            protocolId=protocolId,
                                             outputName=outputName,
                                             volumeId=volumeId,
                                             level=level,
                                             maxDim=maxDim,
                                             method=method,
                                             maxTriangles=maxTriangles,
-                                            currentUser=currentUser)
+                                            currentUser=currentUser,
+                                            mapper=mapper,)
 
     except HTTPException:
         raise
@@ -1745,7 +1904,7 @@ def listOutputTiltSeries(
     """
     List tilt series for a SetOfTiltSeries-like output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1753,6 +1912,7 @@ def listOutputTiltSeries(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -1781,7 +1941,7 @@ def getTiltSeriesFrames(
     """
     Return metadata for all tilt images in one tilt series.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1791,6 +1951,7 @@ def getTiltSeriesFrames(
             protocolId=protocolId,
             outputName=outputName,
             tiltSeriesId=tiltSeriesId,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
@@ -1848,7 +2009,7 @@ def renderTiltSeriesImage(
     """
     Render one tilt image from a tilt series.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1863,6 +2024,7 @@ def renderTiltSeriesImage(
             fmt=fmt,
             applyTransform=applyTransform,
             inline=inline,
+            mapper=mapper,
         )
 
         resp.headers["X-Debug-Auth"] = "ok"
@@ -1895,7 +2057,7 @@ def renderTiltSeriesImagesBatch(
     Render several tilt images from the same tilt series in one request.
     This is intended for smooth slider prefetching in the web viewer.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1910,6 +2072,7 @@ def renderTiltSeriesImagesBatch(
             fmt=payload.fmt,
             applyTransform=payload.applyTransform,
             inline=payload.inline,
+            mapper=mapper
         )
 
         resp = JSONResponse(result or {})
@@ -1942,14 +2105,14 @@ def createNewSetOfTiltSeries(
 ):
     """
     Create a new tilt-series output applying the given exclusions.
-    The backend is expected to duplicate the SetOfTiltSeries and
-    remove excluded views, optionally restacking files on disk.
+    The backend duplicates the SetOfTiltSeries and removes excluded views,
+    optionally restacking files on disk.
     """
     project = service.getProjectById(
         mapper,
         projectId,
         currentUser,
-        refresh=False,
+        refresh=True,
         checkPid=False,
     )
     if not project:
@@ -1962,6 +2125,7 @@ def createNewSetOfTiltSeries(
             outputName=outputName,
             exclusions=payload.exclusions,
             restack=payload.restack,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
@@ -1982,10 +2146,10 @@ def createNewSetOfTiltSeries(
             detail=f"Failed to create new tilt-series set: {e}",
         )
 
-
 # ==============================================================================
 #        ANALYZE RESULTS: CTF TOMOGRAPHY (SetOfCTFTomoSeries)
 # ==============================================================================
+
 class CtftomoNewSetRequest(BaseModel):
     """
     Request payload for creating a new SetOfCTFTomoSeries based on exclusions.
@@ -2010,11 +2174,16 @@ def listCtftomoSeries(
     """
     List CTFTomoSeries entries for a CTFTomo output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return service.listOutputCtftomoSeriesService(projectId, protocolId, outputName)
+    return service.listOutputCtftomoSeriesService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        mapper=mapper,
+    )
 
 
 @router.get(
@@ -2033,11 +2202,17 @@ def getCtftomoSeriesViews(
     """
     Return all CTF measurements for one tilt-series (identified by tiltSeriesId).
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return service.getCtftomoSeriesViewsService(projectId, protocolId, outputName, tiltSeriesId)
+    return service.getCtftomoSeriesViewsService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tiltSeriesId=tiltSeriesId,
+        mapper=mapper,
+    )
 
 
 @router.post(
@@ -2076,6 +2251,7 @@ def createNewSetOfCtftomoSeries(
             outputName=outputName,
             exclusions=payload.exclusions,
             restack=payload.restack,
+            mapper=mapper,
         )
 
         from fastapi.responses import JSONResponse
@@ -2136,13 +2312,7 @@ def renderCtftomoPsdImage(
     Render a PSD image for a CTF-tomography view, given a stack spec
     (for example '3@/path/to/TS_1.mrc').
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2156,6 +2326,7 @@ def renderCtftomoPsdImage(
             fmt=fmt,
             applyTransform=applyTransform,
             inline=inline,
+            mapper=mapper,
         )
         resp.headers["X-Debug-Auth"] = "ok"
         resp.headers["X-Debug-UserId"] = str(
@@ -2163,6 +2334,8 @@ def renderCtftomoPsdImage(
         )
         resp.headers["Vary"] = "Authorization"
         return resp
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in renderCtftomoPsdImage: %s", e)
         raise HTTPException(
@@ -2191,7 +2364,7 @@ def listCoordinates3dTomograms(
     """
     List tomograms referenced by a SetOfCoordinates3D output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2199,6 +2372,7 @@ def listCoordinates3dTomograms(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2229,7 +2403,7 @@ def getCoordinates3dPoints(
     """
     Return all 3D coordinates for one tomogram inside a SetOfCoordinates3D.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2238,6 +2412,7 @@ def getCoordinates3dPoints(
         protocolId=protocolId,
         outputName=outputName,
         tomogramId=tomogramId,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2310,7 +2485,7 @@ def renderCoords3dTomogramSlice(
     """
     Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
     """
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2329,6 +2504,7 @@ def renderCoords3dTomogramSlice(
         thumb=thumb,
         fast=fast,
         quality=quality,
+        mapper=mapper
     )
 
     resp.headers["X-Debug-Auth"] = "ok"
@@ -2378,7 +2554,8 @@ def createCoords3dOutputFromPoints(projectId: int,
         result = service.createCoords3dOutputFromPointsService(projectId=projectId,
                                                                protocolId=protocolId,
                                                                outputName=outputName,
-                                                               payload=payload)
+                                                               payload=payload,
+                                                               mapper=mapper,)
         resp = JSONResponse(result or {"success": True, "outputName": result['outputName']})
         resp.headers["X-Debug-Auth"] = "ok"
         resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2403,7 +2580,7 @@ def getIntegratedAnalyzeContext(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2411,6 +2588,7 @@ def getIntegratedAnalyzeContext(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     resp = JSONResponse(payload)
@@ -2455,13 +2633,7 @@ def getFscRows(
       "threshold": 0.143,
     }
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
-    )
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2470,6 +2642,7 @@ def getFscRows(
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            mapper=mapper,
         )
 
         resp = JSONResponse(payload or {"curves": [], "threshold": 0.143})
@@ -2520,7 +2693,7 @@ def listOutputMetadataTables(
     """
     List logical metadata tables (blocks) associated with a given output.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2528,6 +2701,7 @@ def listOutputMetadataTables(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2556,7 +2730,7 @@ def getMetadataTableSchema(
     """
     Return logical schema for one metadata table: columns, renderers, flags.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2565,6 +2739,7 @@ def getMetadataTableSchema(
         protocolId=protocolId,
         outputName=outputName,
         tableName=tableName,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2591,7 +2766,7 @@ def runMetadataTableAction(
     service: ProjectService = Depends(getProjectService),
 ):
     # runMetadataTableAction
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2684,7 +2859,7 @@ def getMetadataTablePage(
     """
     Return one logical page of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2698,6 +2873,7 @@ def getMetadataTablePage(
         sortBy=sortBy,
         asc=asc,
         selectionOnly=selectionOnly,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2742,7 +2918,7 @@ def exportMetadataTable(
     """
     Export a metadata table (full or subset) as CSV/XLSX.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2764,6 +2940,7 @@ def exportMetadataTable(
         fmt=fmt,
         selectionOnly=selectionOnly,
         ids=idList,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2827,7 +3004,7 @@ def renderMetadataImageCell(
     """
     Render one image cell from a metadata table using the same logic as ImageRenderer.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2843,6 +3020,7 @@ def renderMetadataImageCell(
         applyTransform=applyTransform,
         inline=inline,
         fmt=fmt,
+        mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2889,7 +3067,7 @@ def getMetadataTableWindow(
     """
     Return a window (offset + limit) of rows for a metadata table.
     """
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -2903,6 +3081,7 @@ def getMetadataTableWindow(
         selectionOnly=selectionOnly,
         sortBy=sortBy,
         asc=asc,
+        mapper=mapper,
     )
 
     from fastapi.responses import JSONResponse
@@ -2916,7 +3095,6 @@ def getMetadataTableWindow(
 # ======================================================================
 #                            ANALYZE RESULTS:  EXTERNAL VIEWERS
 # ======================================================================
-
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers",
     response_model=Any,
@@ -2926,7 +3104,7 @@ def listExternalViewers(
     projectId: int,
     protocolId: int,
     outputName: str,
-    objectId: Optional[str] = Query(None),
+    objectId: Optional[Union[str, int]] = Query(None),
     objectKind: Optional[str] = Query(None),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -2936,7 +3114,7 @@ def listExternalViewers(
         mapper,
         projectId,
         currentUser,
-        refresh=False,
+        refresh=True,
         checkPid=False,
     )
     if not project:
@@ -2948,8 +3126,12 @@ def listExternalViewers(
             outputName=outputName,
             objectId=objectId,
             objectKind=objectKind,
+            mapper=mapper,
+            projectId=projectId,
         )
-        return {"viewers": viewers}
+
+        return {"viewers": viewers or []}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2979,7 +3161,7 @@ def launchExternalViewer(
         mapper,
         projectId,
         currentUser,
-        refresh=False,
+        refresh=True,
         checkPid=False,
     )
     if not project:
@@ -2995,7 +3177,10 @@ def launchExternalViewer(
             objectId=payload.objectId,
             objectKind=payload.objectKind,
             params=payload.params or {},
+            mapper=mapper,
+            projectId=projectId,
         )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3004,7 +3189,6 @@ def launchExternalViewer(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to launch external viewer: {e}",
         )
-
 # ======================================================================
 #                            PROTOCOL TAGS
 # ======================================================================
@@ -3022,7 +3206,7 @@ def listProjectTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3042,7 +3226,7 @@ def createProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3074,7 +3258,7 @@ def updateProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3100,7 +3284,7 @@ def deleteProjectTag(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3121,7 +3305,7 @@ def listProtocolTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3147,7 +3331,7 @@ def setProtocolTags(
     service: ProjectService = Depends(getProjectService),
 ):
     # ensureProjectExists
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3171,7 +3355,7 @@ async def getContextMenuVisibilityPolicy(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return service.getContextMenuVisibilityPolicy()
@@ -3393,12 +3577,16 @@ def getProtocolThumbnail(
                     outputName=outputName,
                     force=False,
                     size=size,
+                    mapper=mapper,
+                    projectId=projectId,
                 )
 
             return service.buildProtocolThumbnail(
                 protocolId=protocolId,
                 force=False,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         result = _runThumbnailProjectJob(
@@ -3453,12 +3641,16 @@ def rebuildProtocolThumbnail(
                     outputName=outputName,
                     force=True,
                     size=size,
+                    mapper=mapper,
+                    projectId=projectId,
                 )
 
             return service.buildProtocolThumbnail(
                 protocolId=protocolId,
                 force=True,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         result = _runThumbnailProjectJob(
@@ -3517,59 +3709,8 @@ def listProjectThumbnailItems(
                 maxProtocols=maxProtocols,
                 maxOutputsPerProtocol=maxOutputsPerProtocol,
                 inlineImages=inlineImages,
+                mapper=mapper,
             )
-
-            validItems = []
-
-            for group in items or []:
-                if not isinstance(group, dict):
-                    continue
-
-                protocolIdValue = group.get("protocolId")
-
-                try:
-                    protocol = service.currentProject.getProtocol(int(protocolIdValue))
-                except Exception:
-                    logger.warning(
-                        "Skipping thumbnail group because protocol was not found. "
-                        "projectId=%s protocolId=%s group=%s",
-                        projectId,
-                        protocolIdValue,
-                        group,
-                    )
-                    continue
-
-                validOutputs = []
-
-                for output in group.get("outputs") or []:
-                    if not isinstance(output, dict):
-                        continue
-
-                    outputNameValue = output.get("outputName")
-                    if not outputNameValue:
-                        continue
-
-                    if not hasattr(protocol, str(outputNameValue)):
-                        logger.warning(
-                            "Skipping thumbnail output because it does not belong to protocol. "
-                            "projectId=%s protocolId=%s outputName=%s",
-                            projectId,
-                            protocolIdValue,
-                            outputNameValue,
-                        )
-                        continue
-
-                    validOutputs.append(output)
-
-                if not validOutputs:
-                    continue
-
-                nextGroup = dict(group)
-                nextGroup["outputs"] = validOutputs
-                validItems.append(nextGroup)
-
-            items = validItems
-
         response = JSONResponse(items)
         response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
         response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
@@ -3615,6 +3756,8 @@ def getProtocolOutputThumbnail(
                 outputName=outputName,
                 force=False,
                 size=size,
+                mapper=mapper,
+                projectId=projectId,
             )
 
         thumbPath = result.get("absolutePath")
@@ -3689,25 +3832,25 @@ def getProtocolOutputThumbnailsBatch(
             seen = set()
 
             for requestedOutput in requestedOutputs:
-                protocolId = int(requestedOutput.protocolId)
+                requestedProtocolId = int(requestedOutput.protocolId)
                 outputName = str(requestedOutput.outputName or "").strip()
 
                 if not outputName:
                     continue
 
-                requestKey = (protocolId, outputName)
+                requestKey = (requestedProtocolId, outputName)
                 if requestKey in seen:
                     continue
                 seen.add(requestKey)
 
                 item = {
-                    "protocolId": protocolId,
+                    "protocolId": requestedProtocolId,
                     "outputName": outputName,
                     "outputClassName": None,
                     "exists": False,
                     "cached": False,
                     "thumbnailUrl": (
-                        f"/projects/{int(projectId)}/protocols/{protocolId}"
+                        f"/projects/{int(projectId)}/protocols/{requestedProtocolId}"
                         f"/outputs/{outputName}/thumbnail"
                     ),
                     "thumbnailDataUrl": None,
@@ -3715,14 +3858,14 @@ def getProtocolOutputThumbnailsBatch(
                 }
 
                 try:
-                    protocol = service.currentProject.getProtocol(protocolId)
+                    scipionProtocolId = service._resolveScipionProtocolId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=requestedProtocolId,
+                    )
+                    protocol = service.currentProject.getProtocol(int(scipionProtocolId))
                 except Exception:
                     item["error"] = "Protocol not found"
-                    items.append(item)
-                    continue
-
-                if not hasattr(protocol, outputName):
-                    item["error"] = "Output not found"
                     items.append(item)
                     continue
 
@@ -3734,16 +3877,18 @@ def getProtocolOutputThumbnailsBatch(
 
                 try:
                     result = service.buildProtocolOutputThumbnail(
-                        protocolId=protocolId,
+                        protocolId=requestedProtocolId,
                         outputName=outputName,
                         force=False,
                         size=payload.size,
+                        mapper=mapper,
+                        projectId=projectId,
                     )
                 except Exception as exc:
                     logger.debug(
                         "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
                         projectId,
-                        protocolId,
+                        requestedProtocolId,
                         outputName,
                         exc_info=True,
                     )
@@ -3770,7 +3915,7 @@ def getProtocolOutputThumbnailsBatch(
                         logger.debug(
                             "Could not inline batch thumbnail image. projectId=%s protocolId=%s outputName=%s",
                             projectId,
-                            protocolId,
+                            requestedProtocolId,
                             outputName,
                             exc_info=True,
                         )

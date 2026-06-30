@@ -48,6 +48,33 @@ class FakeProtocol:
         if outputName is not None:
             setattr(self, outputName, output)
 
+class FakeDb:
+    def __init__(self, runtimeProtocolIdByDbId=None):
+        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+        self.fetchCalls = []
+
+    def fetchOne(self, query, params):
+        self.fetchCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        if len(params) < 3:
+            return None
+
+        protocolDbId = params[1]
+        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+        if runtimeProtocolId is None:
+            return None
+
+        return {
+            "protocolId": runtimeProtocolId,
+        }
+
+
+class FakeMapper:
+    def __init__(self, runtimeProtocolIdByDbId=None):
+        self.db = FakeDb(runtimeProtocolIdByDbId=runtimeProtocolIdByDbId)
 
 class FakeCurrentProject:
     # fakeCurrentProject
@@ -212,6 +239,49 @@ def test_OutputPreviewDelegatesToOutputsPreview(projectServiceModule, service, m
     }
 
 
+def test_OutputPreviewResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    FakeOutputsPreview.instances = []
+
+    outputFile = tmp_path / "output.sqlite"
+    outputFile.write_text("placeholder", encoding="utf-8")
+
+    output = FakeOutput(str(outputFile))
+    protocol = FakeProtocol(protocolId=10, outputName="outputMetadata", output=output)
+    service.currentProject = FakeCurrentProject(protocols={10: protocol})
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+    monkeypatch.setattr(service, "_createObjectManager", lambda: {"manager": "fresh"})
+
+    result = service.outputPreview(
+        protocolId=500,
+        outputName="outputMetadata",
+        requestHeaders={"x-preview-colormap": "viridis"},
+        colormap="plasma",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "preview": True,
+        "protocolId": 10,
+        "outputPath": str(outputFile),
+        "colormap": "plasma",
+    }
+    assert FakeOutputsPreview.instances[0].lastPreviewCall == {
+        "protocolId": 10,
+        "outputPath": str(outputFile),
+        "objMgr": {"manager": "fresh"},
+    }
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
 def test_BuildProtocolThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
     FakeThumbnailService.instances = []
     monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
@@ -228,6 +298,42 @@ def test_BuildProtocolThumbnailDelegatesToThumbnailService(projectServiceModule,
             "outputName": "outputA",
         }
     ]
+
+
+def test_BuildProtocolThumbnailResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    FakeThumbnailService.instances = []
+    monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    result = service.buildProtocolThumbnail(
+        protocolId=500,
+        force=True,
+        size=400,
+        outputName="outputA",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "kind": "protocol",
+        "protocolId": 10,
+        "outputName": "outputA",
+    }
+    assert FakeThumbnailService.instances[0].calls == [
+        {
+            "method": "buildProtocolThumbnail",
+            "protocolId": 10,
+            "force": True,
+            "size": 400,
+            "outputName": "outputA",
+        }
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
 
 
 def test_BuildProjectThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -265,6 +371,42 @@ def test_BuildProtocolOutputThumbnailDelegatesToThumbnailService(projectServiceM
     ]
 
 
+def test_BuildProtocolOutputThumbnailResolvesPostgresqlProtocolId(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    FakeThumbnailService.instances = []
+    monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={501: 11})
+
+    result = service.buildProtocolOutputThumbnail(
+        protocolId=501,
+        outputName="outputVol",
+        force=False,
+        size=256,
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "kind": "output",
+        "protocolId": 11,
+        "outputName": "outputVol",
+    }
+    assert FakeThumbnailService.instances[0].calls == [
+        {
+            "method": "buildProtocolOutputThumbnail",
+            "protocolId": 11,
+            "outputName": "outputVol",
+            "force": False,
+            "size": 256,
+        }
+    ]
+    assert mapper.db.fetchCalls[0]["params"] == (1, 501, "501")
+
+
 def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
     FakeThumbnailService.instances = []
     monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
@@ -289,6 +431,82 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
             "inlineImages": False,
         }
     ]
+
+
+def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutputs(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    class FakeThumbnailServiceWithItems:
+        # fakeThumbnailServiceWithItems
+        instances = []
+
+        def __init__(self, currentProject):
+            self.currentProject = currentProject
+            FakeThumbnailServiceWithItems.instances.append(self)
+
+        def listProtocolThumbnailItems(
+                self,
+                projectId,
+                force=False,
+                size=320,
+                maxProtocols=12,
+                maxOutputsPerProtocol=4,
+                inlineImages=False,
+        ):
+            return [
+                {
+                    "projectId": projectId,
+                    "protocolId": 500,
+                    "outputs": [
+                        {"outputName": "outputVol"},
+                        {"outputName": "missingOutput"},
+                    ],
+                },
+                {
+                    "projectId": projectId,
+                    "protocolId": 999,
+                    "outputs": [
+                        {"outputName": "outputVol"},
+                    ],
+                },
+            ]
+
+    output = FakeOutput("volume.mrc")
+    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
+    service.currentProject = FakeCurrentProject(protocols={10: protocol})
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ThumbnailService",
+        FakeThumbnailServiceWithItems,
+    )
+
+    result = service.listProjectThumbnailItems(
+        projectId=1,
+        force=False,
+        size=320,
+        maxProtocols=12,
+        maxOutputsPerProtocol=4,
+        inlineImages=False,
+        mapper=mapper,
+    )
+
+    assert result == [
+        {
+            "projectId": 1,
+            "protocolId": 500,
+            "outputs": [
+                {"outputName": "outputVol"},
+            ],
+        }
+    ]
+
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[1]["params"] == (1, 999, "999")
 
 
 def test_NormalizeExportJsonContentAcceptsJsonString(service):
@@ -341,7 +559,11 @@ def test_ExportProtocolsServiceWritesJsonFile(service, monkeypatch, tmp_path):
         exportPayload=[{"protocolId": 10}, {"protocolId": 11}],
     )
 
-    monkeypatch.setattr(service, "_resolveFsRootForWrite", lambda protocolId: rootPath)
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
 
     payload = FakePayload(
         protocolIds=[10, 11],
@@ -402,7 +624,11 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     rootPath = tmp_path / "browser-root"
     rootPath.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(service, "_resolveFsRootForWrite", lambda protocolId: rootPath)
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
 
     payload = FakePayload(
         path="exports/result.json",
@@ -421,3 +647,198 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
         "size": targetPath.stat().st_size,
         "mimeType": "application/json",
     }
+
+
+def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    projectRouterModule = importlib.import_module("app.backend.api.routers.project_router")
+
+    outputFile = tmp_path / "output.sqlite"
+    outputFile.write_text("placeholder", encoding="utf-8")
+
+    thumbnailFile = tmp_path / "thumbnail.png"
+    thumbnailFile.write_bytes(b"fake-thumbnail")
+
+    output = FakeOutput(str(outputFile))
+    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
+    service.currentProject = FakeCurrentProject(protocols={10: protocol})
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+
+    monkeypatch.setattr(
+        service,
+        "getProjectDbRow",
+        lambda mapper, projectId, currentUser: {"id": projectId, "name": str(tmp_path)},
+    )
+    monkeypatch.setattr(
+        service,
+        "loadProjectForThumbnails",
+        lambda dbProj: service.currentProject,
+    )
+
+    buildCalls = []
+
+    def fakeBuildProtocolOutputThumbnail(
+        protocolId,
+        outputName,
+        force=False,
+        size=320,
+        mapper=None,
+        projectId=None,
+    ):
+        buildCalls.append({
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "force": force,
+            "size": size,
+            "mapper": mapper,
+            "projectId": projectId,
+        })
+        return {
+            "absolutePath": str(thumbnailFile),
+            "exists": True,
+            "cached": False,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "buildProtocolOutputThumbnail",
+        fakeBuildProtocolOutputThumbnail,
+    )
+
+    payload = FakePayload(
+        outputs=[
+            FakePayload(protocolId=500, outputName="outputVol"),
+        ],
+        size=256,
+        inlineImages=False,
+    )
+
+    response = projectRouterModule.getProtocolOutputThumbnailsBatch(
+        projectId=1,
+        payload=payload,
+        currentUser={"id": 1},
+        mapper=mapper,
+        service=service,
+    )
+
+    payloadJson = json.loads(response.body.decode("utf-8"))
+
+    assert payloadJson == {
+        "projectId": 1,
+        "size": 256,
+        "items": [
+            {
+                "protocolId": 500,
+                "outputName": "outputVol",
+                "outputClassName": "FakeOutput",
+                "exists": True,
+                "cached": False,
+                "thumbnailUrl": "/projects/1/protocols/500/outputs/outputVol/thumbnail",
+                "thumbnailDataUrl": None,
+                "error": None,
+            }
+        ],
+    }
+
+    assert buildCalls == [
+        {
+            "protocolId": 500,
+            "outputName": "outputVol",
+            "force": False,
+            "size": 256,
+            "mapper": mapper,
+            "projectId": 1,
+        }
+    ]
+
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+
+
+def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    rootPath = tmp_path / "browser-root"
+    rootPath.mkdir(parents=True, exist_ok=True)
+
+    protocol10 = FakeProtocol(protocolId=10)
+    protocol11 = FakeProtocol(protocolId=11)
+
+    service.currentProject = FakeCurrentProject(
+        protocols={
+            10: protocol10,
+            11: protocol11,
+        },
+        exportPayload=[
+            {"protocolId": 10},
+            {"protocolId": 11},
+        ],
+    )
+
+    exportedProtocolLists = []
+
+    def fakeGetProtocolsJson(protocolList):
+        exportedProtocolLists.append(protocolList)
+        return [
+            {"protocolId": 10},
+            {"protocolId": 11},
+        ]
+
+    service.currentProject.getProtocolsJson = fakeGetProtocolsJson
+
+    mapper = FakeMapper(runtimeProtocolIdByDbId={
+        500: 10,
+        501: 11,
+    })
+
+    monkeypatch.setattr(
+        service,
+        "_resolveFsRootForWrite",
+        lambda protocolId, mapper=None, projectId=None: rootPath,
+    )
+
+    payload = FakePayload(
+        protocolIds=["500", "501"],
+        directoryPath="exports",
+        filename="workflow-export",
+    )
+
+    result = service.exportProtocolsService(
+        mapper=mapper,
+        projectId=1,
+        currentUser={"id": 1},
+        payload=payload,
+    )
+
+    exportedPath = rootPath / "exports" / "workflow-export.json"
+
+    assert exportedProtocolLists == [[protocol10, protocol11]]
+    assert exportedPath.exists() is True
+
+    exportedText = exportedPath.read_text(encoding="utf-8")
+    assert exportedText.startswith("ScipionWeb metadata format: scipionweb.workflow.metadata")
+    assert "ScipionWeb metadata version: 1" in exportedText
+    assert "Scipion required plugins:" in exportedText
+
+    exportedJsonText = service._extractWorkflowJsonText(exportedText)
+    assert json.loads(exportedJsonText) == [
+        {"protocolId": 10},
+        {"protocolId": 11},
+    ]
+
+    assert result == {
+        "success": True,
+        "path": str(exportedPath.resolve()),
+        "filename": "workflow-export.json",
+        "size": exportedPath.stat().st_size,
+        "mimeType": "application/json",
+        "protocolIds": ["500", "501"],
+    }
+
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[1]["params"] == (1, 501, "501")

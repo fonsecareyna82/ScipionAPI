@@ -36,6 +36,7 @@ from app.backend.models import (  # noqa: F401,E402
     tag_model,
     protocol_tag_assignment_model,
     protocol_step_model,
+    scipion_object_model,
 )
 
 target_metadata = Base.metadata
