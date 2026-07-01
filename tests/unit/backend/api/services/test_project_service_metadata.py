@@ -968,6 +968,98 @@ def test_RenderMetadataImageCellServiceResolvesProtocolIdForRelativeImagePaths(
     ]
 
 
+def test_RenderMetadataImageCellServiceResolvesProjectRelativePostgresqlImagePaths(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "project"
+    imagePath = (
+            projectPath
+            / "Runs"
+            / "000002_ProtImportMicrographs"
+            / "extra"
+            / "016.png"
+    )
+    imagePath.parent.mkdir(parents=True)
+
+    try:
+        from PIL import Image
+
+        Image.new("L", (4, 4), 128).save(imagePath)
+    except Exception:
+        imagePath.write_bytes(b"")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeProjectWithoutRuntimeProtocolLookup:
+        def getPath(self):
+            raise AssertionError("currentProject.getPath should not be needed for PostgreSQL project-relative paths")
+
+        def getProtocol(self, protocolId):
+            raise AssertionError("currentProject.getProtocol should not be used")
+
+    columns = [FakeColumn("stack", "Stack", PathRenderer())]
+    table = FakeTable(name="objects", alias="Micrographs", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={
+            "objects": [
+                FakeRow(
+                    1,
+                    ["Runs/000002_ProtImportMicrographs/extra/016.png"],
+                )
+            ],
+        },
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/247/protocol/2/output/outputMicrographs",
+    )
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    mapper = FakeMapper()
+    service.currentProject = FakeProjectWithoutRuntimeProtocolLookup()
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    def failRuntimeProtocolLookup(*args, **kwargs):
+        raise AssertionError("_getScipionProtocolForRuntime should not be used")
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        failRuntimeProtocolLookup,
+    )
+
+    response = service.renderMetadataImageCellService(
+        projectId=247,
+        protocolId=2,
+        outputName="outputMicrographs",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        mapper=mapper,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert response.headers.get("x-image-placeholder") is None
+
+
 def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     service,
     projectServiceModule,

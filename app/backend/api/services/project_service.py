@@ -13714,6 +13714,7 @@ class ProjectService:
         """
         from PIL import Image as PILImage
         from pathlib import Path as LocalPath
+        from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
         # Resolve metadata root path for relative image paths
         objMgr, table = self._openMetadataTable(
@@ -13724,6 +13725,13 @@ class ProjectService:
             mapper=mapper,
         )
         columns = list(table.getColumns())
+
+        pathResolver = None
+        if mapper is not None and getattr(mapper, "db", None) is not None:
+            pathResolver = PostgresqlProjectPathResolver(
+                db=mapper.db,
+                projectId=projectId,
+            )
 
         metaDir = None
         objMgrFileName = str(getattr(objMgr, "_fileName", "") or "")
@@ -13864,41 +13872,56 @@ class ProjectService:
                         imgPath = LocalPath(img)
 
                         # Build candidates for relative paths:
-                        candidates = []
-                        if imgPath.is_absolute():
-                            candidates.append(imgPath)
-                        else:
-                            if metaDir is not None:
-                                candidates.append(metaDir / imgPath)
-
-                            projPath = None
-                            protPath = None
-                            try:
-                                if self.currentProject is not None:
-                                    projPath = LocalPath(self.currentProject.getPath())
-
-                                    prot = self._getScipionProtocolForRuntime(
-                                        mapper=mapper,
-                                        projectId=projectId,
-                                        protocolId=protocolId,
-                                    )
-                                    protPath = LocalPath(prot.getPath())
-                            except Exception:
-                                protPath = None
-
-                            if protPath is not None:
-                                candidates.append(protPath / imgPath)
-                            if projPath is not None:
-                                candidates.append(projPath / imgPath)
-
-                            # Original relative path as last resort
-                            candidates.append(imgPath)
-
                         resolvedPath = None
-                        for cand in candidates:
-                            if cand.exists():
-                                resolvedPath = cand
-                                break
+
+                        # First, resolve PostgreSQL project-relative paths:
+                        #   Runs/000002_ProtImportMicrographs/extra/016.mrc
+                        # should become:
+                        #   <projectPath>/Runs/000002_ProtImportMicrographs/extra/016.mrc
+                        if pathResolver is not None:
+                            resolvedText = pathResolver.resolveExistingPath(img)
+                            if resolvedText:
+                                resolvedPath = LocalPath(resolvedText)
+
+                        # Keep the old runtime/metaDir fallback for legacy/non-PG cases.
+                        if resolvedPath is None:
+                            candidates = []
+
+                            if imgPath.is_absolute():
+                                candidates.append(imgPath)
+                            else:
+                                if metaDir is not None:
+                                    candidates.append(metaDir / imgPath)
+
+                                projPath = None
+                                protPath = None
+                                try:
+                                    if self.currentProject is not None:
+                                        projPath = LocalPath(self.currentProject.getPath())
+
+                                        prot = self._getScipionProtocolForRuntime(
+                                            mapper=mapper,
+                                            projectId=projectId,
+                                            protocolId=protocolId,
+                                        )
+                                        protPath = LocalPath(prot.getPath())
+                                except Exception:
+                                    protPath = None
+
+                                if protPath is not None:
+                                    candidates.append(protPath / imgPath)
+                                if projPath is not None:
+                                    candidates.append(projPath / imgPath)
+
+                                candidates.append(imgPath)
+
+                            for cand in candidates:
+                                try:
+                                    if cand.exists():
+                                        resolvedPath = cand
+                                        break
+                                except Exception:
+                                    continue
 
                         if resolvedPath is None:
                             logger.warning(
