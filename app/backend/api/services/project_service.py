@@ -57,11 +57,16 @@ from app.backend.api.services.protocol_wizard_service import (
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
-from pwem.viewers import VISIBLE, ORDER, RENDER
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
 from pwem.viewers.mdviewer.star_dao import StarFile
-from pyworkflow.object import PointerList, Pointer, CsvList, Set
+from pyworkflow.object import (
+    Object as ScipionObject,
+    PointerList,
+    Pointer,
+    CsvList,
+    Set as ScipionSet,
+)
 from pyworkflow.protocol import (
     MODE_RESUME,
     MODE_RESTART,
@@ -85,7 +90,7 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Any, Union, Tuple, Dict, Set, Sequence
+from typing import List, Optional, Any, Union, Tuple, Dict, Set as TypingSet, Sequence
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
@@ -622,40 +627,32 @@ class ProjectService:
         return self._safeCall(obj, "getObjId", None)
 
     def _isPersistableNonSetOutput(self, outputObj: Any) -> bool:
-        className = self._getScipionClassName(outputObj)
-        classNameText = str(className or "").strip()
-
-        if not classNameText:
+        if outputObj is None:
             return False
 
-        persistableClassNames = {
-            "Volume",
-            "VolumeMask",
-            "Mask",
-            "Image",
-            "Micrograph",
-            "Movie",
-            "Particle",
-            "CTFModel",
-            "FSC",
-            "AtomStruct",
-            "PdbFile",
-            "Sequence",
-            "Transform",
-            "Matrix",
-            "NormalMode",
-            "EMFile",
-            "CryoloModel"
-        }
+        if self._isScipionSetLikeOutput(outputObj):
+            return False
 
-        return classNameText in persistableClassNames
+        try:
+            if isinstance(outputObj, Pointer):
+                return False
+        except Exception:
+            pass
+
+        try:
+            if isinstance(outputObj, ScipionObject):
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _isScipionSetLikeOutput(self, outputObj: Any) -> bool:
         if outputObj is None:
             return False
 
         try:
-            if isinstance(outputObj, Set):
+            if isinstance(outputObj, ScipionSet):
                 return True
         except Exception:
             pass
@@ -1641,7 +1638,7 @@ class ProjectService:
         nodesDict = getattr(runs, "_nodesDict", {}) or {}
 
         protocolDbIdByScipionId: Dict[str, int] = {}
-        currentProtocolIds: Set[str] = set()
+        currentProtocolIds: TypingSet[str] = set()
         protocolsByScipionId: Dict[str, Any] = {}
 
         outputSyncResults: List[Dict[str, Any]] = []
@@ -3653,7 +3650,7 @@ class ProjectService:
         scipionEdgeCount = 0
 
         liveProtocolStatusById: Dict[str, str] = {}
-        activeOutputProtocolIds: Set[str] = set()
+        activeOutputProtocolIds: TypingSet[str] = set()
 
         def normalizeStatus(value: Any) -> str:
             return str(value or "").strip().lower()
@@ -3956,7 +3953,7 @@ class ProjectService:
             return refs
 
         def buildWorkflowPreviewGraph(protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
-            nodeIds: Set[str] = set()
+            nodeIds: TypingSet[str] = set()
             nodes: List[Dict[str, Any]] = []
             edges: List[Dict[str, Any]] = []
 
@@ -4004,7 +4001,7 @@ class ProjectService:
                     }
                 )
 
-            edgeSeen: Set[Tuple[str, str, str, str]] = set()
+            edgeSeen: TypingSet[Tuple[str, str, str, str]] = set()
 
             for index, protocol in enumerate(protocols):
                 targetId = safeString(
@@ -4171,13 +4168,13 @@ class ProjectService:
                 return ""
             return str(value).strip()
 
-        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> Set[str]:
+        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> TypingSet[str]:
             templateId = toCleanString(getTemplateValue(template, "id"))
             templateName = toCleanString(getTemplateValue(template, "name"))
             templateSource = toCleanString(getTemplateValue(template, "source"))
             templatePath = toCleanString(getTemplateValue(template, "templatePath"))
 
-            candidates: Set[str] = set()
+            candidates: TypingSet[str] = set()
 
             if templateId:
                 candidates.add(templateId)
@@ -4691,7 +4688,7 @@ class ProjectService:
                     return value
             return None
 
-        def getTsIds(obj: Any) -> Set[str]:
+        def getTsIds(obj: Any) -> TypingSet[str]:
             values = safeCall(obj, "getTSIds", [])
             return {str(v) for v in safeList(values) if v is not None and str(v)}
 
@@ -4788,7 +4785,7 @@ class ProjectService:
                 "status": statusValue,
             }
 
-        def buildSummary(obj: Any, tsIds: Optional[Set[str]] = None) -> Dict[str, Any]:
+        def buildSummary(obj: Any, tsIds: Optional[TypingSet[str]] = None) -> Dict[str, Any]:
             summary = {
                 "objectClass": className(obj),
                 "objectId": getObjId(obj),
@@ -4873,7 +4870,7 @@ class ProjectService:
         outputRefs = getProtocolOutputRefs(protocol)
         localRefs = inputRefs + outputRefs
 
-        def findInputRef(predicate, tsIds: Optional[Set[str]] = None) -> Optional[Dict[str, Any]]:
+        def findInputRef(predicate, tsIds: Optional[TypingSet[str]] = None) -> Optional[Dict[str, Any]]:
             for ref in inputRefs:
                 obj = ref["object"]
                 if not predicate(obj):
@@ -7830,7 +7827,7 @@ class ProjectService:
                 return []
 
             names: List[str] = []
-            seen: Set[str] = set()
+            seen: TypingSet[str] = set()
 
             for rawName in rawNames.split(","):
                 name = rawName.strip()
@@ -7925,7 +7922,7 @@ class ProjectService:
     def _buildWorkflowPluginMetadata(self, protocolList: List[Any]) -> Dict[str, Any]:
         protocolPlugins: List[Dict[str, str]] = []
         requiredPluginNames: List[str] = []
-        seenPluginNames: Set[str] = set()
+        seenPluginNames: TypingSet[str] = set()
 
         for protocol in protocolList or []:
             protocolId = self._getProtocolObjIdForExport(protocol)
@@ -8005,7 +8002,7 @@ class ProjectService:
         rawNames = metadata.get("requiredPluginNames") or []
 
         names: List[str] = []
-        seen: Set[str] = set()
+        seen: TypingSet[str] = set()
 
         for rawName in rawNames:
             name = str(rawName or "").strip()
@@ -8017,9 +8014,9 @@ class ProjectService:
 
         return names
 
-    def _getInstalledPluginNamesForWorkflowImport(self) -> Set[str]:
+    def _getInstalledPluginNamesForWorkflowImport(self) -> TypingSet[str]:
         # getInstalledPluginNamesForWorkflowImport
-        installedNames: Set[str] = set()
+        installedNames: TypingSet[str] = set()
 
         try:
             from app.backend.api.services.plugin_service import PluginService
@@ -8099,7 +8096,7 @@ class ProjectService:
     ) -> List[str]:
         # getMissingWorkflowPluginNames
         missing: List[str] = []
-        seen: Set[str] = set()
+        seen: TypingSet[str] = set()
 
         for rawPluginName in requiredPluginNames or []:
             pluginName = str(rawPluginName or "").strip()
@@ -8240,7 +8237,7 @@ class ProjectService:
             protocolIds: Optional[List[Union[int, str]]],
     ) -> List[str]:
         out: List[str] = []
-        seen: Set[str] = set()
+        seen: TypingSet[str] = set()
 
         for raw in protocolIds or []:
             value = str(raw).strip()
@@ -8795,7 +8792,7 @@ class ProjectService:
                 detail=f"Scipion export failed: {e}",
             )
 
-    def _getCurrentWorkflowProtocolIds(self) -> Set[str]:
+    def _getCurrentWorkflowProtocolIds(self) -> TypingSet[str]:
         try:
             runs = self.currentProject.getRunsGraph(refresh=True, checkPids=False)
             nodesDict = getattr(runs, "_nodesDict", {}) or {}
@@ -8809,7 +8806,7 @@ class ProjectService:
         }
 
     @staticmethod
-    def _sortProtocolIds(protocolIds: Set[str]) -> List[str]:
+    def _sortProtocolIds(protocolIds: TypingSet[str]) -> List[str]:
         def sortKey(value: str):
             try:
                 return (0, int(value))
@@ -8874,8 +8871,8 @@ class ProjectService:
 
         return str(protocolId).strip()
 
-    def _collectWorkflowProtocolIds(self, workflowContent: Any) -> Set[str]:
-        protocolIds: Set[str] = set()
+    def _collectWorkflowProtocolIds(self, workflowContent: Any) -> TypingSet[str]:
+        protocolIds: TypingSet[str] = set()
 
         for index, protocolItem in enumerate(self._getWorkflowProtocolItems(workflowContent)):
             protocolId = self._getWorkflowProtocolId(protocolItem, index)
@@ -11084,7 +11081,7 @@ class ProjectService:
     ) -> Dict[str, Any]:
         # renderTiltSeriesImagesBatchService
         cleanIndices: List[int] = []
-        seenIndices: Set[int] = set()
+        seenIndices: TypingSet[int] = set()
 
         for rawIndex in indices or []:
             try:
@@ -11223,7 +11220,7 @@ class ProjectService:
 
             # Per-tilt-image exclusions: indices (1-based)
             rawTiltIndices = tsExcl.get("tiltimages") or []
-            excludedTiltIndices: Set[int] = set()
+            excludedTiltIndices: TypingSet[int] = set()
 
             for v in rawTiltIndices:
                 try:
@@ -14314,8 +14311,8 @@ class ProjectService:
 
         return protocol, outputObj
 
-    def _getExternalViewerObjectIds(self, obj: Any) -> Set[str]:
-        values: Set[str] = set()
+    def _getExternalViewerObjectIds(self, obj: Any) -> TypingSet[str]:
+        values: TypingSet[str] = set()
 
         def addValue(value: Any):
             if value is None:
@@ -14487,7 +14484,7 @@ class ProjectService:
         viewerClasses = self._findExternalViewerClasses(targetObj)
 
         descriptors = []
-        seenIds: Set[str] = set()
+        seenIds: TypingSet[str] = set()
         excludedViewer = ['TomoDataViewer', 'MDViewer', 'DataViewer', 'CtfEstimationTomoViewer']
         for viewerClass in viewerClasses:
             descriptor = self._buildExternalViewerDescriptor(viewerClass)

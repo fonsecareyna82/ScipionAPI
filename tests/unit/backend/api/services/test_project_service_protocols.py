@@ -29,6 +29,7 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from pyworkflow.object import Object as ScipionObject
 
 
 class FakeValueHolder:
@@ -430,7 +431,7 @@ def test_RegisterOutputReturnsPersistenceReport(
         def __init__(self):
             self.db = FakeDb()
 
-    class FakeSetOutput:
+    class FakeSetOutput(ScipionObject):
         # fakeSetOutput
         def getClassName(self):
             return "SetOfParticles"
@@ -449,6 +450,13 @@ def test_RegisterOutputReturnsPersistenceReport(
         # fakeUnsupportedOutput
         pass
 
+    class FakePluginObjectOutput(ScipionObject):
+        def getClassName(self):
+            return "CryoloModel"
+
+        def __str__(self):
+            return "CryoloModel(path=/tmp/model.h5)"
+
     class FakeProtocolWithOutputs:
         # fakeProtocolWithOutputs
         def getObjId(self):
@@ -460,6 +468,7 @@ def test_RegisterOutputReturnsPersistenceReport(
                 ("outputVolume", FakeObjectOutput()),
                 ("badSet", FakeBadSetOutput()),
                 ("emptyOutput", None),
+                ("outputCryoloModel", FakePluginObjectOutput()),
                 ("unsupportedOutput", FakeUnsupportedOutput()),
             ]
 
@@ -563,6 +572,15 @@ def test_RegisterOutputReturnsPersistenceReport(
             "mapperKind": "tree",
             "outputName": "outputVolume",
             "outputClassName": "Volume",
+        },
+        {
+            "projectId": 1,
+            "protocolDbId": 500,
+            "stored": True,
+            "includeNestedProperties": True,
+            "mapperKind": "tree",
+            "outputName": "outputCryoloModel",
+            "outputClassName": "CryoloModel",
         },
     ]
 
