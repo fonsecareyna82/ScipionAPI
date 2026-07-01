@@ -607,6 +607,86 @@ def test_RenderTiltSeriesImageServiceDelegatesToOutputsPreview(projectServiceMod
     }
 
 
+def test_RenderTiltSeriesImageServiceResolvesProjectRelativePostgresqlFramePath(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    FakeOutputsPreview.instances = []
+
+    projectPath = tmp_path / "project"
+    framePath = (
+        projectPath
+        / "Runs"
+        / "000084_ProtWarpTSMotionCorr"
+        / "extra"
+        / "warp_frameseries"
+        / "average"
+        / "TS_1.mrcs"
+    )
+    framePath.parent.mkdir(parents=True)
+    framePath.write_bytes(b"fake")
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlTiltSeriesReader:
+        lastSkipReason = None
+
+        def getTiltImageFrame(self, tiltSeriesId, index):
+            return {
+                "index": int(index),
+                "path": (
+                    f"{index}@"
+                    "Runs/000084_ProtWarpTSMotionCorr/extra/"
+                    "warp_frameseries/average/TS_1.mrcs"
+                ),
+                "rot": 12.0,
+                "shiftX": 1.5,
+                "shiftY": -2.5,
+            }
+
+    mapper = FakeMapper()
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: FakePostgresqlTiltSeriesReader(),
+    )
+
+    result = service.renderTiltSeriesImageService(
+        projectId=246,
+        protocolId=180,
+        outputName="TiltSeries",
+        tiltSeriesId="TS_1",
+        index=1,
+        size=512,
+        fmt="png",
+        applyTransform=True,
+        inline=True,
+        mapper=mapper,
+    )
+
+    assert result == {
+        "rendered": True,
+        "filePath": str(framePath.resolve()),
+    }
+
+    assert FakeOutputsPreview.instances[0].lastRenderCall["filePath"] == str(framePath.resolve())
+    assert FakeOutputsPreview.instances[0].lastRenderCall["index"] == 1
+    assert FakeOutputsPreview.instances[0].lastRenderCall["rot"] == 12.0
+    assert FakeOutputsPreview.instances[0].lastRenderCall["shifts"] == (1.5, -2.5)
+
+
 def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectServiceModule, service, monkeypatch):
     createdOutputSet = FakeCreatedTiltSeriesOutputSet()
 
