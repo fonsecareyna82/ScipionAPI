@@ -28,6 +28,7 @@ import importlib
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 
 class FakeAcquisition:
@@ -856,3 +857,49 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
     assert createdSeries._items[0]._enabled is True
     assert createdSeries._items[1]._enabled is False
     assert protocol._stored is True
+
+
+@pytest.fixture
+def projectServiceModule(authTestEnv):
+    return importlib.import_module("app.backend.api.services.project_service")
+
+
+@pytest.fixture
+def service(projectServiceModule):
+    return object.__new__(projectServiceModule.ProjectService)
+
+
+def test_GetCtftomoSeriesViewsServiceRaisesPostgresqlUnavailableWithReaderReason(
+    service,
+    monkeypatch,
+):
+    class FakePgReader:
+        lastSkipReason = "ctftomo_series_item_not_found tiltSeriesId=TS_999"
+
+        def getCtftomoSeriesViews(self, tiltSeriesId):
+            assert tiltSeriesId == "TS_999"
+            return None
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlCtftomoReaderIfAvailable",
+        lambda **kwargs: FakePgReader(),
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("runtime fallback should not be used when mapper is present")
+
+    monkeypatch.setattr(service, "_resolveOutputForCtftomoSeries", failRuntimeFallback)
+
+    with pytest.raises(HTTPException) as exc:
+        service.getCtftomoSeriesViewsService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCTF",
+            tiltSeriesId="TS_999",
+            mapper=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert "ctftomo_series_item_not_found" in str(exc.value.detail)
+    assert "TS_999" in str(exc.value.detail)
