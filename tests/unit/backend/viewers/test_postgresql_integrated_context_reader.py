@@ -467,3 +467,120 @@ def test_PostgresqlIntegratedContextReaderDoesNotMatchEmptyRelationValues(
     assert result == [
         {"tomoId": "TOMO_001"},
     ]
+
+
+def test_PostgresqlIntegratedContextReaderSkipsDependencyCandidatesByRootKind(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._shouldSkipDependencyCandidate("coordinates3d", "tomogram") is True
+    assert reader._shouldSkipDependencyCandidate("coordinates3d", "tiltSeries") is True
+    assert reader._shouldSkipDependencyCandidate("coordinates3d", "ctf") is True
+
+    assert reader._shouldSkipDependencyCandidate("tomogram", "tiltSeries") is True
+
+    assert reader._shouldSkipDependencyCandidate("tomogram", "ctf") is False
+    assert reader._shouldSkipDependencyCandidate("tomogram", "coordinates3d") is False
+    assert reader._shouldSkipDependencyCandidate("ctf", "tiltSeries") is False
+    assert reader._shouldSkipDependencyCandidate("tiltSeries", "ctf") is False
+    assert reader._shouldSkipDependencyCandidate(None, "ctf") is False
+
+
+def test_PostgresqlIntegratedContextReaderShouldReplaceEmptyOrDerivedLinks(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._shouldReplaceLink(None) is True
+
+    assert reader._shouldReplaceLink({
+        "protocolId": None,
+        "outputName": None,
+    }) is True
+
+    assert reader._shouldReplaceLink({
+        "protocolId": 500,
+        "outputName": "outputCoordinates",
+        "status": "derived",
+        "source": "coordinates3d",
+    }) is True
+
+    assert reader._shouldReplaceLink({
+        "protocolId": None,
+        "outputName": "outputTomograms",
+        "status": "inferred",
+    }) is True
+
+
+def test_PostgresqlIntegratedContextReaderKeepsConcreteLinks(authTestEnv):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._shouldReplaceLink({
+        "protocolId": 500,
+        "outputName": "outputTomograms",
+        "status": "available",
+    }) is False
+
+    assert reader._shouldReplaceLink({
+        "protocolId": 501,
+        "outputName": "outputCTF",
+        "status": "related",
+    }) is False
+
+    assert reader._shouldReplaceLink({
+        "protocolId": 502,
+        "outputName": "outputTiltSeries",
+        "status": "inferred",
+    }) is False
+
+
+def test_PostgresqlIntegratedContextReaderDetectsSameStoredSet(authTestEnv):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._isSameStoredSet(
+        {
+            "protocolDbId": 500,
+            "outputName": "outputTomograms",
+        },
+        {
+            "protocolDbId": "500",
+            "outputName": "outputTomograms",
+        },
+    ) is True
+
+    assert reader._isSameStoredSet(
+        {
+            "protocolDbId": 500,
+            "outputName": "outputTomograms",
+        },
+        {
+            "protocolDbId": 501,
+            "outputName": "outputTomograms",
+        },
+    ) is False
+
+    assert reader._isSameStoredSet(
+        {
+            "protocolDbId": 500,
+            "outputName": "outputTomograms",
+        },
+        {
+            "protocolDbId": 500,
+            "outputName": "outputCTF",
+        },
+    ) is False
+
+
+def test_PostgresqlIntegratedContextReaderGetsCandidateProtocolId(authTestEnv):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._getCandidateProtocolId({
+        "protocolDbId": 700,
+        "publicProtocolId": 120,
+    }) == 700
+
+    assert reader._getCandidateProtocolId({
+        "protocolDbId": None,
+        "publicProtocolId": 120,
+    }) == 120
