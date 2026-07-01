@@ -508,7 +508,7 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
             "protocolsCount": 7,
-            "diskUsage": "0.00 GB",
+            "diskUsage": "3.00 GB",
             "isOwner": True,
             "isShared": False,
             "permission": "owner",
@@ -792,3 +792,34 @@ def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
 
     assert mapper.lastListProjectsCall == {"ownerId": 1}
     assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
+
+
+def test_ListProjectsReturnsZeroDiskUsageWhenFilesystemSizeFails(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+        }
+    ]
+
+    mapper.projectProtocolCounts[1] = 7
+
+    def failGetProjectSize(path):
+        raise RuntimeError("du failed")
+
+    monkeypatch.setattr(service, "getProjectSize", failGetProjectSize)
+
+    result = service.listProjects(mapper, currentUser)
+
+    assert result[0]["diskUsage"] == "0.00 GB"
+    assert result[0]["protocolsCount"] == 7
