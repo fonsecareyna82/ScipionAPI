@@ -183,6 +183,7 @@ def getProject(
         refresh=True,
         checkPid=True,
         validateConsistency=validateConsistency,
+        loadWorkflowFromPostgresql=not validateConsistency,
     )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
