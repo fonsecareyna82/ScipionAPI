@@ -3006,6 +3006,76 @@ class ProjectService:
 
         return graphData
 
+    def _loadProjectGraphDataFromPostgresql(
+            self,
+            mapper: Optional[PostgresqlFlatMapper],
+            projectId: int,
+    ) -> Dict[str, Any]:
+        """
+        Load all PostgreSQL-backed data needed to build the project protocol graph.
+
+        This method does not touch Scipion runtime. It only reads PostgreSQL
+        protocol rows, dependencies, tags and persisted output summaries.
+        """
+        tags: Dict[str, List[str]] = {}
+        dependencyMap: Dict[str, Dict[str, List[str]]] = {}
+        protocolRows: List[Dict[str, Any]] = []
+        persistedOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        if mapper is None:
+            return {
+                "tags": tags,
+                "dependencyMap": dependencyMap,
+                "protocolRows": protocolRows,
+                "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+            }
+
+        try:
+            tags = mapper.getProjectProtocolTagIdsByProtocolId(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol tags from PostgreSQL for project %s",
+                projectId,
+            )
+            tags = {}
+
+        try:
+            dependencyMap = mapper.getProjectProtocolAdjacencyMap(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol dependencies from PostgreSQL for project %s",
+                projectId,
+            )
+            dependencyMap = {}
+
+        try:
+            protocolRows = mapper.getProtocols(projectId) or []
+        except Exception:
+            logger.exception(
+                "Failed to load protocol rows from PostgreSQL for project %s",
+                projectId,
+            )
+            protocolRows = []
+
+        try:
+            persistedOutputsByProtocolId = self._loadPersistedOutputSummariesByProtocolId(
+                mapper,
+                projectId,
+            ) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load persisted Scipion outputs for graph. projectId=%s",
+                projectId,
+            )
+            persistedOutputsByProtocolId = {}
+
+        return {
+            "tags": tags,
+            "dependencyMap": dependencyMap,
+            "protocolRows": protocolRows,
+            "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+        }
+
     def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
         projPath = Path(dbProj['name'])
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
@@ -3070,38 +3140,17 @@ class ProjectService:
             scipionProtocolCount = 0
             scipionEdgeCount = 0
 
-        tags = {}
-        dependencyMap = {}
-        protocolRows: List[Dict[str, Any]] = []
+        pgGraphData = self._loadProjectGraphDataFromPostgresql(
+            mapper=mapper,
+            projectId=dbProj['id'],
+        )
+
+        tags = pgGraphData["tags"]
+        dependencyMap = pgGraphData["dependencyMap"]
+        protocolRows = pgGraphData["protocolRows"]
+        persistedOutputsByProtocolId = pgGraphData["persistedOutputsByProtocolId"]
 
         if mapper is not None:
-            try:
-                tags = mapper.getProjectProtocolTagIdsByProtocolId(dbProj['id'])
-            except Exception:
-                logger.exception(
-                    "Failed to load protocol tags from PostgreSQL for project %s",
-                    dbProj['id'],
-                )
-                tags = {}
-
-            try:
-                dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
-            except Exception:
-                logger.exception(
-                    "Failed to load protocol dependencies from PostgreSQL for project %s",
-                    dbProj['id'],
-                )
-                dependencyMap = {}
-
-            try:
-                protocolRows = mapper.getProtocols(dbProj['id'])
-            except Exception:
-                logger.exception(
-                    "Failed to load protocol rows from PostgreSQL for project %s",
-                    dbProj['id'],
-                )
-                protocolRows = []
-
             dbProtocolCount = len(protocolRows)
             dbEdgeCount = sum(len(v.get("parents") or []) for v in dependencyMap.values())
 
@@ -3143,27 +3192,21 @@ class ProjectService:
                         checkPid=False,
                     )
 
-                    dependencyMap = mapper.getProjectProtocolAdjacencyMap(dbProj['id'])
-                    protocolRows = mapper.getProtocols(dbProj['id'])
+                    pgGraphData = self._loadProjectGraphDataFromPostgresql(
+                        mapper=mapper,
+                        projectId=dbProj['id'],
+                    )
+
+                    tags = pgGraphData["tags"]
+                    dependencyMap = pgGraphData["dependencyMap"]
+                    protocolRows = pgGraphData["protocolRows"]
+                    persistedOutputsByProtocolId = pgGraphData["persistedOutputsByProtocolId"]
+
                 except Exception:
                     logger.exception(
                         "Failed to resync protocol graph during project load for project %s",
                         dbProj['id'],
                     )
-
-        persistedOutputsByProtocolId = {}
-        if mapper is not None:
-            try:
-                persistedOutputsByProtocolId = self._loadPersistedOutputSummariesByProtocolId(
-                    mapper,
-                    dbProj['id'],
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to load persisted Scipion outputs for graph. projectId=%s",
-                    dbProj['id'],
-                )
-                persistedOutputsByProtocolId = {}
 
         graphData = self.buildProtocolsGraph(
             dbProj['id'],
