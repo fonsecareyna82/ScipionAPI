@@ -23,6 +23,9 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import ast
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
@@ -39,6 +42,7 @@ class PostgresqlCtftomoReader:
         self._storedSet = None
         self._logicalTables = None
         self._associatedTiltSeriesFramesBySeriesId = {}
+        self.lastSkipReason = None
 
     def hasOutput(self) -> bool:
         return self._getStoredSet() is not None
@@ -56,8 +60,13 @@ class PostgresqlCtftomoReader:
         return result
 
     def getCtftomoSeriesViews(self, tiltSeriesId: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
         seriesItem = self._findCtftomoSeriesItem(tiltSeriesId)
         if seriesItem is None:
+            self.lastSkipReason = (
+                    "ctftomo_series_item_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
             return None
 
         summary = self._buildCtftomoSeriesSummary(seriesItem, 0)
@@ -404,16 +413,13 @@ class PostgresqlCtftomoReader:
             childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
             summary["nViews"] = len(childItems)
 
-        dims = self._firstValueBySuffix(values, ["dim", "dims", "dimensions", "getDim"])
+        dims = self._extractDims(values)
         if dims is not None:
             summary["dims"] = dims
 
-        pixelSize = self._firstValueBySuffix(
-            values,
-            ["samplingrate", "pixelSize", "pixel_size"],
-        )
+        pixelSize = self._extractSamplingRate(values)
         if pixelSize is not None:
-            summary["pixelSize"] = self._toOptionalFloat(pixelSize)
+            summary["pixelSize"] = pixelSize
 
         tiltAxisAngle = self._firstValueBySuffix(values, ["tiltaxisangle"])
         if tiltAxisAngle is not None:
@@ -493,12 +499,18 @@ class PostgresqlCtftomoReader:
         if doseFloat is not None:
             frame["dose"] = doseFloat
 
-        defocusU = self._firstValueBySuffix(values, ["defocusu"])
+        defocusU = self._firstValueBySuffix(
+            values,
+            ["defocusu", "defocus1", "dfu", "df1"],
+        )
         defocusUFloat = self._toOptionalFloat(defocusU)
         if defocusUFloat is not None:
             frame["defocusU"] = defocusUFloat
 
-        defocusV = self._firstValueBySuffix(values, ["defocusv"])
+        defocusV = self._firstValueBySuffix(
+            values,
+            ["defocusv", "defocus2", "dfv", "df2"],
+        )
         defocusVFloat = self._toOptionalFloat(defocusV)
         if defocusVFloat is not None:
             frame["defocusV"] = defocusVFloat
@@ -506,17 +518,34 @@ class PostgresqlCtftomoReader:
         if defocusUFloat is not None and defocusVFloat is not None:
             frame["astigmatism"] = defocusUFloat - defocusVFloat
 
-        defocusAngle = self._firstValueBySuffix(values, ["defocusangle"])
+        defocusAngle = self._firstValueBySuffix(
+            values,
+            ["defocusangle", "astigangle", "astigmatismangle", "angast"],
+        )
         defocusAngleFloat = self._toOptionalFloat(defocusAngle)
         if defocusAngleFloat is not None:
             frame["defocusAngle"] = defocusAngleFloat
 
-        resolution = self._firstValueBySuffix(values, ["resolution"])
+        resolution = self._firstValueBySuffix(
+            values,
+            ["resolution", "estimatedresolution", "estres", "estresolution"],
+        )
         resolutionFloat = self._toOptionalFloat(resolution)
         if resolutionFloat is not None:
             frame["resolution"] = resolutionFloat
 
-        phaseShift = self._firstValueBySuffix(values, ["phaseshift"])
+        cc = self._firstValueBySuffix(
+            values,
+            ["cc", "crosscorrelation", "ctffitcc"],
+        )
+        ccFloat = self._toOptionalFloat(cc)
+        if ccFloat is not None:
+            frame["cc"] = ccFloat
+
+        phaseShift = self._firstValueBySuffix(
+            values,
+            ["phaseshift", "phase_shift"],
+        )
         phaseShiftFloat = self._toOptionalFloat(phaseShift)
         if phaseShiftFloat is not None:
             frame["phaseShift"] = phaseShiftFloat
@@ -573,6 +602,95 @@ class PostgresqlCtftomoReader:
                     return value
 
         return None
+
+    def _extractDims(self, values: Dict[str, Any]) -> Optional[List[int]]:
+        raw = self._firstValueBySuffix(
+            values,
+            [
+                "dim",
+                "dims",
+                "dimensions",
+                "getDim",
+                "imageDim",
+                "imageDims",
+                "_dim",
+            ],
+        )
+
+        numbers = self._parseNumericSequence(raw)
+        if numbers is None or len(numbers) < 2:
+            return None
+
+        dims: List[int] = []
+        for value in numbers[:3]:
+            intValue = self._toOptionalInt(value)
+            if intValue is None or intValue <= 0:
+                return None
+            dims.append(intValue)
+
+        return dims
+
+    def _extractSamplingRate(self, values: Dict[str, Any]) -> Optional[float]:
+        raw = self._firstValueBySuffix(
+            values,
+            [
+                "samplingrate",
+                "samplingRate",
+                "pixelSize",
+                "pixel_size",
+                "voxelSize",
+                "apix",
+            ],
+        )
+
+        numbers = self._parseNumericSequence(raw)
+        if numbers:
+            return self._toOptionalFloat(numbers[0])
+
+        return self._toOptionalFloat(raw)
+
+    def _parseNumericSequence(self, value: Any) -> Optional[List[float]]:
+        if value is None or value == "":
+            return None
+
+        if isinstance(value, (list, tuple)):
+            rawValues = list(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+
+            parsed = None
+            if text.startswith("[") or text.startswith("("):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    try:
+                        parsed = ast.literal_eval(text)
+                    except Exception:
+                        parsed = None
+
+            if isinstance(parsed, (list, tuple)):
+                rawValues = list(parsed)
+            else:
+                cleaned = text.strip("[]()")
+                tokens = [
+                    token.strip()
+                    for token in re.split(r"[\s,;xX]+", cleaned)
+                    if token.strip()
+                ]
+                rawValues = tokens
+        else:
+            rawValues = [value]
+
+        values: List[float] = []
+        for rawValue in rawValues:
+            number = self._toOptionalFloat(rawValue)
+            if number is None:
+                return None
+            values.append(number)
+
+        return values or None
 
     def _toOptionalFloat(self, value: Any) -> Optional[float]:
         if value is None or value == "":
