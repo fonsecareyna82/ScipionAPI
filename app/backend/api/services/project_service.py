@@ -1921,6 +1921,27 @@ class ProjectService:
                 detail=f"Failed to count project protocols from PostgreSQL: {e}",
             )
 
+    def _getProjectDiskUsageFromFilesystem(self, storedProjectPath: Any) -> str:
+        pathText = str(storedProjectPath or "").strip()
+        if not pathText:
+            return "0.00 GB"
+
+        projectPath = Path(pathText).expanduser()
+        if not projectPath.is_absolute():
+            projectPath = Path(self.manager.getProjectPath(str(projectPath)))
+
+        try:
+            realProjectPath = projectPath.resolve(strict=True)
+        except Exception:
+            realProjectPath = projectPath
+
+        try:
+            sizeGB = self.getProjectSize(str(realProjectPath)) / (1024 ** 3)
+        except Exception:
+            sizeGB = 0.0
+
+        return f"{sizeGB:.2f} GB"
+
     def _buildProjectOutFromPostgresqlRow(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1956,7 +1977,7 @@ class ProjectService:
             "createdAt": dbProj.get("createdAt"),
             "status": dbProj.get("status", "active"),
             "protocolsCount": protocolsCount,
-            "diskUsage": dbProj.get("diskUsage") or "0.00 GB",
+            "diskUsage": self._getProjectDiskUsageFromFilesystem(storedProjectPath),
             "isOwner": bool(isOwner),
             "isShared": bool(isShared),
             "permission": permission,
