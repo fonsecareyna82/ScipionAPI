@@ -3236,6 +3236,47 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
+    def loadProjectFromPostgresql(
+            self,
+            dbProj: dict,
+            mapper: PostgresqlFlatMapper,
+    ) -> dict:
+        """
+        Load a project workflow tree using PostgreSQL only.
+
+        This method must not instantiate ScipionProject, must not load the
+        Scipion sqlite project and must not refresh the Scipion runs graph.
+        """
+        projPath = Path(dbProj['name'])
+
+        pgGraphData = self._loadProjectGraphDataFromPostgresql(
+            mapper=mapper,
+            projectId=dbProj['id'],
+        )
+
+        graphData = self.buildProtocolsGraph(
+            dbProj['id'],
+            pgGraphData["protocolRows"],
+            pgGraphData["tags"],
+            dependencyMap=pgGraphData["dependencyMap"],
+            runMap={},
+            persistedOutputsByProtocolId=pgGraphData["persistedOutputsByProtocolId"],
+            allowRuntimeFallback=False,
+        )
+
+        return {
+            "id": dbProj['id'],
+            "name": dbProj['name'],
+            "shortName": os.path.basename(dbProj['name']),
+            "createdAt": str(dbProj['createdAt']),
+            "status": str(dbProj['status']),
+            "path": projPath,
+            "protocols": graphData,
+            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProj['id']),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProj['id']),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
+        }
+
     def validateProjectPostgresqlConsistency(
             self,
             mapper: PostgresqlFlatMapper,

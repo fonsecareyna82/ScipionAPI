@@ -1179,3 +1179,104 @@ def test_LoadProjectGraphDataFromPostgresqlLoadsGraphParts(service, mapper, monk
             },
         },
     }
+
+
+def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
+    service,
+    mapper,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    dbProj = {
+        "id": 1,
+        "name": str(projectPath),
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+    }
+
+    pgGraphData = {
+        "tags": {
+            "10": ["import"],
+        },
+        "dependencyMap": {
+            "10": {
+                "parents": [],
+                "children": ["20"],
+            },
+            "20": {
+                "parents": ["10"],
+                "children": [],
+            },
+        },
+        "protocolRows": [
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+            {
+                "protocolId": "20",
+                "protocolClassName": "ProtMotionCorr",
+                "status": "running",
+            },
+        ],
+        "persistedOutputsByProtocolId": {
+            "10": {
+                "outputMovies": {
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_loadProjectGraphDataFromPostgresql",
+        lambda mapper, projectId: pgGraphData,
+    )
+
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("loadProjectFromPostgresql should not touch Scipion runtime")
+
+    import app.backend.api.services.project_service as project_service_module
+    monkeypatch.setattr(project_service_module, "ScipionProject", failRuntime)
+
+    result = service.loadProjectFromPostgresql(
+        dbProj=dbProj,
+        mapper=mapper,
+    )
+
+    assert result["id"] == 1
+    assert result["name"] == str(projectPath)
+    assert result["shortName"] == "demo-project"
+    assert result["createdAt"] == "2026-04-15T10:00:00"
+    assert result["status"] == "active"
+    assert result["path"] == projectPath
+    assert result["thumbnailUrl"] == "/projects/1/thumbnail"
+    assert result["thumbnailRebuildUrl"] == "/projects/1/thumbnail/rebuild"
+    assert result["thumbnailItemsUrl"] == "/projects/1/thumbnail-items"
+
+    graph = result["protocols"]
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["protocolId"] == "10"
+    assert graph["10"]["children"] == ["20"]
+    assert graph["10"]["parents"] == []
+    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["status"] == "finished"
+    assert graph["10"]["tags"] == ["import"]
+    assert graph["10"]["outputs"][0]["name"] == "outputMovies"
+    assert graph["10"]["outputs"][0]["persisted"] is True
+
+    assert graph["20"]["protocolId"] == "20"
+    assert graph["20"]["children"] == []
+    assert graph["20"]["parents"] == ["10"]
+    assert graph["20"]["label"] == "ProtMotionCorr"
+    assert graph["20"]["status"] == "running"
