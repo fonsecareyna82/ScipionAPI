@@ -891,3 +891,248 @@ def test_PostgresqlIntegratedContextReaderFindsExistingRelationKeysByAliases(
     ) == []
 
 
+def test_PostgresqlIntegratedContextReaderMergeRelationsForCandidateIgnoresIncompleteCandidate(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    class FakeSetMapper:
+        def getStoredSet(self, **kwargs):
+            raise AssertionError("getStoredSet should not be called for incomplete candidates")
+
+    reader.setMapper = FakeSetMapper()
+
+    relationsByKey = {}
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": None,
+            "outputName": "outputTiltSeries",
+        },
+        candidateKind="tiltSeries",
+        relationsByKey=relationsByKey,
+    )
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": 700,
+            "outputName": "",
+        },
+        candidateKind="tiltSeries",
+        relationsByKey=relationsByKey,
+    )
+
+    assert relationsByKey == {}
+
+
+def test_PostgresqlIntegratedContextReaderMergeRelationsForTiltSeriesCandidateUsesAllowedKeys(
+    authTestEnv,
+    monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+    reader = _makeReader(authTestEnv)
+
+    class FakeTiltSeriesReader:
+        def __init__(self, db, projectId, protocolId, outputName):
+            assert projectId == 1
+            assert protocolId == 700
+            assert outputName == "outputTiltSeries"
+
+        def listTiltSeries(self):
+            return [
+                {
+                    "tiltSeriesId": "TS_001",
+                    "label": "TiltSeries TS_001",
+                },
+                {
+                    "tiltSeriesId": "TS_002",
+                    "label": "TiltSeries TS_002",
+                },
+            ]
+
+    monkeypatch.setattr(module, "PostgresqlTiltSeriesReader", FakeTiltSeriesReader)
+
+    relationsByKey = {}
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": 700,
+            "outputName": "outputTiltSeries",
+        },
+        candidateKind="tiltSeries",
+        relationsByKey=relationsByKey,
+        allowedRelationKeys={"TS_002"},
+    )
+
+    assert relationsByKey == {
+        "TS_002": {
+            "key": "TS_002",
+            "label": "TiltSeries TS_002",
+            "tiltSeriesId": "TS_002",
+            "tsId": "TS_002",
+        },
+    }
+
+
+def test_PostgresqlIntegratedContextReaderMergeRelationsForCtftomoCandidateUsesAllowedKeys(
+    authTestEnv,
+    monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+    reader = _makeReader(authTestEnv)
+
+    class FakeCtftomoReader:
+        def __init__(self, db, projectId, protocolId, outputName):
+            assert projectId == 1
+            assert protocolId == 701
+            assert outputName == "outputCTF"
+
+        def listCtftomoSeries(self):
+            return [
+                {
+                    "tiltSeriesId": "TS_001",
+                    "label": "CTF TS_001",
+                },
+                {
+                    "tiltSeriesId": "TS_002",
+                    "label": "CTF TS_002",
+                },
+            ]
+
+    monkeypatch.setattr(module, "PostgresqlCtftomoReader", FakeCtftomoReader)
+
+    relationsByKey = {}
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": 701,
+            "outputName": "outputCTF",
+        },
+        candidateKind="ctf",
+        relationsByKey=relationsByKey,
+        allowedRelationKeys={"TS_001"},
+    )
+
+    assert relationsByKey == {
+        "TS_001": {
+            "key": "TS_001",
+            "label": "CTF TS_001",
+            "ctfSeriesId": "TS_001",
+            "tiltSeriesId": "TS_001",
+            "tsId": "TS_001",
+        },
+    }
+
+
+def test_PostgresqlIntegratedContextReaderMergeRelationsForCoordinates3dCandidateUsesAllowedKeys(
+    authTestEnv,
+    monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+    reader = _makeReader(authTestEnv)
+
+    class FakeCoords3dReader:
+        def __init__(self, db, projectId, protocolId, outputName):
+            assert projectId == 1
+            assert protocolId == 702
+            assert outputName == "outputCoordinates"
+
+        def listTomograms(self):
+            return [
+                {
+                    "tomoId": "TOMO_001",
+                    "label": "Tomogram TOMO_001",
+                },
+                {
+                    "tomoId": "TOMO_002",
+                    "label": "Tomogram TOMO_002",
+                },
+            ]
+
+    monkeypatch.setattr(module, "PostgresqlCoords3dReader", FakeCoords3dReader)
+
+    relationsByKey = {}
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": 702,
+            "outputName": "outputCoordinates",
+        },
+        candidateKind="coordinates3d",
+        relationsByKey=relationsByKey,
+        allowedRelationKeys={"TOMO_002"},
+    )
+
+    assert relationsByKey == {
+        "TOMO_002": {
+            "key": "TOMO_002",
+            "label": "Tomogram TOMO_002",
+            "coordinatesTomogramId": "TOMO_002",
+            "tomogramId": "TOMO_002",
+        },
+    }
+
+
+def test_PostgresqlIntegratedContextReaderMergeRelationsForTomogramCandidateUsesAllowedKeys(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    class FakeSetMapper:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            assert projectId == 1
+            assert protocolDbId == 703
+            assert outputName == "outputTomograms"
+            assert limit is None
+            assert offset == 0
+
+            return {
+                "items": [
+                    {
+                        "values": {
+                            "_tsId": "TS_001",
+                            "_tomoId": "TOMO_001",
+                            "_objLabel": "Tomogram 001",
+                        },
+                    },
+                    {
+                        "values": {
+                            "_tsId": "TS_002",
+                            "_tomoId": "TOMO_002",
+                            "_objLabel": "Tomogram 002",
+                        },
+                    },
+                ],
+            }
+
+    reader.setMapper = FakeSetMapper()
+
+    relationsByKey = {}
+
+    reader._mergeRelationsForCandidate(
+        candidate={
+            "protocolDbId": 703,
+            "outputName": "outputTomograms",
+        },
+        candidateKind="tomogram",
+        relationsByKey=relationsByKey,
+        allowedRelationKeys={"TS_001"},
+    )
+
+    assert list(relationsByKey.keys()) == ["TS_001"]
+
+    relation = relationsByKey["TS_001"]
+
+    assert relation["key"] == "TS_001"
+    assert relation["tomogramId"] == "TOMO_001"
+    assert relation["sourceTomoId"] == "TOMO_001"
+    assert relation["tomogramVolumeId"] == 0
+    assert relation["tiltSeriesId"] == "TS_001"
+    assert relation["tsId"] == "TS_001"
+    assert relation["ctfSeriesId"] == "TS_001"
