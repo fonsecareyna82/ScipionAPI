@@ -223,3 +223,129 @@ def test_PostgresqlIntegratedContextReaderMergesRelationAliases(authTestEnv):
     assert relationsByKey["TS_001"]["tomogramId"] == "TOMO_001"
     assert relationsByKey["TS_001"]["sourceTomoId"] == "TOMO_001"
     assert relationsByKey["TS_001"]["label"] == "Tomogram TOMO_001"
+
+
+def test_PostgresqlIntegratedContextReaderClassifiesInputRefKinds(authTestEnv):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfCTFTomoSeries",
+    }) == "ctf"
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfTiltSeries",
+    }) == "tiltSeries"
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfTiltSeriesM",
+    }) == "tiltSeriesM"
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfTomograms",
+    }) == "tomogram"
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfCoordinates3D",
+    }) == "coordinates3d"
+
+    assert reader._getInputRefKind({
+        "objectClassName": "SetOfParticles",
+    }) is None
+
+
+def test_PostgresqlIntegratedContextReaderExpandsInputRefOutputNames(authTestEnv):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._expandInputRefOutputNames("outputTomograms") == [
+        "outputTomograms",
+    ]
+
+    assert reader._expandInputRefOutputNames("outputTomograms.someNestedOutput") == [
+        "outputTomograms.someNestedOutput",
+        "outputTomograms",
+    ]
+
+    assert reader._expandInputRefOutputNames("") == []
+    assert reader._expandInputRefOutputNames(None) == []
+
+
+def test_PostgresqlIntegratedContextReaderGetsStoredSetFromInputRefUsingExpandedNames(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    calls = []
+
+    class FakeSetMapper:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            calls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+                "limit": limit,
+                "offset": offset,
+            })
+
+            if outputName == "outputTomograms":
+                return {
+                    "id": 20,
+                    "objectId": 200,
+                    "protocolDbId": protocolDbId,
+                    "outputName": outputName,
+                    "setClassName": "SetOfTomograms",
+                    "itemClassName": "Tomogram",
+                }
+
+            return None
+
+    reader.setMapper = FakeSetMapper()
+
+    result = reader._getStoredSetFromInputRef({
+        "parentProtocolDbId": 700,
+        "parentOutputName": "outputTomograms.someNestedOutput",
+    })
+
+    assert result == {
+        "id": 20,
+        "objectId": 200,
+        "protocolDbId": 700,
+        "outputName": "outputTomograms",
+        "setClassName": "SetOfTomograms",
+        "itemClassName": "Tomogram",
+    }
+
+    assert calls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 700,
+            "outputName": "outputTomograms.someNestedOutput",
+            "limit": None,
+            "offset": 0,
+        },
+        {
+            "projectId": 1,
+            "protocolDbId": 700,
+            "outputName": "outputTomograms",
+            "limit": None,
+            "offset": 0,
+        },
+    ]
+
+
+def test_PostgresqlIntegratedContextReaderReturnsNoneWhenInputRefHasNoParentProtocol(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    class FakeSetMapper:
+        def getStoredSet(self, **kwargs):
+            raise AssertionError("getStoredSet should not be called without parentProtocolDbId")
+
+    reader.setMapper = FakeSetMapper()
+
+    result = reader._getStoredSetFromInputRef({
+        "parentProtocolDbId": None,
+        "parentOutputName": "outputTomograms",
+    })
+
+    assert result is None
