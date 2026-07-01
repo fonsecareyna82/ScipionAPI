@@ -547,6 +547,7 @@ class FakeProjectService:
             checkPid=False,
             validateConsistency=False,
             failOnConsistencyError=False,
+            loadWorkflowFromPostgresql=False,
     ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
@@ -556,6 +557,7 @@ class FakeProjectService:
             "checkPid": checkPid,
             "validateConsistency": validateConsistency,
             "failOnConsistencyError": failOnConsistencyError,
+            "loadWorkflowFromPostgresql": loadWorkflowFromPostgresql,
         }
         return self.projectByIdResult
 

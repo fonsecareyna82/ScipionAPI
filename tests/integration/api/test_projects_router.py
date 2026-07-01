@@ -141,6 +141,7 @@ def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProject
         "checkPid": True,
         "validateConsistency": False,
         "failOnConsistencyError": False,
+        "loadWorkflowFromPostgresql": True,
     }
 
 
@@ -1446,4 +1447,28 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
         "id": 1,
         "email": "user@example.com",
         "role": "user",
+    }
+
+
+def test_GetProjectWithValidateConsistencyDisablesPostgresqlWorkflowLoad(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get("/projects/1?validateConsistency=true")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 1
+    assert fakeProjectService.lastGetProjectByIdCall == {
+        "mapper": fakeProjectService.lastGetProjectByIdCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "refresh": True,
+        "checkPid": True,
+        "validateConsistency": True,
+        "failOnConsistencyError": False,
+        "loadWorkflowFromPostgresql": False,
     }
