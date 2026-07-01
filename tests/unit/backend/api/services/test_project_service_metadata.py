@@ -1345,3 +1345,121 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     assert call["kwargs"]["outputClassName"] == "SetOfParticles"
     assert call["kwargs"]["sqliteFile"].startswith("Logs/selection_")
     assert call["kwargs"]["sqliteFile"].endswith(".txt,Class001")
+
+
+def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    from starlette.responses import Response
+
+    projectPath = tmp_path / "project"
+    imagePath = (
+        projectPath
+        / "Runs"
+        / "000077_XmippProtPreprocessMicrographs"
+        / "extra"
+        / "008.mrc"
+    )
+    imagePath.parent.mkdir(parents=True)
+    imagePath.write_bytes(b"fake mrc content")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeOutputsPreview:
+        instances = []
+
+        def __init__(self, currentProject, protocol, output, requestHeaders=None):
+            self.currentProject = currentProject
+            self.protocol = protocol
+            self.output = output
+            self.requestHeaders = requestHeaders
+            self.lastRenderCall = None
+            FakeOutputsPreview.instances.append(self)
+
+        def renderImageFromFilePath(
+            self,
+            filePath,
+            size,
+            fmt,
+            index,
+            applyTransform,
+            inline,
+            rot,
+            shifts,
+        ):
+            self.lastRenderCall = {
+                "filePath": filePath,
+                "size": size,
+                "fmt": fmt,
+                "index": index,
+                "applyTransform": applyTransform,
+                "inline": inline,
+                "rot": rot,
+                "shifts": shifts,
+            }
+            return Response(content=b"fake-webp", media_type="image/webp")
+
+    columns = [FakeColumn("stack", "Stack", PathRenderer())]
+    table = FakeTable(name="objects", alias="Micrographs", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={
+            "objects": [
+                FakeRow(
+                    1,
+                    ["Runs/000077_XmippProtPreprocessMicrographs/extra/008.mrc"],
+                )
+            ],
+        },
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/247/protocol/77/output/outputMicrographs",
+    )
+
+    mapper = FakeMapper()
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+
+    response = service.renderMetadataImageCellService(
+        projectId=247,
+        protocolId=77,
+        outputName="outputMicrographs",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=200,
+        applyTransform=False,
+        inline=True,
+        fmt="webp",
+        mapper=mapper,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/webp"
+    assert response.headers.get("x-image-placeholder") is None
+
+    assert FakeOutputsPreview.instances[0].lastRenderCall == {
+        "filePath": str(imagePath.resolve()),
+        "size": 200,
+        "fmt": "webp",
+        "index": 0,
+        "applyTransform": False,
+        "inline": True,
+        "rot": None,
+        "shifts": None,
+    }

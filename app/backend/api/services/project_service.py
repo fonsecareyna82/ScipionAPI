@@ -13886,7 +13886,17 @@ class ProjectService:
                 else:
                     # Path-like result: try to open image from disk
                     if isinstance(img, (str, os.PathLike)):
-                        imgPath = LocalPath(img)
+                        imageIndex = 0
+                        imagePathText = str(img)
+
+                        if "@" in imagePathText:
+                            indexText, imagePathText = imagePathText.split("@", 1)
+                            try:
+                                imageIndex = int(float(indexText))
+                            except Exception:
+                                imageIndex = 0
+
+                        imgPath = LocalPath(imagePathText)
 
                         # Build candidates for relative paths:
                         resolvedPath = None
@@ -13896,7 +13906,7 @@ class ProjectService:
                         # should become:
                         #   <projectPath>/Runs/000002_ProtImportMicrographs/extra/016.mrc
                         if pathResolver is not None:
-                            resolvedText = pathResolver.resolveExistingPath(img)
+                            resolvedText = pathResolver.resolveExistingPath(imagePathText)
                             if resolvedText:
                                 resolvedPath = LocalPath(resolvedText)
 
@@ -13954,11 +13964,36 @@ class ProjectService:
                                 pilImg = PILImage.open(str(resolvedPath))
                             except Exception as e:
                                 logger.error(
-                                    "Cannot open image file '%s' for metadata cell: %s",
+                                    "Cannot open image file '%s' for metadata cell with PIL: %s",
                                     str(resolvedPath),
                                     e,
                                 )
-                                pilImg = None
+                                # PIL cannot read cryo-EM formats such as .mrc/.mrcs.
+                                # Fall back to Scipion/pwem preview rendering.
+                                try:
+                                    preview = OutputsPreview(
+                                        currentProject=self.currentProject,
+                                        protocol=None,
+                                        output=None,
+                                    )
+
+                                    return preview.renderImageFromFilePath(
+                                        filePath=str(resolvedPath),
+                                        size=size,
+                                        fmt=fmt,
+                                        index=imageIndex,
+                                        applyTransform=False,
+                                        inline=inline,
+                                        rot=None,
+                                        shifts=None,
+                                    )
+                                except Exception as previewError:
+                                    logger.error(
+                                        "Cannot render metadata image file '%s' with Scipion preview: %s",
+                                        str(resolvedPath),
+                                        previewError,
+                                    )
+                                    pilImg = None
                     else:
                         # Unsupported type: treat as no image for this cell
                         logger.warning(
