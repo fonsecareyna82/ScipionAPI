@@ -1888,98 +1888,108 @@ class ProjectService:
 
         return {"message": "Project deleted successfully"}
 
-    def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
-        """
-        List all projects visible for the current user:
-        - owned projects
-        - shared projects (from project_shares)
+    def _getProjectDisplayNameFromPostgresqlPath(self, storedProjectPath: Any) -> str:
+        pathText = str(storedProjectPath or "").strip()
+        if not pathText:
+            return ""
 
-        Notes:
-        - If a project is imported as a symlink, size/protocol count/mtime are
-          computed from the real target path.
-        - The displayed project name remains the managed entry name stored in DB
-          (usually the symlink name under the Scipion projects folder).
-        """
-        dbProjects = mapper.listProjects(ownerId=currentUser["id"])
-        result = []
+        return Path(pathText).expanduser().name or pathText
 
-        for dbProj in dbProjects:
-            storedProjectPath = dbProj.get("name")
-            if not storedProjectPath:
-                continue
-
-            projectId = dbProj["id"]
-
-            storedPathObj = Path(storedProjectPath).expanduser()
-            if not storedPathObj.is_absolute():
-                storedPathObj = Path(self.manager.getProjectPath(str(storedPathObj)))
-
-            displayName = storedPathObj.name
-
-            try:
-                realProjectPathObj = storedPathObj.resolve(strict=True)
-            except FileNotFoundError:
-                realProjectPathObj = storedPathObj
-            except Exception:
-                realProjectPathObj = storedPathObj
-
-            realProjectPath = str(realProjectPathObj)
-            runsPath = os.path.join(realProjectPath, "Runs")
-
-            try:
-                sizeGB = self.getProjectSize(realProjectPath) / (1024 ** 3)
-            except Exception:
-                sizeGB = 0.0
-
-            protCount = None
-
-            countProjectProtocols = getattr(mapper, "countProjectProtocols", None)
-            if callable(countProjectProtocols):
-                try:
-                    protCount = int(countProjectProtocols(projectId) or 0)
-                except Exception:
-                    logger.exception(
-                        "Failed to count project protocols from PostgreSQL. projectId=%s",
-                        projectId,
-                    )
-
-            if protCount is None:
-                try:
-                    protCount = self.countProtocols(runsPath)
-                except Exception:
-                    protCount = 0
-
-            isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUser["id"])
-            isShared = dbProj.get("isShared", False)
-            permission = dbProj.get("permission", "owner" if isOwner else "full")
-            projectOwnerId = dbProj.get("ownerId")
-            updatedAt = dbProj.get("updatedAt")
-
-            thumbnailVersion = self._buildProjectThumbnailVersion(
-                projectPath=realProjectPath,
-                projectId=projectId,
-                updatedAt=updatedAt,
-                protocolsCount=protCount,
+    def _countProjectProtocolsFromPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> int:
+        countProjectProtocols = getattr(mapper, "countProjectProtocols", None)
+        if not callable(countProjectProtocols):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL mapper does not expose countProjectProtocols",
             )
 
-            result.append({
-                "id": projectId,
-                "name": displayName,
-                "description": dbProj.get("description", ""),
-                "createdAt": dbProj.get("createdAt"),
-                "status": dbProj.get("status", "active"),
-                "protocolsCount": str(protCount),
-                "diskUsage": f"{sizeGB:.2f} GB",
-                "isOwner": bool(isOwner),
-                "isShared": bool(isShared),
-                "permission": permission,
-                "projectOwnerId": projectOwnerId,
-                "updatedAt": updatedAt,
-                "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
-                "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
-                "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
-                "thumbnailVersion": thumbnailVersion,
-            })
+        try:
+            return int(countProjectProtocols(projectId) or 0)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to count project protocols from PostgreSQL. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to count project protocols from PostgreSQL: {e}",
+            )
+
+    def _buildProjectOutFromPostgresqlRow(
+            self,
+            mapper: PostgresqlFlatMapper,
+            dbProj: Dict[str, Any],
+            currentUser: dict,
+    ) -> Dict[str, Any]:
+        projectId = int(dbProj["id"])
+        storedProjectPath = dbProj.get("name")
+        displayName = self._getProjectDisplayNameFromPostgresqlPath(storedProjectPath)
+
+        protocolsCount = self._countProjectProtocolsFromPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        currentUserId = currentUser["id"]
+        isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUserId)
+        isShared = dbProj.get("isShared", False)
+        permission = dbProj.get("permission", "owner" if isOwner else "full")
+        projectOwnerId = dbProj.get("ownerId")
+        updatedAt = dbProj.get("updatedAt")
+
+        thumbnailVersion = "%s:%s:%s:postgresql" % (
+            projectId,
+            updatedAt or "",
+            protocolsCount,
+        )
+
+        return {
+            "id": projectId,
+            "name": displayName,
+            "description": dbProj.get("description", ""),
+            "createdAt": dbProj.get("createdAt"),
+            "status": dbProj.get("status", "active"),
+            "protocolsCount": protocolsCount,
+            "diskUsage": dbProj.get("diskUsage") or "0.00 GB",
+            "isOwner": bool(isOwner),
+            "isShared": bool(isShared),
+            "permission": permission,
+            "projectOwnerId": projectOwnerId,
+            "updatedAt": updatedAt,
+            "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
+            "thumbnailVersion": thumbnailVersion,
+        }
+
+    def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
+        """
+        List all projects visible for the current user using PostgreSQL only.
+
+        This endpoint should not load Scipion projects nor scan project folders.
+        It is used by the project list screen, so it must stay cheap even when
+        projects contain many runs or large files.
+        """
+        dbProjects = mapper.listProjects(ownerId=currentUser["id"]) or []
+
+        result = []
+        for dbProj in dbProjects:
+            if not dbProj.get("name"):
+                continue
+
+            result.append(
+                self._buildProjectOutFromPostgresqlRow(
+                    mapper=mapper,
+                    dbProj=dbProj,
+                    currentUser=currentUser,
+                )
+            )
 
         return result
 

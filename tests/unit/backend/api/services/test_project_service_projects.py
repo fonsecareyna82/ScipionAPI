@@ -507,8 +507,8 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "description": "demo description",
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
-            "protocolsCount": "7",
-            "diskUsage": "3.00 GB",
+            "protocolsCount": 7,
+            "diskUsage": "0.00 GB",
             "isOwner": True,
             "isShared": False,
             "permission": "owner",
@@ -517,25 +517,21 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "thumbnailUrl": "/projects/1/thumbnail",
             "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
             "thumbnailItemsUrl": "/projects/1/thumbnail-items",
-            "thumbnailVersion": "thumb-v1",
+            "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
         }
     ]
     assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
 
 
-def test_ListProjectsFallsBackToFilesystemProtocolCountWhenPostgresqlCountFails(
+def test_ListProjectsRaisesWhenPostgresqlProtocolCountFails(
     service,
     mapper,
     currentUser,
-    monkeypatch,
 ):
-    storedPath = Path(service.manager.PROJECTS) / "demo-project"
-    storedPath.mkdir(parents=True, exist_ok=True)
-
     mapper.projectsListResult = [
         {
             "id": 1,
-            "name": str(storedPath),
+            "name": "/some/scipion/projects/demo-project",
             "description": "demo description",
             "createdAt": "2026-04-15T10:00:00",
             "updatedAt": "2026-04-15T11:00:00",
@@ -549,23 +545,18 @@ def test_ListProjectsFallsBackToFilesystemProtocolCountWhenPostgresqlCountFails(
 
     mapper.countProjectProtocols = failCountProjectProtocols
 
-    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
-    monkeypatch.setattr(service, "countProtocols", lambda path: 7)
-    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
+    with pytest.raises(HTTPException) as exc:
+        service.listProjects(mapper, currentUser)
 
-    result = service.listProjects(mapper, currentUser)
-
-    assert result[0]["protocolsCount"] == "7"
+    assert exc.value.status_code == 500
+    assert "Failed to count project protocols from PostgreSQL" in exc.value.detail
 
 
-def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser, monkeypatch):
-    storedPath = Path(service.manager.PROJECTS) / "shared-project"
-    storedPath.mkdir(parents=True, exist_ok=True)
-
+def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser):
     mapper.projectsListResult = [
         {
             "id": 2,
-            "name": str(storedPath),
+            "name": "/some/scipion/projects/shared-project",
             "description": "shared description",
             "createdAt": "2026-04-15T10:00:00",
             "updatedAt": "2026-04-15T11:00:00",
@@ -577,16 +568,17 @@ def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser, mo
         }
     ]
 
-    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
-    monkeypatch.setattr(service, "countProtocols", lambda path: 0)
-    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v2")
+    mapper.projectProtocolCounts[2] = 4
 
     result = service.listProjects(mapper, currentUser)
 
+    assert result[0]["name"] == "shared-project"
+    assert result[0]["protocolsCount"] == 4
     assert result[0]["isOwner"] is False
     assert result[0]["isShared"] is True
     assert result[0]["permission"] == "read"
     assert result[0]["projectOwnerId"] == 99
+    assert result[0]["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
 
 
 def test_ShareProjectWithUserReturns404WhenProjectMissing(service, mapper, currentUser):
@@ -743,3 +735,60 @@ def test_RevokeProjectShareForUserReturnsSuccess(service, mapper, currentUser):
         "projectId": 1,
         "userId": 2,
     }
+
+
+def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+        }
+    ]
+
+    mapper.projectProtocolCounts[1] = 7
+
+    def failFilesystemCall(*args, **kwargs):
+        raise AssertionError("listProjects should not touch filesystem helpers")
+
+    monkeypatch.setattr(service, "getProjectSize", failFilesystemCall)
+    monkeypatch.setattr(service, "countProtocols", failFilesystemCall)
+    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", failFilesystemCall)
+
+    result = service.listProjects(mapper, currentUser)
+
+    assert result == [
+        {
+            "id": 1,
+            "name": "demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "status": "active",
+            "protocolsCount": 7,
+            "diskUsage": "0.00 GB",
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+            "projectOwnerId": 1,
+            "updatedAt": "2026-04-15T11:00:00",
+            "thumbnailUrl": "/projects/1/thumbnail",
+            "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
+            "thumbnailItemsUrl": "/projects/1/thumbnail-items",
+            "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
+        }
+    ]
+
+    assert mapper.lastListProjectsCall == {"ownerId": 1}
+    assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
