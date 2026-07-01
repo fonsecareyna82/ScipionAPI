@@ -778,3 +778,116 @@ def test_PostgresqlIntegratedContextReaderSafeValueHandlesTuplesAsLists(
         "TS_001",
         3,
     ]
+
+
+def test_PostgresqlIntegratedContextReaderBuildsRelationKeySetFromAliases(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    relationsByKey = {
+        "TS_001": {
+            "key": "TS_001",
+            "label": "TiltSeries TS_001",
+            "tiltSeriesId": "TS_001",
+            "tsId": "TS_ALIAS_001",
+            "ctfSeriesId": "CTF_001",
+            "tomogramId": "TOMO_001",
+            "sourceTomoId": "SOURCE_TOMO_001",
+            "coordinatesTomogramId": "COORD_TOMO_001",
+        },
+        "TS_002": {
+            "key": "TS_002",
+            "label": "",
+            "tiltSeriesId": "TS_002",
+            "tomogramId": None,
+        },
+    }
+
+    result = reader._getRelationKeySet(relationsByKey)
+
+    assert result == {
+        "TS_001",
+        "TiltSeries TS_001",
+        "TS_ALIAS_001",
+        "CTF_001",
+        "TOMO_001",
+        "SOURCE_TOMO_001",
+        "COORD_TOMO_001",
+        "TS_002",
+    }
+
+
+def test_PostgresqlIntegratedContextReaderRelationKeySetReturnsNoneWhenEmpty(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._getRelationKeySet({}) is None
+    assert reader._getRelationKeySet(None) is None
+
+
+def test_PostgresqlIntegratedContextReaderIterRelationMatchValuesDeduplicatesAliases(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    result = reader._iterRelationMatchValues(
+        "TS_001",
+        {
+            "key": "TS_001",
+            "tiltSeriesId": "TS_001",
+            "tsId": "TS_ALIAS_001",
+            "ctfSeriesId": "CTF_001",
+            "tomogramId": "TOMO_001",
+            "sourceTomoId": "TOMO_001",
+            "coordinatesTomogramId": "COORD_TOMO_001",
+        },
+    )
+
+    assert result == [
+        "TS_001",
+        "TS_ALIAS_001",
+        "CTF_001",
+        "TOMO_001",
+        "COORD_TOMO_001",
+    ]
+
+
+def test_PostgresqlIntegratedContextReaderFindsExistingRelationKeysByAliases(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    relationsByKey = {
+        "TS_001": {
+            "key": "TS_001",
+            "tiltSeriesId": "TS_001",
+            "ctfSeriesId": "TS_001",
+        },
+        "TOMO_002": {
+            "key": "TOMO_002",
+            "tomogramId": "TOMO_002",
+            "sourceTomoId": "SOURCE_TOMO_002",
+        },
+        "UNRELATED": {
+            "key": "UNRELATED",
+        },
+    }
+
+    assert reader._findExistingRelationKeys(
+        relationsByKey,
+        ["TS_001"],
+    ) == ["TS_001"]
+
+    assert reader._findExistingRelationKeys(
+        relationsByKey,
+        ["SOURCE_TOMO_002"],
+    ) == ["TOMO_002"]
+
+    assert reader._findExistingRelationKeys(
+        relationsByKey,
+        ["NO_MATCH"],
+    ) == []
+
+
