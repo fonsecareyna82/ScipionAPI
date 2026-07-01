@@ -1989,6 +1989,33 @@ class ProjectService:
             "thumbnailVersion": thumbnailVersion,
         }
 
+    def getProjectSummaryFromPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+    ) -> Optional[dict]:
+        """
+        Return project metadata from PostgreSQL without loading Scipion runtime.
+
+        This is the cheap read path for project screens that only need project
+        metadata. It must not call loadProject(), refresh runs, check PIDs or
+        populate currentProject.
+        """
+        dbProj = mapper.getProject(
+            projectId=projectId,
+            userId=currentUser["id"],
+        )
+
+        if not dbProj:
+            return None
+
+        return self._buildProjectOutFromPostgresqlRow(
+            mapper=mapper,
+            dbProj=dbProj,
+            currentUser=currentUser,
+        )
+
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
         """
         List all projects visible for the current user using PostgreSQL only.
