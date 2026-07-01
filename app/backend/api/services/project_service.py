@@ -3172,6 +3172,7 @@ class ProjectService:
             dependencyMap=dependencyMap,
             runMap=runMap,
             persistedOutputsByProtocolId=persistedOutputsByProtocolId,
+            allowRuntimeFallback=False,
         )
 
         stats = projPath.stat()
