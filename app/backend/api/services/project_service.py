@@ -9193,7 +9193,11 @@ class ProjectService:
             except Exception:
                 imageIndex = int(fallbackIndex)
 
-        return os.path.abspath(imagePath), imageIndex
+        # Do not os.path.abspath() here.
+        # PostgreSQL paths can be project-relative:
+        # Runs/000084_Prot.../extra/...
+        # They must be resolved against the project path, not against cwd/scipion_home.
+        return str(Path(str(imagePath)).expanduser()), imageIndex
 
     # ======================================================================
     # Analyze Results: Resolve viewer
@@ -10909,6 +10913,19 @@ class ProjectService:
                         frame.get("path"),
                         fallbackIndex=int(index),
                     )
+
+                    if mapper is not None and getattr(mapper, "db", None) is not None:
+                        from app.backend.viewers.postgresql_path_resolver import (
+                            PostgresqlProjectPathResolver,
+                        )
+
+                        resolvedImagePath = PostgresqlProjectPathResolver(
+                            db=mapper.db,
+                            projectId=projectId,
+                        ).resolveExistingPath(imagePath)
+
+                        if resolvedImagePath:
+                            imagePath = resolvedImagePath
 
                     cacheKey = self._buildTiltSeriesPreviewCacheKey(
                         projectId=projectId,
