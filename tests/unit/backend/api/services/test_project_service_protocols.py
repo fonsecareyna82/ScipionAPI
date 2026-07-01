@@ -436,7 +436,7 @@ def test_RegisterOutputReturnsPersistenceReport(
         def getClassName(self):
             return "SetOfParticles"
 
-    class FakeObjectOutput:
+    class FakeObjectOutput(ScipionObject):
         # fakeObjectOutput
         def getClassName(self):
             return "Volume"
@@ -548,6 +548,10 @@ def test_RegisterOutputReturnsPersistenceReport(
         {
             "outputName": "emptyOutput",
             "outputClassName": "",
+        },
+        {
+            "outputName": "outputCryoloModel",
+            "outputClassName": "CryoloModel",
         },
         {
             "outputName": "unsupportedOutput",
