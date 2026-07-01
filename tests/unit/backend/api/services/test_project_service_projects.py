@@ -939,3 +939,104 @@ def test_GetProjectSummaryFromPostgresqlKeepsSharedProjectFlags(
     assert result["permission"] == "read"
     assert result["projectOwnerId"] == 99
     assert result["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
+
+
+def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
+    def failRuntimeLookup(protocolId):
+        raise AssertionError("buildProtocolsGraph should not use runtime fallback")
+
+    service._tryGetScipionProtocolByRuntimeId = failRuntimeLookup
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+        ],
+        tags={
+            "10": ["import"],
+        },
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "10": {
+                "outputMovies": {
+                    "mapperKind": "flat_set",
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["protocolId"] == "10"
+    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["status"] == "finished"
+    assert graph["10"]["tags"] == ["import"]
+
+    assert graph["10"]["outputs"] == [
+        {
+            "name": "outputMovies",
+            "paramClass": "PointerParam",
+            "pointerClass": "SetOfMovies",
+            "info": "",
+            "value": "10.outputMovies",
+            "parentId": "10",
+            "persisted": True,
+            "persistence": {
+                "mapperKind": "flat_set",
+                "className": "SetOfMovies",
+                "itemsCount": 25,
+            },
+        },
+    ]
+
+
+def test_BuildProtocolsGraphUsesPostgresqlDependenciesWithoutRuntime(service):
+    service._tryGetScipionProtocolByRuntimeId = lambda protocolId: (_ for _ in ()).throw(
+        AssertionError("buildProtocolsGraph should not use runtime fallback")
+    )
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+            {
+                "protocolId": "20",
+                "protocolClassName": "ProtMotionCorr",
+                "status": "running",
+            },
+        ],
+        tags={},
+        dependencyMap={
+            "10": {
+                "parents": [],
+                "children": ["20"],
+            },
+            "20": {
+                "parents": ["10"],
+                "children": [],
+            },
+        },
+        runMap={},
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["children"] == ["20"]
+    assert graph["10"]["parents"] == []
+
+    assert graph["20"]["children"] == []
+    assert graph["20"]["parents"] == ["10"]

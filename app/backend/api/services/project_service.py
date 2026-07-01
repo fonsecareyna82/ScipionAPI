@@ -2740,6 +2740,7 @@ class ProjectService:
             dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
             runMap: Optional[Dict[str, Any]] = None,
             persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+            allowRuntimeFallback: bool = True,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
         graphData: Dict[str, Any] = {}
@@ -2815,6 +2816,8 @@ class ProjectService:
 
             inputs = []
             outputs = []
+            seenOutputNames = set()
+
             cpuTime = ''
             elapsedTime = ''
             isinteractive = False
@@ -2826,10 +2829,11 @@ class ProjectService:
             comment = ''
             title = ''
 
-            # Prefer the live protocol object coming from runs graph
+            # Prefer the live protocol object coming from runs graph.
+            # Runtime fallback is optional so the graph can be built from PostgreSQL only.
             protocol = liveRuns.get(nodeId)
 
-            if protocol is None:
+            if protocol is None and allowRuntimeFallback:
                 protocol = self._tryGetScipionProtocolByRuntimeId(nodeId)
 
             if protocol is not None:
@@ -2920,8 +2924,6 @@ class ProjectService:
                     inputs = []
 
                 try:
-                    seenOutputNames = set()
-
                     for key, attr in protocol.iterOutputAttributes():
                         outputName = str(key)
                         seenOutputNames.add(outputName)
@@ -2930,6 +2932,7 @@ class ProjectService:
                         outputItem["name"] = key
                         outputItem["paramClass"] = "PointerParam"
                         outputItem["pointerClass"] = attr.__class__.__name__
+
                         try:
                             outputItem["info"] = attr.__str__()
                         except Exception:
@@ -2949,23 +2952,10 @@ class ProjectService:
 
                         outputs.append(outputItem)
 
-                    for outputName, persistedOutput in persistedOutputsByName.items():
-                        if outputName in seenOutputNames:
-                            continue
-
-                        outputs.append({
-                            "name": outputName,
-                            "paramClass": "PointerParam",
-                            "pointerClass": persistedOutput.get("className") or "",
-                            "info": "",
-                            "value": "%s.%s" % (nodeId, outputName),
-                            "parentId": nodeId,
-                            "persisted": True,
-                            "persistence": persistedOutput,
-                        })
-
                 except Exception:
                     outputs = []
+                    seenOutputNames = set()
+
             else:
                 try:
                     protocolIdInt = int(nodeId)
@@ -2974,6 +2964,23 @@ class ProjectService:
                 except Exception:
                     thumbnailUrl = None
                     thumbnailRebuildUrl = None
+
+            # Add persisted outputs even when there is no runtime protocol object.
+            # If runtime already provided the output, only enrich that runtime output above.
+            for outputName, persistedOutput in persistedOutputsByName.items():
+                if outputName in seenOutputNames:
+                    continue
+
+                outputs.append({
+                    "name": outputName,
+                    "paramClass": "PointerParam",
+                    "pointerClass": persistedOutput.get("className") or "",
+                    "info": "",
+                    "value": "%s.%s" % (nodeId, outputName),
+                    "parentId": nodeId,
+                    "persisted": True,
+                    "persistence": persistedOutput,
+                })
 
             graphData[nodeId] = {
                 "protocolId": nodeId,
