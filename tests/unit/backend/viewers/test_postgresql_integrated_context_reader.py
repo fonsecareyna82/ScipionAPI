@@ -584,3 +584,133 @@ def test_PostgresqlIntegratedContextReaderGetsCandidateProtocolId(authTestEnv):
         "protocolDbId": None,
         "publicProtocolId": 120,
     }) == 120
+
+
+def test_PostgresqlIntegratedContextReaderBuildsTomogramItemsFromStoredSetValues(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+    storedSet = {
+        "items": [
+            {
+                "scipionItemId": 101,
+                "values": {
+                    "_tsId": "TS_001",
+                    "_tomoId": "TOMO_001",
+                    "_objLabel": "Tomogram 001",
+                },
+            },
+            {
+                "scipionItemId": 102,
+                "values": {
+                    "tiltSeriesId": "TS_002",
+                    "tomogramId": "TOMO_002",
+                    "label": "Tomogram 002",
+                },
+            },
+        ],
+    }
+    result = reader._buildTomogramItemsFromStoredSet(storedSet)
+
+    assert result == [
+        {
+            "id": "TS_001",
+            "tomoId": "TOMO_001",
+            "tomogramId": "TOMO_001",
+            "label": "TS_001",
+            "volumeId": 0,
+            "tomogramVolumeId": 0,
+            "tsId": "TS_001",
+            "tiltSeriesId": "TS_001",
+            "ctfSeriesId": "TS_001",
+            "sourceTomoId": "TOMO_001",
+        },
+        {
+            "id": "TS_002",
+            "tomoId": "TOMO_002",
+            "tomogramId": "TOMO_002",
+            "label": "Tomogram 002",
+            "volumeId": 1,
+            "tomogramVolumeId": 1,
+            "tsId": "TS_002",
+            "tiltSeriesId": "TS_002",
+            "ctfSeriesId": "TS_002",
+            "sourceTomoId": "TOMO_002",
+        },
+    ]
+
+
+def test_PostgresqlIntegratedContextReaderBuildsTomogramItemsWithFallbackIds(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    storedSet = {
+        "items": [
+            {
+                "scipionItemId": 555,
+                "values": {},
+            },
+            {
+                "values": {
+                    "name": "Named tomogram",
+                },
+            },
+        ],
+    }
+
+    result = reader._buildTomogramItemsFromStoredSet(storedSet)
+
+    assert result == [
+        {
+            "id": 555,
+            "tomoId": 555,
+            "tomogramId": 555,
+            "label": 555,
+            "volumeId": 0,
+            "tomogramVolumeId": 0,
+        },
+        {
+            "id": 1,
+            "tomoId": 1,
+            "tomogramId": 1,
+            "label": "Named tomogram",
+            "volumeId": 1,
+            "tomogramVolumeId": 1,
+        },
+    ]
+
+
+def test_PostgresqlIntegratedContextReaderBuildsTomogramItemsFromNormalizedNames(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    storedSet = {
+        "items": [
+            {
+                "values": {
+                    "tilt_series_id": "TS_A",
+                    "tomogram_id": "TOMO_A",
+                    "name": "Tomogram A",
+                },
+            },
+        ],
+    }
+
+    result = reader._buildTomogramItemsFromStoredSet(storedSet)
+
+    assert result == [
+        {
+            "id": "TS_A",
+            "tomoId": "TOMO_A",
+            "tomogramId": "TOMO_A",
+            "label": "Tomogram A",
+            "volumeId": 0,
+            "tomogramVolumeId": 0,
+            "tsId": "TS_A",
+            "tiltSeriesId": "TS_A",
+            "ctfSeriesId": "TS_A",
+            "sourceTomoId": "TOMO_A",
+        },
+    ]
