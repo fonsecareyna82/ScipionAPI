@@ -42,6 +42,7 @@ class PostgresqlTiltSeriesReader:
         self.setMapper = ScipionSetPostgresqlMapper(db)
         self._storedSet = None
         self._logicalTables = None
+        self.lastSkipReason = None
 
     def hasOutput(self) -> bool:
         storedSet = self._getStoredSet()
@@ -59,11 +60,20 @@ class PostgresqlTiltSeriesReader:
         return result
 
     def getTiltSeriesFrames(self, tiltSeriesId: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
+
         storedSet = self._getStoredSet()
         if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
+            self.lastSkipReason = "tiltseries_stored_set_not_found"
             return None
 
         seriesItem = self._findTiltSeriesItem(tiltSeriesId)
+        if seriesItem is None:
+            self.lastSkipReason = (
+                    "tiltseries_item_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
 
         seriesSummary = self._buildTiltSeriesSummary(seriesItem, 0)
         childTable = self._findChildTableForParentItem(seriesItem.get("scipionItemId"))
@@ -86,8 +96,15 @@ class PostgresqlTiltSeriesReader:
         return payload
 
     def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
+
         payload = self.getTiltSeriesFrames(tiltSeriesId)
         if not payload:
+            if not self.lastSkipReason:
+                self.lastSkipReason = (
+                        "tiltseries_frames_not_available tiltSeriesId=%s"
+                        % str(tiltSeriesId)
+                )
             return None
 
         frames = payload.get("frames") or []
@@ -102,6 +119,10 @@ class PostgresqlTiltSeriesReader:
             if 0 <= targetIndex < len(frames):
                 return frames[targetIndex]
 
+        self.lastSkipReason = (
+                "tilt_image_frame_not_found tiltSeriesId=%s index=%s"
+                % (str(tiltSeriesId), str(index))
+        )
         return None
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:

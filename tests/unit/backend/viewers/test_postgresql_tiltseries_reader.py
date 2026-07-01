@@ -95,3 +95,62 @@ def test_PostgresqlTiltSeriesReaderParsesJsonTransformMatrix(authTestEnv):
     assert transform["shiftX"] == 5.0
     assert transform["shiftY"] == 7.0
     assert transform["rot"] == pytest.approx(-90.0)
+
+
+def test_PostgresqlTiltSeriesReaderStoresSkipReasonWhenSeriesIsMissing(authTestEnv, monkeypatch):
+    import importlib
+
+    module = importlib.import_module("app.backend.viewers.postgresql_tiltseries_reader")
+
+    reader = module.PostgresqlTiltSeriesReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputTiltSeries",
+    )
+
+    monkeypatch.setattr(
+        reader,
+        "_getStoredSet",
+        lambda: {
+            "setClassName": "SetOfTiltSeries",
+            "itemClassName": "TiltSeries",
+            "items": [],
+        },
+    )
+
+    result = reader.getTiltSeriesFrames("TS_999")
+
+    assert result is None
+    assert reader.lastSkipReason == "tiltseries_item_not_found tiltSeriesId=TS_999"
+
+
+def test_PostgresqlTiltSeriesReaderStoresSkipReasonWhenFrameIsMissing(authTestEnv, monkeypatch):
+    import importlib
+
+    module = importlib.import_module("app.backend.viewers.postgresql_tiltseries_reader")
+
+    reader = module.PostgresqlTiltSeriesReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputTiltSeries",
+    )
+
+    monkeypatch.setattr(
+        reader,
+        "getTiltSeriesFrames",
+        lambda tiltSeriesId: {
+            "tiltSeriesId": tiltSeriesId,
+            "label": tiltSeriesId,
+            "frames": [
+                {"index": 0, "path": "0@tilt_000.mrc"},
+                {"index": 1, "path": "1@tilt_001.mrc"},
+            ],
+        },
+    )
+
+    result = reader.getTiltImageFrame("TS_001", 99)
+
+    assert result is None
+    assert reader.lastSkipReason == "tilt_image_frame_not_found tiltSeriesId=TS_001 index=99"
