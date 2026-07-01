@@ -1280,3 +1280,126 @@ def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     assert graph["20"]["parents"] == ["10"]
     assert graph["20"]["label"] == "ProtMotionCorr"
     assert graph["20"]["status"] == "running"
+
+
+def test_GetProjectByIdCanLoadWorkflowFromPostgresql(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": str(projectPath),
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    def failRuntimeLoad(*args, **kwargs):
+        raise AssertionError("getProjectById should not call loadProject when PG workflow is requested")
+
+    capturedPgLoad = {}
+
+    def fakeLoadProjectFromPostgresql(dbProj, mapper):
+        capturedPgLoad["dbProj"] = dbProj
+        capturedPgLoad["mapper"] = mapper
+        return {
+            "id": dbProj["id"],
+            "name": dbProj["name"],
+            "shortName": "demo-project",
+            "createdAt": str(dbProj["createdAt"]),
+            "status": str(dbProj["status"]),
+            "path": projectPath,
+            "protocols": {
+                "PROJECT": {
+                    "protocolId": "PROJECT",
+                    "children": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(service, "loadProject", failRuntimeLoad)
+    monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
+
+    result = service.getProjectById(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=False,
+        loadWorkflowFromPostgresql=True,
+    )
+
+    assert result["id"] == 1
+    assert result["protocols"]["PROJECT"]["protocolId"] == "PROJECT"
+    assert capturedPgLoad["dbProj"]["id"] == 1
+    assert capturedPgLoad["mapper"] is mapper
+
+
+def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFlag(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": str(projectPath),
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    def failPgOnlyLoad(*args, **kwargs):
+        raise AssertionError("consistency validation should not use PG-only workflow load")
+
+    monkeypatch.setattr(service, "loadProjectFromPostgresql", failPgOnlyLoad)
+    monkeypatch.setattr(
+        service,
+        "loadProject",
+        lambda dbProj, mapper, refresh=True, checkPid=True: {
+            "id": dbProj["id"],
+            "name": dbProj["name"],
+            "protocols": {},
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "validateProjectPostgresqlConsistency",
+        lambda mapper, projectId, currentUser, refresh=True, checkPid=True: {
+            "ok": True,
+            "issues": {},
+        },
+    )
+
+    result = service.getProjectById(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=True,
+        loadWorkflowFromPostgresql=True,
+    )
+
+    assert result["id"] == 1

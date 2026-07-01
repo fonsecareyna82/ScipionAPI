@@ -2138,11 +2138,12 @@ class ProjectService:
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
-            currentUser,
-            refresh=True,
-            checkPid=True,
+            currentUser: dict,
+            refresh: bool = True,
+            checkPid: bool = True,
             validateConsistency: bool = False,
             failOnConsistencyError: bool = False,
+            loadWorkflowFromPostgresql: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2153,7 +2154,18 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        project = self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid)
+        if loadWorkflowFromPostgresql and not validateConsistency:
+            project = self.loadProjectFromPostgresql(
+                dbProj=dbProj,
+                mapper=mapper,
+            )
+        else:
+            project = self.loadProject(
+                dbProj,
+                mapper,
+                refresh=refresh,
+                checkPid=checkPid,
+            )
 
         if validateConsistency:
             try:
