@@ -1050,6 +1050,168 @@ class ProjectService:
             "postgresqlError": postgresqlError,
         }
 
+    def registerOutput(
+            self,
+            projectId: int,
+            protocol: Any,
+            mapper: PostgresqlFlatMapper,
+            returnReport: bool = False,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        from app.backend.mapper import (
+            ScipionObjectPostgresqlMapper,
+            ScipionSetPostgresqlMapper,
+        )
+
+        declaredOutputs: List[Dict[str, Any]] = []
+        persistedOutputs: List[Dict[str, Any]] = []
+        skippedOutputs: List[Dict[str, Any]] = []
+        outputErrors: List[Dict[str, Any]] = []
+
+        protocolId = self._getScipionObjectId(protocol)
+        protocolDbId = self._resolveProtocolDbIdForOutputPersistence(
+            mapper.db,
+            projectId,
+            protocol,
+        )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
+        try:
+            outputAttributes = list(protocol.iterOutputAttributes())
+        except Exception as exc:
+            logger.exception(
+                "Could not iterate protocol outputs. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+            outputErrors.append({
+                "outputName": None,
+                "outputClassName": None,
+                "error": str(exc),
+            })
+
+            report = {
+                "declared": declaredOutputs,
+                "persisted": persistedOutputs,
+                "skipped": skippedOutputs,
+                "errors": outputErrors,
+            }
+            return report if returnReport else persistedOutputs
+
+        setMapper = ScipionSetPostgresqlMapper(mapper.db)
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+
+        for outputItem in outputAttributes:
+            outputName = None
+            outputObj = None
+
+            if isinstance(outputItem, (tuple, list)) and len(outputItem) >= 2:
+                outputName = outputItem[0]
+                outputObj = outputItem[1]
+            else:
+                outputName = self._safeCall(outputItem, "getName", None)
+                outputObj = outputItem
+
+            outputName = str(outputName or "").strip()
+            outputClassName = self._getScipionClassName(outputObj) or ""
+
+            if not outputName:
+                skippedOutputs.append({
+                    "outputName": outputName,
+                    "outputClassName": outputClassName,
+                    "reason": "empty_output_name",
+                })
+                continue
+
+            declaredOutputs.append({
+                "outputName": outputName,
+                "outputClassName": outputClassName,
+            })
+
+            if outputObj is None:
+                skippedOutputs.append({
+                    "outputName": outputName,
+                    "outputClassName": "",
+                    "reason": "empty_output",
+                })
+                continue
+
+            try:
+                if self._isScipionSetLikeOutput(outputObj):
+                    syncInfo = setMapper.storeSet(
+                        projectId=projectId,
+                        protocolDbId=int(protocolDbId),
+                        outputName=outputName,
+                        scipionSet=outputObj,
+                    )
+
+                    persistedOutputs.append({
+                        "outputName": outputName,
+                        "outputClassName": outputClassName,
+                        "mapperKind": "flat_set",
+                        **(syncInfo or {}),
+                    })
+
+                elif self._isPersistableNonSetOutput(outputObj):
+                    try:
+                        syncInfo = objectMapper.storeObjectTree(
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            outputName=outputName,
+                            scipionObj=outputObj,
+                            registerType=True,
+                            includeNestedProperties=True,
+                        )
+                    except TypeError:
+                        syncInfo = objectMapper.storeObjectTree(
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            outputName=outputName,
+                            scipionObj=outputObj,
+                            includeNestedProperties=True,
+                        )
+
+                    persistedOutputs.append({
+                        "outputName": outputName,
+                        "outputClassName": outputClassName,
+                        "mapperKind": "tree",
+                        **(syncInfo or {}),
+                    })
+
+                else:
+                    skippedOutputs.append({
+                        "outputName": outputName,
+                        "outputClassName": outputClassName,
+                        "reason": "unsupported_output_type",
+                    })
+
+            except Exception as exc:
+                logger.exception(
+                    "Failed to persist protocol output. projectId=%s protocolId=%s outputName=%s outputClassName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    outputClassName,
+                )
+                outputErrors.append({
+                    "outputName": outputName,
+                    "outputClassName": outputClassName,
+                    "error": str(exc),
+                })
+
+        report = {
+            "declared": declaredOutputs,
+            "persisted": persistedOutputs,
+            "skipped": skippedOutputs,
+            "errors": outputErrors,
+        }
+
+        return report if returnReport else persistedOutputs
+
     def _deletePersistedProtocolOutputsFromPostgresql(
             self,
             mapper,
@@ -5097,173 +5259,6 @@ class ProjectService:
             missingOutputs.append(missingItem)
 
         return missingOutputs
-
-    def registerOutput(
-            self,
-            projectId: int,
-            protocol: Any,
-            mapper: PostgresqlFlatMapper,
-            returnReport: bool = False,
-    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        from app.backend.mapper import (
-            ScipionObjectPostgresqlMapper,
-            ScipionSetPostgresqlMapper,
-        )
-
-        declaredOutputs: List[Dict[str, Any]] = []
-        persistedOutputs: List[Dict[str, Any]] = []
-        skippedOutputs: List[Dict[str, Any]] = []
-        outputErrors: List[Dict[str, Any]] = []
-
-        protocolId = self._getScipionObjectId(protocol)
-        protocolDbId = self._resolveProtocolDbIdForOutputPersistence(
-            mapper.db,
-            projectId,
-            protocol,
-        )
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
-
-        try:
-            outputAttributes = list(protocol.iterOutputAttributes())
-        except Exception as exc:
-            logger.exception(
-                "Could not iterate protocol outputs. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            outputErrors.append({
-                "protocolId": str(protocolId),
-                "outputName": None,
-                "outputClassName": None,
-                "error": str(exc),
-            })
-
-            report = {
-                "declared": declaredOutputs,
-                "persisted": persistedOutputs,
-                "skipped": skippedOutputs,
-                "errors": outputErrors,
-            }
-            return report if returnReport else persistedOutputs
-
-        setMapper = ScipionSetPostgresqlMapper(mapper.db)
-        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
-
-        for outputItem in outputAttributes:
-            outputName = None
-            outputObj = None
-
-            if isinstance(outputItem, (tuple, list)) and len(outputItem) >= 2:
-                outputName = outputItem[0]
-                outputObj = outputItem[1]
-            else:
-                outputName = self._safeCall(outputItem, "getName", None)
-                outputObj = outputItem
-
-            outputName = str(outputName or "").strip()
-            outputClassName = self._getScipionClassName(outputObj)
-
-            if not outputName:
-                skippedOutputs.append({
-                    "protocolId": str(protocolId),
-                    "outputName": outputName,
-                    "outputClassName": outputClassName,
-                    "reason": "empty_output_name",
-                })
-                continue
-
-            declaredOutputs.append({
-                "outputName": outputName,
-                "outputClassName": outputClassName,
-            })
-
-            if outputObj is None:
-                skippedOutputs.append({
-                    "outputName": outputName,
-                    "outputClassName": "",
-                    "reason": "empty_output",
-                })
-                continue
-
-            try:
-                if self._isScipionSetLikeOutput(outputObj):
-                    syncInfo = setMapper.storeSet(
-                        projectId=projectId,
-                        protocolDbId=int(protocolDbId),
-                        outputName=outputName,
-                        scipionSet=outputObj,
-                    )
-
-                    persistedOutputs.append({
-                        "protocolId": str(protocolId),
-                        "protocolDbId": int(protocolDbId),
-                        "outputName": outputName,
-                        "outputClassName": outputClassName,
-                        "mapperKind": "flat_set",
-                        **(syncInfo or {}),
-                    })
-                elif self._isPersistableNonSetOutput(outputObj):
-                    try:
-                        syncInfo = objectMapper.storeObjectTree(
-                            projectId=projectId,
-                            protocolDbId=int(protocolDbId),
-                            outputName=outputName,
-                            scipionObj=outputObj,
-                            registerType=True,
-                            includeNestedProperties=True,
-                        )
-
-                    except TypeError:
-                        syncInfo = objectMapper.storeObjectTree(
-                            projectId=projectId,
-                            protocolDbId=int(protocolDbId),
-                            outputName=outputName,
-                            scipionObj=outputObj,
-                            includeNestedProperties=True,
-                        )
-
-                    persistedOutputs.append({
-                        "outputName": outputName,
-                        "outputClassName": outputClassName,
-                        "mapperKind": "tree",
-                        **(syncInfo or {}),
-                    })
-                else:
-                    skippedOutputs.append({
-                        "outputName": outputName,
-                        "outputClassName": outputClassName,
-                        "reason": "unsupported_output_type",
-                    })
-
-            except Exception as exc:
-                logger.exception(
-                    "Failed to persist protocol output. projectId=%s protocolId=%s outputName=%s outputClassName=%s",
-                    projectId,
-                    protocolId,
-                    outputName,
-                    outputClassName,
-                )
-                outputErrors.append({
-                    "protocolId": str(protocolId),
-                    "protocolDbId": int(protocolDbId),
-                    "outputName": outputName,
-                    "outputClassName": outputClassName,
-                    "error": str(exc),
-                })
-
-        report = {
-            "declared": declaredOutputs,
-            "persisted": persistedOutputs,
-            "skipped": skippedOutputs,
-            "errors": outputErrors,
-        }
-
-        return report if returnReport else persistedOutputs
 
     def _resolveProtocolDbIdForOutputPersistence(self, db, projectId: int, protocol: Any) -> int:
         scipionProtocolId = self._getScipionObjId(protocol)
