@@ -250,6 +250,9 @@ class ScipionObjectPostgresqlMapper:
         metadata = {
             "moduleName": self._getModuleName(scipionObj),
             "baseClassName": self._getBaseClassName(scipionObj),
+            "mapperKind": self._guessMapperKind(scipionObj),
+            "displayText": self._getObjectDisplayText(scipionObj),
+            "fileName": self._getObjectFileName(scipionObj),
             "isPointer": self._isPointer(scipionObj),
             "isNested": bool(attributes),
             "hasSourceObjId": self._getSourceObjId(scipionObj) is not None,
@@ -475,6 +478,31 @@ class ScipionObjectPostgresqlMapper:
             except Exception:
                 pass
         return getattr(scipionObj, "_objCreation", None)
+
+    def _getObjectDisplayText(self, scipionObj: Any) -> Optional[str]:
+        if scipionObj is None:
+            return None
+
+        try:
+            text = str(scipionObj)
+        except Exception:
+            return None
+
+        text = str(text or "").strip()
+        return text or None
+
+    def _getObjectFileName(self, scipionObj: Any) -> Optional[str]:
+        getter = getattr(scipionObj, "getFileName", None)
+        if not callable(getter):
+            return None
+
+        try:
+            value = getter()
+        except Exception:
+            return None
+
+        text = str(value or "").strip()
+        return text or None
 
     def _getOptionalObjectText(self, scipionObj: Any, getterName: str, attributeName: str) -> Optional[str]:
         getter = getattr(scipionObj, getterName, None)
