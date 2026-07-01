@@ -349,3 +349,121 @@ def test_PostgresqlIntegratedContextReaderReturnsNoneWhenInputRefHasNoParentProt
     })
 
     assert result is None
+
+
+def test_PostgresqlIntegratedContextReaderReturnsAllItemsWhenNoAllowedRelationKeys(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    items = [
+        {"id": "TS_001", "label": "TiltSeries TS_001"},
+        {"id": "TS_002", "label": "TiltSeries TS_002"},
+    ]
+
+    assert reader._filterIntegratedItemsByAllowedKeys(items, None) == items
+    assert reader._filterIntegratedItemsByAllowedKeys(items, set()) == items
+
+
+def test_PostgresqlIntegratedContextReaderFiltersItemsByAllowedRelationKeys(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    items = [
+        {
+            "id": "item-1",
+            "tiltSeriesId": "TS_001",
+            "label": "TiltSeries TS_001",
+        },
+        {
+            "id": "item-2",
+            "tiltSeriesId": "TS_002",
+            "label": "TiltSeries TS_002",
+        },
+        {
+            "id": "item-3",
+            "tomoId": "TOMO_003",
+            "label": "Tomogram TOMO_003",
+        },
+    ]
+
+    result = reader._filterIntegratedItemsByAllowedKeys(
+        items,
+        {"TS_001", "TOMO_003"},
+    )
+
+    assert result == [
+        {
+            "id": "item-1",
+            "tiltSeriesId": "TS_001",
+            "label": "TiltSeries TS_001",
+        },
+        {
+            "id": "item-3",
+            "tomoId": "TOMO_003",
+            "label": "Tomogram TOMO_003",
+        },
+    ]
+
+
+def test_PostgresqlIntegratedContextReaderFiltersItemsByAllRelationAliasFields(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    items = [
+        {"key": "KEY_001"},
+        {"name": "NAME_001"},
+        {"id": "ID_001"},
+        {"tomoId": "TOMO_001"},
+        {"tomogramId": "TOMOGRAM_001"},
+        {"tiltSeriesId": "TS_001"},
+        {"ctfSeriesId": "CTF_001"},
+        {"coordinatesTomogramId": "COORD_TOMO_001"},
+        {"tsId": "TSID_001"},
+        {"sourceTomoId": "SOURCE_TOMO_001"},
+        {"label": "LABEL_001"},
+        {"unknown": "NO_MATCH"},
+    ]
+
+    result = reader._filterIntegratedItemsByAllowedKeys(
+        items,
+        {
+            "KEY_001",
+            "NAME_001",
+            "ID_001",
+            "TOMO_001",
+            "TOMOGRAM_001",
+            "TS_001",
+            "CTF_001",
+            "COORD_TOMO_001",
+            "TSID_001",
+            "SOURCE_TOMO_001",
+            "LABEL_001",
+        },
+    )
+
+    assert result == items[:-1]
+
+
+def test_PostgresqlIntegratedContextReaderDoesNotMatchEmptyRelationValues(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    items = [
+        {"id": ""},
+        {"label": "   "},
+        {"tiltSeriesId": None},
+        {"tomoId": "TOMO_001"},
+    ]
+
+    result = reader._filterIntegratedItemsByAllowedKeys(
+        items,
+        {"", "TOMO_001"},
+    )
+
+    assert result == [
+        {"tomoId": "TOMO_001"},
+    ]
