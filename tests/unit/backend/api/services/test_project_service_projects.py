@@ -823,3 +823,119 @@ def test_ListProjectsReturnsZeroDiskUsageWhenFilesystemSizeFails(
 
     assert result[0]["diskUsage"] == "0.00 GB"
     assert result[0]["protocolsCount"] == 7
+
+
+def test_GetProjectSummaryFromPostgresqlBuildsProjectOutWithoutLoadingRuntime(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": "/some/scipion/projects/demo-project",
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    mapper.projectProtocolCounts[1] = 7
+
+    monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
+
+    def failRuntimeLoad(*args, **kwargs):
+        raise AssertionError("getProjectSummaryFromPostgresql should not load runtime project")
+
+    service.loadProject = failRuntimeLoad
+
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+    )
+
+    assert mapper.lastGetProjectCall == {
+        "projectId": 1,
+        "userId": 1,
+    }
+
+    assert result == {
+        "id": 1,
+        "name": "demo-project",
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "status": "active",
+        "protocolsCount": 7,
+        "diskUsage": "3.00 GB",
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+        "projectOwnerId": 1,
+        "updatedAt": "2026-04-15T11:00:00",
+        "thumbnailUrl": "/projects/1/thumbnail",
+        "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
+        "thumbnailItemsUrl": "/projects/1/thumbnail-items",
+        "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
+    }
+
+    assert service.currentProject is None
+
+
+def test_GetProjectSummaryFromPostgresqlReturnsNoneWhenProjectIsNotAccessible(
+    service,
+    mapper,
+    currentUser,
+):
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=999,
+        currentUser=currentUser,
+    )
+
+    assert result is None
+    assert mapper.lastGetProjectCall == {
+        "projectId": 999,
+        "userId": 1,
+    }
+
+
+def test_GetProjectSummaryFromPostgresqlKeepsSharedProjectFlags(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsById[(2, 1)] = {
+        "id": 2,
+        "name": "/some/scipion/projects/shared-project",
+        "description": "shared description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 99,
+        "isOwner": False,
+        "isShared": True,
+        "permission": "read",
+    }
+
+    mapper.projectProtocolCounts[2] = 4
+    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
+
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=2,
+        currentUser=currentUser,
+    )
+
+    assert result["name"] == "shared-project"
+    assert result["protocolsCount"] == 4
+    assert result["isOwner"] is False
+    assert result["isShared"] is True
+    assert result["permission"] == "read"
+    assert result["projectOwnerId"] == 99
+    assert result["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
