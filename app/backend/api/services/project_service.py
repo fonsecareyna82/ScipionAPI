@@ -645,6 +645,7 @@ class ProjectService:
             "Matrix",
             "NormalMode",
             "EMFile",
+            "CryoloModel"
         }
 
         return classNameText in persistableClassNames
