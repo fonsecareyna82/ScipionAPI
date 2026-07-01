@@ -1063,7 +1063,7 @@ def test_LoadProjectBuildsGraphWithoutRuntimeFallback(service, mapper, currentUs
         return {"PROJECT": {"protocolId": "PROJECT"}}
 
     monkeypatch.setattr(service, "buildProtocolsGraph", fakeBuildProtocolsGraph)
-    monkeypatch.setattr(service, "_loadPersistedOutputSummariesByProtocolId", lambda mapper, projectId: {})
+    monkeypatch.setattr(service, "_loadPersistedOutputsByProtocolId", lambda mapper, projectId: {})
 
     class FakeRunsGraph:
         _nodesDict = {}
@@ -1170,14 +1170,7 @@ def test_LoadProjectGraphDataFromPostgresqlLoadsGraphParts(service, mapper, monk
                 "status": "running",
             },
         ],
-        "persistedOutputsByProtocolId": {
-            "10": {
-                "outputMovies": {
-                    "className": "SetOfMovies",
-                    "itemsCount": 25,
-                },
-            },
-        },
+        "persistedOutputsByProtocolId": {},
     }
 
 
@@ -1403,3 +1396,133 @@ def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFl
     )
 
     assert result["id"] == 1
+
+
+def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
+    service,
+    mapper,
+    monkeypatch,
+):
+    mapper.getProjectProtocolTagIdsByProtocolId = lambda projectId: {}
+    mapper.getProjectProtocolAdjacencyMap = lambda projectId: {}
+    mapper.getProtocols = lambda projectId: []
+
+    called = {}
+
+    def fakeLoadPersistedOutputs(mapperArg, projectIdArg):
+        called["mapper"] = mapperArg
+        called["projectId"] = projectIdArg
+        return {
+            "10": {
+                "outputMovies": {
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_loadPersistedOutputsByProtocolId",
+        fakeLoadPersistedOutputs,
+    )
+
+    result = service._loadProjectGraphDataFromPostgresql(
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert called == {
+        "mapper": mapper,
+        "projectId": 1,
+    }
+
+    assert result["persistedOutputsByProtocolId"] == {
+        "10": {
+            "outputMovies": {
+                "className": "SetOfMovies",
+                "itemsCount": 25,
+            },
+        },
+    }
+
+
+def test_BuildPersistedOutputInfoFormatsParticlesLikeRuntime(service):
+    info = service._buildPersistedOutputInfo(
+        outputName="outputParticles",
+        persistedOutput={
+            "className": "SetOfParticles",
+            "itemClassName": "Particle",
+            "itemsCount": 372,
+        },
+        properties={
+            "boxSize": 140,
+            "samplingRate": 4.0,
+        },
+    )
+
+    assert info == "Particles (372 items, 140x140, 4.00 A/px)"
+
+
+def test_BuildPersistedOutputInfoKeepsSetOfClassesName(service):
+    info = service._buildPersistedOutputInfo(
+        outputName="outputClasses",
+        persistedOutput={
+            "className": "SetOfClasses3D",
+            "itemClassName": "Class3D",
+            "itemsCount": 4,
+        },
+        properties={},
+    )
+
+    assert info == "SetOfClasses3D (4 items)"
+
+
+def test_BuildProtocolsGraphUsesPersistedOutputInfoWithoutRuntime(service):
+    def failRuntimeLookup(protocolId):
+        raise AssertionError("buildProtocolsGraph should not use runtime fallback")
+
+    service._tryGetScipionProtocolByRuntimeId = failRuntimeLookup
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "2",
+                "protocolClassName": "ProtRelionExtractParticles",
+                "status": "finished",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "2": {
+                "outputParticles": {
+                    "mapperKind": "flat_set",
+                    "className": "SetOfParticles",
+                    "itemsCount": 372,
+                    "info": "Particles (372 items, 140x140, 4.00 A/px)",
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["2"]["outputs"] == [
+        {
+            "name": "outputParticles",
+            "paramClass": "PointerParam",
+            "pointerClass": "SetOfParticles",
+            "info": "Particles (372 items, 140x140, 4.00 A/px)",
+            "value": "2.outputParticles",
+            "parentId": "2",
+            "persisted": True,
+            "persistence": {
+                "mapperKind": "flat_set",
+                "className": "SetOfParticles",
+                "itemsCount": 372,
+                "info": "Particles (372 items, 140x140, 4.00 A/px)",
+            },
+        },
+    ]
