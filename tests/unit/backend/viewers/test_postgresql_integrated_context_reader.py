@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import importlib
+from datetime import date, datetime
 
 
 def _makeReader(authTestEnv):
@@ -713,4 +714,67 @@ def test_PostgresqlIntegratedContextReaderBuildsTomogramItemsFromNormalizedNames
             "ctfSeriesId": "TS_A",
             "sourceTomoId": "TOMO_A",
         },
+    ]
+
+
+class FakeScalarValue:
+    def __init__(self, value):
+        self.value = value
+
+    def item(self):
+        return self.value
+
+
+def test_PostgresqlIntegratedContextReaderSafeValueSerializesDatesAndScalars(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    value = {
+        "createdAt": datetime(2026, 7, 1, 10, 30, 45),
+        "runDate": date(2026, 7, 1),
+        "count": FakeScalarValue(25),
+        "nested": [
+            {
+                "score": FakeScalarValue(0.95),
+            },
+        ],
+    }
+
+    assert reader._safeValue(value) == {
+        "createdAt": "2026-07-01T10:30:45",
+        "runDate": "2026-07-01",
+        "count": 25,
+        "nested": [
+            {
+                "score": 0.95,
+            },
+        ],
+    }
+
+
+def test_PostgresqlIntegratedContextReaderSafeValueLeavesPlainValuesUntouched(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    value = {
+        "text": "TS_001",
+        "number": 7,
+        "float": 1.25,
+        "flag": True,
+        "none": None,
+    }
+
+    assert reader._safeValue(value) == value
+
+
+def test_PostgresqlIntegratedContextReaderSafeValueHandlesTuplesAsLists(
+    authTestEnv,
+):
+    reader = _makeReader(authTestEnv)
+
+    assert reader._safeValue(("TS_001", FakeScalarValue(3))) == [
+        "TS_001",
+        3,
     ]
