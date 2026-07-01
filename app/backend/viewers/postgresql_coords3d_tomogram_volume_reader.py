@@ -30,6 +30,7 @@ import numpy as np
 
 from app.backend.utils.volume_utils import readVolumeArray3d
 from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
+from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
 class PostgresqlCoords3dTomogramVolumeReader:
@@ -48,6 +49,7 @@ class PostgresqlCoords3dTomogramVolumeReader:
         )
         self.lastSkipReason = None
         self._volumes = None
+        self._pathResolver = PostgresqlProjectPathResolver(db, projectId)
 
     def hasOutput(self) -> bool:
         return bool(self.listVolumes())
@@ -363,28 +365,7 @@ class PostgresqlCoords3dTomogramVolumeReader:
             pass
 
     def _resolveExistingPath(self, fileName: Any) -> Optional[str]:
-        text = self._toText(fileName)
-        if not text:
-            return None
-
-        path = Path(text).expanduser()
-        candidates = []
-
-        if path.is_absolute():
-            candidates.append(path)
-        else:
-            candidates.append(path)
-            candidates.append(Path.cwd() / path)
-
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-                if resolved.exists():
-                    return str(resolved)
-            except Exception:
-                continue
-
-        return None
+        return self._pathResolver.resolveExistingPath(fileName)
 
     def _normalizeDims(self, value: Any) -> Optional[List[int]]:
         if isinstance(value, dict):

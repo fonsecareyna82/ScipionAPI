@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 
 from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
 class PostgresqlVolumeReader:
@@ -21,7 +22,7 @@ class PostgresqlVolumeReader:
         self._storedSet = None
         self._storedObjectTree = None
         self._volumes = None
-        self._projectPath = None
+        self._pathResolver = PostgresqlProjectPathResolver(db, projectId)
 
     def hasOutput(self) -> bool:
         if self._getStoredSet() is not None:
@@ -610,74 +611,8 @@ class PostgresqlVolumeReader:
         volume["pixelSize"] = samplingRate
         volume["voxelSize"] = [samplingRate, samplingRate, samplingRate]
 
-    def _getProjectPath(self) -> Optional[Path]:
-        if self._projectPath is not None:
-            return self._projectPath
-
-        try:
-            row = self.db.fetchOne(
-                """
-                SELECT name
-                  FROM projects
-                 WHERE id = %s
-                 LIMIT 1
-                """,
-                (self.projectId,),
-            )
-        except Exception:
-            self._projectPath = None
-            return None
-
-        if not row:
-            self._projectPath = None
-            return None
-
-        rawPath = row.get("name") if isinstance(row, dict) else row[0]
-        if not rawPath:
-            self._projectPath = None
-            return None
-
-        try:
-            self._projectPath = Path(str(rawPath)).expanduser()
-        except Exception:
-            self._projectPath = None
-
-        return self._projectPath
-
     def _resolveExistingPath(self, fileName: Any) -> Optional[str]:
-        text = self._toText(fileName)
-        if not text:
-            return None
-
-        path = Path(text).expanduser()
-        candidates = []
-
-        if path.is_absolute():
-            candidates.append(path)
-        else:
-            projectPath = self._getProjectPath()
-            if projectPath is not None:
-                candidates.append(projectPath / path)
-
-            candidates.append(path)
-            candidates.append(Path.cwd() / path)
-
-        seen = set()
-
-        for candidate in candidates:
-            try:
-                candidateKey = str(candidate)
-                if candidateKey in seen:
-                    continue
-                seen.add(candidateKey)
-
-                resolved = candidate.resolve()
-                if resolved.exists():
-                    return str(resolved)
-            except Exception:
-                continue
-
-        return None
+        return self._pathResolver.resolveExistingPath(fileName)
 
     def _normalizeVolumeDisplayName(
             self,
