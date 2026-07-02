@@ -3519,6 +3519,13 @@ class ProjectService:
 
         return result
 
+    def _formatProtocolElapsedSecondsFromPostgresql(self, value: Any) -> str:
+        elapsedSeconds = self._toPersistedOutputFloat(value)
+        if elapsedSeconds is None or elapsedSeconds <= 0:
+            return ""
+
+        return str(int(elapsedSeconds))
+
     def buildProtocolsGraph(
             self,
             projectId: int,
@@ -3527,6 +3534,7 @@ class ProjectService:
             dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
             runMap: Optional[Dict[str, Any]] = None,
             persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+            protocolStepSummaryByProtocolId: Optional[Dict[str, Dict[str, Any]]] = None,
             allowRuntimeFallback: bool = True,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
@@ -3534,6 +3542,7 @@ class ProjectService:
         adjacency = dependencyMap or {}
         liveRuns = runMap or {}
         persistedOutputsByProtocolId = persistedOutputsByProtocolId or {}
+        protocolStepSummaryByProtocolId = protocolStepSummaryByProtocolId or {}
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -3591,6 +3600,7 @@ class ProjectService:
 
             nodeId = str(rawNodeId)
             persistedOutputsByName = persistedOutputsByProtocolId.get(nodeId, {})
+            stepSummary = protocolStepSummaryByProtocolId.get(nodeId, {}) or {}
             nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
             childrenIds = list(nodeDeps.get("children") or [])
             parentIds = list(nodeDeps.get("parents") or [])
@@ -3664,10 +3674,16 @@ class ProjectService:
             seenOutputNames = set()
 
             cpuTime = ''
-            elapsedTime = ''
-            isinteractive = False
-            numberOfSteps = 0
-            stepsDone = 0
+            elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                stepSummary.get("elapsedSeconds")
+            )
+            isinteractive = bool(stepSummary.get("isInteractive"))
+            numberOfSteps = self._toPersistedOutputInt(
+                stepSummary.get("numberOfSteps")
+            ) or 0
+            stepsDone = self._toPersistedOutputInt(
+                stepSummary.get("stepsDone")
+            ) or 0
             thumbnailUrl = None
             thumbnailRebuildUrl = None
             runName = storedRunName
@@ -3876,6 +3892,7 @@ class ProjectService:
         dependencyMap: Dict[str, Dict[str, List[str]]] = {}
         protocolRows: List[Dict[str, Any]] = []
         persistedOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        protocolStepSummaryByProtocolId: Dict[str, Dict[str, Any]] = {}
 
         if mapper is None:
             return {
@@ -3883,6 +3900,7 @@ class ProjectService:
                 "dependencyMap": dependencyMap,
                 "protocolRows": protocolRows,
                 "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+                "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
             }
 
         try:
@@ -3902,6 +3920,21 @@ class ProjectService:
                 projectId,
             )
             dependencyMap = {}
+
+        try:
+            getStepSummary = getattr(
+                mapper,
+                "getProjectProtocolStepSummaryByProtocolId",
+                None,
+            )
+            if callable(getStepSummary):
+                protocolStepSummaryByProtocolId = getStepSummary(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol step summaries from PostgreSQL for project %s",
+                projectId,
+            )
+            protocolStepSummaryByProtocolId = {}
 
         try:
             protocolRows = mapper.getProtocols(projectId) or []
@@ -3929,6 +3962,7 @@ class ProjectService:
             "dependencyMap": dependencyMap,
             "protocolRows": protocolRows,
             "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+            "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
         }
 
     def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
@@ -4070,6 +4104,7 @@ class ProjectService:
             dependencyMap=dependencyMap,
             runMap=runMap,
             persistedOutputsByProtocolId=persistedOutputsByProtocolId,
+            protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
             allowRuntimeFallback=False,
         )
 
@@ -4116,6 +4151,7 @@ class ProjectService:
             dependencyMap=pgGraphData["dependencyMap"],
             runMap={},
             persistedOutputsByProtocolId=pgGraphData["persistedOutputsByProtocolId"],
+            protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
             allowRuntimeFallback=False,
         )
 

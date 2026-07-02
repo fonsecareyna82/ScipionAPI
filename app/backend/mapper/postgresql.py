@@ -1540,6 +1540,42 @@ class PostgresqlFlatMapper(Mapper):
 
         return result
 
+    def getProjectProtocolStepSummaryByProtocolId(self, projectId: int) -> Dict[str, Dict[str, Any]]:
+        rows = self.db.fetchAll(
+            """
+            SELECT
+                "protocolId",
+                COUNT(*)::int AS "numberOfSteps",
+                COUNT(*) FILTER (
+                    WHERE lower(COALESCE(status, '')) IN ('finished', 'done')
+                )::int AS "stepsDone",
+                COALESCE(SUM(COALESCE("elapsedSeconds", 0)), 0)::double precision AS "elapsedSeconds",
+                BOOL_OR(interactive) AS "isInteractive",
+                MAX("updatedAt") AS "updatedAt"
+              FROM protocol_steps
+             WHERE "projectId" = %s
+             GROUP BY "protocolId"
+             ORDER BY "protocolId"
+            """,
+            (projectId,),
+        )
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows or []:
+            protocolId = str(row.get("protocolId") or "").strip()
+            if not protocolId:
+                continue
+
+            result[protocolId] = {
+                "numberOfSteps": int(row.get("numberOfSteps") or 0),
+                "stepsDone": int(row.get("stepsDone") or 0),
+                "elapsedSeconds": row.get("elapsedSeconds"),
+                "isInteractive": bool(row.get("isInteractive")),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        return result
+
     # -----------------------------
     # Settings Methods
     # -----------------------------
