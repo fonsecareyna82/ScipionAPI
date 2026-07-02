@@ -71,9 +71,19 @@ class PostgresqlVolumeReader:
         return info
 
     def getVolumeFile(self, volumeId: Union[int, str]) -> Optional[Dict[str, Any]]:
-        info = self.getVolumeInfo(volumeId)
-        if info is None:
+        self.lastSkipReason = None
+
+        volumes = self.listVolumes()
+        if not volumes:
+            self.lastSkipReason = self.lastSkipReason or "volume_list_empty"
             return None
+
+        volume = self._findVolume(volumeId, volumes)
+        if volume is None:
+            self.lastSkipReason = "volume_not_found volumeId=%s" % str(volumeId)
+            return None
+
+        info = dict(volume)
 
         fileName = info.get("fileName") or info.get("path")
         if not fileName:
