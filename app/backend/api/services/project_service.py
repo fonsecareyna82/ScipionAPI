@@ -13706,6 +13706,19 @@ class ProjectService:
         }
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
+    def _isVolumeLikeImageFile(self, filePath: Union[str, Path]) -> bool:
+        try:
+            reader = ImageReadersRegistry.open(str(filePath))
+            data = reader.getImages()
+
+            if isinstance(data, list):
+                data = data[0]
+
+            return getattr(data, "ndim", 0) == 3 and data.shape[0] > 1
+        except Exception:
+            return False
+
+
     def renderMetadataImageCellService(
             self,
             projectId: int,
@@ -13968,8 +13981,11 @@ class ProjectService:
                                     str(resolvedPath),
                                     e,
                                 )
+                                previewIndex = imageIndex
                                 # PIL cannot read cryo-EM formats such as .mrc/.mrcs.
                                 # Fall back to Scipion/pwem preview rendering.
+                                if previewIndex in (None, 0) and self._isVolumeLikeImageFile(resolvedPath):
+                                    previewIndex = None
                                 try:
                                     preview = OutputsPreview(
                                         currentProject=self.currentProject,
@@ -13981,7 +13997,7 @@ class ProjectService:
                                         filePath=str(resolvedPath),
                                         size=size,
                                         fmt=fmt,
-                                        index=imageIndex,
+                                        index=previewIndex,
                                         applyTransform=False,
                                         inline=inline,
                                         rot=None,
