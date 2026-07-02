@@ -2794,6 +2794,173 @@ class ProjectService:
 
         return dims
 
+    def _normalizePersistedOutputClassText(
+            self,
+            *values: Any,
+    ) -> str:
+        return (
+            " ".join(str(value or "") for value in values)
+            .replace("_", "")
+            .replace("-", "")
+            .replace(".", "")
+            .replace(" ", "")
+            .lower()
+        )
+
+    def _resolvePersistedOutputDims(
+            self,
+            persistedOutput: Dict[str, Any],
+            properties: Optional[Dict[str, Any]] = None,
+    ) -> List[int]:
+        properties = properties or {}
+        sources = [properties, persistedOutput]
+
+        classText = self._normalizePersistedOutputClassText(
+            persistedOutput.get("className"),
+            persistedOutput.get("itemClassName"),
+            properties.get("className"),
+            properties.get("baseClassName"),
+        )
+
+        firstDim = self._normalizePersistedOutputDims(
+            self._firstPersistedValue(
+                sources,
+                [
+                    "_firstDim",
+                    "firstDim",
+                    "first_dim",
+                ],
+            )
+        )
+
+        anglesCount = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                [
+                    "_anglesCount",
+                    "anglesCount",
+                    "angles_count",
+                    "tiltAngles",
+                    "tiltAnglesCount",
+                    "tilt_angles_count",
+                ],
+            )
+        )
+
+        # Scipion displays SetOfTiltSeries as:
+        #   nAngles x xDim x yDim
+        # not as xDim x yDim x zDim.
+        if "setoftiltseries" in classText and firstDim:
+            if anglesCount is None:
+                anglesCount = self._toPersistedOutputInt(
+                    self._firstPersistedValue(
+                        sources,
+                        [
+                            "itemsCount",
+                            "itemsTableCount",
+                            "rootTableItemsCount",
+                            "size",
+                            "count",
+                            "_size",
+                        ],
+                    )
+                )
+
+            if anglesCount is not None and anglesCount > 0 and len(firstDim) >= 2:
+                return [anglesCount, firstDim[0], firstDim[1]]
+
+            return firstDim[:3]
+
+        dimValue = self._firstPersistedValue(
+            sources,
+            [
+                "dimensions",
+                "dimension",
+                "dims",
+                "dim",
+                "_dim",
+                "_firstDim",
+                "firstDim",
+                "first_dim",
+                "boxSize",
+                "box_size",
+                "_boxSize",
+                "imageSize",
+                "image_size",
+                "xDim",
+                "yDim",
+                "zDim",
+                "_xDim",
+                "_yDim",
+                "_zDim",
+                "width",
+                "height",
+                "depth",
+            ],
+        )
+
+        dims = self._normalizePersistedOutputDims(dimValue)
+        if dims:
+            return dims
+
+        xDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["xDim", "_xDim", "xdim", "_xdim", "width", "_width"],
+            )
+        )
+        yDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["yDim", "_yDim", "ydim", "_ydim", "height", "_height"],
+            )
+        )
+        zDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["zDim", "_zDim", "zdim", "_zdim", "depth", "_depth"],
+            )
+        )
+
+        dims = [d for d in (xDim, yDim, zDim) if d is not None and d > 0]
+        if dims:
+            return dims
+
+        # Useful for Coordinate3D-like outputs where tomograms are stored as linked metadata.
+        linkedTomograms = self._firstPersistedValue(
+            sources,
+            ["linkedTomograms", "linked_tomograms", "tomograms"],
+        )
+
+        if isinstance(linkedTomograms, list):
+            for item in linkedTomograms:
+                if not isinstance(item, dict):
+                    continue
+
+                dims = self._normalizePersistedOutputDims(
+                    self._firstPersistedValue(
+                        [item],
+                        [
+                            "dimensions",
+                            "dims",
+                            "dim",
+                            "_firstDim",
+                            "firstDim",
+                            "xDim",
+                            "yDim",
+                            "zDim",
+                            "width",
+                            "height",
+                            "depth",
+                        ],
+                    )
+                )
+
+                if dims:
+                    return dims
+
+        return []
+
     def _formatPersistedOutputDims(self, dims: List[int]) -> str:
         if not dims:
             return ""
@@ -2860,54 +3027,10 @@ class ProjectService:
             )
         )
 
-        dimValue = self._firstPersistedValue(
-            [properties, persistedOutput],
-            [
-                "dimensions",
-                "dimension",
-                "dims",
-                "dim",
-                "_dim",
-                "boxSize",
-                "box_size",
-                "_boxSize",
-                "imageSize",
-                "image_size",
-                "xDim",
-                "yDim",
-                "zDim",
-                "_xDim",
-                "_yDim",
-                "_zDim",
-                "width",
-                "height",
-                "depth",
-            ],
+        dims = self._resolvePersistedOutputDims(
+            persistedOutput=persistedOutput,
+            properties=properties,
         )
-
-        dims = self._normalizePersistedOutputDims(dimValue)
-
-        if not dims:
-            xDim = self._toPersistedOutputInt(
-                self._firstPersistedValue(
-                    [properties, persistedOutput],
-                    ["xDim", "_xDim", "xdim", "_xdim", "width", "_width"],
-                )
-            )
-            yDim = self._toPersistedOutputInt(
-                self._firstPersistedValue(
-                    [properties, persistedOutput],
-                    ["yDim", "_yDim", "ydim", "_ydim", "height", "_height"],
-                )
-            )
-            zDim = self._toPersistedOutputInt(
-                self._firstPersistedValue(
-                    [properties, persistedOutput],
-                    ["zDim", "_zDim", "zdim", "_zdim", "depth", "_depth"],
-                )
-            )
-
-            dims = [d for d in (xDim, yDim, zDim) if d is not None and d > 0]
 
         samplingRate = self._toPersistedOutputFloat(
             self._firstPersistedValue(
@@ -2936,7 +3059,7 @@ class ProjectService:
             details.append(dimsText)
 
         if samplingRate is not None and samplingRate > 0:
-            details.append(f"{samplingRate:.2f} A/px")
+            details.append(f"{samplingRate:.2f} Å/px")
 
         if details:
             return f"{displayClass} ({', '.join(details)})"
