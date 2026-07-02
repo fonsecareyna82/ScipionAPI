@@ -103,52 +103,6 @@ def readVolumeSlice2d(
 
     return np.asarray(slice2d), props, meta
 
-def readMrcVolumePlane2d(
-        volumePath: str,
-        sliceIndex: int,
-) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, Any]]:
-    """
-    Read a single Z plane from an MRC-like stack using the mmap path.
-
-    This is intended for large tilt-series previews:
-    - It avoids reading the whole stack.
-    - It does NOT downsample with [::step, ::step].
-    - It returns the full selected plane so the caller can resize it with
-      a good interpolation method, e.g. LANCZOS.
-    """
-    p = Path(volumePath)
-    if not p.exists():
-        raise FileNotFoundError(volumePath)
-
-    if p.suffix.lower() not in MRC_LIKE_EXTENSIONS:
-        raise ValueError(f"Unsupported MRC-like extension: {p.suffix}")
-
-    sig = buildVolumeSignature(p)
-    vol3d, props, _mrcHandle = _readMrcVolumeMapped(sig)
-
-    if vol3d.ndim != 3:
-        raise ValueError(f"Unsupported volume shape {vol3d.shape}, expected 3D")
-
-    zdim, ydim, xdim = (
-        int(vol3d.shape[0]),
-        int(vol3d.shape[1]),
-        int(vol3d.shape[2]),
-    )
-
-    if zdim <= 0:
-        raise ValueError("Empty MRC stack")
-
-    k = max(0, min(int(sliceIndex), zdim - 1))
-
-    plane2d = vol3d[k, :, :]
-
-    meta = {
-        "axis": "z",
-        "index": k,
-        "dims": (zdim, ydim, xdim),
-    }
-
-    return np.asarray(plane2d), props, meta
 
 def _normalizeVolumeArray(
         data: Any,
