@@ -3500,7 +3500,65 @@ class ProjectService:
             status = str(statusValue) if statusValue is not None else ""
 
             protocolClassName = str(row.get("protocolClassName") or "")
-            label = protocolClassName or nodeId
+
+            params = row.get("params") or {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except Exception:
+                    params = {}
+
+            if not isinstance(params, dict):
+                params = {}
+
+            def getParamValue(*names):
+                for name in names:
+                    if name not in params:
+                        continue
+
+                    value = params.get(name)
+
+                    if isinstance(value, dict):
+                        for valueKey in (
+                                "value",
+                                "editableValue",
+                                "default",
+                                "objValue",
+                                "_value",
+                        ):
+                            if valueKey in value:
+                                value = value.get(valueKey)
+                                break
+
+                    if value is None:
+                        continue
+
+                    text = str(value).strip()
+                    if text and text.lower() not in ("none", "null"):
+                        return text
+
+                return ""
+
+            storedRunName = getParamValue(
+                "runName",
+                "_runName",
+            )
+
+            storedTitle = getParamValue(
+                "title",
+                "_title",
+                "objLabel",
+                "_objLabel",
+            )
+
+            storedComment = getParamValue(
+                "_objComment",
+                "objComment",
+                "comment",
+                "_comment",
+            )
+
+            label = storedTitle or storedRunName or protocolClassName or nodeId
 
             inputs = []
             outputs = []
@@ -3513,9 +3571,9 @@ class ProjectService:
             stepsDone = 0
             thumbnailUrl = None
             thumbnailRebuildUrl = None
-            runName = ''
-            comment = ''
-            title = ''
+            runName = storedRunName
+            comment = storedComment
+            title = storedTitle
 
             # Prefer the live protocol object coming from runs graph.
             # Runtime fallback is optional so the graph can be built from PostgreSQL only.
@@ -3526,14 +3584,22 @@ class ProjectService:
 
             if protocol is not None:
                 try:
-                    label = str(protocol) or label
+                    runtimeLabel = str(protocol) or ""
+                    if runtimeLabel:
+                        label = runtimeLabel
+                        if not title:
+                            title = runtimeLabel
                 except Exception:
                     pass
 
                 try:
-                    runName = protocol.runName.get()
-                    if runName is None:
-                        runName = protocol.getRunName()
+                    runtimeRunName = protocol.runName.get()
+                    if runtimeRunName is None:
+                        runtimeRunName = protocol.getRunName()
+
+                    runtimeRunName = str(runtimeRunName or "").strip()
+                    if runtimeRunName:
+                        runName = runtimeRunName
                 except Exception:
                     pass
 
