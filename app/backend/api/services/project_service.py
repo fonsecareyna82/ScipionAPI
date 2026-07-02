@@ -2977,6 +2977,98 @@ class ProjectService:
 
         return f"{dims[0]}x{dims[1]}"
 
+    def _toPersistedOutputBool(self, value: Any) -> Optional[bool]:
+        if value is None or value == "":
+            return None
+
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, (int, float)):
+            return bool(value)
+
+        text = str(value).strip().lower()
+        if text in ("true", "1", "yes", "y"):
+            return True
+        if text in ("false", "0", "no", "n"):
+            return False
+
+        return None
+
+    def _buildPersistedTomoDisplayFlags(
+            self,
+            persistedOutput: Dict[str, Any],
+            properties: Dict[str, Any],
+    ) -> List[str]:
+        sources = [properties or {}, persistedOutput or {}]
+
+        classText = self._normalizePersistedOutputClassText(
+            persistedOutput.get("className"),
+            persistedOutput.get("itemClassName"),
+            properties.get("className"),
+            properties.get("baseClassName"),
+        )
+
+        isTomoLike = (
+                "tiltseries" in classText
+                or "tomogram" in classText
+                or "ctftomo" in classText
+        )
+
+        if not isTomoLike:
+            return []
+
+        def firstBool(*names):
+            value = self._firstPersistedValue(sources, list(names))
+            return self._toPersistedOutputBool(value)
+
+        flags: List[str] = []
+
+        isHeterogeneousSet = firstBool(
+            "isHeterogeneousSet",
+            "heterogeneous",
+            "_isHeterogeneousSet",
+        )
+        if isHeterogeneousSet:
+            flags.append("+het")
+
+        hasAlignment = firstBool(
+            "hasAlignment",
+            "_hasAlignment",
+            "alignment",
+            "aligned",
+        )
+        if hasAlignment:
+            flags.append("+ali")
+
+        interpolated = firstBool(
+            "interpolated",
+            "_interpolated",
+            "isInterpolated",
+        )
+        if interpolated:
+            flags.append("! interp")
+
+        ctfCorrected = firstBool(
+            "ctfCorrected",
+            "_ctfCorrected",
+            "ctf",
+            "ctfCorrectedFlag",
+        )
+        if ctfCorrected:
+            flags.append("+ctf")
+
+        hasOddEven = firstBool(
+            "hasOddEven",
+            "_hasOddEven",
+            "oddEven",
+            "hasOddEvenAssociated",
+        )
+        if hasOddEven:
+            flags.append("+oe")
+
+        return flags
+
     def _formatPersistedOutputClassName(
             self,
             className: Any,
@@ -3061,6 +3153,13 @@ class ProjectService:
         dimsText = self._formatPersistedOutputDims(dims)
         if dimsText:
             details.append(dimsText)
+
+        details.extend(
+            self._buildPersistedTomoDisplayFlags(
+                persistedOutput=persistedOutput,
+                properties=properties,
+            )
+        )
 
         if samplingRate is not None and samplingRate > 0:
             details.append(f"{samplingRate:.2f} Å/px")
