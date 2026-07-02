@@ -115,6 +115,10 @@ _protocolsTreeLock = threading.Lock()
 _protocolsTreeCache: Dict[int, Dict[str, Any]] = {}
 _lastProtocolsTreeRevision = -1
 
+_VOLUME_SLICE_CACHE_LOCK = threading.Lock()
+_VOLUME_SLICE_CACHE = collections.OrderedDict()
+_VOLUME_SLICE_CACHE_MAX_ITEMS = 128
+
 # newProtocolContextCacheRevisionDriven
 _newProtocolLock = threading.Lock()
 _newProtocolCache: Dict[str, Dict[str, Any]] = {}
@@ -10093,6 +10097,103 @@ class ProjectService:
             "counts": counts,
         }
 
+    def _buildVolumeSliceCacheKey(
+            self,
+            *,
+            volumePath: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str,
+            colormap: Optional[str],
+            normalize: Optional[str],
+            scale: float,
+            fmt: str,
+            thumb: Optional[int],
+            fast: bool,
+            quality: int,
+    ):
+        try:
+            stat = os.stat(volumePath)
+            mtimeNs = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+            sizeBytes = int(stat.st_size)
+        except Exception:
+            mtimeNs = None
+            sizeBytes = None
+
+        return (
+            os.path.abspath(str(volumePath)),
+            mtimeNs,
+            sizeBytes,
+            str(tomogramId),
+            int(sliceIndex),
+            str(axis or "z").lower(),
+            str(colormap or ""),
+            str(normalize or "minmax").lower(),
+            float(scale or 1.0),
+            str(fmt or "webp").lower(),
+            int(thumb or 0),
+            bool(fast),
+            int(quality or 75),
+        )
+
+    def _getCachedVolumeSliceResponse(self, cacheKey) -> Optional[Response]:
+        with _VOLUME_SLICE_CACHE_LOCK:
+            cached = _VOLUME_SLICE_CACHE.get(cacheKey)
+            if cached is None:
+                return None
+
+            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+
+        headers = dict(cached.get("headers") or {})
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        headers["X-Preview-Cache"] = "hit"
+        self._exposeHeader(headers, "X-Preview-Cache")
+
+        return Response(
+            content=cached["body"],
+            media_type=cached.get("mediaType") or "image/webp",
+            headers=headers,
+        )
+
+    def _storeCachedVolumeSliceResponse(self, cacheKey, response: Response) -> Response:
+        body = getattr(response, "body", None)
+        if body is None:
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type")
+
+        with _VOLUME_SLICE_CACHE_LOCK:
+            _VOLUME_SLICE_CACHE[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+
+            while len(_VOLUME_SLICE_CACHE) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
+                _VOLUME_SLICE_CACHE.popitem(last=False)
+
+        response.headers["X-Preview-Cache"] = "miss"
+        self._exposeHeader(response.headers, "X-Preview-Cache")
+
+        return response
+
+    def _exposeHeader(self, headers, headerName: str) -> None:
+        exposeKey = "Access-Control-Expose-Headers"
+        current = headers.get(exposeKey, "")
+        parts = [h.strip() for h in str(current).split(",") if h.strip()]
+
+        if headerName not in parts:
+            parts.append(headerName)
+
+        headers[exposeKey] = ", ".join(parts)
+
     def renderVolumeSliceService(
             self,
             projectId: int,
@@ -10123,7 +10224,25 @@ class ProjectService:
             if info is not None:
                 volumePath = info.get("fileName") or info.get("path")
                 if volumePath and os.path.exists(str(volumePath)):
-                    return self._renderTomogramSliceFromPath(
+                    cacheKey = self._buildVolumeSliceCacheKey(
+                        volumePath=str(volumePath),
+                        tomogramId=volumeId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize or "minmax",
+                        scale=scale,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+                    cachedResponse = self._getCachedVolumeSliceResponse(cacheKey)
+                    if cachedResponse is not None:
+                        return cachedResponse
+
+                    response = self._renderTomogramSliceFromPath(
                         volumePath=str(volumePath),
                         tomogramId=volumeId,
                         sliceIndex=sliceIndex,
@@ -10137,6 +10256,8 @@ class ProjectService:
                         fast=fast,
                         quality=quality,
                     )
+
+                    return self._storeCachedVolumeSliceResponse(cacheKey, response)
 
             logger.info(
                 "Skipping PostgreSQL volume slice reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
