@@ -1461,7 +1461,7 @@ def test_BuildPersistedOutputInfoFormatsParticlesLikeRuntime(service):
         },
     )
 
-    assert info == "Particles (372 items, 140x140, 4.00 A/px)"
+    assert info == "Particles (372 items, 140x140, 4.00 Å/px)"
 
 
 def test_BuildPersistedOutputInfoKeepsSetOfClassesName(service):

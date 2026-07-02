@@ -95,8 +95,67 @@ class PostgresqlTiltSeriesReader:
 
         return payload
 
+    def _canUsePostgresqlBackend(self) -> bool:
+        return (
+                callable(getattr(self.db, "fetchOne", None))
+                and callable(getattr(self.db, "fetchAll", None))
+        )
+
+    def _getTiltImageFrameFromFramesPayload(
+            self,
+            tiltSeriesId: Any,
+            index: Any,
+    ) -> Optional[Dict[str, Any]]:
+        targetIndex = self._toOptionalInt(index)
+        if targetIndex is None:
+            self.lastSkipReason = (
+                    "tilt_image_frame_invalid_index tiltSeriesId=%s index=%s"
+                    % (str(tiltSeriesId), str(index))
+            )
+            return None
+
+        try:
+            framesPayload = self.getTiltSeriesFrames(tiltSeriesId)
+        except Exception as exc:
+            self.lastSkipReason = (
+                    "tiltseries_frames_payload_error tiltSeriesId=%s index=%s error=%s"
+                    % (str(tiltSeriesId), str(index), str(exc))
+            )
+            return None
+
+        if not framesPayload:
+            if not self.lastSkipReason:
+                self.lastSkipReason = (
+                        "tiltseries_frames_payload_not_found tiltSeriesId=%s"
+                        % str(tiltSeriesId)
+                )
+            return None
+
+        frames = framesPayload.get("frames") or []
+
+        for fallbackIndex, frame in enumerate(frames):
+            frameIndex = self._toOptionalInt(frame.get("index"))
+
+            if frameIndex == targetIndex:
+                return frame
+
+            if frameIndex is None and fallbackIndex == targetIndex:
+                return frame
+
+        self.lastSkipReason = (
+                "tilt_image_frame_not_found tiltSeriesId=%s index=%s"
+                % (str(tiltSeriesId), str(index))
+        )
+        return None
+
     def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
+
+        if not self._canUsePostgresqlBackend():
+            return self._getTiltImageFrameFromFramesPayload(
+                tiltSeriesId=tiltSeriesId,
+                index=index,
+            )
 
         storedSet = self._getStoredSet()
         if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
