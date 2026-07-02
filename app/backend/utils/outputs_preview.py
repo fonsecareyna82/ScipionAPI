@@ -2044,36 +2044,15 @@ class OutputsPreview(FileHandlers):
         # Slow path
         if gray is None:
             try:
-                vol3d, props = readVolumeArray3d(str(absPath))  # Z, Y, X
-                if vol3d.ndim != 3:
-                    raise ValueError(
-                        f"Unsupported volume shape {vol3d.shape}, expected 3D"
-                    )
-
-                zdim, ydim, xdim = (
-                    int(vol3d.shape[0]),
-                    int(vol3d.shape[1]),
-                    int(vol3d.shape[2]),
+                slice2d, props, sliceMeta = readVolumeSlice2d(
+                    str(absPath),
+                    sliceIndex=sliceIndex,
+                    axis=axis,
+                    maxSide=thumb,
                 )
 
-                if axis == "z":
-                    dim = zdim
-                elif axis == "y":
-                    dim = ydim
-                else:
-                    dim = xdim
-
-                if dim <= 0:
-                    raise ValueError("Empty volume")
-
-                k = max(0, min(int(sliceIndex), dim - 1))
-
-                if axis == "z":
-                    slice2d = vol3d[k, :, :]
-                elif axis == "y":
-                    slice2d = vol3d[:, k, :]
-                else:
-                    slice2d = vol3d[:, :, k]
+                zdim, ydim, xdim = sliceMeta["dims"]
+                k = sliceMeta["index"]
 
                 gray = self._normMode2D(slice2d, mode=normalize or "minmax")
             except Exception as e:
