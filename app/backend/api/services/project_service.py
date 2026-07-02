@@ -14200,7 +14200,7 @@ class ProjectService:
                             try:
                                 pilImg = PILImage.open(str(resolvedPath))
                             except Exception as e:
-                                logger.error(
+                                logger.warning(
                                     "Cannot open image file '%s' for metadata cell with PIL: %s",
                                     str(resolvedPath),
                                     e,
