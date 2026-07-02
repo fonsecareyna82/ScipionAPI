@@ -49,7 +49,7 @@ from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 from app.backend.utils.constants import SQLITE_OBJECT_TABLE, maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
-from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
     findProtocolWizardsWeb,
@@ -12518,7 +12518,12 @@ class ProjectService:
 
         if gray is None:
             try:
-                vol3d, _props = readVolumeArray3d(str(volumePath))  # Z, Y, X
+                slice2d, _props, sliceMeta = readVolumeSlice2d(
+                    str(volumePath),
+                    sliceIndex=requestedIndex,
+                    axis=axis,
+                    maxSide=thumb,
+                )
             except HTTPException:
                 raise
             except FileNotFoundError:
@@ -12529,39 +12534,14 @@ class ProjectService:
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to read tomogram volume: {e}",
+                    detail=f"Failed to read tomogram slice: {e}",
                 )
 
-            if vol3d.ndim != 3:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Invalid tomogram volume shape {vol3d.shape}",
-                )
-
-            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
-            depth = max(zdim, 1)
-
-            if axis == "z":
-                dim = zdim
-            elif axis == "y":
-                dim = ydim
-            else:
-                dim = xdim
-
-            if dim <= 0:
-                raise HTTPException(status_code=500, detail="Empty tomogram volume")
-
-            k = max(0, min(requestedIndex, dim - 1))
-
-            if axis == "z":
-                slice2d = vol3d[k, :, :]
-            elif axis == "y":
-                slice2d = vol3d[:, k, :]
-            else:
-                slice2d = vol3d[:, :, k]
+            zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
+            depth = max(int(zdim), 1)
 
             gray = self._normalize2dSlice(slice2d, mode=normalize)
-            sliceUsed = k
+            sliceUsed = int(sliceMeta.get("index", requestedIndex))
 
         if thumb is not None and thumb > 0:
             pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
