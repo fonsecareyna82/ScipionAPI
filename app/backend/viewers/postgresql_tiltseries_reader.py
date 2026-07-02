@@ -98,26 +98,52 @@ class PostgresqlTiltSeriesReader:
     def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        payload = self.getTiltSeriesFrames(tiltSeriesId)
-        if not payload:
-            if not self.lastSkipReason:
-                self.lastSkipReason = (
-                        "tiltseries_frames_not_available tiltSeriesId=%s"
-                        % str(tiltSeriesId)
-                )
+        storedSet = self._getStoredSet()
+        if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
+            self.lastSkipReason = "tiltseries_stored_set_not_found"
             return None
 
-        frames = payload.get("frames") or []
+        seriesItem = self._findTiltSeriesItem(tiltSeriesId)
+        if seriesItem is None:
+            self.lastSkipReason = (
+                    "tiltseries_item_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
+
+        childTable = self._findChildTableForParentItem(seriesItem.get("scipionItemId"))
+        if childTable is None:
+            self.lastSkipReason = (
+                    "tiltseries_child_table_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
+
+        childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
+        if not childItems:
+            self.lastSkipReason = (
+                    "tiltseries_child_items_empty tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
+
         targetIndex = self._toOptionalInt(index)
+        if targetIndex is None:
+            self.lastSkipReason = (
+                    "tilt_image_frame_invalid_index tiltSeriesId=%s index=%s"
+                    % (str(tiltSeriesId), str(index))
+            )
+            return None
 
-        if targetIndex is not None:
-            for frame in frames:
-                frameIndex = self._toOptionalInt(frame.get("index"))
-                if frameIndex == targetIndex:
-                    return frame
+        for position, item in enumerate(childItems):
+            frame = self._buildTiltImageFrame(item, position)
+            frameIndex = self._toOptionalInt(frame.get("index"))
 
-            if 0 <= targetIndex < len(frames):
-                return frames[targetIndex]
+            if frameIndex == targetIndex:
+                return frame
+
+        if 0 <= targetIndex < len(childItems):
+            return self._buildTiltImageFrame(childItems[targetIndex], targetIndex)
 
         self.lastSkipReason = (
                 "tilt_image_frame_not_found tiltSeriesId=%s index=%s"
