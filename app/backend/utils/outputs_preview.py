@@ -656,16 +656,13 @@ class OutputsPreview(FileHandlers):
             summary = f"{total} items" if total != 1 else "1 item"
         return tiles, labels, cols, tileSize, summary
 
-    def _normalizePlaneToUint8ForPreview(self, arr: np.ndarray) -> Optional[np.ndarray]:
+    def _getPlanePreviewStats(self, arr: np.ndarray) -> Optional[tuple]:
         try:
             arr = np.asarray(arr)
             arr = np.squeeze(arr)
 
             if arr.ndim != 2 or arr.size == 0:
                 return None
-
-            if arr.dtype == np.uint8:
-                return arr.copy()
 
             h, w = arr.shape
             statsStep = max(1, int(math.ceil(max(h, w) / 2048.0)))
@@ -675,7 +672,7 @@ class OutputsPreview(FileHandlers):
             finite = statsArr[np.isfinite(statsArr)]
 
             if finite.size == 0:
-                return np.zeros(arr.shape, dtype=np.uint8)
+                return None
 
             pLow, pHigh = np.percentile(finite, [0.5, 99.5])
 
@@ -692,44 +689,69 @@ class OutputsPreview(FileHandlers):
                     or not np.isfinite(pHigh)
                     or pHigh <= pLow
             ):
-                return np.zeros(arr.shape, dtype=np.uint8)
+                return None
 
-            arrFloat = arr.astype(np.float32, copy=False)
-
-            finiteMask = np.isfinite(arrFloat)
-            if not finiteMask.all():
-                fillValue = float(np.median(finite))
-                arrFloat = np.where(finiteMask, arrFloat, fillValue)
-
-            arrFloat = (arrFloat - float(pLow)) / (float(pHigh) - float(pLow) + 1e-12)
-            arrFloat = np.clip(arrFloat, 0.0, 1.0)
-
-            return (255.0 * arrFloat).astype(np.uint8)
+            fillValue = float(np.median(finite))
+            return float(pLow), float(pHigh), fillValue
         except Exception:
             return None
 
-    def _resizePlaneForPreview(
+    def _resizePlaneBeforeNormalization(
             self,
-            tile: np.ndarray,
+            arr: np.ndarray,
             size: Optional[int],
-    ) -> np.ndarray:
-        if size is None or int(size) <= 0:
-            return tile
+    ) -> Optional[np.ndarray]:
+        try:
+            arr = np.asarray(arr)
+            arr = np.squeeze(arr)
 
-        h, w = tile.shape[:2]
-        maxSide = max(h, w)
+            if arr.ndim != 2 or arr.size == 0:
+                return None
 
-        if maxSide <= int(size):
-            return tile
+            if size is None or int(size) <= 0:
+                return np.asarray(arr, dtype=np.float32)
 
-        scale = float(size) / float(maxSide)
-        newW = max(1, int(round(w * scale)))
-        newH = max(1, int(round(h * scale)))
+            h, w = arr.shape[:2]
+            maxSide = max(h, w)
 
-        pilImg = Image.fromarray(tile.astype(np.uint8), mode="L")
-        pilImg = pilImg.resize((newW, newH), resample=Image.Resampling.LANCZOS)
+            if maxSide <= int(size):
+                return np.asarray(arr, dtype=np.float32)
 
-        return np.asarray(pilImg)
+            scale = float(size) / float(maxSide)
+            newW = max(1, int(round(w * scale)))
+            newH = max(1, int(round(h * scale)))
+
+            pilImg = Image.fromarray(np.asarray(arr, dtype=np.float32), mode="F")
+            pilImg = pilImg.resize((newW, newH), resample=Image.Resampling.BILINEAR)
+
+            return np.asarray(pilImg, dtype=np.float32)
+        except Exception:
+            return None
+
+    def _normalizePreviewPlaneToUint8(
+            self,
+            arr: np.ndarray,
+            pLow: float,
+            pHigh: float,
+            fillValue: float = 0.0,
+    ) -> Optional[np.ndarray]:
+        try:
+            arr = np.asarray(arr, dtype=np.float32)
+            arr = np.squeeze(arr)
+
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+
+            finiteMask = np.isfinite(arr)
+            if not finiteMask.all():
+                arr = np.where(finiteMask, arr, float(fillValue))
+
+            arr = (arr - float(pLow)) / (float(pHigh) - float(pLow) + 1e-12)
+            arr = np.clip(arr, 0.0, 1.0)
+
+            return (255.0 * arr).astype(np.uint8)
+        except Exception:
+            return None
 
     def _tryRenderMrcStackImageQualityFromFilePath(
             self,
@@ -767,8 +789,17 @@ class OutputsPreview(FileHandlers):
             return None
 
         try:
-            tile = self._normalizePlaneToUint8ForPreview(plane2d)
-            if tile is None:
+            stats = self._getPlanePreviewStats(plane2d)
+            if stats is None:
+                return None
+
+            pLow, pHigh, fillValue = stats
+
+            previewPlane = self._resizePlaneBeforeNormalization(
+                plane2d,
+                size=size,
+            )
+            if previewPlane is None:
                 return None
 
             dims = meta.get("dims")
@@ -777,9 +808,16 @@ class OutputsPreview(FileHandlers):
                 origWidth = int(xdim)
                 origHeight = int(ydim)
             else:
-                origHeight, origWidth = tile.shape[:2]
+                origHeight, origWidth = np.asarray(plane2d).shape[:2]
 
-            tile = self._resizePlaneForPreview(tile, size=size)
+            tile = self._normalizePreviewPlaneToUint8(
+                previewPlane,
+                pLow=pLow,
+                pHigh=pHigh,
+                fillValue=fillValue,
+            )
+            if tile is None:
+                return None
 
             if (
                     applyTransform
