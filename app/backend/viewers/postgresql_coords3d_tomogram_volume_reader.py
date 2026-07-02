@@ -355,12 +355,16 @@ class PostgresqlCoords3dTomogramVolumeReader:
                 volume["voxelSize"] = [samplingRate, samplingRate, samplingRate]
 
         try:
-            finite = np.asarray(array, dtype=np.float32)
-            finite = finite[np.isfinite(finite)]
-            if finite.size:
-                volume["min"] = float(np.min(finite))
-                volume["max"] = float(np.max(finite))
-                volume["mean"] = float(np.mean(finite))
+            shape = getattr(array, "shape", None)
+            voxelCount = int(np.prod(shape)) if shape is not None else 0
+
+            if 0 < voxelCount <= 20_000_000:
+                finite = np.asarray(array, dtype=np.float32)
+                finite = finite[np.isfinite(finite)]
+                if finite.size:
+                    volume["min"] = float(np.min(finite))
+                    volume["max"] = float(np.max(finite))
+                    volume["mean"] = float(np.mean(finite))
         except Exception:
             pass
 
