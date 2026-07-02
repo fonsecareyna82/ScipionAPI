@@ -41,7 +41,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 14
+NESTED_LOGICAL_TABLES_VERSION = 15
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -1404,6 +1404,63 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return "text"
         return className
 
+    def _callOptionalBoolGetter(self, scipionObj: Any, getterName: str) -> Optional[bool]:
+        getter = getattr(scipionObj, getterName, None)
+        if not callable(getter):
+            return None
+
+        try:
+            return bool(getter())
+        except Exception:
+            return None
+
+    def _getTomoSetDisplayFlags(self, scipionSet: Any) -> Dict[str, Any]:
+        """
+        Store tomography display flags needed to reproduce Scipion output labels.
+
+        Examples:
+            SetOfTiltSeries (2 items, 41x400x356, +het, +ali, 10.00 Å/px)
+            TiltSeries (..., +ali, ! interp, +ctf, +oe)
+        """
+        className = str(self._getClassName(scipionSet) or scipionSet.__class__.__name__ or "")
+        normalizedClassName = className.replace("_", "").replace("-", "").lower()
+
+        isTomoLike = (
+                "tiltseries" in normalizedClassName
+                or "tomogram" in normalizedClassName
+                or "ctftomo" in normalizedClassName
+        )
+
+        if not isTomoLike:
+            return {}
+
+        flags: Dict[str, Any] = {}
+
+        heterogeneous = self._callOptionalBoolGetter(scipionSet, "isHeterogeneousSet")
+        if heterogeneous is not None:
+            flags["isHeterogeneousSet"] = heterogeneous
+
+        hasAlignment = self._callOptionalBoolGetter(scipionSet, "hasAlignment")
+        if hasAlignment is not None:
+            flags["hasAlignment"] = hasAlignment
+
+        interpolated = self._callOptionalBoolGetter(scipionSet, "interpolated")
+        if interpolated is not None:
+            flags["interpolated"] = interpolated
+
+        ctfCorrected = self._callOptionalBoolGetter(scipionSet, "ctfCorrected")
+        if ctfCorrected is not None:
+            flags["ctfCorrected"] = ctfCorrected
+
+        hasOddEven = self._callOptionalBoolGetter(scipionSet, "hasOddEven")
+        if hasOddEven is not None:
+            flags["hasOddEven"] = hasOddEven
+
+        if flags:
+            flags["tomoDisplayFlagsVersion"] = 1
+
+        return flags
+
     def _getSetProperties(self, scipionSet: Any) -> Dict[str, Any]:
         properties: Dict[str, Any] = {
             "className": self._getClassName(scipionSet),
@@ -1424,6 +1481,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if linkedTomograms:
             properties["linkedTomograms"] = linkedTomograms
 
+        tomoDisplayFlags = self._getTomoSetDisplayFlags(scipionSet)
+        if tomoDisplayFlags:
+            properties.update(tomoDisplayFlags)
 
         for attrName, attrValue in self._getAttributesToStore(scipionSet):
             if self._getAttributesToStore(attrValue):
