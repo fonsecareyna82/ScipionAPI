@@ -658,7 +658,7 @@ class OutputsPreview(FileHandlers):
             filePath: Union[str, Path],
             size: Optional[int] = None,
             fmt: str = "png",
-            index: int = 0,
+            index: Optional[int] = 0,
             inline: bool = True,
             quality: int = 75,
             applyTransform: bool = True,
@@ -690,7 +690,10 @@ class OutputsPreview(FileHandlers):
 
         # Try first image, fallback to central if needed
         try:
-            pilImg = reader.getImage(index=index, pilImage=True)
+            if index is None:
+                pilImg = reader.getCentralImage(pilImage=True)
+            else:
+                pilImg = reader.getImage(index=index, pilImage=True)
         except Exception:
             try:
                 pilImg = reader.getCentralImage(pilImage=True)
