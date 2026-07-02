@@ -30,7 +30,7 @@ from app.backend.utils.constants import (
     maxThumbSize,
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
-from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import (
     SetOfClasses2D,
