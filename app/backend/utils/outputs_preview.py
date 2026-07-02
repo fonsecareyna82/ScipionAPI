@@ -30,7 +30,10 @@ from app.backend.utils.constants import (
     maxThumbSize,
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
-from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
+from app.backend.utils.volume_utils import (
+    readVolumeSlice2d,
+    readMrcVolumePlane2d,
+)
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import (
     SetOfClasses2D,
@@ -653,6 +656,221 @@ class OutputsPreview(FileHandlers):
             summary = f"{total} items" if total != 1 else "1 item"
         return tiles, labels, cols, tileSize, summary
 
+    def _normalizePlaneToUint8ForPreview(self, arr: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            arr = np.asarray(arr)
+            arr = np.squeeze(arr)
+
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+
+            if arr.dtype == np.uint8:
+                return arr.copy()
+
+            h, w = arr.shape
+            statsStep = max(1, int(math.ceil(max(h, w) / 2048.0)))
+            statsArr = arr[::statsStep, ::statsStep]
+
+            statsArr = np.asarray(statsArr, dtype=np.float32)
+            finite = statsArr[np.isfinite(statsArr)]
+
+            if finite.size == 0:
+                return np.zeros(arr.shape, dtype=np.uint8)
+
+            pLow, pHigh = np.percentile(finite, [0.5, 99.5])
+
+            if (
+                    not np.isfinite(pLow)
+                    or not np.isfinite(pHigh)
+                    or pHigh <= pLow
+            ):
+                pLow = float(np.min(finite))
+                pHigh = float(np.max(finite))
+
+            if (
+                    not np.isfinite(pLow)
+                    or not np.isfinite(pHigh)
+                    or pHigh <= pLow
+            ):
+                return np.zeros(arr.shape, dtype=np.uint8)
+
+            arrFloat = arr.astype(np.float32, copy=False)
+
+            finiteMask = np.isfinite(arrFloat)
+            if not finiteMask.all():
+                fillValue = float(np.median(finite))
+                arrFloat = np.where(finiteMask, arrFloat, fillValue)
+
+            arrFloat = (arrFloat - float(pLow)) / (float(pHigh) - float(pLow) + 1e-12)
+            arrFloat = np.clip(arrFloat, 0.0, 1.0)
+
+            return (255.0 * arrFloat).astype(np.uint8)
+        except Exception:
+            return None
+
+    def _resizePlaneForPreview(
+            self,
+            tile: np.ndarray,
+            size: Optional[int],
+    ) -> np.ndarray:
+        if size is None or int(size) <= 0:
+            return tile
+
+        h, w = tile.shape[:2]
+        maxSide = max(h, w)
+
+        if maxSide <= int(size):
+            return tile
+
+        scale = float(size) / float(maxSide)
+        newW = max(1, int(round(w * scale)))
+        newH = max(1, int(round(h * scale)))
+
+        pilImg = Image.fromarray(tile.astype(np.uint8), mode="L")
+        pilImg = pilImg.resize((newW, newH), resample=Image.Resampling.LANCZOS)
+
+        return np.asarray(pilImg)
+
+    def _tryRenderMrcStackImageQualityFromFilePath(
+            self,
+            p: Path,
+            size: Optional[int] = None,
+            fmt: str = "png",
+            index: Optional[int] = 0,
+            inline: bool = True,
+            quality: int = 75,
+            applyTransform: bool = True,
+            rot=None,
+            shifts=None,
+    ) -> Optional[Response]:
+        if p.suffix.lower() not in {".mrc", ".map", ".mrcs", ".rec", ".ali", ".st"}:
+            return None
+
+        try:
+            reader = ImageReadersRegistry.open(str(p))
+        except Exception:
+            return None
+
+        try:
+            requestedIndex = 0 if index is None else int(index)
+        except Exception:
+            requestedIndex = 0
+
+        requestedIndex = max(0, requestedIndex)
+
+        try:
+            plane2d, _props, meta = readMrcVolumePlane2d(
+                str(p),
+                sliceIndex=requestedIndex,
+            )
+        except Exception:
+            return None
+
+        try:
+            tile = self._normalizePlaneToUint8ForPreview(plane2d)
+            if tile is None:
+                return None
+
+            dims = meta.get("dims")
+            if isinstance(dims, (list, tuple)) and len(dims) >= 3:
+                _zdim, ydim, xdim = dims[:3]
+                origWidth = int(xdim)
+                origHeight = int(ydim)
+            else:
+                origHeight, origWidth = tile.shape[:2]
+
+            tile = self._resizePlaneForPreview(tile, size=size)
+
+            if (
+                    applyTransform
+                    and rot is not None
+                    and shifts is not None
+                    and origWidth > 0
+                    and origHeight > 0
+            ):
+                tileArr = np.asarray(tile)
+
+                tileHeight, tileWidth = tileArr.shape[:2]
+
+                scaleX = tileWidth / float(origWidth)
+                scaleY = tileHeight / float(origHeight)
+
+                scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
+                tile = reader.transformSlice(tileArr, scaledShifts, rot)
+
+            tile = reader.flipSlice(tile)
+
+            tile = np.asarray(tile)
+            tile = np.squeeze(tile)
+
+            if tile.ndim != 2:
+                return None
+
+            if tile.dtype != np.uint8:
+                tile = np.clip(tile, 0, 255).astype(np.uint8)
+
+        except Exception:
+            return None
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        img = Image.fromarray(tile.astype(np.uint8), mode="L")
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        metaHeaders = {
+            "mime": mediaType,
+            "width": img.width,
+            "height": img.height,
+            "note": f"Quality MRC stack preview for {p.name}",
+        }
+        previewHeaders = self._buildPreviewHeaders(metaHeaders)
+
+        disp = "inline" if inline else "attachment"
+        filename = (
+            f"{p.name}.{fmtLower}"
+            if not p.name.lower().endswith(fmtLower)
+            else p.name
+        )
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Note": f"file={p.name}; fast=mrc-plane-quality",
+            "Access-Control-Expose-Headers": ", ".join(
+                [
+                    "Content-Disposition",
+                    "X-Preview-Mime",
+                    "X-Preview-Width",
+                    "X-Preview-Height",
+                    "X-Preview-Note",
+                ]
+            ),
+            **previewHeaders,
+        }
+
+        return Response(
+            content=buf.getvalue(),
+            media_type=mediaType,
+            headers=headers,
+        )
+
+
     def renderImageFromFilePath(
             self,
             filePath: Union[str, Path],
@@ -679,6 +897,20 @@ class OutputsPreview(FileHandlers):
                 status_code=404,
                 detail=f"Image file not found: {p}",
             )
+
+        qualityFastResponse = self._tryRenderMrcStackImageQualityFromFilePath(
+            p=p,
+            size=size,
+            fmt=fmt,
+            index=index,
+            inline=inline,
+            quality=quality,
+            applyTransform=applyTransform,
+            rot=rot,
+            shifts=shifts,
+        )
+        if qualityFastResponse is not None:
+            return qualityFastResponse
 
         try:
             reader = ImageReadersRegistry.open(str(p))
