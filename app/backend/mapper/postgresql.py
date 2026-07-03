@@ -222,8 +222,8 @@ class PostgresqlFlatMapper(Mapper):
                 "creatorObjId" INTEGER NOT NULL,
                 "parentObjId" INTEGER NOT NULL,
                 "childObjId" INTEGER NOT NULL,
-                "parentExtended" TEXT,
-                "childExtended" TEXT,
+                "parentExtended" TEXT NOT NULL DEFAULT '',
+                "childExtended" TEXT NOT NULL DEFAULT '',
                 "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
                 UNIQUE (
@@ -248,6 +248,17 @@ class PostgresqlFlatMapper(Mapper):
 
             CREATE INDEX IF NOT EXISTS idx_scipion_relations_child
               ON scipion_relations("projectId", "childObjId");
+            """
+        )
+
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_object_id_counters (
+                "projectId" INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                "nextObjectId" INTEGER NOT NULL DEFAULT 1,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
             """
         )
 
