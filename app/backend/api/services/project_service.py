@@ -7047,6 +7047,44 @@ class ProjectService:
         else:
             return rawValue
 
+    def _getParentProtocolForPointer(
+            self,
+            mapper,
+            projectId: int,
+            parentId,
+    ):
+        parentScipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=parentId,
+        )
+
+        parentProtocol = None
+
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            parentProtocol = self._loadProtocolFromRuntimeDb(
+                protocolId=parentScipionProtocolId,
+            )
+
+        if parentProtocol is None:
+            parentProtocol = self._getScipionProtocolByRuntimeId(
+                parentScipionProtocolId,
+            )
+
+        return parentScipionProtocolId, parentProtocol
+
+    def _splitPointerValue(self, value):
+        valueText = str(value or "").strip()
+
+        if not valueText:
+            return "", ""
+
+        if "." not in valueText:
+            return "", valueText
+
+        parentId, outputName = valueText.split(".", 1)
+        return parentId.strip(), outputName.strip()
+
     def applyParamsToProtocol(
             self,
             mapper,
@@ -7065,53 +7103,101 @@ class ProjectService:
 
                 if isinstance(param, MultiPointerParam):
                     newInputs = PointerList()
-                    for v in value:
-                        parentId, rawValue = v.split('.') if v else ("", "")
+
+                    for v in value or []:
+                        parentId, rawValue = self._splitPointerValue(v)
+
                         if rawValue:
                             try:
-                                parentScipionProtocolId = self._resolveScipionProtocolId(
+                                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
                                     mapper=mapper,
                                     projectId=projectId,
-                                    protocolId=parentId,
+                                    parentId=parentId,
                                 )
-                                parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
-                                extended = rawValue
-                                newInputs.append(Pointer(parentProtocol, extended=extended))
-                                logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+
+                                if not hasattr(parentProtocol, rawValue):
+                                    errorList.append(
+                                        '**%s** parent protocol %s does not have output %s.'
+                                        % (param.label.get(), parentScipionProtocolId, rawValue)
+                                    )
+                                    continue
+
+                                newInputs.append(
+                                    Pointer(parentProtocol, extended=rawValue)
+                                )
+
+                                logger.info(
+                                    "[INFO] MultiPointer param %s set from parent %s output %s",
+                                    key,
+                                    parentScipionProtocolId,
+                                    rawValue,
+                                )
+
                             except Exception as e:
-                                logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                                logger.exception(
+                                    "[ERROR] Could not set multipointer param %s from value %s",
+                                    key,
+                                    v,
+                                )
+                                errorList.append(
+                                    '**%s** could not resolve input %s: %s'
+                                    % (param.label.get(), v, e)
+                                )
                         else:
-                            # Pointer without parentId, fallback
                             param.set(None)
-                    # MultiPointer validation
+
                     if newInputs.isEmpty() and not param.allowsNull.get():
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
+
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
-                    parentId, rawValue = value.split('.') if value else ("", "")
+                    parentId, rawValue = self._splitPointerValue(value)
+
                     if rawValue:
                         try:
-                            parentScipionProtocolId = self._resolveScipionProtocolId(
+                            parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
                                 mapper=mapper,
                                 projectId=projectId,
-                                protocolId=parentId,
+                                parentId=parentId,
                             )
-                            parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
+
                             output = rawValue
                             val = f"{parentScipionProtocolId}.{output}"
-                            param.set(val)
-                            parentOutput = hasattr(parentProtocol, output)
-                            if parentOutput:
-                                protocol.setAttributeValue(key, parentProtocol)
-                                param.default.set(val)
-                                pointer = getattr(protocol, key)
-                                pointer.setExtended(output)
 
-                            logger.info(f"[INFO] Pointer param {key} set from parent {parentId} output {rawValue}")
+                            if not hasattr(parentProtocol, output):
+                                errorList.append(
+                                    '**%s** parent protocol %s does not have output %s.'
+                                    % (param.label.get(), parentScipionProtocolId, output)
+                                )
+                                continue
+
+                            param.set(val)
+                            protocol.setAttributeValue(key, parentProtocol)
+
+                            param.default.set(val)
+
+                            pointer = getattr(protocol, key)
+                            pointer.setExtended(output)
+
+                            logger.info(
+                                "[INFO] Pointer param %s set from parent %s output %s",
+                                key,
+                                parentScipionProtocolId,
+                                output,
+                            )
+
                         except Exception as e:
-                            logger.error(f"[ERROR] Could not set pointer for {key}: {e}")
+                            logger.exception(
+                                "[ERROR] Could not set pointer param %s from value %s",
+                                key,
+                                value,
+                            )
+                            errorList.append(
+                                '**%s** could not resolve input %s: %s'
+                                % (param.label.get(), value, e)
+                            )
+
                     else:
-                        # Pointer without parentId, fallback
                         conditionValue = None
                         try:
                             if hasattr(param, "condition") and param.condition is not None:
@@ -7149,22 +7235,33 @@ class ProjectService:
             logger.warning(f"[WARN] Param {key} is not a PointerParam")
             return
 
-        parentScipionProtocolId = self._resolveScipionProtocolId(
+        parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
             mapper=mapper,
             projectId=projectId,
-            protocolId=parentId,
+            parentId=parentId,
         )
-        parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
 
         editableValue = value.get("editableValue") if isinstance(value, dict) else value
 
         if editableValue and "." in str(editableValue):
             _rawParentId, outputName = str(editableValue).split(".", 1)
             editableValue = f"{parentScipionProtocolId}.{outputName}"
+        else:
+            outputName = str(editableValue or "").strip()
+
+        if outputName and not hasattr(parentProtocol, outputName):
+            raise ValueError(
+                "Parent protocol %s does not have output %s"
+                % (parentScipionProtocolId, outputName)
+            )
 
         param.set(editableValue)
         protocol.setAttributeValue(key, parentProtocol)
         param.default.set(editableValue)
+
+        pointer = getattr(protocol, key, None)
+        if pointer is not None and outputName:
+            pointer.setExtended(outputName)
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
