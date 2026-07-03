@@ -7007,7 +7007,9 @@ class ProjectService:
         """
         Returns the parameters of an existing protocol given its ID.
         """
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
+        if usingPostgresqlRuntime:
             self.syncPostgresqlRuntimeProtocol(
                 mapper=mapper,
                 projectId=projectId,
@@ -7022,7 +7024,13 @@ class ProjectService:
         )
 
         protocol.getPlugin()
-        self.currentProject._fixProtParamsConfiguration(protocol)
+
+        # Do not call Scipion's _fixProtParamsConfiguration for PostgreSQL-runtime
+        # reconstructed protocols. It assumes pointer.get() returns a Scipion object,
+        # but PostgreSQL can restore saved pointers as raw strings like:
+        #   "1.outputTSMovies"
+        if not usingPostgresqlRuntime:
+            self.currentProject._fixProtParamsConfiguration(protocol)
 
         return self._buildProtocolContext(projectId, protocol)
 
@@ -7498,30 +7506,15 @@ class ProjectService:
         Normalize PointerParam/MultiPointerParam values coming from the frontend.
 
         Supported shapes:
-          "1.outputTiltSeriesM"
-          {"editableValue": "1.outputTiltSeriesM"}
-          {"value": "1.outputTiltSeriesM"}
-          [{"editableValue": "1.outputA"}, {"editableValue": "2.outputB"}]
+          "1.outputTSMovies"
+          {"editableValue": "1.outputTSMovies"}
+          {"value": "1.outputTSMovies"}
+          {"parentId": 1, "value": "outputTSMovies"}
+          {"parentId": 1, "outputName": "outputTSMovies"}
+          {"parentProtocolId": 1, "parentOutputName": "outputTSMovies"}
+          [{"editableValue": "1.outputA"}, {"parentId": 2, "value": "outputB"}]
         """
         if rawValue in (None, ""):
-            return []
-
-        if isinstance(rawValue, dict):
-            for key in ("editableValue", "value", "default", "objValue"):
-                value = rawValue.get(key)
-                if value not in (None, "", []):
-                    return self._normalizeRuntimePointerParamValues(value)
-
-            parentId = rawValue.get("parentId") or rawValue.get("protocolId")
-            outputName = (
-                    rawValue.get("outputName")
-                    or rawValue.get("extended")
-                    or rawValue.get("name")
-            )
-
-            if parentId not in (None, "") and outputName not in (None, ""):
-                return [f"{parentId}.{outputName}"]
-
             return []
 
         if isinstance(rawValue, (list, tuple, set)):
@@ -7531,6 +7524,51 @@ class ProjectService:
                 result.extend(self._normalizeRuntimePointerParamValues(item))
 
             return result
+
+        if isinstance(rawValue, dict):
+            parentId = (
+                    rawValue.get("parentId")
+                    or rawValue.get("protocolId")
+                    or rawValue.get("parentProtocolId")
+            )
+
+            outputName = (
+                    rawValue.get("outputName")
+                    or rawValue.get("parentOutputName")
+                    or rawValue.get("extended")
+            )
+
+            if parentId not in (None, ""):
+                # If value/editableValue already has "1.outputX", keep that.
+                for key in ("editableValue", "value", "default", "objValue", "name"):
+                    candidate = rawValue.get(key)
+
+                    if candidate in (None, "", []):
+                        continue
+
+                    candidateText = str(candidate).strip()
+
+                    if "." in candidateText:
+                        return self._normalizeRuntimePointerParamValues(candidateText)
+
+                    if outputName in (None, ""):
+                        outputName = candidateText
+
+                    break
+
+                if outputName not in (None, ""):
+                    return [f"{parentId}.{outputName}"]
+
+            # Direct textual value case, without separate parentId.
+            for key in ("editableValue", "value", "default", "objValue"):
+                value = rawValue.get(key)
+
+                if value in (None, "", []):
+                    continue
+
+                return self._normalizeRuntimePointerParamValues(value)
+
+            return []
 
         valueText = str(rawValue or "").strip()
         return [valueText] if valueText else []
