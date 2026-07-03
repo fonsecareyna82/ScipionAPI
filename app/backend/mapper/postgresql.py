@@ -809,6 +809,43 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cur.rowcount > 0
 
+    def upsertProjectProtocolStatus(
+            self,
+            projectId: int,
+            protocolId: int,
+            protocolClassName: str,
+            statusValue,
+    ) -> int:
+        cur = self.db.execute(
+            """
+            INSERT INTO protocols (
+                "projectId",
+                "protocolId",
+                "protocolClassName",
+                status,
+                params,
+                "parentIds",
+                "childIds",
+                "updatedAt"
+            )
+            VALUES (%s, %s, %s, %s, '{}'::jsonb, %s, %s, NOW())
+            ON CONFLICT ("projectId", "protocolId")
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                "updatedAt" = NOW()
+            RETURNING id
+            """,
+            (
+                int(projectId),
+                str(protocolId),
+                str(protocolClassName),
+                str(statusValue),
+                [],
+                [],
+            ),
+        )
+        return int(cur.fetchone()["id"])
+
     # -----------------------------
     # Project share methods
     # -----------------------------
