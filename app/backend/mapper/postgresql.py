@@ -787,6 +787,28 @@ class PostgresqlFlatMapper(Mapper):
         )
         return self.db.fetchOne(query, params)
 
+    def updateProjectProtocolStatus(
+            self,
+            projectId: int,
+            protocolId: int,
+            statusValue,
+    ) -> bool:
+        cur = self.db.execute(
+            """
+            UPDATE protocols
+               SET status = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (
+                str(statusValue),
+                int(projectId),
+                str(protocolId),
+            ),
+        )
+        return cur.rowcount > 0
+
     # -----------------------------
     # Project share methods
     # -----------------------------
