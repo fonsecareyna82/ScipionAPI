@@ -2512,6 +2512,7 @@ class ProjectService:
             failOnConsistencyError: bool = False,
             loadWorkflowFromPostgresql: bool = False,
             usePostgresqlRuntimeProject: bool = False,
+            usePostgresqlRuntimeWriteFallback: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2540,7 +2541,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     enableReadFallback=True,
-                    enableWriteFallback=False,
+                    enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
 
         if validateConsistency:
