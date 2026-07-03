@@ -7240,16 +7240,24 @@ class ProjectService:
                                 )
                                 continue
 
-                            param.set(val)
-                            protocol.setAttributeValue(key, parentProtocol)
-                            param.default.set(val)
-
                             pointer = getattr(protocol, key, None)
-                            if pointer is not None:
+
+                            if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
+                                pointer = Pointer(parentProtocol, extended=output)
+                                setattr(protocol, key, pointer)
+                            else:
+                                pointer.set(parentProtocol)
                                 pointer.setExtended(output)
 
+                            # Keep the form/default textual representation if available,
+                            # but do not call param.set(val), because that stores the input as string.
+                            try:
+                                param.default.set(val)
+                            except Exception:
+                                pass
+
                             logger.info(
-                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s",
+                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
                                 key,
                                 getattr(protocol, "getObjId", lambda: None)(),
                                 parentScipionProtocolId,
@@ -7262,13 +7270,7 @@ class ProjectService:
                                     "getObjId",
                                     lambda: None,
                                 )() if pointer is not None else None,
-                            )
-
-                            logger.info(
-                                "[INFO] Pointer param %s set from parent %s output %s",
-                                key,
-                                parentScipionProtocolId,
-                                output,
+                                getattr(pointer, "get", lambda: None)() if pointer is not None else None,
                             )
 
                         except Exception as e:
@@ -7825,13 +7827,20 @@ class ProjectService:
                 % (parentScipionProtocolId, outputName)
             )
 
-        param.set(editableValue)
-        protocol.setAttributeValue(key, parentProtocol)
-        param.default.set(editableValue)
-
         pointer = getattr(protocol, key, None)
-        if pointer is not None and outputName:
-            pointer.setExtended(outputName)
+
+        if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
+            pointer = Pointer(parentProtocol, extended=outputName)
+            setattr(protocol, key, pointer)
+        else:
+            pointer.set(parentProtocol)
+            if outputName:
+                pointer.setExtended(outputName)
+
+        try:
+            param.default.set(editableValue)
+        except Exception:
+            pass
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
@@ -8337,17 +8346,33 @@ class ProjectService:
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
                     valueList = []
-
                     for pointer in protVar:
-                        if pointer.get() is not None:
-                            parentId = pointer.get().getObjParentId()
-                            value = "%s.%s" % (parentId, pointer.getExtended())
-                        else:
-                            value = None
+                        value = None
+
+                        try:
+                            targetObj = pointer.get()
+                        except Exception:
+                            targetObj = None
+
+                        try:
+                            extended = pointer.getExtended()
+                        except Exception:
+                            extended = None
+
+                        if isinstance(targetObj, str):
+                            value = targetObj
+
+                        elif targetObj is not None:
+                            try:
+                                parentId = targetObj.getObjParentId()
+                                value = "%s.%s" % (parentId, extended) if extended else None
+                            except Exception:
+                                value = None
+
                         valueList.append(value)
 
                     paramValue = valueList
-                    paramDict['readOnly'] = True
+                    paramDict["readOnly"] = True
 
                 elif isinstance(param, PointerParam):
                     parentId = None
