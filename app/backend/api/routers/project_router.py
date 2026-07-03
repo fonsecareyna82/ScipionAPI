@@ -526,6 +526,7 @@ async def launchProtocol(
 async def saveProtocol(
     projectId: int,
     request: ProtocolRequest,
+    usePostgresqlRuntimeProject: bool = Query(False),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -534,7 +535,12 @@ async def saveProtocol(
     Save protocol parameters in a given project.
     """
     try:
-        project = service.getProjectById(mapper, projectId, currentUser)
+        project = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

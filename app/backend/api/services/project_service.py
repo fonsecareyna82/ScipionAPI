@@ -98,6 +98,8 @@ import pyworkflow
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
+from app.backend.project import PostgresqlProject
+from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
@@ -181,6 +183,94 @@ class ProjectService:
         """Clear per-request project and tomogram cache."""
         self.currentProject = None
         self.tomoList = {}
+
+    def _currentProjectUsesPostgresqlRuntimeMapper(self) -> bool:
+        project = getattr(self, "currentProject", None)
+        if project is None:
+            return False
+
+        checker = getattr(project, "usingPostgresqlRuntimeMapper", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+
+        return isinstance(getattr(project, "mapper", None), PostgresqlRuntimeMapper)
+
+    def _shouldUsePostgresqlRuntimeProject(self, explicit: bool = False) -> bool:
+        if explicit:
+            return True
+
+        value = os.environ.get("SCIPIONWEB_USE_POSTGRESQL_RUNTIME_PROJECT", "")
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _replaceCurrentProjectWithPostgresqlProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            enableReadFallback: bool = True,
+            enableWriteFallback: bool = False,
+    ) -> None:
+        """
+        Replace the currently loaded Scipion Project with a PostgreSQL-aware
+        Project wrapper.
+
+        This keeps Scipion paths/settings/hosts but makes Project.mapper and
+        Protocol.mapper delegate writes to PostgreSQL.
+        """
+        currentProject = getattr(self, "currentProject", None)
+        if currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            return
+
+        projectPath = getattr(currentProject, "path", None)
+        if not projectPath:
+            try:
+                projectPath = currentProject.getPath()
+            except Exception:
+                projectPath = None
+
+        if not projectPath:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Cannot enable PostgreSQL runtime project: missing project path",
+            )
+
+        domain = currentProject.getDomain()
+
+        try:
+            currentProject.closeMapper()
+        except Exception:
+            logger.debug(
+                "Could not close legacy project mapper before PostgreSQL runtime replacement.",
+                exc_info=True,
+            )
+
+        pgProject = PostgresqlProject(
+            domain=domain,
+            path=projectPath,
+            projectId=projectId,
+            flatMapper=mapper,
+            enableReadFallback=enableReadFallback,
+            enableWriteFallback=enableWriteFallback,
+        )
+
+        pgProject.load(chdir=True)
+
+        self.currentProject = pgProject
+
+        logger.info(
+            "Loaded project %s with PostgreSQL runtime mapper. readFallback=%s writeFallback=%s",
+            projectId,
+            enableReadFallback,
+            enableWriteFallback,
+        )
 
     def _createObjectManager(self) -> ObjectManager:
         """Create and configure a fresh ObjectManager instance.
@@ -2399,6 +2489,7 @@ class ProjectService:
             validateConsistency: bool = False,
             failOnConsistencyError: bool = False,
             loadWorkflowFromPostgresql: bool = False,
+            usePostgresqlRuntimeProject: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2421,6 +2512,14 @@ class ProjectService:
                 refresh=refresh,
                 checkPid=checkPid,
             )
+
+            if self._shouldUsePostgresqlRuntimeProject(usePostgresqlRuntimeProject):
+                self._replaceCurrentProjectWithPostgresqlProject(
+                    mapper=mapper,
+                    projectId=projectId,
+                    enableReadFallback=True,
+                    enableWriteFallback=False,
+                )
 
         if validateConsistency:
             try:
@@ -6416,7 +6515,7 @@ class ProjectService:
                 detail=f"Failed to persist protocol in Scipion: {e}",
             )
 
-        if setToSave:
+        if setToSave and not self._currentProjectUsesPostgresqlRuntimeMapper():
             try:
                 self.syncProjectProtocolsAndDependencies(
                     mapper,
@@ -6435,6 +6534,15 @@ class ProjectService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Protocol was saved in Scipion but graph sync to PostgreSQL failed: {e}",
                 )
+
+        elif setToSave:
+            logger.info(
+                "Skipping legacy graph sync after PostgreSQL runtime save. "
+                "projectId=%s protocolId=%s protocolClassName=%s",
+                projectId,
+                getattr(protocol, "getObjId", lambda: protocolId)(),
+                protocolClassName,
+            )
 
         return protocol, errorList
 
