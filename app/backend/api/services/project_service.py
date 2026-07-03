@@ -1728,6 +1728,29 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+    def _mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):
+        storedText = str(storedStatus or "").strip().lower()
+        runtimeText = str(runtimeStatus or "").strip().lower()
+
+        if not runtimeText:
+            return storedStatus or STATUS_NEW
+
+        # Do not downgrade a protocol that was already launched/running/scheduled
+        # just because an early runtime read still reports "new".
+        if runtimeText == "new" and storedText in {
+            "launched",
+            "running",
+            "scheduled",
+        }:
+            return storedStatus
+
+        # Do not overwrite terminal states with non-terminal stale reads.
+        if storedText in {"finished", "failed", "aborted", "interactive"}:
+            if runtimeText not in {"finished", "failed", "aborted", "interactive"}:
+                return storedStatus
+
+        return runtimeStatus
+
     def syncPostgresqlRuntimeProtocol(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1756,6 +1779,19 @@ class ProjectService:
             protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
         protocolContext = self._buildProtocolContext(projectId, protocol)
+
+        storedRow = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=scipionProtocolId,
+        )
+
+        storedStatus = storedRow.get("status") if storedRow else None
+        runtimeStatus = protocolContext.get("info", {}).get("status")
+
+        protocolContext["info"]["status"] = self._mergeRuntimeProtocolStatus(
+            storedStatus=storedStatus,
+            runtimeStatus=runtimeStatus,
+        )
         protocolDbId = mapper.saveProtocol(protocolContext)
 
         steps = []
@@ -6460,6 +6496,14 @@ class ProjectService:
         """
         Returns the parameters of an existing protocol given its ID.
         """
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                registerOutputs=True,
+            )
+
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
@@ -6468,14 +6512,6 @@ class ProjectService:
 
         protocol.getPlugin()
         self.currentProject._fixProtParamsConfiguration(protocol)
-
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
-            self.syncPostgresqlRuntimeProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                registerOutputs=True,
-            )
 
         return self._buildProtocolContext(projectId, protocol)
 
@@ -7040,6 +7076,22 @@ class ProjectService:
                     )
 
                 self.currentProject.launchProtocol(protocol)
+
+                if usingPostgresqlRuntime:
+                    launchedProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
+
+                    launchStatus = self._safeCall(protocol, "getStatus", None)
+
+                    # Sometimes the in-memory object may still report "new" immediately after
+                    # launch, but the API action has already been accepted by Scipion.
+                    if str(launchStatus or "").strip().lower() in ("", "new"):
+                        launchStatus = STATUS_LAUNCHED
+
+                    mapper.updateProjectProtocolStatus(
+                        projectId=projectId,
+                        protocolId=launchedProtocolId,
+                        statusValue=launchStatus,
+                    )
 
             if usingPostgresqlRuntime:
                 try:

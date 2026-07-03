@@ -187,12 +187,14 @@ class PostgresqlRuntimeMapper(Mapper):
         return self.readFallbackMapper.updateFrom(obj)
 
     def selectById(self, objId):
-        obj = self._selectByIdFromReadFallback(objId)
-        if obj is not None:
-            return self._attachRuntimeContext(obj)
         obj = self._selectProtocolByIdFromPostgresql(objId)
         if obj is not None:
             return self._attachRuntimeContext(obj)
+
+        obj = self._selectByIdFromReadFallback(objId)
+        if obj is not None:
+            return self._attachRuntimeContext(obj)
+
         return None
 
     def _selectByIdFromReadFallback(self, objId):
