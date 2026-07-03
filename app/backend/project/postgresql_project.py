@@ -103,8 +103,8 @@ class PostgresqlProject(ScipionProject):
             projectId=self.postgresqlProjectId,
             readFallbackMapper=readFallbackMapper,
             writeFallbackMapper=writeFallbackMapper,
+            project=self,
         )
-
         self._postgresqlRuntimeMapper = runtimeMapper
         return runtimeMapper
 
