@@ -77,6 +77,7 @@ from pyworkflow.protocol import (
     STATUS_SCHEDULED,
 )
 from pyworkflow.template import TemplateList
+from pyworkflow.protocol.protocol import getProtocolFromDb
 
 try:
     from pyworkflow.viewer import DESKTOP_TKINTER
@@ -1750,6 +1751,99 @@ class ProjectService:
                 return storedStatus
 
         return runtimeStatus
+
+    def syncPostgresqlRuntimeProtocolStatus(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ):
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+        statusValue = self._safeCall(protocol, "getStatus", None)
+
+        if str(statusValue or "").strip().lower() in ("", "new"):
+            existing = mapper.getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+            )
+            existingStatus = existing.get("status") if existing else None
+
+            if str(existingStatus or "").strip().lower() in ("launched", "running", "scheduled"):
+                statusValue = existingStatus
+
+        mapper.saveProtocol(
+            self._buildProtocolContext(projectId, protocol)
+        )
+
+        return {
+            "protocolId": str(scipionProtocolId),
+            "status": statusValue,
+        }
+
+    def syncPostgresqlRuntimeProtocolStatusFromRunDb(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> dict:
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+        projectPath = self.currentProject.getPath()
+        runDbPath = protocol.getDbPath()
+
+        if not os.path.isabs(str(runDbPath)):
+            workingDir = protocol.getWorkingDir()
+
+            if not os.path.isabs(str(workingDir)):
+                workingDir = os.path.join(projectPath, str(workingDir))
+
+            runDbPath = os.path.join(str(workingDir), "logs", "run.db")
+
+        runDbPath = os.path.abspath(str(runDbPath))
+
+        runtimeProtocol = getProtocolFromDb(
+            projectPath,
+            runDbPath,
+            int(scipionProtocolId),
+            chdir=False,
+        )
+
+        runtimeStatus = runtimeProtocol.getStatus()
+
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=scipionProtocolId,
+        )
+
+        if not row:
+            raise RuntimeError(
+                f"PostgreSQL protocol row not found. projectId={projectId} protocolId={scipionProtocolId}"
+            )
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "status": runtimeStatus,
+        })
+
+        return {
+            "projectId": projectId,
+            "protocolId": str(scipionProtocolId),
+            "runDbPath": runDbPath,
+            "status": runtimeStatus,
+        }
 
     def syncPostgresqlRuntimeProtocol(
             self,
@@ -6501,7 +6595,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                registerOutputs=True,
+                registerOutputs=False,
             )
 
         protocol = self._getScipionProtocolForRuntime(
@@ -6850,7 +6944,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                registerOutputs=True,
+                registerOutputs=False,
             )
 
         return mapper.listProtocolSteps(projectId, scipionProtocolId)
@@ -7080,38 +7174,24 @@ class ProjectService:
                 if usingPostgresqlRuntime:
                     launchedProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
 
-                    launchStatus = self._safeCall(protocol, "getStatus", None)
-                    if str(launchStatus or "").strip().lower() in ("", "new"):
-                        launchStatus = STATUS_LAUNCHED
-
                     try:
-                        protocol.setStatus(launchStatus)
+                        protocol.setStatus(STATUS_LAUNCHED)
                     except Exception:
                         statusAttr = getattr(protocol, "status", None)
                         setter = getattr(statusAttr, "set", None)
                         if callable(setter):
-                            setter(launchStatus)
+                            setter(STATUS_LAUNCHED)
 
                     self.currentProject._storeProtocol(protocol)
 
-                    row = mapper.getProjectProtocolByProtocolId(
-                        projectId=projectId,
-                        protocolId=launchedProtocolId,
-                    )
-
-                    logger.warning(
-                        "PostgreSQL protocol row after launch store. projectId=%s protocolId=%s found=%s rowStatus=%s",
-                        projectId,
-                        launchedProtocolId,
-                        bool(row),
-                        row.get("status") if row else None,
-                    )
-
-                    if not row:
-                        raise RuntimeError(
-                            "Protocol launch was accepted but PostgreSQL row was not created. "
-                            f"projectId={projectId} protocolId={launchedProtocolId}"
-                        )
+                    return {
+                        "protocols": 1,
+                        "dependencies": 0,
+                        "postgresqlRuntimeLaunch": True,
+                        "launchAccepted": True,
+                        "protocolId": str(launchedProtocolId),
+                        "protocolStatus": STATUS_LAUNCHED,
+                    }
 
             if usingPostgresqlRuntime:
                 try:

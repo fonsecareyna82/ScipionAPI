@@ -128,6 +128,9 @@ class PostgresqlRuntimeMapper(Mapper):
             self._storeSetObject(obj)
             return
 
+        if self._shouldSkipInternalRuntimeObject(obj):
+            return
+
         if isinstance(obj, ScipionObject):
             self._storeObjectTree(obj)
             return
@@ -571,6 +574,15 @@ class PostgresqlRuntimeMapper(Mapper):
         protocolDbId = self._resolveProtocolDbIdFromObject(ownerProtocol)
         outputName = self._getObjectName(scipionObj) or self._getClassName(scipionObj)
 
+        if self._shouldSkipRuntimeObjectTree(outputName, scipionObj):
+            logger.debug(
+                "Skipping internal runtime object persistence. projectId=%s outputName=%s class=%s",
+                self.projectId,
+                outputName,
+                self._getClassName(scipionObj),
+            )
+            return
+
         if protocolDbId is None or not outputName:
             logger.debug(
                 "Skipping runtime object persistence without owner/outputName: %s",
@@ -584,6 +596,18 @@ class PostgresqlRuntimeMapper(Mapper):
             outputName=outputName,
             scipionObj=scipionObj,
         )
+
+    def _shouldSkipRuntimeObjectTree(self, outputName, scipionObj) -> bool:
+        """
+        Skip only known internal protocol runtime fields that are not real outputs.
+        """
+        name = str(outputName or "").strip()
+
+        internalNames = {
+            "_jobId",
+        }
+
+        return name in internalNames
 
     # ---------------------------------------------------------------------
     # Serialization helpers
@@ -1141,3 +1165,30 @@ class PostgresqlRuntimeMapper(Mapper):
                 getattr(protocol, "getObjId", lambda: None)(),
                 exc_info=True,
             )
+
+    def _shouldSkipInternalRuntimeObject(self, obj) -> bool:
+        if obj is None:
+            return False
+
+        candidateNames = []
+
+        for attrName in ("_objName", "_objLabel"):
+            value = getattr(obj, attrName, None)
+            try:
+                value = value.get() if hasattr(value, "get") else value
+            except Exception:
+                pass
+
+            if value not in (None, ""):
+                candidateNames.append(str(value))
+
+        try:
+            candidateNames.append(str(obj.getName()))
+        except Exception:
+            pass
+
+        internalNames = {
+            "_jobId",
+        }
+
+        return any(name in internalNames for name in candidateNames)
