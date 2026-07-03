@@ -7369,16 +7369,37 @@ class ProjectService:
 
         params = params or {}
 
+        detectedPointerParams = []
+
         for inputName, rawParamValue in params.items():
             try:
                 param = protocol.getParam(inputName)
             except Exception:
                 param = None
 
-            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+            pointerValues = self._normalizeRuntimePointerParamValues(rawParamValue)
+
+            if not pointerValues:
                 continue
 
-            pointerValues = self._normalizeRuntimePointerParamValues(rawParamValue)
+            validPointerValues = []
+
+            for pointerValue in pointerValues:
+                parentId, outputName = self._splitPointerValue(pointerValue)
+
+                if parentId and outputName:
+                    validPointerValues.append(pointerValue)
+
+            if not validPointerValues:
+                continue
+
+            detectedPointerParams.append({
+                "inputName": inputName,
+                "paramClass": param.__class__.__name__ if param is not None else None,
+                "isPointerParam": isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
+                "rawValue": rawParamValue,
+                "pointerValues": validPointerValues,
+            })
 
             for itemIndex, pointerValue in enumerate(pointerValues):
                 parentId, outputName = self._splitPointerValue(pointerValue)
