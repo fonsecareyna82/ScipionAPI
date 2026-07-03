@@ -1728,6 +1728,230 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+    def syncPostgresqlRuntimeProtocol(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId,
+            registerOutputs: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
+
+        The process launched by Scipion updates logs/run.db and steps.sqlite.
+        PostgreSQL must be refreshed from that runtime state, not from the
+        legacy project graph.
+        """
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        protocol = self._loadProtocolFromRuntimeDb(
+            protocolId=scipionProtocolId,
+        )
+
+        if protocol is None:
+            protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+        protocolContext = self._buildProtocolContext(projectId, protocol)
+        protocolDbId = mapper.saveProtocol(protocolContext)
+
+        steps = []
+        try:
+            steps = self._buildProtocolStepsForPostgresql(protocol)
+        except Exception:
+            logger.exception(
+                "Failed to build PostgreSQL runtime protocol steps. projectId=%s protocolId=%s",
+                projectId,
+                scipionProtocolId,
+            )
+
+        if steps:
+            mapper.replaceProtocolSteps(
+                projectId=projectId,
+                protocolDbId=int(protocolDbId),
+                protocolId=int(scipionProtocolId),
+                steps=steps,
+            )
+
+        outputReport = {
+            "declared": [],
+            "persisted": [],
+            "skipped": [],
+            "errors": [],
+        }
+
+        shouldRegisterOutputs = (
+                registerOutputs
+                and self._isRuntimeProtocolTerminal(protocol)
+                and self._shouldRegisterProtocolOutputs(protocol)
+        )
+
+        if shouldRegisterOutputs:
+            try:
+                outputReport = self.registerOutput(
+                    projectId=projectId,
+                    protocol=protocol,
+                    mapper=mapper,
+                    returnReport=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to register PostgreSQL runtime protocol outputs. projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                )
+                outputReport = {
+                    "declared": [],
+                    "persisted": [],
+                    "skipped": [],
+                    "errors": [{
+                        "protocolId": str(scipionProtocolId),
+                        "error": "Failed to register outputs",
+                    }],
+                }
+
+        return {
+            "protocols": 1,
+            "dependencies": 0,
+            "inputRefs": 0,
+            "steps": len(steps or []),
+            "stepsProtocols": 1 if steps else 0,
+            "stepErrors": [],
+            "outputsDeclared": len(outputReport.get("declared") or []),
+            "outputs": len(outputReport.get("persisted") or []),
+            "outputsMissing": 0,
+            "outputsByKind": self._countRuntimeOutputKinds(outputReport.get("persisted") or []),
+            "outputMissing": [],
+            "outputErrors": outputReport.get("errors") or [],
+            "postgresqlRuntimeSync": True,
+            "protocolId": str(scipionProtocolId),
+            "protocolStatus": self._safeCall(protocol, "getStatus", None),
+            "outputsRegistered": bool(outputReport.get("persisted")),
+        }
+
+    def _loadProtocolFromRuntimeDb(self, protocolId: int):
+        """
+        Load the real runtime protocol from logs/run.db.
+
+        This is the source of truth after launch, because the external Scipion
+        runner updates that database while the protocol is executing.
+        """
+        if self.currentProject is None:
+            return None
+
+        try:
+            protocol = self._getScipionProtocolByRuntimeId(protocolId)
+        except Exception:
+            protocol = None
+
+        if protocol is None:
+            return None
+
+        try:
+            runDbPath = protocol.getDbPath()
+        except Exception:
+            runDbPath = None
+
+        if not runDbPath:
+            return protocol
+
+        if not os.path.isabs(str(runDbPath)):
+            workingDir = None
+            try:
+                workingDir = protocol.getWorkingDir()
+            except Exception:
+                workingDir = None
+
+            if workingDir:
+                runDbPath = os.path.abspath(os.path.join(str(workingDir), "logs", os.path.basename(str(runDbPath))))
+            else:
+                projectPath = self._getCurrentProjectPath()
+                runDbPath = os.path.abspath(os.path.join(str(projectPath), str(runDbPath)))
+
+        if not os.path.exists(str(runDbPath)):
+            logger.debug(
+                "Runtime db does not exist yet. protocolId=%s runDbPath=%s",
+                protocolId,
+                runDbPath,
+            )
+            return protocol
+
+        projectPath = self._getCurrentProjectPath()
+        if not projectPath:
+            return protocol
+
+        try:
+            runtimeProtocol = getProtocolFromDb(
+                projectPath,
+                str(runDbPath),
+                int(protocolId),
+                chdir=False,
+            )
+
+            if runtimeProtocol is not None:
+                return runtimeProtocol
+
+        except Exception:
+            logger.debug(
+                "Could not load protocol from runtime db. protocolId=%s runDbPath=%s",
+                protocolId,
+                runDbPath,
+                exc_info=True,
+            )
+
+        return protocol
+
+    def _getCurrentProjectPath(self) -> Optional[str]:
+        project = getattr(self, "currentProject", None)
+        if project is None:
+            return None
+
+        for attrName in ("path", "_path"):
+            value = getattr(project, attrName, None)
+            if value:
+                return str(value)
+
+        try:
+            value = project.getPath()
+            if value:
+                return str(value)
+        except Exception:
+            pass
+
+        return None
+
+    def _isRuntimeProtocolTerminal(self, protocol) -> bool:
+        for methodName in ("isFinished", "isFailed", "isAborted"):
+            method = getattr(protocol, methodName, None)
+            if callable(method):
+                try:
+                    if bool(method()):
+                        return True
+                except Exception:
+                    pass
+
+        statusValue = self._safeCall(protocol, "getStatus", None)
+        statusText = str(statusValue or "").strip().lower()
+
+        return statusText in {
+            "finished",
+            "failed",
+            "aborted",
+            "interactive",
+        }
+
+    def _countRuntimeOutputKinds(self, outputs: List[Dict[str, Any]]) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+
+        for item in outputs or []:
+            mapperKind = str(item.get("mapperKind") or "unknown")
+            result[mapperKind] = result.get(mapperKind, 0) + 1
+
+        return result
+
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -6244,6 +6468,15 @@ class ProjectService:
 
         protocol.getPlugin()
         self.currentProject._fixProtParamsConfiguration(protocol)
+
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                registerOutputs=True,
+            )
+
         return self._buildProtocolContext(projectId, protocol)
 
     def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
@@ -6576,6 +6809,14 @@ class ProjectService:
             protocolId=protocolId,
         )
 
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                registerOutputs=True,
+            )
+
         return mapper.listProtocolSteps(projectId, scipionProtocolId)
 
     def updateProtocolStepStatusService(
@@ -6801,22 +7042,35 @@ class ProjectService:
                 self.currentProject.launchProtocol(protocol)
 
             if usingPostgresqlRuntime:
-                return {
-                    "protocols": 1,
-                    "dependencies": 0,
-                    "inputRefs": 0,
-                    "steps": 0,
-                    "stepsProtocols": 0,
-                    "stepErrors": [],
-                    "outputsDeclared": 0,
-                    "outputs": 0,
-                    "outputsMissing": 0,
-                    "outputsByKind": {},
-                    "outputMissing": [],
-                    "outputErrors": [],
+                try:
+                    syncResult = self.syncPostgresqlRuntimeProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=getattr(protocol, "getObjId", lambda: protocolId)(),
+                        registerOutputs=False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to sync PostgreSQL runtime protocol immediately after launch. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        getattr(protocol, "getObjId", lambda: protocolId)(),
+                    )
+                    syncResult = {
+                        "protocols": 1,
+                        "dependencies": 0,
+                        "postgresqlRuntimeSync": False,
+                        "syncError": "Immediate runtime sync failed",
+                    }
+
+                syncResult.update({
                     "postgresqlRuntimeLaunch": True,
-                    "protocolId": str(getattr(protocol, "getObjId", lambda: protocolId)()),
-                }
+                    "launchAccepted": True,
+                    "syncSkipped": False,
+                    "syncSkippedReason": None,
+                })
+
+                return syncResult
 
             return self.syncProjectProtocolsAndDependencies(
                 mapper,
