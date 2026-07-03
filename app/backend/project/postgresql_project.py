@@ -158,19 +158,145 @@ class PostgresqlProject(ScipionProject):
 
     def closeMapper(self):
         """
-        Close runtime mapper and fallback mappers.
+            Close runtime mapper and fallback mappers.
 
-        PostgresqlRuntimeMapper.close() already closes readFallbackMapper.
-        This method is defensive and avoids leaking sqlite connections during
-        tests or repeated project loads.
-        """
+            PostgresqlRuntimeMapper.close() already closes readFallbackMapper.
+            This method is defensive and avoids leaking sqlite connections during
+            tests or repeated project loads.
+            """
         runtimeMapper = self._postgresqlRuntimeMapper
+        readFallbackMapper = self._readFallbackMapper
+        writeFallbackMapper = self._writeFallbackMapper
 
         try:
             if runtimeMapper is not None:
                 runtimeMapper.close()
+
+            if writeFallbackMapper is not None and writeFallbackMapper is not readFallbackMapper:
+                try:
+                    writeFallbackMapper.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close PostgreSQL project write fallback mapper.",
+                        exc_info=True,
+                    )
         finally:
             self.mapper = None
             self._postgresqlRuntimeMapper = None
             self._readFallbackMapper = None
             self._writeFallbackMapper = None
+
+    # ---------------------------------------------------
+    #               PROTOCOLS
+    # --------------------------------------------------
+    def _storeProtocol(self, protocol):
+        """
+        Store protocol through the PostgreSQL runtime mapper and make sure the
+        Scipion filesystem layout exists.
+
+        Scipion's Project._setupProtocol stores first to allocate an id, then
+        assigns the workingDir and stores again. By hooking here, the first
+        store does nothing filesystem-related, and the second store creates the
+        logical run folder once workingDir is available.
+        """
+        super()._storeProtocol(protocol)
+        self._ensureProtocolFilesystem(protocol)
+
+    # ---------------------------------------------------
+    #               HELPERS
+    # --------------------------------------------------
+
+    def _ensureProtocolFilesystem(self, protocol) -> None:
+        """
+        Ensure Scipion's logical protocol folder exists.
+
+        PostgreSQL can persist the protocol row, but protocol execution and
+        outputs still need the filesystem layout:
+            Runs/000123_ProtClass/
+            Runs/000123_ProtClass/extra/
+            Runs/000123_ProtClass/logs/
+            Runs/000123_ProtClass/tmp or scratch
+        """
+        workingDir = self._getProtocolWorkingDir(protocol)
+        if not workingDir:
+            return
+
+        logsDir = self._getProtocolSubPath(protocol, "_getLogsPath", "logs")
+        extraDir = self._getProtocolSubPath(protocol, "_getExtraPath", "extra")
+
+        if (
+                os.path.isdir(workingDir)
+                and os.path.isdir(logsDir)
+                and os.path.isdir(extraDir)
+        ):
+            return
+
+        makeWorkingDir = getattr(protocol, "makeWorkingDir", None)
+        if not callable(makeWorkingDir):
+            raise RuntimeError(
+                "Cannot create Scipion protocol filesystem layout: "
+                "protocol does not provide makeWorkingDir(). "
+                "protocolId=%s protocolClass=%s workingDir=%s"
+                % (
+                    getattr(protocol, "getObjId", lambda: None)(),
+                    getattr(protocol, "getClassName", lambda: protocol.__class__.__name__)(),
+                    workingDir,
+                )
+            )
+
+        try:
+            makeWorkingDir()
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not create Scipion protocol filesystem layout. "
+                "protocolId=%s protocolClass=%s workingDir=%s"
+                % (
+                    getattr(protocol, "getObjId", lambda: None)(),
+                    getattr(protocol, "getClassName", lambda: protocol.__class__.__name__)(),
+                    workingDir,
+                )
+            ) from exc
+
+        logger.info(
+            "Created Scipion protocol filesystem layout. protocolId=%s workingDir=%s",
+            getattr(protocol, "getObjId", lambda: None)(),
+            workingDir,
+        )
+
+    def _getProtocolWorkingDir(self, protocol) -> Optional[str]:
+        getWorkingDir = getattr(protocol, "getWorkingDir", None)
+        if callable(getWorkingDir):
+            try:
+                value = getWorkingDir()
+                if value:
+                    return str(value)
+            except Exception:
+                pass
+
+        workingDir = getattr(protocol, "workingDir", None)
+        getter = getattr(workingDir, "get", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if value:
+                    return str(value)
+            except Exception:
+                pass
+
+        return None
+
+    def _getProtocolSubPath(self, protocol, methodName: str, fallbackName: str) -> str:
+        method = getattr(protocol, methodName, None)
+        if callable(method):
+            try:
+                value = method()
+                if value:
+                    return str(value)
+            except Exception:
+                pass
+
+        workingDir = self._getProtocolWorkingDir(protocol)
+        if not workingDir:
+            return fallbackName
+
+        return os.path.join(workingDir, fallbackName)
