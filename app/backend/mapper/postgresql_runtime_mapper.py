@@ -30,6 +30,7 @@ from pyworkflow.mapper.mapper import Mapper
 from pyworkflow.protocol.protocol import Protocol
 from pyworkflow.object import Object as ScipionObject
 from pyworkflow.object import Set as ScipionSet
+from pyworkflow.utils import joinExt, replaceExt
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
@@ -109,6 +110,8 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is None:
             return
 
+        self._ensureObjId(obj)
+
         if self.writeFallbackMapper is not None:
             self.writeFallbackMapper.store(obj)
 
@@ -130,7 +133,42 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
     def insert(self, obj):
+        self._ensureObjId(obj)
         self.store(obj)
+
+    def insertChild(self, obj, key, attr, namePrefix=None):
+        """
+        Insert/store a child object following the naming convention used by
+        SqliteMapper.
+
+        This is called by Protocol._insertChild when outputs or internal child
+        attributes are registered.
+        """
+        if attr is None:
+            return
+
+        self._ensureObjId(obj)
+        self._ensureObjId(attr)
+
+        if namePrefix is None:
+            namePrefix = self._getNamePrefix(obj)
+
+        try:
+            attr._objName = joinExt(namePrefix, key)
+            attr._objParentId = obj.getObjId()
+        except Exception:
+            logger.debug(
+                "Could not assign PostgreSQL child metadata. parent=%s key=%s child=%s",
+                obj,
+                key,
+                attr,
+                exc_info=True,
+            )
+
+        if self.writeFallbackMapper is not None:
+            self.writeFallbackMapper.insertChild(obj, key, attr, namePrefix=namePrefix)
+
+        self.store(attr)
 
     def updateTo(self, obj):
         self.store(obj)
@@ -301,6 +339,9 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def insertRelationData(self, relName, creatorId, parentId, childId,
                            parentExtended=None, childExtended=None):
+
+        parentExtended = self._normalizeRelationExtended(parentExtended)
+        childExtended = self._normalizeRelationExtended(childExtended)
         self.db.execute(
             """
             INSERT INTO scipion_relations (
@@ -395,7 +436,7 @@ class PostgresqlRuntimeMapper(Mapper):
     # ---------------------------------------------------------------------
 
     def _storeProtocol(self, protocol: Protocol):
-        protocolId = self._getObjId(protocol)
+        protocolId = self._ensureObjId(protocol)
         if protocolId is None:
             raise ValueError("Cannot store protocol without object id.")
 
@@ -536,6 +577,46 @@ class PostgresqlRuntimeMapper(Mapper):
     # ---------------------------------------------------------------------
     # Small utilities
     # ---------------------------------------------------------------------
+
+    def _ensureObjId(self, obj) -> Optional[int]:
+        """
+        Ensure Scipion object has an _objId.
+
+        SqliteMapper.insert assigns _objId automatically. If this mapper is used
+        as Project.mapper, PostgreSQL must do the same.
+        """
+        if obj is None:
+            return None
+
+        objId = self._getObjId(obj)
+        if objId is not None:
+            return objId
+
+        allocator = getattr(self.flatMapper, "allocateProjectObjectId", None)
+        if not callable(allocator):
+            raise RuntimeError("PostgresqlFlatMapper does not provide allocateProjectObjectId")
+
+        objId = int(allocator(self.projectId))
+
+        try:
+            obj._objId = objId
+        except Exception as exc:
+            raise RuntimeError("Could not assign _objId=%s to %s" % (objId, obj)) from exc
+
+        return objId
+
+    def _getNamePrefix(self, obj) -> str:
+        objName = str(getattr(obj, "_objName", "") or "")
+
+        try:
+            objId = obj.strId()
+        except Exception:
+            objId = str(self._requireObjId(obj))
+
+        if objName and "." in objName:
+            return replaceExt(objName, objId)
+
+        return objId
 
     def _attachRuntimeContext(self, obj):
         if obj is None:
@@ -692,3 +773,8 @@ class PostgresqlRuntimeMapper(Mapper):
             return None
 
         return int(row["id"])
+
+    def _normalizeRelationExtended(self, value) -> str:
+        if value is None:
+            return ""
+        return str(value)

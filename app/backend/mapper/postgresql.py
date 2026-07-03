@@ -110,6 +110,17 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_object_id_counters (
+                "projectId" INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                "nextObjectId" INTEGER NOT NULL DEFAULT 1,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+
         # CreateProtocolsTableLegacy
         self.db.execute(
             """
@@ -986,6 +997,55 @@ class PostgresqlFlatMapper(Mapper):
             """,
             tuple(params),
         )
+
+    def allocateProjectObjectId(self, projectId: int) -> int:
+        """
+        Allocate a Scipion-like object id for a project.
+
+        This is needed when PostgreSQL acts as the runtime mapper and Scipion
+        creates new Protocol/Object instances without an _objId yet.
+        """
+        row = self.db.fetchOne(
+            """
+            WITH existing_max AS (
+                SELECT COALESCE(MAX(value), 0)::integer AS value
+                  FROM (
+                        SELECT ("protocolId")::integer AS value
+                          FROM protocols
+                         WHERE "projectId" = %s
+                           AND "protocolId" ~ '^[0-9]+$'
+
+                        UNION ALL
+
+                        SELECT "scipionObjId"::integer AS value
+                          FROM scipion_objects
+                         WHERE "projectId" = %s
+                           AND "scipionObjId" IS NOT NULL
+                  ) AS ids
+            ),
+            ensure_counter AS (
+                INSERT INTO project_object_id_counters ("projectId", "nextObjectId")
+                SELECT %s, existing_max.value + 1
+                  FROM existing_max
+                ON CONFLICT ("projectId") DO NOTHING
+                RETURNING "nextObjectId"
+            )
+            UPDATE project_object_id_counters counter
+               SET "nextObjectId" = GREATEST(counter."nextObjectId", existing_max.value + 1) + 1,
+                   "updatedAt" = NOW()
+              FROM existing_max
+             WHERE counter."projectId" = %s
+            RETURNING counter."nextObjectId" - 1 AS "objectId"
+            """,
+            (projectId, projectId, projectId, projectId),
+        )
+
+        if not row or row.get("objectId") is None:
+            raise RuntimeError(
+                "Could not allocate Scipion object id for project %s" % projectId
+            )
+
+        return int(row["objectId"])
 
     # -----------------------------
     # Protocol Methods
