@@ -1313,6 +1313,7 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolId: Union[int, str],
+            protocol: Any = None,
     ) -> Dict[str, Any]:
         protocolDbId = self._resolvePostgresqlProtocolDbId(
             mapper=mapper,
@@ -1325,9 +1326,23 @@ class ProjectService:
                 "protocolDbId": None,
                 "setsDeleted": 0,
                 "objectsDeleted": 0,
+                "filesDeleted": 0,
+                "filesSkipped": [],
+                "fileErrors": [],
                 "skipped": True,
                 "reason": "protocol_not_found",
             }
+
+        outputFiles = self._collectPersistedProtocolOutputFilesFromPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+        )
+
+        fileCleanup = self._deletePersistedProtocolOutputFilesFromFilesystem(
+            protocol=protocol,
+            rawFileNames=outputFiles,
+        )
 
         setRows = mapper.db.fetchAll(
             """
@@ -1449,8 +1464,181 @@ class ProjectService:
             "protocolDbId": protocolDbId,
             "setsDeleted": setsDeleted,
             "objectsDeleted": objectsDeleted,
+            "filesDeleted": fileCleanup.get("filesDeleted", 0),
+            "filesSkipped": fileCleanup.get("filesSkipped", []),
+            "fileErrors": fileCleanup.get("fileErrors", []),
             "skipped": False,
         }
+
+    def _collectPersistedProtocolOutputFilesFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[str]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT DISTINCT file_name
+              FROM (
+                    SELECT root.metadata ->> 'fileName' AS file_name
+                      FROM scipion_sets s
+                      LEFT JOIN scipion_objects root
+                        ON root.id = s."objectId"
+                     WHERE s."projectId" = %s
+                       AND s."protocolDbId" = %s
+
+                    UNION
+
+                    SELECT o.metadata ->> 'fileName' AS file_name
+                      FROM scipion_objects o
+                     WHERE o."projectId" = %s
+                       AND o."protocolDbId" = %s
+                       AND o."parentObjectId" IS NULL
+              ) files
+             WHERE file_name IS NOT NULL
+               AND file_name <> ''
+            """,
+            (
+                projectId,
+                protocolDbId,
+                projectId,
+                protocolDbId,
+            ),
+        )
+
+        result = []
+        seen = set()
+
+        for row in rows or []:
+            value = row.get("file_name") if isinstance(row, dict) else row[0]
+            value = str(value or "").strip()
+
+            if not value or value in seen:
+                continue
+
+            seen.add(value)
+            result.append(value)
+
+        return result
+
+    def _deletePersistedProtocolOutputFilesFromFilesystem(
+            self,
+            protocol: Any,
+            rawFileNames: List[str],
+    ) -> Dict[str, Any]:
+        projectPath = self._getCurrentProjectPath()
+
+        if not projectPath:
+            return {
+                "filesDeleted": 0,
+                "filesSkipped": [
+                    {
+                        "fileName": fileName,
+                        "reason": "missing_project_path",
+                    }
+                    for fileName in (rawFileNames or [])
+                ],
+                "fileErrors": [],
+            }
+
+        projectPath = os.path.abspath(str(projectPath))
+
+        workingDirPath = None
+        if protocol is not None:
+            try:
+                workingDirPath = protocol.getWorkingDir()
+            except Exception:
+                workingDirPath = None
+
+        if workingDirPath:
+            workingDirPath = str(workingDirPath)
+            if not os.path.isabs(workingDirPath):
+                workingDirPath = os.path.join(projectPath, workingDirPath)
+            workingDirPath = os.path.abspath(workingDirPath)
+
+        allowedRoot = workingDirPath or projectPath
+
+        filesDeleted = 0
+        filesSkipped = []
+        fileErrors = []
+
+        for rawFileName in rawFileNames or []:
+            resolvedPath = self._resolvePersistedOutputFileForDeletion(
+                rawFileName=rawFileName,
+                projectPath=projectPath,
+                allowedRoot=allowedRoot,
+            )
+
+            if resolvedPath is None:
+                filesSkipped.append({
+                    "fileName": str(rawFileName),
+                    "reason": "outside_allowed_root",
+                })
+                continue
+
+            candidatePaths = [
+                resolvedPath,
+                resolvedPath + "-wal",
+                resolvedPath + "-shm",
+                resolvedPath + "-journal",
+            ]
+
+            for candidatePath in candidatePaths:
+                if not os.path.exists(candidatePath):
+                    continue
+
+                try:
+                    if os.path.isdir(candidatePath) and not os.path.islink(candidatePath):
+                        shutil.rmtree(candidatePath)
+                    else:
+                        os.remove(candidatePath)
+
+                    filesDeleted += 1
+
+                except Exception as e:
+                    logger.exception(
+                        "Could not delete persisted protocol output file. path=%s",
+                        candidatePath,
+                    )
+                    fileErrors.append({
+                        "fileName": str(rawFileName),
+                        "path": candidatePath,
+                        "error": str(e),
+                    })
+
+        return {
+            "filesDeleted": filesDeleted,
+            "filesSkipped": filesSkipped,
+            "fileErrors": fileErrors,
+        }
+
+    def _resolvePersistedOutputFileForDeletion(
+            self,
+            rawFileName: str,
+            projectPath: str,
+            allowedRoot: str,
+    ) -> Optional[str]:
+        rawFileName = str(rawFileName or "").strip()
+
+        if not rawFileName:
+            return None
+
+        if os.path.isabs(rawFileName):
+            candidatePath = os.path.abspath(rawFileName)
+        else:
+            candidatePath = os.path.abspath(os.path.join(projectPath, rawFileName))
+
+        allowedRoot = os.path.abspath(allowedRoot)
+
+        try:
+            commonPath = os.path.commonpath([allowedRoot, candidatePath])
+        except Exception:
+            return None
+
+        if commonPath != allowedRoot:
+            return None
+
+        return candidatePath
 
     def _deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             self,
@@ -1461,6 +1649,8 @@ class ProjectService:
         cleanupItems = []
         totalSetsDeleted = 0
         totalObjectsDeleted = 0
+        totalFilesDeleted = 0
+        totalFileErrors = []
 
         for protocol in protocols or []:
             protocolId = None
@@ -1477,6 +1667,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                protocol=protocol,
             )
 
             cleanupItems.append({
@@ -1486,11 +1677,15 @@ class ProjectService:
 
             totalSetsDeleted += int(cleanupInfo.get("setsDeleted") or 0)
             totalObjectsDeleted += int(cleanupInfo.get("objectsDeleted") or 0)
+            totalFilesDeleted += int(cleanupInfo.get("filesDeleted") or 0)
+            totalFileErrors.extend(cleanupInfo.get("fileErrors") or [])
 
         return {
             "protocolsCount": len(cleanupItems),
             "setsDeleted": totalSetsDeleted,
             "objectsDeleted": totalObjectsDeleted,
+            "filesDeleted": totalFilesDeleted,
+            "fileErrors": totalFileErrors,
             "items": cleanupItems,
         }
 
