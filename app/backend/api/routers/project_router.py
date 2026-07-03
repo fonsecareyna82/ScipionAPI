@@ -473,6 +473,7 @@ def _normalizeErrors(detail: Any) -> List[str]:
 async def launchProtocol(
     projectId: int,
     request: ProtocolRequest,
+    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -481,7 +482,14 @@ async def launchProtocol(
     Launch, restart, schedule, or stop a protocol in a given project.
     """
     try:
-        project = service.getProjectById(mapper, projectId, currentUser)
+        project = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False if usePostgresqlRuntimeProject else True,
+            checkPid=False,
+            usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

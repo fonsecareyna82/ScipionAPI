@@ -6756,12 +6756,22 @@ class ProjectService:
                 detail=errors,
             )
 
-        self.syncProjectProtocolsAndDependencies(
-            mapper,
-            projectId,
-            refresh=True,
-            checkPid=False,
-        )
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
+        if not usingPostgresqlRuntime:
+            self.syncProjectProtocolsAndDependencies(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=False,
+            )
+        else:
+            logger.info(
+                "Skipping legacy pre-launch graph sync for PostgreSQL runtime protocol. "
+                "projectId=%s protocolId=%s",
+                projectId,
+                getattr(protocol, "getObjId", lambda: protocolId)(),
+            )
 
         try:
             if executeMode == "schedule":
@@ -6788,6 +6798,24 @@ class ProjectService:
                     )
 
                 self.currentProject.launchProtocol(protocol)
+
+            if usingPostgresqlRuntime:
+                return {
+                    "protocols": 1,
+                    "dependencies": 0,
+                    "inputRefs": 0,
+                    "steps": 0,
+                    "stepsProtocols": 0,
+                    "stepErrors": [],
+                    "outputsDeclared": 0,
+                    "outputs": 0,
+                    "outputsMissing": 0,
+                    "outputsByKind": {},
+                    "outputMissing": [],
+                    "outputErrors": [],
+                    "postgresqlRuntimeLaunch": True,
+                    "protocolId": str(getattr(protocol, "getObjId", lambda: protocolId)()),
+                }
 
             return self.syncProjectProtocolsAndDependencies(
                 mapper,
