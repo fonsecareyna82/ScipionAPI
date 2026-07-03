@@ -1005,9 +1005,11 @@ class PostgresqlFlatMapper(Mapper):
         This is needed when PostgreSQL acts as the runtime mapper and Scipion
         creates new Protocol/Object instances without an _objId yet.
         """
-        row = self.db.fetchOne(
-            """
-            WITH existing_max AS (
+        projectId = int(projectId)
+
+        with self.db.transaction():
+            maxRow = self.db.fetchOne(
+                """
                 SELECT COALESCE(MAX(value), 0)::integer AS value
                   FROM (
                         SELECT ("protocolId")::integer AS value
@@ -1022,23 +1024,42 @@ class PostgresqlFlatMapper(Mapper):
                          WHERE "projectId" = %s
                            AND "scipionObjId" IS NOT NULL
                   ) AS ids
-            ),
-            ensure_counter AS (
-                INSERT INTO project_object_id_counters ("projectId", "nextObjectId")
-                SELECT %s, existing_max.value + 1
-                  FROM existing_max
-                ON CONFLICT ("projectId") DO NOTHING
-                RETURNING "nextObjectId"
+                """,
+                (projectId, projectId),
             )
-            UPDATE project_object_id_counters counter
-               SET "nextObjectId" = GREATEST(counter."nextObjectId", existing_max.value + 1) + 1,
-                   "updatedAt" = NOW()
-              FROM existing_max
-             WHERE counter."projectId" = %s
-            RETURNING counter."nextObjectId" - 1 AS "objectId"
-            """,
-            (projectId, projectId, projectId, projectId),
-        )
+
+            existingMax = int((maxRow or {}).get("value") or 0)
+            nextCandidate = existingMax + 1
+
+            self.db.execute(
+                """
+                INSERT INTO project_object_id_counters (
+                    "projectId",
+                    "nextObjectId"
+                )
+                VALUES (%s, %s)
+                ON CONFLICT ("projectId")
+                DO UPDATE SET
+                    "nextObjectId" = GREATEST(
+                        project_object_id_counters."nextObjectId",
+                        EXCLUDED."nextObjectId"
+                    ),
+                    "updatedAt" = NOW()
+                """,
+                (projectId, nextCandidate),
+                commit=False,
+            )
+
+            row = self.db.fetchOne(
+                """
+                UPDATE project_object_id_counters
+                   SET "nextObjectId" = "nextObjectId" + 1,
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                 RETURNING "nextObjectId" - 1 AS "objectId"
+                """,
+                (projectId,),
+            )
 
         if not row or row.get("objectId") is None:
             raise RuntimeError(
