@@ -187,48 +187,12 @@ class PostgresqlRuntimeMapper(Mapper):
         return self.readFallbackMapper.updateFrom(obj)
 
     def selectById(self, objId):
-        logger.warning(
-            "PostgreSQLRuntimeMapper.selectById called. "
-            "projectId=%s objId=%s readFallback=%s project=%s",
-            self.projectId,
-            objId,
-            type(self.readFallbackMapper),
-            type(self.project),
-        )
-
         obj = self._selectByIdFromReadFallback(objId)
         if obj is not None:
-            logger.warning(
-                "PostgreSQLRuntimeMapper.selectById loaded object from fallback. "
-                "objId=%s obj=%s",
-                objId,
-                obj,
-            )
             return self._attachRuntimeContext(obj)
-
-        logger.warning(
-            "PostgreSQLRuntimeMapper.selectById fallback did not find objId=%s. "
-            "Trying PostgreSQL.",
-            objId,
-        )
-
         obj = self._selectProtocolByIdFromPostgresql(objId)
         if obj is not None:
-            logger.warning(
-                "PostgreSQLRuntimeMapper.selectById loaded protocol from PostgreSQL. "
-                "objId=%s obj=%s class=%s",
-                objId,
-                obj,
-                obj.__class__.__name__,
-            )
             return self._attachRuntimeContext(obj)
-
-        logger.warning(
-            "PostgreSQLRuntimeMapper.selectById did not find object. "
-            "projectId=%s objId=%s",
-            self.projectId,
-            objId,
-        )
         return None
 
     def _selectByIdFromReadFallback(self, objId):
@@ -274,14 +238,6 @@ class PostgresqlRuntimeMapper(Mapper):
             protocolId,
         )
 
-        logger.warning(
-            "PostgreSQL protocol row lookup result. projectId=%s protocolId=%s found=%s row=%s",
-            self.projectId,
-            protocolId,
-            bool(row),
-            row,
-        )
-
         if not row:
             return None
 
@@ -323,11 +279,6 @@ class PostgresqlRuntimeMapper(Mapper):
         return self._attachRuntimeContextList(result)
 
     def _buildProtocolFromPostgresqlRow(self, row):
-        logger.warning(
-            "Building protocol from PostgreSQL row. projectId=%s row=%s",
-            self.projectId,
-            row,
-        )
 
         protocolClassName = str(row.get("protocolClassName") or "").strip()
         if not protocolClassName:

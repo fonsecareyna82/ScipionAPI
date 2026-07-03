@@ -914,13 +914,6 @@ class ProjectService:
                 detail=f"Protocol not found in Scipion runtime: {protocolId}",
             )
 
-        logger.info(
-            "Resolving Scipion protocol runtime object. protocolId=%s currentProject=%s mapper=%s",
-            protocolId,
-            type(self.currentProject),
-            type(getattr(self.currentProject, "mapper", None)),
-        )
-
         return protocol
 
     def _tryGetScipionProtocolByRuntimeId(
@@ -1866,13 +1859,6 @@ class ProjectService:
             currentProtocolIds.add(nodeIdText)
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
             protocolsByScipionId[nodeIdText] = protocol
-
-        logger.warning(
-            "PostgreSQL protocol purge candidate. projectId=%s currentProtocolIds=%s preservePgOnly=%s",
-            projectId,
-            sorted(currentProtocolIds),
-            self._shouldPreservePostgresqlOnlyProtocols(),
-        )
 
         # 2) Do not purge PostgreSQL protocol rows while PostgreSQL runtime mapper
         # is active/migrating.
