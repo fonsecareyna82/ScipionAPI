@@ -691,13 +691,7 @@ class ProjectService:
 
         status = protocol.getStatus()
 
-        if status == STATUS_FINISHED:
-            return True
-
-        if status in (STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED):
-            return True
-
-        return False
+        return status == STATUS_FINISHED
 
     def _safeCall(self, obj: Any, methodName: str, default: Any = None) -> Any:
         try:
@@ -2855,6 +2849,75 @@ class ProjectService:
 
         return {"success": True}
 
+    def syncActivePostgresqlRuntimeProtocolStatuses(
+            self,
+            mapper,
+            projectId: int,
+    ) -> dict:
+        """
+        Refresh only active PostgreSQL runtime protocol statuses from logs/run.db.
+
+        This is intentionally status-only:
+          - no outputs
+          - no object persistence
+          - no full graph sync
+        """
+        rows = mapper.db.fetchAll(
+            """
+            SELECT "protocolId", status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND LOWER(COALESCE(status, '')) IN ('launched', 'running', 'scheduled')
+             ORDER BY "protocolId"
+            """,
+            (projectId,),
+        )
+
+        report = {
+            "checked": len(rows or []),
+            "updated": [],
+            "unchanged": [],
+            "errors": [],
+        }
+
+        for row in rows or []:
+            protocolId = row.get("protocolId")
+            previousStatus = row.get("status")
+
+            try:
+                result = self.syncPostgresqlRuntimeProtocolStatusFromRunDb(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+
+                newStatus = result.get("status")
+
+                item = {
+                    "protocolId": str(protocolId),
+                    "previousStatus": previousStatus,
+                    "status": newStatus,
+                }
+
+                if str(previousStatus or "").strip().lower() != str(newStatus or "").strip().lower():
+                    report["updated"].append(item)
+                else:
+                    report["unchanged"].append(item)
+
+            except Exception as e:
+                logger.debug(
+                    "Could not refresh PostgreSQL runtime protocol status. projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                    exc_info=True,
+                )
+                report["errors"].append({
+                    "protocolId": str(protocolId),
+                    "error": str(e),
+                })
+
+        return report
+
     def getProjectById(
             self,
             mapper: PostgresqlFlatMapper,
@@ -2897,7 +2960,6 @@ class ProjectService:
                     enableReadFallback=True,
                     enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
-
         if validateConsistency:
             try:
                 from app.backend.api.services.project_consistency_service import (
@@ -2936,6 +2998,37 @@ class ProjectService:
                     "ok": False,
                     "error": str(e),
                 }
+
+        postgresqlRuntimeStatusSync = None
+
+        if self._shouldUsePostgresqlRuntimeProject(usePostgresqlRuntimeProject):
+            self._replaceCurrentProjectWithPostgresqlProject(
+                mapper=mapper,
+                projectId=projectId,
+                enableReadFallback=True,
+                enableWriteFallback=usePostgresqlRuntimeWriteFallback,
+            )
+
+            if refresh:
+                postgresqlRuntimeStatusSync = self.syncActivePostgresqlRuntimeProtocolStatuses(
+                    mapper=mapper,
+                    projectId=projectId,
+                )
+
+                if postgresqlRuntimeStatusSync.get("updated"):
+                    logger.info(
+                        "Refreshed PostgreSQL runtime protocol statuses while loading project. "
+                        "projectId=%s report=%s",
+                        projectId,
+                        postgresqlRuntimeStatusSync,
+                    )
+                if postgresqlRuntimeStatusSync.get("updated"):
+                    project = self.loadProjectFromPostgresql(
+                        dbProj=dbProj,
+                        mapper=mapper,
+                    )
+        if postgresqlRuntimeStatusSync is not None and isinstance(project, dict):
+            project["postgresqlRuntimeStatusSync"] = postgresqlRuntimeStatusSync
 
         return project
 
