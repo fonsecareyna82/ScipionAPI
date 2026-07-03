@@ -3218,6 +3218,7 @@ class ProjectService:
                 mapper,
                 refresh=refresh,
                 checkPid=checkPid,
+                syncPostgresqlGraph=False,
             )
 
             if usingPostgresqlRuntimeProject:
@@ -4789,7 +4790,14 @@ class ProjectService:
             "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
         }
 
-    def loadProject(self, dbProj: dict, mapper: PostgresqlFlatMapper = None, refresh=True, checkPid=True) -> dict:
+    def loadProject(
+            self,
+            dbProj: dict,
+            mapper: PostgresqlFlatMapper = None,
+            refresh=True,
+            checkPid=True,
+            syncPostgresqlGraph: bool = True,
+    ) -> dict:
         projPath = Path(dbProj['name'])
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
         self.currentProject.load(dbPath=self.currentProject.getDbPath())
@@ -4863,7 +4871,7 @@ class ProjectService:
         protocolRows = pgGraphData["protocolRows"]
         persistedOutputsByProtocolId = pgGraphData["persistedOutputsByProtocolId"]
 
-        if mapper is not None:
+        if mapper is not None and syncPostgresqlGraph:
             dbProtocolCount = len(protocolRows)
             dbEdgeCount = sum(len(v.get("parents") or []) for v in dependencyMap.values())
 

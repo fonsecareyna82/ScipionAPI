@@ -580,9 +580,28 @@ async def saveProtocol(
         protocol, errors = service.saveProtocol(mapper, projectId, protocolId, protocolClassName, params)
         errors = errors or []
 
-        return {"status": 0 if not errors else 1,
-                "errors": [str(err) for err in errors],
-                "workflow": []}
+        workflow = []
+
+        if not errors and usePostgresqlRuntimeProject:
+            refreshedProject = service.getProjectById(
+                mapper,
+                projectId,
+                currentUser,
+                refresh=False,
+                checkPid=False,
+                loadWorkflowFromPostgresql=True,
+                usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+                usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+            )
+
+            if refreshedProject:
+                workflow = refreshedProject.get("protocols", [])
+
+        return {
+            "status": 0 if not errors else 1,
+            "errors": [str(err) for err in errors],
+            "workflow": workflow,
+        }
 
     except HTTPException as e:
         return JSONResponse(
