@@ -892,14 +892,17 @@ class ProjectService:
             )
 
         try:
-            logger.warning(
-                "Runtime protocol lookup. protocolId=%s currentProject=%s mapper=%s",
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to load protocol from currentProject. "
+                "protocolId=%s currentProject=%s mapper=%s",
                 protocolId,
                 type(self.currentProject),
                 type(getattr(self.currentProject, "mapper", None)),
             )
-            protocol = self.currentProject.getProtocol(int(protocolId))
-        except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",

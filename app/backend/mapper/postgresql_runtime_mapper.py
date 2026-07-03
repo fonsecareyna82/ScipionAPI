@@ -187,14 +187,48 @@ class PostgresqlRuntimeMapper(Mapper):
         return self.readFallbackMapper.updateFrom(obj)
 
     def selectById(self, objId):
+        logger.warning(
+            "PostgreSQLRuntimeMapper.selectById called. "
+            "projectId=%s objId=%s readFallback=%s project=%s",
+            self.projectId,
+            objId,
+            type(self.readFallbackMapper),
+            type(self.project),
+        )
+
         obj = self._selectByIdFromReadFallback(objId)
         if obj is not None:
+            logger.warning(
+                "PostgreSQLRuntimeMapper.selectById loaded object from fallback. "
+                "objId=%s obj=%s",
+                objId,
+                obj,
+            )
             return self._attachRuntimeContext(obj)
+
+        logger.warning(
+            "PostgreSQLRuntimeMapper.selectById fallback did not find objId=%s. "
+            "Trying PostgreSQL.",
+            objId,
+        )
 
         obj = self._selectProtocolByIdFromPostgresql(objId)
         if obj is not None:
+            logger.warning(
+                "PostgreSQLRuntimeMapper.selectById loaded protocol from PostgreSQL. "
+                "objId=%s obj=%s class=%s",
+                objId,
+                obj,
+                obj.__class__.__name__,
+            )
             return self._attachRuntimeContext(obj)
 
+        logger.warning(
+            "PostgreSQLRuntimeMapper.selectById did not find object. "
+            "projectId=%s objId=%s",
+            self.projectId,
+            objId,
+        )
         return None
 
     def _selectByIdFromReadFallback(self, objId):
@@ -202,7 +236,7 @@ class PostgresqlRuntimeMapper(Mapper):
             return None
 
         try:
-            return self.readFallbackMapper.selectById(objId)
+            obj = self.readFallbackMapper.selectById(objId)
         except Exception:
             logger.debug(
                 "Object %s was not found in read fallback mapper. Trying PostgreSQL.",
@@ -211,14 +245,41 @@ class PostgresqlRuntimeMapper(Mapper):
             )
             return None
 
+        if obj is None:
+            logger.debug(
+                "Object %s was not found in read fallback mapper. Trying PostgreSQL.",
+                objId,
+            )
+            return None
+
+        return obj
+
     def _selectProtocolByIdFromPostgresql(self, objId):
         protocolId = self._toOptionalInt(objId)
         if protocolId is None:
+            logger.warning(
+                "Cannot select PostgreSQL protocol: objId is not an int. objId=%s",
+                objId,
+            )
             return None
+
+        logger.warning(
+            "Looking for PostgreSQL protocol row. projectId=%s protocolId=%s",
+            self.projectId,
+            protocolId,
+        )
 
         row = self.flatMapper.getProjectProtocolByProtocolId(
             self.projectId,
             protocolId,
+        )
+
+        logger.warning(
+            "PostgreSQL protocol row lookup result. projectId=%s protocolId=%s found=%s row=%s",
+            self.projectId,
+            protocolId,
+            bool(row),
+            row,
         )
 
         if not row:
@@ -262,14 +323,24 @@ class PostgresqlRuntimeMapper(Mapper):
         return self._attachRuntimeContextList(result)
 
     def _buildProtocolFromPostgresqlRow(self, row):
+        logger.warning(
+            "Building protocol from PostgreSQL row. projectId=%s row=%s",
+            self.projectId,
+            row,
+        )
+
         protocolClassName = str(row.get("protocolClassName") or "").strip()
         if not protocolClassName:
+            logger.warning(
+                "Cannot build PostgreSQL protocol: empty protocolClassName. row=%s",
+                row,
+            )
             return None
 
         protocolClass = self._resolveProtocolClass(protocolClassName)
         if protocolClass is None:
             logger.warning(
-                "Cannot build protocol from PostgreSQL: protocol class not found. "
+                "Cannot build PostgreSQL protocol: class not found. "
                 "projectId=%s protocolId=%s protocolClassName=%s",
                 self.projectId,
                 row.get("protocolId"),
@@ -286,6 +357,15 @@ class PostgresqlRuntimeMapper(Mapper):
         self._attachRuntimeContext(protocol)
         self._applyStoredProtocolParams(protocol, row.get("params") or {})
         self._ensureProtocolWorkingDir(protocol)
+
+        logger.warning(
+            "Built PostgreSQL protocol object. projectId=%s protocolId=%s protocol=%s class=%s workingDir=%s",
+            self.projectId,
+            protocolId,
+            protocol,
+            protocol.__class__.__name__,
+            getattr(protocol, "getWorkingDir", lambda: None)(),
+        )
 
         return protocol
 
@@ -898,15 +978,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return None
 
-    def _instantiateProtocol(self, protocolClass):
-        if self.project is not None:
-            try:
-                return protocolClass(project=self.project)
-            except TypeError:
-                pass
-
-        return protocolClass()
-
     def _toOptionalInt(self, value):
         if value in (None, ""):
             return None
@@ -918,15 +989,16 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def _instantiateProtocol(self, protocolClass):
         if self.project is not None:
-            try:
-                return protocolClass(project=self.project)
-            except TypeError:
-                pass
+            newProtocol = getattr(self.project, "newProtocol", None)
+            if callable(newProtocol):
+                protocol = newProtocol(protocolClass)
+                protocol.setMapper(self)
+                protocol.setProject(self.project)
+                return protocol
 
-        try:
-            return protocolClass()
-        except TypeError:
-            return protocolClass(project=self.project)
+        protocol = protocolClass()
+        self._attachRuntimeContext(protocol)
+        return protocol
 
     def _toOptionalInt(self, value) -> Optional[int]:
         if value in (None, ""):
