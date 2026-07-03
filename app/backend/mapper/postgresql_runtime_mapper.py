@@ -124,11 +124,11 @@ class PostgresqlRuntimeMapper(Mapper):
             self._storeProtocol(obj)
             return
 
-        if isinstance(obj, ScipionSet) or self._isSetLike(obj):
-            self._storeSetObject(obj)
+        if self._shouldSkipInternalRuntimeObject(obj):
             return
 
-        if self._shouldSkipInternalRuntimeObject(obj):
+        if isinstance(obj, ScipionSet) or self._isSetLike(obj):
+            self._storeSetObject(obj)
             return
 
         if isinstance(obj, ScipionObject):
@@ -1174,6 +1174,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         for attrName in ("_objName", "_objLabel"):
             value = getattr(obj, attrName, None)
+
             try:
                 value = value.get() if hasattr(value, "get") else value
             except Exception:
@@ -1189,6 +1190,20 @@ class PostgresqlRuntimeMapper(Mapper):
 
         internalNames = {
             "_jobId",
+            "_pid",
+            "_outputs",
         }
 
-        return any(name in internalNames for name in candidateNames)
+        for rawName in candidateNames:
+            name = str(rawName or "").strip()
+            if not name:
+                continue
+
+            if name in internalNames:
+                return True
+
+            shortName = name.split(".")[-1]
+            if shortName in internalNames:
+                return True
+
+        return False
