@@ -377,11 +377,19 @@ def loadProtocols(
 async def loadProtocol(
     projectId: int,
     protocolId: int,
+    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False,
+        checkPid=False,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+    )
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -526,7 +534,7 @@ async def launchProtocol(
 async def saveProtocol(
     projectId: int,
     request: ProtocolRequest,
-    usePostgresqlRuntimeProject: bool = Query(False),
+    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),

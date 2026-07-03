@@ -892,6 +892,12 @@ class ProjectService:
             )
 
         try:
+            logger.warning(
+                "Runtime protocol lookup. protocolId=%s currentProject=%s mapper=%s",
+                protocolId,
+                type(self.currentProject),
+                type(getattr(self.currentProject, "mapper", None)),
+            )
             protocol = self.currentProject.getProtocol(int(protocolId))
         except Exception as e:
             raise HTTPException(
@@ -904,6 +910,13 @@ class ProjectService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Protocol not found in Scipion runtime: {protocolId}",
             )
+
+        logger.info(
+            "Resolving Scipion protocol runtime object. protocolId=%s currentProject=%s mapper=%s",
+            protocolId,
+            type(self.currentProject),
+            type(getattr(self.currentProject, "mapper", None)),
+        )
 
         return protocol
 
@@ -1715,6 +1728,10 @@ class ProjectService:
 
         return result
 
+    def _shouldPreservePostgresqlOnlyProtocols(self) -> bool:
+        value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1847,11 +1864,26 @@ class ProjectService:
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
             protocolsByScipionId[nodeIdText] = protocol
 
-        # 2) Purge stale protocol rows that are no longer present in the real graph
-        mapper.deleteProjectProtocolsNotInProtocolIds(
+        logger.warning(
+            "PostgreSQL protocol purge candidate. projectId=%s currentProtocolIds=%s preservePgOnly=%s",
             projectId,
             sorted(currentProtocolIds),
+            self._shouldPreservePostgresqlOnlyProtocols(),
         )
+
+        # 2) Do not purge PostgreSQL protocol rows while PostgreSQL runtime mapper
+        # is active/migrating.
+        #
+        # PostgreSQL can now contain protocols that do not exist in project.sqlite.
+        # If we purge rows based only on the legacy Scipion/SQLite graph, loading or
+        # refreshing a project can delete valid PostgreSQL-only protocols.
+        purgedProtocols = 0
+
+        if not self._shouldPreservePostgresqlOnlyProtocols():
+            purgedProtocols = mapper.deleteProjectProtocolsNotInProtocolIds(
+                projectId,
+                sorted(currentProtocolIds),
+            )
 
         # 3) Build edges parent -> child using DB ids
         edges: List[Tuple[int, int]] = []
@@ -1908,6 +1940,7 @@ class ProjectService:
             "outputsByKind": outputResultsByKind,
             "outputMissing": outputSyncMissing,
             "outputErrors": outputSyncErrors,
+            "purgedProtocols": int(purgedProtocols or 0),
         }
 
     def syncProjectGraphAfterMutation(

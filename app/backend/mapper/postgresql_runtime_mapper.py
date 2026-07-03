@@ -216,30 +216,10 @@ class PostgresqlRuntimeMapper(Mapper):
         if protocolId is None:
             return None
 
-        getter = getattr(self.flatMapper, "getProjectProtocolByProtocolId", None)
-        if callable(getter):
-            row = getter(self.projectId, protocolId)
-        else:
-            row = self.db.fetchOne(
-                """
-                SELECT
-                    id,
-                    "projectId",
-                    "protocolId",
-                    "protocolClassName",
-                    status,
-                    params,
-                    "parentIds",
-                    "childIds",
-                    "createdAt",
-                    "updatedAt"
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND "protocolId" = %s
-                 LIMIT 1
-                """,
-                (self.projectId, str(protocolId)),
-            )
+        row = self.flatMapper.getProjectProtocolByProtocolId(
+            self.projectId,
+            protocolId,
+        )
 
         if not row:
             return None
@@ -281,7 +261,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return self._attachRuntimeContextList(result)
 
-    def _buildProtocolFromPostgresqlRow(self, row: Dict[str, Any]) -> Optional[Protocol]:
+    def _buildProtocolFromPostgresqlRow(self, row):
         protocolClassName = str(row.get("protocolClassName") or "").strip()
         if not protocolClassName:
             return None
@@ -304,7 +284,6 @@ class PostgresqlRuntimeMapper(Mapper):
             self._setObjId(protocol, protocolId)
 
         self._attachRuntimeContext(protocol)
-        self._applyStoredProtocolStatus(protocol, row.get("status"))
         self._applyStoredProtocolParams(protocol, row.get("params") or {})
         self._ensureProtocolWorkingDir(protocol)
 
@@ -705,20 +684,14 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is None:
             return obj
 
-        try:
-            if isinstance(obj, Protocol):
-                obj.setMapper(self)
+        if isinstance(obj, Protocol):
+            obj.setMapper(self)
 
-                if self.project is not None:
-                    try:
-                        obj.setProject(self.project)
-                    except Exception:
-                        logger.debug(
-                            "Could not attach PostgreSQL project to protocol.",
-                            exc_info=True,
-                        )
-        except Exception:
-            pass
+            if self.project is not None:
+                try:
+                    obj.setProject(self.project)
+                except Exception:
+                    pass
 
         return obj
 
@@ -906,29 +879,42 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if domain is None:
             try:
+                from pyworkflow.config import Config
                 domain = Config.getDomain()
             except Exception:
                 domain = None
 
-        protocols = {}
-        if domain is not None:
-            try:
-                protocols = domain.getProtocols() or {}
-            except Exception:
-                protocols = {}
+        if domain is None:
+            return None
 
-        protocolClass = protocols.get(protocolClassName)
-        if protocolClass is not None:
-            return protocolClass
+        protocols = domain.getProtocols() or {}
 
-        for key, value in protocols.items():
-            try:
-                if str(key).lower() == protocolClassName.lower():
-                    return value
-            except Exception:
-                continue
+        if protocolClassName in protocols:
+            return protocols[protocolClassName]
+
+        for name, protocolClass in protocols.items():
+            if str(name).lower() == protocolClassName.lower():
+                return protocolClass
 
         return None
+
+    def _instantiateProtocol(self, protocolClass):
+        if self.project is not None:
+            try:
+                return protocolClass(project=self.project)
+            except TypeError:
+                pass
+
+        return protocolClass()
+
+    def _toOptionalInt(self, value):
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            return None
 
     def _instantiateProtocol(self, protocolClass):
         if self.project is not None:
@@ -987,7 +973,7 @@ class PostgresqlRuntimeMapper(Mapper):
                     exc_info=True,
                 )
 
-    def _applyStoredProtocolParams(self, protocol: Protocol, rawParams):
+    def _applyStoredProtocolParams(self, protocol, rawParams):
         params = self._normalizeStoredProtocolParams(rawParams)
 
         for key, storedValue in params.items():
@@ -995,35 +981,63 @@ class PostgresqlRuntimeMapper(Mapper):
             if value is None:
                 continue
 
-            self._applyStoredProtocolParam(protocol, key, value)
+            param = None
+            try:
+                param = protocol.getParam(key)
+            except Exception:
+                param = None
 
-    def _normalizeStoredProtocolParams(self, rawParams) -> Dict[str, Any]:
+            if param is not None:
+                setter = getattr(param, "set", None)
+                if callable(setter):
+                    try:
+                        setter(value)
+                    except Exception:
+                        logger.debug(
+                            "Could not restore PostgreSQL protocol param. key=%s value=%s",
+                            key,
+                            value,
+                            exc_info=True,
+                        )
+
+                try:
+                    protocol.setAttributeValue(key, value)
+                except Exception:
+                    pass
+                continue
+
+            attr = getattr(protocol, key, None)
+            attrSetter = getattr(attr, "set", None)
+            if callable(attrSetter):
+                try:
+                    attrSetter(value)
+                    continue
+                except Exception:
+                    pass
+
+            try:
+                setattr(protocol, key, value)
+            except Exception:
+                pass
+
+    def _normalizeStoredProtocolParams(self, rawParams):
         if rawParams is None:
             return {}
 
         if isinstance(rawParams, str):
             try:
+                import json
                 rawParams = json.loads(rawParams)
             except Exception:
                 return {}
 
-        if not isinstance(rawParams, dict):
-            return {}
-
-        return rawParams
+        return rawParams if isinstance(rawParams, dict) else {}
 
     def _extractStoredProtocolParamValue(self, storedValue):
         if isinstance(storedValue, dict):
-            for key in (
-                    "editableValue",
-                    "value",
-                    "objValue",
-                    "_value",
-                    "default",
-            ):
+            for key in ("editableValue", "value", "objValue", "_value", "default"):
                 if key in storedValue:
                     return storedValue.get(key)
-
             return None
 
         return storedValue
@@ -1087,23 +1101,18 @@ class PostgresqlRuntimeMapper(Mapper):
                 exc_info=True,
             )
 
-    def _ensureProtocolWorkingDir(self, protocol: Protocol) -> None:
+    def _ensureProtocolWorkingDir(self, protocol):
         if self.project is None:
-            return
-
-        protocolId = self._getObjId(protocol)
-        if protocolId is None:
             return
 
         try:
             workingDirName = self.project.getProtWorkingDir(protocol)
-            workingDir = self.project.getPath(PROJECT_RUNS, workingDirName)
+            workingDir = self.project.getPath("Runs", workingDirName)
             protocol.setWorkingDir(workingDir)
         except Exception:
             logger.debug(
-                "Could not restore PostgreSQL protocol workingDir. "
-                "projectId=%s protocolId=%s",
+                "Could not restore PostgreSQL protocol workingDir. projectId=%s protocolId=%s",
                 self.projectId,
-                protocolId,
+                getattr(protocol, "getObjId", lambda: None)(),
                 exc_info=True,
             )
