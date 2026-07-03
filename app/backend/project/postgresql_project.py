@@ -27,6 +27,7 @@ import logging
 import os
 from typing import Optional
 
+from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -82,6 +83,17 @@ class PostgresqlProject(ScipionProject):
         to self.mapper can go to PostgreSQL.
         """
         sqlitePath = self._normalizeSqlitePath(sqliteFn)
+        # Scipion still executes protocols from their own logs/run.db.
+        # Only the project mapper is replaced by PostgreSQL. Protocol run
+        # databases must remain regular SQLite databases because
+        # runProtocolMain() loads them with the standard Project class.
+        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
+            logger.info(
+                "Creating legacy SQLite mapper for protocol runtime db: %s",
+                sqlitePath,
+            )
+            return ScipionProject.createMapper(self, sqlitePath)
+
 
         readFallbackMapper = self._createFallbackMapper(
             sqlitePath=sqlitePath,
