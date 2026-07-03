@@ -6580,20 +6580,89 @@ class ProjectService:
         viewers = self.findViewersWeb(protocol)
 
         # Inputs
+        # Inputs
         inputs = []
+
         for key, attr in protocol.iterInputAttributes():
-            inp = {}
-            inp['inputName'] = key
-            inp['paramClass'] = 'PointerParam'
-            inp['pointerClass'] = attr.get().getClassName() if attr and attr.get() else ""
+            inp = {
+                "inputName": key,
+                "paramClass": "PointerParam",
+                "pointerClass": "",
+                "info": "",
+                "value": "",
+                "parentId": None,
+            }
+
+            targetObj = None
+            objValue = None
+            extended = None
+
             try:
-                inp['info'] = str(attr.get())
+                targetObj = attr.get() if attr else None
             except Exception:
-                inp['info'] = ""
-            inp['value'] = f"{attr.getObjValue()}.{attr.getExtended()}"
-            inp['parentId'] = attr.getObjValue().getObjId()
+                targetObj = None
+
+            try:
+                objValue = attr.getObjValue() if attr else None
+            except Exception:
+                objValue = None
+
+            try:
+                extended = attr.getExtended() if attr else None
+            except Exception:
+                extended = None
+
+            # PostgreSQL runtime can restore a pointer param as raw string:
+            #   "1.outputTiltSeriesM"
+            # Do not assume attr.get() is always a Scipion object.
+            if isinstance(targetObj, str):
+                rawValue = targetObj.strip()
+                parentId, outputName = self._splitPointerValue(rawValue)
+
+                inp["info"] = rawValue
+                inp["value"] = rawValue
+
+                if parentId:
+                    try:
+                        inp["parentId"] = int(parentId)
+                    except Exception:
+                        inp["parentId"] = parentId
+
+                if outputName and not extended:
+                    extended = outputName
+
+            elif targetObj is not None:
+                getClassName = getattr(targetObj, "getClassName", None)
+                if callable(getClassName):
+                    try:
+                        inp["pointerClass"] = getClassName() or ""
+                    except Exception:
+                        inp["pointerClass"] = ""
+
+                try:
+                    inp["info"] = str(targetObj)
+                except Exception:
+                    inp["info"] = ""
+
+            if objValue is not None:
+                getObjId = getattr(objValue, "getObjId", None)
+                if callable(getObjId):
+                    try:
+                        parentObjId = getObjId()
+                        if parentObjId is not None:
+                            inp["parentId"] = parentObjId
+                    except Exception:
+                        pass
+
+            if not inp["value"]:
+                if inp["parentId"] is not None and extended:
+                    inp["value"] = "%s.%s" % (str(inp["parentId"]), str(extended))
+                elif isinstance(targetObj, str):
+                    inp["value"] = targetObj
+
             inputs.append(inp)
-        info['inputs'] = inputs
+
+        info["inputs"] = inputs
 
         # Outputs
         outputs = []
@@ -7194,11 +7263,6 @@ class ProjectService:
                                     lambda: None,
                                 )() if pointer is not None else None,
                             )
-
-                            param.default.set(val)
-
-                            pointer = getattr(protocol, key)
-                            pointer.setExtended(output)
 
                             logger.info(
                                 "[INFO] Pointer param %s set from parent %s output %s",
@@ -7858,6 +7922,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     protocol=protocol,
+                    params=params,
                 )
 
                 logger.info(
