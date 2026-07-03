@@ -154,8 +154,8 @@ class PostgresqlRuntimeMapper(Mapper):
             namePrefix = self._getNamePrefix(obj)
 
         try:
-            attr._objName = joinExt(namePrefix, key)
-            attr._objParentId = obj.getObjId()
+            self._setObjName(attr, joinExt(namePrefix, key))
+            self._setObjParentId(attr, obj.getObjId())
         except Exception:
             logger.debug(
                 "Could not assign PostgreSQL child metadata. parent=%s key=%s child=%s",
@@ -599,7 +599,7 @@ class PostgresqlRuntimeMapper(Mapper):
         objId = int(allocator(self.projectId))
 
         try:
-            obj._objId = objId
+            self._setObjId(obj, objId)
         except Exception as exc:
             raise RuntimeError("Could not assign _objId=%s to %s" % (objId, obj)) from exc
 
@@ -778,3 +778,27 @@ class PostgresqlRuntimeMapper(Mapper):
         if value is None:
             return ""
         return str(value)
+
+    def _setObjId(self, obj, objId: int) -> None:
+        setter = getattr(obj, "setObjId", None)
+        if callable(setter):
+            setter(int(objId))
+            return
+
+        obj._objId = int(objId)
+
+    def _setObjName(self, obj, name: str) -> None:
+        setter = getattr(obj, "setObjName", None)
+        if callable(setter):
+            setter(str(name))
+            return
+
+        obj._objName = str(name)
+
+    def _setObjParentId(self, obj, parentId: int) -> None:
+        setter = getattr(obj, "setObjParentId", None)
+        if callable(setter):
+            setter(int(parentId))
+            return
+
+        obj._objParentId = int(parentId)

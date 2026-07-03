@@ -251,17 +251,6 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
-        self.db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_object_id_counters (
-                "projectId" INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-                "nextObjectId" INTEGER NOT NULL DEFAULT 1,
-                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
-        )
-
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS protocol_steps (
                 id SERIAL PRIMARY KEY,
