@@ -172,6 +172,7 @@ def importProject(
 def getProject(
     projectId: int,
     validateConsistency: bool = Query(False),
+    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -184,9 +185,15 @@ def getProject(
         checkPid=True,
         validateConsistency=validateConsistency,
         loadWorkflowFromPostgresql=not validateConsistency,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
     )
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     return project
 
 
