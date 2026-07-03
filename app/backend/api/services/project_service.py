@@ -7220,7 +7220,10 @@ class ProjectService:
 
                     protocol.setAttributeValue(key, newInputs)
                 elif isinstance(param, PointerParam):
-                    parentId, rawValue = self._splitPointerValue(value)
+                    pointerValues = self._normalizeRuntimePointerParamValues(value)
+                    pointerValue = pointerValues[0] if pointerValues else None
+
+                    parentId, rawValue = self._splitPointerValue(pointerValue)
 
                     if rawValue:
                         try:
@@ -7438,6 +7441,25 @@ class ProjectService:
                     "objectClassName": outputInfo.get("className"),
                     "objectId": outputInfo.get("objectId"),
                 })
+
+        logger.info(
+            "Runtime dependency sync from params. projectId=%s childProtocolId=%s protocolDbId=%s "
+            "parentProtocolDbIds=%s parentProtocolIds=%s inputRefs=%s rawParams=%s",
+            projectId,
+            protocolId,
+            protocolDbId,
+            parentProtocolDbIds,
+            parentProtocolIds,
+            inputRefs,
+            {
+                k: v
+                for k, v in (params or {}).items()
+                if isinstance(
+                protocol.getParam(k),
+                (PointerParam, MultiPointerParam, RelationParam)
+            )
+            },
+        )
 
         dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
             mapper=mapper,
@@ -8374,24 +8396,66 @@ class ProjectService:
                     paramValue = valueList
                     paramDict["readOnly"] = True
 
+
                 elif isinstance(param, PointerParam):
                     parentId = None
-                    if protVar.get() is not None:
-                        parentId = protVar.get().getObjParentId()
-                        paramValue = "%s.%s" % (parentId,
-                                                  protVar.getExtended()) if protVar.getExtended() else ""
-                    else:
+                    paramValue = None
+                    try:
+                        targetObj = protVar.get() if protVar is not None else None
+                    except Exception:
+                        targetObj = None
+                    try:
+                        objValue = protVar.getObjValue() if protVar is not None else None
+                    except Exception:
+                        objValue = None
+                    try:
+                        extended = protVar.getExtended() if protVar is not None else None
+                    except Exception:
+                        extended = None
+
+                    if isinstance(targetObj, str):
+                        # PostgreSQL runtime pointer can arrive as a raw value:
+                        #   "1.outputTSMovies"
+                        parentIdText, outputName = self._splitPointerValue(targetObj)
+                        if parentIdText:
+                            try:
+                                parentId = int(parentIdText)
+                            except Exception:
+                                parentId = parentIdText
+
+                        if outputName and not extended:
+                            extended = outputName
+
+                        paramValue = targetObj
+
+                    elif targetObj is not None:
+                        # Normal Scipion pointer: protVar.get() returns the pointed output object.
                         try:
-                            parentId = protVar.getObjParentId()
-                            paramValue = "%s.%s" % (parentId,
-                                                    protVar.getExtended()) if protVar.getExtended() else ""
-                        except Exception as e:
-                            paramValue = None
+                            parentId = targetObj.getObjParentId()
+                        except Exception:
+                            parentId = None
+                        if parentId is None and objValue is not None:
+                            try:
+                                parentId = objValue.getObjId()
+                            except Exception:
+                                parentId = None
 
-                    if protVar.get() is not None:
+                        paramValue = "%s.%s" % (parentId, extended) if parentId is not None and extended else ""
+
+                    elif objValue is not None:
+                        # Pointer object exists but target output is not resolved.
+                        try:
+                            parentId = objValue.getObjId()
+                        except Exception:
+                            parentId = None
+                        paramValue = "%s.%s" % (parentId, extended) if parentId is not None and extended else ""
+                    else:
+                        paramValue = None
+
+                    if parentId is not None:
                         paramDict["parentId"] = parentId
-                    paramDict['readOnly'] = True
 
+                    paramDict["readOnly"] = True
                 else:
                     paramValue = protVar.get() if protVar.get() is not None else None
 
