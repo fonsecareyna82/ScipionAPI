@@ -489,6 +489,7 @@ async def launchProtocol(
             refresh=False if usePostgresqlRuntimeProject else True,
             checkPid=False,
             usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+            usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
         )
         if not project:
             return JSONResponse(

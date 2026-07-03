@@ -94,18 +94,13 @@ class PostgresqlProject(ScipionProject):
             )
             return ScipionProject.createMapper(self, sqlitePath)
 
-
         readFallbackMapper = self._createFallbackMapper(
             sqlitePath=sqlitePath,
             enabled=self.enableReadFallback,
             label="read",
         )
 
-        writeFallbackMapper = self._createFallbackMapper(
-            sqlitePath=sqlitePath,
-            enabled=self.enableWriteFallback,
-            label="write",
-        )
+        writeFallbackMapper = readFallbackMapper if self.enableWriteFallback else None
 
         self._readFallbackMapper = readFallbackMapper
         self._writeFallbackMapper = writeFallbackMapper
