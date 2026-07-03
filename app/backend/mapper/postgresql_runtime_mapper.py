@@ -24,13 +24,16 @@
 # *
 # ******************************************************************************
 import logging
+import json
 from typing import Any, Dict, Iterable, List, Optional
 
 from pyworkflow.mapper.mapper import Mapper
+from pyworkflow.project.project import PROJECT_RUNS
 from pyworkflow.protocol.protocol import Protocol
 from pyworkflow.object import Object as ScipionObject
 from pyworkflow.object import Set as ScipionSet
 from pyworkflow.utils import joinExt, replaceExt
+from pyworkflow.config import Config
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
@@ -62,12 +65,14 @@ class PostgresqlRuntimeMapper(Mapper):
             dictClasses=None,
             readFallbackMapper=None,
             writeFallbackMapper=None,
+            project=None,
     ):
         super().__init__(dictClasses=dictClasses)
 
         self.flatMapper = flatMapper
         self.db = flatMapper.db
         self.projectId = int(projectId)
+        self.project = project
 
         # Temporary bridges while we migrate reads/runtime fully.
         self.readFallbackMapper = readFallbackMapper
@@ -182,15 +187,64 @@ class PostgresqlRuntimeMapper(Mapper):
         return self.readFallbackMapper.updateFrom(obj)
 
     def selectById(self, objId):
-        if self.readFallbackMapper is not None:
-            obj = self.readFallbackMapper.selectById(objId)
-            self._attachRuntimeContext(obj)
-            return obj
+        obj = self._selectByIdFromReadFallback(objId)
+        if obj is not None:
+            return self._attachRuntimeContext(obj)
 
-        raise NotImplementedError(
-            "PostgreSQL selectById is not implemented yet. "
-            "This will be the next migration step."
-        )
+        obj = self._selectProtocolByIdFromPostgresql(objId)
+        if obj is not None:
+            return self._attachRuntimeContext(obj)
+
+        return None
+
+    def _selectByIdFromReadFallback(self, objId):
+        if self.readFallbackMapper is None:
+            return None
+
+        try:
+            return self.readFallbackMapper.selectById(objId)
+        except Exception:
+            logger.debug(
+                "Object %s was not found in read fallback mapper. Trying PostgreSQL.",
+                objId,
+                exc_info=True,
+            )
+            return None
+
+    def _selectProtocolByIdFromPostgresql(self, objId):
+        protocolId = self._toOptionalInt(objId)
+        if protocolId is None:
+            return None
+
+        getter = getattr(self.flatMapper, "getProjectProtocolByProtocolId", None)
+        if callable(getter):
+            row = getter(self.projectId, protocolId)
+        else:
+            row = self.db.fetchOne(
+                """
+                SELECT
+                    id,
+                    "projectId",
+                    "protocolId",
+                    "protocolClassName",
+                    status,
+                    params,
+                    "parentIds",
+                    "childIds",
+                    "createdAt",
+                    "updatedAt"
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND "protocolId" = %s
+                 LIMIT 1
+                """,
+                (self.projectId, str(protocolId)),
+            )
+
+        if not row:
+            return None
+
+        return self._buildProtocolFromPostgresqlRow(row)
 
     def exists(self, objId):
         row = self.db.fetchOne(
@@ -226,6 +280,35 @@ class PostgresqlRuntimeMapper(Mapper):
             return self._attachRuntimeContextIterator(result)
 
         return self._attachRuntimeContextList(result)
+
+    def _buildProtocolFromPostgresqlRow(self, row: Dict[str, Any]) -> Optional[Protocol]:
+        protocolClassName = str(row.get("protocolClassName") or "").strip()
+        if not protocolClassName:
+            return None
+
+        protocolClass = self._resolveProtocolClass(protocolClassName)
+        if protocolClass is None:
+            logger.warning(
+                "Cannot build protocol from PostgreSQL: protocol class not found. "
+                "projectId=%s protocolId=%s protocolClassName=%s",
+                self.projectId,
+                row.get("protocolId"),
+                protocolClassName,
+            )
+            return None
+
+        protocol = self._instantiateProtocol(protocolClass)
+
+        protocolId = self._toOptionalInt(row.get("protocolId"))
+        if protocolId is not None:
+            self._setObjId(protocol, protocolId)
+
+        self._attachRuntimeContext(protocol)
+        self._applyStoredProtocolStatus(protocol, row.get("status"))
+        self._applyStoredProtocolParams(protocol, row.get("params") or {})
+        self._ensureProtocolWorkingDir(protocol)
+
+        return protocol
 
     def selectAllBatch(self, objectFilter=None):
         if self.readFallbackMapper is None:
@@ -625,6 +708,15 @@ class PostgresqlRuntimeMapper(Mapper):
         try:
             if isinstance(obj, Protocol):
                 obj.setMapper(self)
+
+                if self.project is not None:
+                    try:
+                        obj.setProject(self.project)
+                    except Exception:
+                        logger.debug(
+                            "Could not attach PostgreSQL project to protocol.",
+                            exc_info=True,
+                        )
         except Exception:
             pass
 
@@ -802,3 +894,216 @@ class PostgresqlRuntimeMapper(Mapper):
             return
 
         obj._objParentId = int(parentId)
+
+    def _resolveProtocolClass(self, protocolClassName: str):
+        domain = None
+
+        if self.project is not None:
+            try:
+                domain = self.project.getDomain()
+            except Exception:
+                domain = None
+
+        if domain is None:
+            try:
+                domain = Config.getDomain()
+            except Exception:
+                domain = None
+
+        protocols = {}
+        if domain is not None:
+            try:
+                protocols = domain.getProtocols() or {}
+            except Exception:
+                protocols = {}
+
+        protocolClass = protocols.get(protocolClassName)
+        if protocolClass is not None:
+            return protocolClass
+
+        for key, value in protocols.items():
+            try:
+                if str(key).lower() == protocolClassName.lower():
+                    return value
+            except Exception:
+                continue
+
+        return None
+
+    def _instantiateProtocol(self, protocolClass):
+        if self.project is not None:
+            try:
+                return protocolClass(project=self.project)
+            except TypeError:
+                pass
+
+        try:
+            return protocolClass()
+        except TypeError:
+            return protocolClass(project=self.project)
+
+    def _toOptionalInt(self, value) -> Optional[int]:
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            pass
+
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return None
+
+    def _applyStoredProtocolStatus(self, protocol: Protocol, statusValue):
+        if statusValue in (None, ""):
+            return
+
+        statusText = str(statusValue)
+
+        setter = getattr(protocol, "setStatus", None)
+        if callable(setter):
+            try:
+                setter(statusText)
+                return
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol status using setStatus. status=%s",
+                    statusText,
+                    exc_info=True,
+                )
+
+        statusAttr = getattr(protocol, "status", None)
+        setMethod = getattr(statusAttr, "set", None)
+        if callable(setMethod):
+            try:
+                setMethod(statusText)
+                return
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol status using status.set(). status=%s",
+                    statusText,
+                    exc_info=True,
+                )
+
+    def _applyStoredProtocolParams(self, protocol: Protocol, rawParams):
+        params = self._normalizeStoredProtocolParams(rawParams)
+
+        for key, storedValue in params.items():
+            value = self._extractStoredProtocolParamValue(storedValue)
+            if value is None:
+                continue
+
+            self._applyStoredProtocolParam(protocol, key, value)
+
+    def _normalizeStoredProtocolParams(self, rawParams) -> Dict[str, Any]:
+        if rawParams is None:
+            return {}
+
+        if isinstance(rawParams, str):
+            try:
+                rawParams = json.loads(rawParams)
+            except Exception:
+                return {}
+
+        if not isinstance(rawParams, dict):
+            return {}
+
+        return rawParams
+
+    def _extractStoredProtocolParamValue(self, storedValue):
+        if isinstance(storedValue, dict):
+            for key in (
+                    "editableValue",
+                    "value",
+                    "objValue",
+                    "_value",
+                    "default",
+            ):
+                if key in storedValue:
+                    return storedValue.get(key)
+
+            return None
+
+        return storedValue
+
+    def _applyStoredProtocolParam(self, protocol: Protocol, key: str, value):
+        param = None
+
+        try:
+            param = protocol.getParam(key)
+        except Exception:
+            param = None
+
+        if param is not None:
+            setter = getattr(param, "set", None)
+            if callable(setter):
+                try:
+                    setter(value)
+                except Exception:
+                    logger.debug(
+                        "Could not restore protocol param using param.set(). "
+                        "param=%s value=%s",
+                        key,
+                        value,
+                        exc_info=True,
+                    )
+
+            try:
+                protocol.setAttributeValue(key, value)
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol attribute value. param=%s value=%s",
+                    key,
+                    value,
+                    exc_info=True,
+                )
+
+            return
+
+        attr = getattr(protocol, key, None)
+        attrSetter = getattr(attr, "set", None)
+        if callable(attrSetter):
+            try:
+                attrSetter(value)
+                return
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol attr using attr.set(). "
+                    "attr=%s value=%s",
+                    key,
+                    value,
+                    exc_info=True,
+                )
+
+        try:
+            setattr(protocol, key, value)
+        except Exception:
+            logger.debug(
+                "Could not setattr protocol param. attr=%s value=%s",
+                key,
+                value,
+                exc_info=True,
+            )
+
+    def _ensureProtocolWorkingDir(self, protocol: Protocol) -> None:
+        if self.project is None:
+            return
+
+        protocolId = self._getObjId(protocol)
+        if protocolId is None:
+            return
+
+        try:
+            workingDirName = self.project.getProtWorkingDir(protocol)
+            workingDir = self.project.getPath(PROJECT_RUNS, workingDirName)
+            protocol.setWorkingDir(workingDir)
+        except Exception:
+            logger.debug(
+                "Could not restore PostgreSQL protocol workingDir. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                protocolId,
+                exc_info=True,
+            )
