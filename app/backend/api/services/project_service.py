@@ -7173,12 +7173,18 @@ class ProjectService:
 
                             param.set(val)
                             protocol.setAttributeValue(key, parentProtocol)
+                            param.default.set(val)
+
                             pointer = getattr(protocol, key, None)
+                            if pointer is not None:
+                                pointer.setExtended(output)
 
                             logger.info(
-                                "DEBUG pointer after set. childProtocol=%s key=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s",
-                                getattr(protocol, "getObjId", lambda: None)(),
+                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s",
                                 key,
+                                getattr(protocol, "getObjId", lambda: None)(),
+                                parentScipionProtocolId,
+                                output,
                                 pointer,
                                 getattr(pointer, "getObjValue", lambda: None)() if pointer is not None else None,
                                 getattr(pointer, "getExtended", lambda: None)() if pointer is not None else None,
@@ -7240,13 +7246,14 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             protocol,
+            params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Sync only the input refs and dependency edges for one PostgreSQL-runtime protocol.
+        Sync input refs and dependency edges for one PostgreSQL-runtime protocol.
 
-        This is needed after saving a protocol with PointerParam/MultiPointerParam,
-        because the PostgreSQL workflow graph is built from protocol_dependencies,
-        not from the live Scipion graph.
+        Important:
+          - Dependency edges are resolved from raw params, not only from Scipion Pointer objects.
+          - The workflow graph loaded from PostgreSQL uses protocol_dependencies.
         """
         protocolId = self._getScipionObjectId(protocol)
         if protocolId is None:
@@ -7279,37 +7286,79 @@ class ProjectService:
                 "reason": "protocol_not_found",
             }
 
-        parentProtocolDbIds = []
-        inputRefs = []
+        parentProtocolDbIds: List[int] = []
+        parentProtocolIds: List[int] = []
+        inputRefs: List[Dict[str, Any]] = []
 
-        try:
-            inputAttributes = list(protocol.iterInputAttributes())
-        except Exception:
-            inputAttributes = []
+        params = params or {}
 
-        for inputName, pointer in inputAttributes:
-            pointerItems = self._iterProtocolInputPointers(pointer)
+        for inputName, rawParamValue in params.items():
+            try:
+                param = protocol.getParam(inputName)
+            except Exception:
+                param = None
 
-            for itemIndex, pointerItem in enumerate(pointerItems):
-                targetObj = self._getPointerTargetObject(pointerItem)
-                if targetObj is None:
+            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
+            pointerValues = self._normalizeRuntimePointerParamValues(rawParamValue)
+
+            for itemIndex, pointerValue in enumerate(pointerValues):
+                parentId, outputName = self._splitPointerValue(pointerValue)
+
+                if not parentId or not outputName:
                     continue
 
-                parentProtocolId = self._getPointerParentProtocolId(pointerItem, targetObj)
-                if parentProtocolId is None:
+                try:
+                    parentScipionProtocolId = self._resolveScipionProtocolId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=parentId,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not resolve parent protocol id from pointer param. "
+                        "projectId=%s childProtocolId=%s inputName=%s value=%s",
+                        projectId,
+                        protocolId,
+                        inputName,
+                        pointerValue,
+                    )
                     continue
 
                 parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
                     mapper=mapper,
                     projectId=projectId,
-                    protocolId=parentProtocolId,
+                    protocolId=parentScipionProtocolId,
                 )
 
                 if parentProtocolDbId is None:
+                    logger.warning(
+                        "Parent protocol row not found while syncing runtime dependency. "
+                        "projectId=%s childProtocolId=%s parentProtocolId=%s inputName=%s outputName=%s",
+                        projectId,
+                        protocolId,
+                        parentScipionProtocolId,
+                        inputName,
+                        outputName,
+                    )
                     continue
 
-                if int(parentProtocolDbId) not in parentProtocolDbIds:
-                    parentProtocolDbIds.append(int(parentProtocolDbId))
+                parentProtocolDbId = int(parentProtocolDbId)
+                parentScipionProtocolId = int(parentScipionProtocolId)
+
+                if parentProtocolDbId not in parentProtocolDbIds:
+                    parentProtocolDbIds.append(parentProtocolDbId)
+
+                if parentScipionProtocolId not in parentProtocolIds:
+                    parentProtocolIds.append(parentScipionProtocolId)
+
+                outputInfo = self._getPersistedOutputInfoForInputRef(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbId=parentProtocolDbId,
+                    outputName=outputName,
+                )
 
                 inputRefs.append({
                     "projectId": int(projectId),
@@ -7317,12 +7366,11 @@ class ProjectService:
                     "protocolId": str(protocolId),
                     "inputName": str(inputName),
                     "itemIndex": int(itemIndex),
-                    "parentProtocolDbId": int(parentProtocolDbId),
-                    "parentProtocolId": str(parentProtocolId),
-                    "parentOutputName": self._getPointerOutputName(pointerItem),
-                    "objectClassName": self._getScipionClassName(targetObj),
-                    "objectId": str(self._getScipionObjectId(targetObj))
-                    if self._getScipionObjectId(targetObj) is not None else None,
+                    "parentProtocolDbId": parentProtocolDbId,
+                    "parentProtocolId": str(parentScipionProtocolId),
+                    "parentOutputName": str(outputName),
+                    "objectClassName": outputInfo.get("className"),
+                    "objectId": outputInfo.get("objectId"),
                 })
 
         dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
@@ -7339,15 +7387,157 @@ class ProjectService:
             refs=inputRefs,
         )
 
+        self._updatePostgresqlProtocolParentIds(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+            parentProtocolIds=parentProtocolIds,
+        )
+
         return {
             "protocolId": str(protocolId),
             "protocolDbId": int(protocolDbId),
             "parents": parentProtocolDbIds,
+            "parentProtocolIds": parentProtocolIds,
             "inputRefs": inputRefs,
             "dependencies": dependenciesSaved,
             "inputRefsSaved": inputRefsSaved,
             "skipped": False,
         }
+
+    def _normalizeRuntimePointerParamValues(self, rawValue: Any) -> List[str]:
+        """
+        Normalize PointerParam/MultiPointerParam values coming from the frontend.
+
+        Supported shapes:
+          "1.outputTiltSeriesM"
+          {"editableValue": "1.outputTiltSeriesM"}
+          {"value": "1.outputTiltSeriesM"}
+          [{"editableValue": "1.outputA"}, {"editableValue": "2.outputB"}]
+        """
+        if rawValue in (None, ""):
+            return []
+
+        if isinstance(rawValue, dict):
+            for key in ("editableValue", "value", "default", "objValue"):
+                value = rawValue.get(key)
+                if value not in (None, "", []):
+                    return self._normalizeRuntimePointerParamValues(value)
+
+            parentId = rawValue.get("parentId") or rawValue.get("protocolId")
+            outputName = (
+                    rawValue.get("outputName")
+                    or rawValue.get("extended")
+                    or rawValue.get("name")
+            )
+
+            if parentId not in (None, "") and outputName not in (None, ""):
+                return [f"{parentId}.{outputName}"]
+
+            return []
+
+        if isinstance(rawValue, (list, tuple, set)):
+            result: List[str] = []
+
+            for item in rawValue:
+                result.extend(self._normalizeRuntimePointerParamValues(item))
+
+            return result
+
+        valueText = str(rawValue or "").strip()
+        return [valueText] if valueText else []
+
+    def _getPersistedOutputInfoForInputRef(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                s."objectId"::text AS "objectId",
+                s."setClassName" AS "className"
+              FROM scipion_sets s
+             WHERE s."projectId" = %s
+               AND s."protocolDbId" = %s
+               AND s."outputName" = %s
+
+            UNION ALL
+
+            SELECT
+                o."scipionObjId"::text AS "objectId",
+                o."className" AS "className"
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = %s
+               AND o."parentObjectId" IS NULL
+               AND (o.path = %s OR o.name = %s)
+
+             LIMIT 1
+            """,
+            (
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                outputName,
+            ),
+        )
+
+        if not row:
+            return {
+                "objectId": None,
+                "className": None,
+            }
+
+        return {
+            "objectId": row.get("objectId"),
+            "className": row.get("className"),
+        }
+
+    def _updatePostgresqlProtocolParentIds(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            parentProtocolIds: List[int],
+    ) -> None:
+        cleanParentIds = []
+        seen = set()
+
+        for parentId in parentProtocolIds or []:
+            try:
+                parentId = int(parentId)
+            except Exception:
+                continue
+
+            if parentId <= 0:
+                continue
+
+            if parentId in seen:
+                continue
+
+            seen.add(parentId)
+            cleanParentIds.append(parentId)
+
+        mapper.db.execute(
+            """
+            UPDATE protocols
+               SET "parentIds" = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND id = %s
+            """,
+            (
+                cleanParentIds,
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
 
     def _replacePostgresqlDependenciesForProtocol(
             self,
