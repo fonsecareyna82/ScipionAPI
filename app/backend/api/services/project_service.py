@@ -7081,17 +7081,37 @@ class ProjectService:
                     launchedProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
 
                     launchStatus = self._safeCall(protocol, "getStatus", None)
-
-                    # Sometimes the in-memory object may still report "new" immediately after
-                    # launch, but the API action has already been accepted by Scipion.
                     if str(launchStatus or "").strip().lower() in ("", "new"):
                         launchStatus = STATUS_LAUNCHED
 
-                    mapper.updateProjectProtocolStatus(
+                    try:
+                        protocol.setStatus(launchStatus)
+                    except Exception:
+                        statusAttr = getattr(protocol, "status", None)
+                        setter = getattr(statusAttr, "set", None)
+                        if callable(setter):
+                            setter(launchStatus)
+
+                    self.currentProject._storeProtocol(protocol)
+
+                    row = mapper.getProjectProtocolByProtocolId(
                         projectId=projectId,
                         protocolId=launchedProtocolId,
-                        statusValue=launchStatus,
                     )
+
+                    logger.warning(
+                        "PostgreSQL protocol row after launch store. projectId=%s protocolId=%s found=%s rowStatus=%s",
+                        projectId,
+                        launchedProtocolId,
+                        bool(row),
+                        row.get("status") if row else None,
+                    )
+
+                    if not row:
+                        raise RuntimeError(
+                            "Protocol launch was accepted but PostgreSQL row was not created. "
+                            f"projectId={projectId} protocolId={launchedProtocolId}"
+                        )
 
             if usingPostgresqlRuntime:
                 try:
