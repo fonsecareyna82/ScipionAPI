@@ -3195,6 +3195,7 @@ class ProjectService:
                     mapper,
                     refresh=refresh,
                     checkPid=checkPid,
+                    syncPostgresqlGraph=False,
                 )
 
                 self._replaceCurrentProjectWithPostgresqlProject(
@@ -7481,21 +7482,15 @@ class ProjectService:
 
         logger.info(
             "Runtime dependency sync from params. projectId=%s childProtocolId=%s protocolDbId=%s "
-            "parentProtocolDbIds=%s parentProtocolIds=%s inputRefs=%s rawParams=%s",
+            "parentProtocolDbIds=%s parentProtocolIds=%s inputRefs=%s detectedPointerParams=%s allParams=%s",
             projectId,
             protocolId,
             protocolDbId,
             parentProtocolDbIds,
             parentProtocolIds,
             inputRefs,
-            {
-                k: v
-                for k, v in (params or {}).items()
-                if isinstance(
-                protocol.getParam(k),
-                (PointerParam, MultiPointerParam, RelationParam)
-            )
-            },
+            detectedPointerParams,
+            params,
         )
 
         dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
@@ -8031,12 +8026,17 @@ class ProjectService:
                     dependencySync,
                 )
 
-            except Exception:
+
+            except Exception as e:
                 logger.exception(
                     "Failed to sync PostgreSQL runtime protocol inputs/dependencies after save. "
                     "projectId=%s protocolId=%s",
                     projectId,
                     getattr(protocol, "getObjId", lambda: protocolId)(),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to sync PostgreSQL runtime protocol dependencies after save: {e}",
                 )
 
         if setToSave and not self._currentProjectUsesPostgresqlRuntimeMapper():
