@@ -2251,16 +2251,23 @@ class ProjectService:
                 persistedSqliteReferences.add(part)
                 persistedSqliteReferences.add(os.path.basename(part))
 
+                if os.path.isabs(part):
+                    persistedSqliteReferences.add(os.path.abspath(part))
+                    continue
+
+                # Values like Runs/001175_ProtImportTsMovies/TiltSeriesM.sqlite
+                # are project-relative, not workingDir-relative.
                 try:
-                    if projectPath and not os.path.isabs(part):
+                    if projectPath:
                         persistedSqliteReferences.add(
                             os.path.abspath(os.path.join(str(projectPath), part))
                         )
                 except Exception:
                     pass
 
+                # Values like TiltSeriesM.sqlite are workingDir-relative.
                 try:
-                    if workingDir and not os.path.isabs(part):
+                    if workingDir and not str(part).startswith("Runs/"):
                         persistedSqliteReferences.add(
                             os.path.abspath(os.path.join(str(workingDir), part))
                         )
