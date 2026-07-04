@@ -232,7 +232,7 @@ class PostgresqlRuntimeMapper(Mapper):
             )
             return None
 
-        logger.warning(
+        logger.debug(
             "Looking for PostgreSQL protocol row. projectId=%s protocolId=%s",
             self.projectId,
             protocolId,
@@ -314,7 +314,7 @@ class PostgresqlRuntimeMapper(Mapper):
         self._applyStoredProtocolParams(protocol, row.get("params") or {})
         self._ensureProtocolWorkingDir(protocol)
 
-        logger.warning(
+        logger.debug(
             "Built PostgreSQL protocol object. projectId=%s protocolId=%s protocol=%s class=%s workingDir=%s",
             self.projectId,
             protocolId,
