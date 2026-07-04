@@ -8928,6 +8928,8 @@ class ProjectService:
 
             repairedMapper = False
 
+            persistedMapperRepair = False
+
             if outputObj is not None:
                 repairedMapper = self._repairPostgresqlRuntimeSetMapperInfo(
                     mapper=mapper,
@@ -8935,6 +8937,35 @@ class ProjectService:
                     outputObj=outputObj,
                     outputInfo=outputInfo,
                 )
+
+                if repairedMapper:
+                    try:
+                        # Important:
+                        # The execution process may reload the parent protocol/output from
+                        # the runtime DB, so an in-memory repair is not enough.
+                        self.currentProject._storeProtocol(parentProtocol)
+                        persistedMapperRepair = True
+
+                        logger.info(
+                            "Persisted repaired PostgreSQL runtime Set mapper metadata. "
+                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
+                            projectId,
+                            parentScipionProtocolId,
+                            parentProtocolDbId,
+                            outputName,
+                            outputObj,
+                        )
+
+                    except Exception:
+                        logger.exception(
+                            "Could not persist repaired PostgreSQL runtime Set mapper metadata. "
+                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
+                            projectId,
+                            parentScipionProtocolId,
+                            parentProtocolDbId,
+                            outputName,
+                            outputObj,
+                        )
 
             logger.debug(
                 "Resolved runtime output from PostgreSQL. "
@@ -8955,6 +8986,7 @@ class ProjectService:
                 "source": "postgresql",
                 "hasRuntimeAttribute": hasRuntimeAttribute,
                 "repairedMapper": repairedMapper,
+                "persistedMapperRepair": persistedMapperRepair,
                 "outputInfo": outputInfo,
             }
 
