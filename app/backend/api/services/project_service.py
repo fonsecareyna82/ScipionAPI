@@ -8510,113 +8510,34 @@ class ProjectService:
             parentProtocol,
             outputName: str,
             outputInfo: Dict[str, Any],
+            mapper=None,
     ):
         """
-        Attach a lightweight PostgreSQL-backed output placeholder to the parent protocol.
+        Attach a PostgreSQL-backed output proxy to the parent protocol.
 
-        This is not the final PostgreSQL-backed Scipion Set implementation.
-        It is a runtime bridge so Pointer(parentProtocol, extended=outputName)
-        can resolve the output from PostgreSQL metadata instead of requiring the
-        parent protocol to expose a live sqlite-backed attribute.
+        This intentionally replaces the legacy sqlite-backed output attribute when
+        PostgreSQL has the output persisted. The goal is that child PointerParams
+        resolve through PostgreSQL instead of the original parent output sqlite.
         """
-
-        class PostgresqlRuntimeOutputPlaceholder:
-            def __init__(self, parent, name, info):
-                self._parent = parent
-                self._name = name
-                self._info = info or {}
-                self._properties = self._info.get("properties") or {}
-
-            def getObjId(self):
-                value = self._info.get("objectId")
-
-                try:
-                    return int(value)
-                except Exception:
-                    return value
-
-            def getClassName(self):
-                return self._info.get("className")
-
-            def getObjParent(self):
-                return self._parent
-
-            def getObjParentId(self):
-                try:
-                    return self._parent.getObjId()
-                except Exception:
-                    return None
-
-            def getName(self):
-                return self._name
-
-            def getObjLabel(self):
-                return self._name
-
-            def getFileName(self):
-                # Important: this is intentionally not the source of truth anymore.
-                return self._properties.get("fileName")
-
-            def getSize(self):
-                value = self._info.get("itemsCount")
-
-                try:
-                    return int(value)
-                except Exception:
-                    return 0
-
-            def isEmpty(self):
-                return self.getSize() == 0
-
-            def isStreamClosed(self):
-                streamState = (
-                        self._properties.get("streamState")
-                        or self._properties.get("_streamState")
-                )
-
-                try:
-                    return int(streamState) == 2
-                except Exception:
-                    return True
-
-            def getSamplingRate(self):
-                value = (
-                        self._properties.get("samplingRate")
-                        or self._properties.get("_samplingRate")
-                )
-
-                try:
-                    return float(value)
-                except Exception:
-                    return None
-
-            def getPostgresqlRuntimeInfo(self):
-                return self._info
-
-            def __bool__(self):
-                return True
-
-            def __repr__(self):
-                return (
-                        "<PostgresqlRuntimeOutputPlaceholder "
-                        "name=%s class=%s objectId=%s items=%s>"
-                        % (
-                            self._name,
-                            self.getClassName(),
-                            self.getObjId(),
-                            self.getSize(),
-                        )
-                )
-
-        placeholder = PostgresqlRuntimeOutputPlaceholder(
-            parent=parentProtocol,
-            name=outputName,
-            info=outputInfo,
+        from app.backend.utils.postgresql_runtime_output_adapter import (
+            PostgresqlRuntimeOutputProxy,
         )
 
-        setattr(parentProtocol, outputName, placeholder)
+        db = getattr(mapper, "db", None)
 
-        return placeholder
+        if db is None:
+            raise ValueError("PostgreSQL mapper/db is required to attach runtime output proxy")
+
+        proxy = PostgresqlRuntimeOutputProxy(
+            db=db,
+            parent=parentProtocol,
+            outputName=outputName,
+            outputInfo=outputInfo,
+        )
+
+        setattr(parentProtocol, outputName, proxy)
+
+        return proxy
 
     def _resolveParentOutputForRuntimePointer(
             self,
@@ -8648,27 +8569,31 @@ class ProjectService:
             hasRuntimeAttribute = False
 
         if outputInfo.get("exists"):
-            if not hasRuntimeAttribute:
-                self._attachPostgresqlRuntimeOutputPlaceholder(
-                    parentProtocol=parentProtocol,
-                    outputName=outputName,
-                    outputInfo=outputInfo,
-                )
+            proxy = self._attachPostgresqlRuntimeOutputPlaceholder(
+                parentProtocol=parentProtocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=mapper,
+            )
 
-                logger.debug(
-                    "Attached PostgreSQL runtime output placeholder. "
-                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputInfo=%s",
-                    projectId,
-                    parentScipionProtocolId,
-                    parentProtocolDbId,
-                    outputName,
-                    outputInfo,
-                )
+            logger.debug(
+                "Attached PostgreSQL runtime output proxy. "
+                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                "outputName=%s hadRuntimeAttribute=%s proxy=%s outputInfo=%s",
+                projectId,
+                parentScipionProtocolId,
+                parentProtocolDbId,
+                outputName,
+                hasRuntimeAttribute,
+                proxy,
+                outputInfo,
+            )
 
             return {
                 "exists": True,
-                "source": "postgresql",
+                "source": "postgresql_proxy",
                 "hasRuntimeAttribute": hasRuntimeAttribute,
+                "proxyAttached": True,
                 "outputInfo": outputInfo,
             }
 
