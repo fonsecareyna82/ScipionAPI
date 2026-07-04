@@ -3094,6 +3094,34 @@ class ProjectService:
                     "status": newStatus,
                 }
 
+                normalizedNewStatus = str(newStatus or "").strip().lower()
+
+                if normalizedNewStatus in ("finished", "interactive"):
+                    try:
+                        runtimeSync = self.syncPostgresqlRuntimeProtocol(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                            registerOutputs=True,
+                        )
+
+                        item["runtimeSync"] = runtimeSync
+                        item["outputsRegistered"] = runtimeSync.get("outputs", 0)
+                        item["outputsDeclared"] = runtimeSync.get("outputsDeclared", 0)
+                        item["outputErrors"] = runtimeSync.get("outputErrors", [])
+
+                    except Exception as e:
+                        logger.exception(
+                            "Failed to sync PostgreSQL runtime outputs after terminal status. "
+                            "projectId=%s protocolId=%s status=%s",
+                            projectId,
+                            protocolId,
+                            newStatus,
+                        )
+
+                        item["outputsRegistered"] = 0
+                        item["outputSyncError"] = str(e)
+
                 if str(previousStatus or "").strip().lower() != str(newStatus or "").strip().lower():
                     report["updated"].append(item)
                 else:
