@@ -7480,7 +7480,7 @@ class ProjectService:
                     "objectId": outputInfo.get("objectId"),
                 })
 
-        logger.info(
+        logger.debug(
             "Runtime dependency sync from params. projectId=%s childProtocolId=%s protocolDbId=%s "
             "parentProtocolDbIds=%s parentProtocolIds=%s inputRefs=%s detectedPointerParams=%s allParams=%s",
             projectId,
