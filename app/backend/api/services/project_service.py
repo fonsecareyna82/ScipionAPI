@@ -8752,6 +8752,141 @@ class ProjectService:
 
         return report
 
+    def _repairPostgresqlRuntimeSetMapperInfo(
+            self,
+            mapper,
+            projectId: int,
+            outputObj,
+            outputInfo: Dict[str, Any],
+    ) -> bool:
+        """
+        Repair Scipion Set mapper metadata using PostgreSQL stored properties.
+
+        Some outputs loaded from run.db can exist as Set objects but without
+        mapper path/prefix initialized. Protocol execution then fails with:
+
+            Set.load: mapper path and prefix not set.
+
+        We do not replace the output object. We only restore the legacy sqlite
+        mapper path from PostgreSQL properties so the Scipion Set can load normally.
+        """
+        if outputObj is None:
+            return False
+
+        properties = (outputInfo or {}).get("properties") or {}
+
+        if not isinstance(properties, dict):
+            return False
+
+        mapperPath = (
+                properties.get("_mapperPath")
+                or properties.get("fileName")
+                or properties.get("legacyMapperPath")
+                or properties.get("legacyFileName")
+        )
+
+        if not mapperPath:
+            return False
+
+        mapperPath = str(mapperPath).split(",")[0].strip()
+
+        if not mapperPath:
+            return False
+
+        if not os.path.isabs(mapperPath):
+            projectPath = None
+
+            try:
+                projectPath = self._getCurrentProjectPath()
+            except Exception:
+                projectPath = None
+
+            if not projectPath and mapper is not None:
+                try:
+                    row = mapper.db.fetchOne(
+                        """
+                        SELECT name
+                          FROM projects
+                         WHERE id = %s
+                        """,
+                        (int(projectId),),
+                    )
+                    if row:
+                        projectPath = row.get("name")
+                except Exception:
+                    projectPath = None
+
+            if projectPath:
+                mapperPath = os.path.abspath(os.path.join(str(projectPath), mapperPath))
+
+        if not mapperPath:
+            return False
+
+        # If the object already has a filename, do not force it unless mapper path is missing.
+        currentFileName = None
+
+        try:
+            currentFileName = outputObj.getFileName()
+        except Exception:
+            currentFileName = None
+
+        repaired = False
+
+        if not currentFileName:
+            try:
+                setter = getattr(outputObj, "setFileName", None)
+                if callable(setter):
+                    setter(mapperPath)
+                    repaired = True
+            except Exception:
+                logger.debug(
+                    "Could not set filename on PostgreSQL runtime output object. object=%s mapperPath=%s",
+                    outputObj,
+                    mapperPath,
+                    exc_info=True,
+                )
+
+        # Defensive repair for pyworkflow Set internals.
+        for attrName, attrValue in (
+                ("_mapperPath", mapperPath),
+                ("_mapperPrefix", ""),
+        ):
+            try:
+                attr = getattr(outputObj, attrName, None)
+
+                if hasattr(attr, "set"):
+                    currentValue = None
+
+                    try:
+                        currentValue = attr.get()
+                    except Exception:
+                        currentValue = None
+
+                    if currentValue in (None, ""):
+                        attr.set(attrValue)
+                        repaired = True
+
+                elif attr in (None, ""):
+                    setattr(outputObj, attrName, attrValue)
+                    repaired = True
+
+            except Exception:
+                logger.debug(
+                    "Could not repair %s on PostgreSQL runtime output object. object=%s value=%s",
+                    attrName,
+                    outputObj,
+                    attrValue,
+                    exc_info=True,
+                )
+
+        logger.debug(
+            "PostgreSQL runtime Set mapper repair. object=%s mapperPath=%s repaired=%s",
+            outputObj,
+            mapperPath,
+            repaired,
+        )
+
+        return repaired
 
     def _resolveParentOutputForRuntimePointer(
             self,
@@ -8784,27 +8919,34 @@ class ProjectService:
             hasRuntimeAttribute = False
 
         if outputInfo.get("exists"):
-            proxy = None
+            outputObj = None
 
-            if attachProxy:
-                proxy = self._attachPostgresqlRuntimeOutputPlaceholder(
-                    parentProtocol=parentProtocol,
-                    outputName=outputName,
-                    outputInfo=outputInfo,
+            try:
+                outputObj = getattr(parentProtocol, outputName, None)
+            except Exception:
+                outputObj = None
+
+            repairedMapper = False
+
+            if outputObj is not None:
+                repairedMapper = self._repairPostgresqlRuntimeSetMapperInfo(
                     mapper=mapper,
+                    projectId=projectId,
+                    outputObj=outputObj,
+                    outputInfo=outputInfo,
                 )
 
             logger.debug(
                 "Resolved runtime output from PostgreSQL. "
                 "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                "outputName=%s hadRuntimeAttribute=%s attachProxy=%s proxy=%s outputInfo=%s",
+                "outputName=%s hasRuntimeAttribute=%s repairedMapper=%s outputObj=%s outputInfo=%s",
                 projectId,
                 parentScipionProtocolId,
                 parentProtocolDbId,
                 outputName,
                 hasRuntimeAttribute,
-                attachProxy,
-                proxy,
+                repairedMapper,
+                outputObj,
                 outputInfo,
             )
 
@@ -8812,7 +8954,7 @@ class ProjectService:
                 "exists": True,
                 "source": "postgresql",
                 "hasRuntimeAttribute": hasRuntimeAttribute,
-                "proxyAttached": bool(proxy is not None),
+                "repairedMapper": repairedMapper,
                 "outputInfo": outputInfo,
             }
 
@@ -9467,21 +9609,17 @@ class ProjectService:
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
-        if usingPostgresqlRuntime:
-            postgresqlLaunchPointerReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=protocol,
-            )
-
-            if postgresqlLaunchPointerReport.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
-                            % postgresqlLaunchPointerReport.get("errors")
-                    ),
-                )
+        # if usingPostgresqlRuntime:
+        #
+        #
+        #     if postgresqlLaunchPointerReport.get("errors"):
+        #         raise HTTPException(
+        #             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #             detail=(
+        #                     "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
+        #                     % postgresqlLaunchPointerReport.get("errors")
+        #             ),
+        #         )
 
         if protocol.useQueue():
             queueName = params.get("_queueName")
