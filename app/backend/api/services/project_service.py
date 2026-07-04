@@ -7776,7 +7776,7 @@ class ProjectService:
                                     parentProtocolDbId=int(parentProtocolDbId),
                                     parentScipionProtocolId=parentScipionProtocolId,
                                     parentProtocol=parentProtocol,
-                                    outputName=rawValue,
+                                    outputName=output,
                                 )
 
                                 if not resolvedOutput.get("exists"):
@@ -8547,6 +8547,7 @@ class ProjectService:
             parentScipionProtocolId,
             parentProtocol,
             outputName: str,
+            attachProxy: bool = False,
     ) -> Dict[str, Any]:
         """
         Resolve a parent output for a child PointerParam/MultiPointerParam.
@@ -8569,31 +8570,35 @@ class ProjectService:
             hasRuntimeAttribute = False
 
         if outputInfo.get("exists"):
-            proxy = self._attachPostgresqlRuntimeOutputPlaceholder(
-                parentProtocol=parentProtocol,
-                outputName=outputName,
-                outputInfo=outputInfo,
-                mapper=mapper,
-            )
+            proxy = None
+
+            if attachProxy:
+                proxy = self._attachPostgresqlRuntimeOutputPlaceholder(
+                    parentProtocol=parentProtocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    mapper=mapper,
+                )
 
             logger.debug(
-                "Attached PostgreSQL runtime output proxy. "
+                "Resolved runtime output from PostgreSQL. "
                 "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                "outputName=%s hadRuntimeAttribute=%s proxy=%s outputInfo=%s",
+                "outputName=%s hadRuntimeAttribute=%s attachProxy=%s proxy=%s outputInfo=%s",
                 projectId,
                 parentScipionProtocolId,
                 parentProtocolDbId,
                 outputName,
                 hasRuntimeAttribute,
+                attachProxy,
                 proxy,
                 outputInfo,
             )
 
             return {
                 "exists": True,
-                "source": "postgresql_proxy",
+                "source": "postgresql",
                 "hasRuntimeAttribute": hasRuntimeAttribute,
-                "proxyAttached": True,
+                "proxyAttached": bool(proxy is not None),
                 "outputInfo": outputInfo,
             }
 
