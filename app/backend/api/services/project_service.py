@@ -876,6 +876,7 @@ class ProjectService:
                 detail=f"Protocol not found in PostgreSQL: {protocolId}",
             )
 
+
     def _getScipionProtocolByRuntimeId(
             self,
             protocolId: Union[int, str],
@@ -7988,9 +7989,23 @@ class ProjectService:
         parentProtocolIds: List[int] = []
         inputRefs: List[Dict[str, Any]] = []
 
-        params = params or {}
+        rawParams = params or {}
+
+        params = self._mergeRuntimePointerParamsWithProtocolState(
+            protocol=protocol,
+            params=rawParams,
+        )
 
         detectedPointerParams = []
+
+        logger.debug(
+            "Runtime dependency sync merged pointer params. projectId=%s protocolId=%s "
+            "rawParams=%s mergedParams=%s",
+            projectId,
+            protocolId,
+            rawParams,
+            params,
+        )
 
         for inputName, rawParamValue in params.items():
             try:
@@ -8136,6 +8151,139 @@ class ProjectService:
             "inputRefsSaved": inputRefsSaved,
             "skipped": False,
         }
+
+    def _normalizeRuntimePointerValuesFromProtocolAttribute(self, attr: Any) -> List[str]:
+        """
+        Extract normalized pointer values from an already-applied Scipion pointer attribute.
+
+        This protects PostgreSQL runtime dependency sync from partial launch payloads:
+        if a pointer is already present on the protocol object, we should preserve it
+        even if it is not present in the current request params.
+        """
+        if attr in (None, ""):
+            return []
+
+        result: List[str] = []
+
+        def addValue(parentId, outputName):
+            if parentId in (None, "") or outputName in (None, ""):
+                return
+
+            value = "%s.%s" % (str(parentId).strip(), str(outputName).strip())
+            if value not in result:
+                result.append(value)
+
+        # PointerList / MultiPointer-like case.
+        try:
+            if isinstance(attr, PointerList):
+                for item in attr:
+                    for value in self._normalizeRuntimePointerValuesFromProtocolAttribute(item):
+                        if value not in result:
+                            result.append(value)
+
+                return result
+        except Exception:
+            pass
+
+        # Plain list/tuple fallback, just in case.
+        if isinstance(attr, (list, tuple, set)):
+            for item in attr:
+                for value in self._normalizeRuntimePointerValuesFromProtocolAttribute(item):
+                    if value not in result:
+                        result.append(value)
+
+            return result
+
+        # Raw value already stored as frontend-like representation.
+        if isinstance(attr, (str, dict)):
+            return self._normalizeRuntimePointerParamValues(attr)
+
+        targetObj = None
+        objValue = None
+        extended = None
+
+        try:
+            targetObj = attr.get() if hasattr(attr, "get") else None
+        except Exception:
+            targetObj = None
+
+        try:
+            objValue = attr.getObjValue() if hasattr(attr, "getObjValue") else None
+        except Exception:
+            objValue = None
+
+        try:
+            extended = attr.getExtended() if hasattr(attr, "getExtended") else None
+        except Exception:
+            extended = None
+
+        # Sometimes the pointer target itself is a raw string: "1175.outputTiltSeriesM".
+        if isinstance(targetObj, str):
+            return self._normalizeRuntimePointerParamValues(targetObj)
+
+        parentId = None
+
+        # Normal Pointer: objValue is the parent protocol.
+        if objValue is not None:
+            try:
+                parentId = objValue.getObjId()
+            except Exception:
+                parentId = None
+
+        # Sometimes attr.get() returns the pointed output object.
+        if parentId is None and targetObj is not None:
+            try:
+                parentId = targetObj.getObjParentId()
+            except Exception:
+                parentId = None
+
+        if parentId is None and targetObj is not None:
+            try:
+                parentObj = targetObj.getObjParent()
+                if parentObj is not None:
+                    parentId = parentObj.getObjId()
+            except Exception:
+                parentId = None
+
+        addValue(parentId, extended)
+
+        return result
+
+    def _mergeRuntimePointerParamsWithProtocolState(
+            self,
+            protocol,
+            params: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Merge request params with pointer values already present in the protocol.
+
+        Important:
+          - If a param is explicitly present in params, respect the request value.
+          - If a pointer param is missing from params, preserve the value already
+            applied on the protocol object.
+        """
+        mergedParams: Dict[str, Any] = dict(params or {})
+        explicitParamNames = set(mergedParams.keys())
+
+        try:
+            inputAttributes = list(protocol.iterInputAttributes())
+        except Exception:
+            inputAttributes = []
+
+        for inputName, attr in inputAttributes:
+            if inputName in explicitParamNames:
+                # The request explicitly sent this param. Do not resurrect old values
+                # if the frontend intentionally cleared it.
+                continue
+
+            pointerValues = self._normalizeRuntimePointerValuesFromProtocolAttribute(attr)
+
+            if not pointerValues:
+                continue
+
+            mergedParams[inputName] = pointerValues[0] if len(pointerValues) == 1 else pointerValues
+
+        return mergedParams
 
     def _normalizeRuntimePointerParamValues(self, rawValue: Any) -> List[str]:
         """
