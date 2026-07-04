@@ -8539,6 +8539,220 @@ class ProjectService:
 
         return proxy
 
+    def _preparePostgresqlRuntimePointerOutputsForLaunch(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+    ) -> Dict[str, Any]:
+        """
+        Prepare child protocol pointers before launch using protocol_input_refs.
+
+        This does not rewrite PostgreSQL graph and does not persist the protocol again.
+        It only ensures that Scipion runtime can resolve Pointer(parentProtocol, extended=outputName)
+        while launching.
+
+        Important:
+          - Existing runtime outputs are kept untouched.
+          - PostgreSQL proxy is attached only when the parent runtime protocol does not
+            expose the requested output attribute.
+        """
+        protocolId = self._getScipionObjectId(protocol)
+
+        if protocolId is None:
+            return {
+                "prepared": 0,
+                "skipped": True,
+                "reason": "protocol_without_id",
+                "items": [],
+                "errors": [],
+            }
+
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return {
+                "protocolId": str(protocolId),
+                "protocolDbId": None,
+                "prepared": 0,
+                "skipped": True,
+                "reason": "protocol_not_found_in_postgresql",
+                "items": [],
+                "errors": [],
+            }
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                "inputName",
+                "itemIndex",
+                "parentProtocolDbId",
+                "parentProtocolId",
+                "parentOutputName",
+                "objectClassName",
+                "objectId"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "inputName", "itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        preparedItems = []
+        errors = []
+
+        for row in rows or []:
+            inputName = str(row.get("inputName") or "").strip()
+            parentOutputName = str(row.get("parentOutputName") or "").strip()
+            parentProtocolId = row.get("parentProtocolId")
+            parentProtocolDbId = row.get("parentProtocolDbId")
+
+            if not inputName or not parentOutputName or parentProtocolId in (None, ""):
+                continue
+
+            itemReport = {
+                "inputName": inputName,
+                "parentProtocolId": str(parentProtocolId),
+                "parentProtocolDbId": parentProtocolDbId,
+                "parentOutputName": parentOutputName,
+                "attachedProxy": False,
+                "hadRuntimeAttribute": False,
+                "pointerReset": False,
+            }
+
+            try:
+                parentScipionProtocolId = self._resolveScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=parentProtocolId,
+                )
+
+                parentProtocol = self._loadProtocolFromRuntimeDb(
+                    protocolId=parentScipionProtocolId,
+                )
+
+                if parentProtocol is None:
+                    parentProtocol = self._getScipionProtocolByRuntimeId(
+                        parentScipionProtocolId,
+                    )
+
+                try:
+                    hasRuntimeAttribute = hasattr(parentProtocol, parentOutputName)
+                except Exception:
+                    hasRuntimeAttribute = False
+
+                itemReport["hadRuntimeAttribute"] = bool(hasRuntimeAttribute)
+
+                if not hasRuntimeAttribute:
+                    resolvedParentProtocolDbId = parentProtocolDbId
+
+                    if resolvedParentProtocolDbId is None:
+                        resolvedParentProtocolDbId = self._resolvePostgresqlProtocolDbId(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=parentScipionProtocolId,
+                        )
+
+                    if resolvedParentProtocolDbId is None:
+                        raise ValueError(
+                            "Parent protocol %s was not found in PostgreSQL"
+                            % str(parentScipionProtocolId)
+                        )
+
+                    outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                        mapper=mapper,
+                        projectId=projectId,
+                        parentProtocolDbId=int(resolvedParentProtocolDbId),
+                        outputName=parentOutputName,
+                    )
+
+                    if not outputInfo.get("exists"):
+                        raise ValueError(
+                            "Parent output %s.%s was not found in PostgreSQL"
+                            % (str(parentScipionProtocolId), parentOutputName)
+                        )
+
+                    self._attachPostgresqlRuntimeOutputPlaceholder(
+                        parentProtocol=parentProtocol,
+                        outputName=parentOutputName,
+                        outputInfo=outputInfo,
+                        mapper=mapper,
+                    )
+
+                    itemReport["attachedProxy"] = True
+                    itemReport["outputInfo"] = {
+                        "kind": outputInfo.get("kind"),
+                        "setId": outputInfo.get("setId"),
+                        "objectId": outputInfo.get("objectId"),
+                        "className": outputInfo.get("className"),
+                        "itemClassName": outputInfo.get("itemClassName"),
+                        "itemsCount": outputInfo.get("itemsCount"),
+                    }
+
+                param = protocol.getParam(inputName)
+
+                if isinstance(param, MultiPointerParam):
+                    # Do not rebuild the whole PointerList here yet. This helper is
+                    # focused on normal PointerParam launch preparation.
+                    # MultiPointer support can be added later if needed.
+                    itemReport["pointerReset"] = False
+                    itemReport["skippedPointerResetReason"] = "multipointer_not_rebuilt"
+                else:
+                    pointer = getattr(protocol, inputName, None)
+
+                    if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
+                        pointer = Pointer(parentProtocol, extended=parentOutputName)
+                        setattr(protocol, inputName, pointer)
+                    else:
+                        pointer.set(parentProtocol)
+                        pointer.setExtended(parentOutputName)
+
+                    itemReport["pointerReset"] = True
+
+                preparedItems.append(itemReport)
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to prepare PostgreSQL runtime pointer output for launch. "
+                    "projectId=%s protocolId=%s inputName=%s parentProtocolId=%s parentOutputName=%s",
+                    projectId,
+                    protocolId,
+                    inputName,
+                    parentProtocolId,
+                    parentOutputName,
+                )
+
+                itemReport["error"] = str(e)
+                errors.append(itemReport)
+
+        report = {
+            "protocolId": str(protocolId),
+            "protocolDbId": int(protocolDbId),
+            "prepared": len(preparedItems),
+            "items": preparedItems,
+            "errors": errors,
+            "skipped": False,
+        }
+
+        logger.info(
+            "Prepared PostgreSQL runtime pointer outputs for launch. "
+            "projectId=%s protocolId=%s report=%s",
+            projectId,
+            protocolId,
+            report,
+        )
+
+        return report
+
+
     def _resolveParentOutputForRuntimePointer(
             self,
             mapper,
@@ -9326,6 +9540,24 @@ class ProjectService:
                         getattr(protocol, "getObjId", lambda: protocolId)(),
                         cleanupInfo,
                     )
+
+                postgresqlLaunchPointerReport = None
+
+                if self._currentProjectUsesPostgresqlRuntimeMapper():
+                    postgresqlLaunchPointerReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=protocol,
+                    )
+
+                    if postgresqlLaunchPointerReport.get("errors"):
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=(
+                                    "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
+                                    % postgresqlLaunchPointerReport.get("errors")
+                            ),
+                        )
 
                 self.currentProject.launchProtocol(protocol)
 
