@@ -7756,15 +7756,46 @@ class ProjectService:
                                     parentId=parentId,
                                 )
 
-                                if not hasattr(parentProtocol, rawValue):
+                                parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
+                                    mapper=mapper,
+                                    projectId=projectId,
+                                    protocolId=parentScipionProtocolId,
+                                )
+
+                                if parentProtocolDbId is None:
                                     errorList.append(
-                                        '**%s** parent protocol %s does not have output %s.'
+                                        '**%s** parent protocol %s was not found in PostgreSQL.'
+                                        % (param.label.get(), parentScipionProtocolId)
+                                    )
+                                    continue
+
+                                resolvedOutput = self._resolveParentOutputForRuntimePointer(
+                                    mapper=mapper,
+                                    projectId=projectId,
+                                    parentProtocolDbId=int(parentProtocolDbId),
+                                    parentScipionProtocolId=parentScipionProtocolId,
+                                    parentProtocol=parentProtocol,
+                                    outputName=rawValue,
+                                )
+
+                                if not resolvedOutput.get("exists"):
+                                    errorList.append(
+                                        '**%s** parent protocol %s does not have output %s in PostgreSQL or runtime.'
                                         % (param.label.get(), parentScipionProtocolId, rawValue)
                                     )
                                     continue
 
                                 newInputs.append(
                                     Pointer(parentProtocol, extended=rawValue)
+                                )
+
+                                logger.debug(
+                                    "MultiPointer param %s set from parent %s output %s source=%s hasRuntimeAttribute=%s",
+                                    key,
+                                    parentScipionProtocolId,
+                                    rawValue,
+                                    resolvedOutput.get("source"),
+                                    resolvedOutput.get("hasRuntimeAttribute"),
                                 )
 
                                 logger.info(
@@ -7791,6 +7822,7 @@ class ProjectService:
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
 
                     protocol.setAttributeValue(key, newInputs)
+
                 elif isinstance(param, PointerParam):
                     pointerValues = self._normalizeRuntimePointerParamValues(value)
                     pointerValue = pointerValues[0] if pointerValues else None
@@ -7808,9 +7840,31 @@ class ProjectService:
                             output = rawValue
                             val = f"{parentScipionProtocolId}.{output}"
 
-                            if not hasattr(parentProtocol, output):
+                            parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocolId=parentScipionProtocolId,
+                            )
+
+                            if parentProtocolDbId is None:
                                 errorList.append(
-                                    '**%s** parent protocol %s does not have output %s.'
+                                    '**%s** parent protocol %s was not found in PostgreSQL.'
+                                    % (param.label.get(), parentScipionProtocolId)
+                                )
+                                continue
+
+                            resolvedOutput = self._resolveParentOutputForRuntimePointer(
+                                mapper=mapper,
+                                projectId=projectId,
+                                parentProtocolDbId=int(parentProtocolDbId),
+                                parentScipionProtocolId=parentScipionProtocolId,
+                                parentProtocol=parentProtocol,
+                                outputName=output,
+                            )
+
+                            if not resolvedOutput.get("exists"):
+                                errorList.append(
+                                    '**%s** parent protocol %s does not have output %s in PostgreSQL or runtime.'
                                     % (param.label.get(), parentScipionProtocolId, output)
                                 )
                                 continue
@@ -7831,12 +7885,15 @@ class ProjectService:
                             except Exception:
                                 pass
 
-                            logger.info(
-                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
+                            logger.debug(
+                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s "
+                                "source=%s hasRuntimeAttribute=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
                                 key,
                                 getattr(protocol, "getObjId", lambda: None)(),
                                 parentScipionProtocolId,
                                 output,
+                                resolvedOutput.get("source"),
+                                resolvedOutput.get("hasRuntimeAttribute"),
                                 pointer,
                                 getattr(pointer, "getObjValue", lambda: None)() if pointer is not None else None,
                                 getattr(pointer, "getExtended", lambda: None)() if pointer is not None else None,
@@ -8151,6 +8208,336 @@ class ProjectService:
 
         valueText = str(rawValue or "").strip()
         return [valueText] if valueText else []
+
+    def _getPostgresqlRuntimeOutputInfo(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        """
+        Resolve a persisted parent output from PostgreSQL.
+
+        This is used by runtime input resolution so child protocols do not depend
+        exclusively on the parent runtime db exposing the output as a live attribute.
+        """
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                'set' AS kind,
+                s.id AS "setId",
+                s."objectId"::text AS "objectId",
+                s."outputName" AS "outputName",
+                s."setClassName" AS "className",
+                s."itemClassName" AS "itemClassName",
+                s.properties AS properties
+              FROM scipion_sets s
+             WHERE s."projectId" = %s
+               AND s."protocolDbId" = %s
+               AND s."outputName" = %s
+
+            UNION ALL
+
+            SELECT
+                'object' AS kind,
+                NULL AS "setId",
+                o."scipionObjId"::text AS "objectId",
+                o.name AS "outputName",
+                o."className" AS "className",
+                NULL AS "itemClassName",
+                o.metadata AS properties
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = %s
+               AND o."parentObjectId" IS NULL
+               AND (o.path = %s OR o.name = %s)
+
+             LIMIT 1
+            """,
+            (
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                outputName,
+            ),
+        )
+
+        if not row:
+            return {
+                "exists": False,
+                "kind": None,
+                "setId": None,
+                "objectId": None,
+                "outputName": outputName,
+                "className": None,
+                "itemClassName": None,
+                "properties": {},
+                "itemsCount": None,
+                "tablesCount": None,
+                "tableItemsCount": None,
+            }
+
+        info = dict(row)
+        properties = info.get("properties") or {}
+
+        if not isinstance(properties, dict):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        info["properties"] = properties
+        info["exists"] = True
+
+        setId = info.get("setId")
+
+        itemsCount = None
+        tablesCount = None
+        tableItemsCount = None
+
+        if setId is not None:
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM scipion_set_items
+                     WHERE "setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                itemsCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                itemsCount = None
+
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM scipion_set_tables
+                     WHERE "setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                tablesCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                tablesCount = None
+
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(ti.id) AS count
+                      FROM scipion_set_tables t
+                      JOIN scipion_set_table_items ti
+                        ON ti."tableId" = t.id
+                     WHERE t."setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                tableItemsCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                tableItemsCount = None
+
+        if itemsCount is None:
+            try:
+                itemsCount = int(
+                    properties.get("itemsCount")
+                    or properties.get("_size")
+                    or 0
+                )
+            except Exception:
+                itemsCount = None
+
+        info["itemsCount"] = itemsCount
+        info["tablesCount"] = tablesCount
+        info["tableItemsCount"] = tableItemsCount
+
+        return info
+
+    def _attachPostgresqlRuntimeOutputPlaceholder(
+            self,
+            parentProtocol,
+            outputName: str,
+            outputInfo: Dict[str, Any],
+    ):
+        """
+        Attach a lightweight PostgreSQL-backed output placeholder to the parent protocol.
+
+        This is not the final PostgreSQL-backed Scipion Set implementation.
+        It is a runtime bridge so Pointer(parentProtocol, extended=outputName)
+        can resolve the output from PostgreSQL metadata instead of requiring the
+        parent protocol to expose a live sqlite-backed attribute.
+        """
+
+        class PostgresqlRuntimeOutputPlaceholder:
+            def __init__(self, parent, name, info):
+                self._parent = parent
+                self._name = name
+                self._info = info or {}
+                self._properties = self._info.get("properties") or {}
+
+            def getObjId(self):
+                value = self._info.get("objectId")
+
+                try:
+                    return int(value)
+                except Exception:
+                    return value
+
+            def getClassName(self):
+                return self._info.get("className")
+
+            def getObjParent(self):
+                return self._parent
+
+            def getObjParentId(self):
+                try:
+                    return self._parent.getObjId()
+                except Exception:
+                    return None
+
+            def getName(self):
+                return self._name
+
+            def getObjLabel(self):
+                return self._name
+
+            def getFileName(self):
+                # Important: this is intentionally not the source of truth anymore.
+                return self._properties.get("fileName")
+
+            def getSize(self):
+                value = self._info.get("itemsCount")
+
+                try:
+                    return int(value)
+                except Exception:
+                    return 0
+
+            def isEmpty(self):
+                return self.getSize() == 0
+
+            def isStreamClosed(self):
+                streamState = (
+                        self._properties.get("streamState")
+                        or self._properties.get("_streamState")
+                )
+
+                try:
+                    return int(streamState) == 2
+                except Exception:
+                    return True
+
+            def getSamplingRate(self):
+                value = (
+                        self._properties.get("samplingRate")
+                        or self._properties.get("_samplingRate")
+                )
+
+                try:
+                    return float(value)
+                except Exception:
+                    return None
+
+            def getPostgresqlRuntimeInfo(self):
+                return self._info
+
+            def __bool__(self):
+                return True
+
+            def __repr__(self):
+                return (
+                        "<PostgresqlRuntimeOutputPlaceholder "
+                        "name=%s class=%s objectId=%s items=%s>"
+                        % (
+                            self._name,
+                            self.getClassName(),
+                            self.getObjId(),
+                            self.getSize(),
+                        )
+                )
+
+        placeholder = PostgresqlRuntimeOutputPlaceholder(
+            parent=parentProtocol,
+            name=outputName,
+            info=outputInfo,
+        )
+
+        setattr(parentProtocol, outputName, placeholder)
+
+        return placeholder
+
+    def _resolveParentOutputForRuntimePointer(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            parentScipionProtocolId,
+            parentProtocol,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        """
+        Resolve a parent output for a child PointerParam/MultiPointerParam.
+
+        PostgreSQL is the source of truth for output existence.
+        The Scipion runtime attribute is kept only as compatibility.
+        """
+        outputInfo = self._getPostgresqlRuntimeOutputInfo(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbId=parentProtocolDbId,
+            outputName=outputName,
+        )
+
+        hasRuntimeAttribute = False
+
+        try:
+            hasRuntimeAttribute = hasattr(parentProtocol, outputName)
+        except Exception:
+            hasRuntimeAttribute = False
+
+        if outputInfo.get("exists"):
+            if not hasRuntimeAttribute:
+                self._attachPostgresqlRuntimeOutputPlaceholder(
+                    parentProtocol=parentProtocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                )
+
+                logger.debug(
+                    "Attached PostgreSQL runtime output placeholder. "
+                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputInfo=%s",
+                    projectId,
+                    parentScipionProtocolId,
+                    parentProtocolDbId,
+                    outputName,
+                    outputInfo,
+                )
+
+            return {
+                "exists": True,
+                "source": "postgresql",
+                "hasRuntimeAttribute": hasRuntimeAttribute,
+                "outputInfo": outputInfo,
+            }
+
+        if hasRuntimeAttribute:
+            return {
+                "exists": True,
+                "source": "scipion_runtime",
+                "hasRuntimeAttribute": True,
+                "outputInfo": outputInfo,
+            }
+
+        return {
+            "exists": False,
+            "source": None,
+            "hasRuntimeAttribute": False,
+            "outputInfo": outputInfo,
+        }
 
     def _getPersistedOutputInfoForInputRef(
             self,
