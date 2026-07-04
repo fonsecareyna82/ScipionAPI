@@ -2237,6 +2237,115 @@ class ProjectService:
 
             return text
 
+        def buildPostgresqlViewerReadiness(storedSet):
+            if not storedSet:
+                return {
+                    "ready": False,
+                    "reason": "stored_set_not_found",
+                }
+
+            setClassName = str(storedSet.get("setClassName") or "")
+            itemClassName = str(storedSet.get("itemClassName") or "")
+            classText = ("%s %s" % (setClassName, itemClassName)).replace(" ", "").lower()
+
+            itemsCount = None
+            properties = storedSet.get("properties") or {}
+
+            if isinstance(properties, dict):
+                itemsCount = properties.get("itemsCount") or properties.get("_size")
+
+            try:
+                itemsCount = int(itemsCount)
+            except Exception:
+                itemsCount = None
+
+            setId = storedSet.get("id")
+            rootItemsCount = None
+            tablesCount = None
+            tableItemsCount = None
+
+            try:
+                if setId is not None:
+                    row = mapper.db.fetchOne(
+                        """
+                        SELECT COUNT(*) AS count
+                          FROM scipion_set_items
+                         WHERE "setId" = %s
+                        """,
+                        (int(setId),),
+                    )
+                    rootItemsCount = int(row.get("count") or 0) if row else 0
+            except Exception:
+                rootItemsCount = None
+
+            try:
+                if setId is not None:
+                    row = mapper.db.fetchOne(
+                        """
+                        SELECT COUNT(*) AS count
+                          FROM scipion_set_tables
+                         WHERE "setId" = %s
+                        """,
+                        (int(setId),),
+                    )
+                    tablesCount = int(row.get("count") or 0) if row else 0
+            except Exception:
+                tablesCount = None
+
+            try:
+                if setId is not None:
+                    row = mapper.db.fetchOne(
+                        """
+                        SELECT COUNT(ti.id) AS count
+                          FROM scipion_set_tables t
+                          JOIN scipion_set_table_items ti
+                            ON ti."tableId" = t.id
+                         WHERE t."setId" = %s
+                        """,
+                        (int(setId),),
+                    )
+                    tableItemsCount = int(row.get("count") or 0) if row else 0
+            except Exception:
+                tableItemsCount = None
+
+            supportedReader = None
+
+            if "tiltseries" in classText and "ctftomo" not in classText:
+                supportedReader = "PostgresqlTiltSeriesReader"
+            elif "ctftomo" in classText:
+                supportedReader = "PostgresqlCtftomoReader"
+            elif "coordinates3d" in classText or "coordinate3d" in classText:
+                supportedReader = "PostgresqlCoords3dReader"
+            elif "tomogram" in classText or "volume" in classText:
+                supportedReader = "PostgresqlIntegratedContextReader"
+
+            hasRootItems = rootItemsCount is not None and rootItemsCount > 0
+            hasLogicalTables = tablesCount is not None and tablesCount > 0
+            hasTableItems = tableItemsCount is not None and tableItemsCount > 0
+
+            ready = bool(
+                supportedReader
+                and (
+                        hasRootItems
+                        or hasTableItems
+                        or itemsCount is not None
+                )
+            )
+
+            reason = "postgresql_reader_available" if ready else "postgresql_reader_or_items_missing"
+
+            return {
+                "ready": ready,
+                "reason": reason,
+                "reader": supportedReader,
+                "setClassName": setClassName,
+                "itemClassName": itemClassName,
+                "itemsCount": itemsCount,
+                "rootItemsCount": rootItemsCount,
+                "tablesCount": tablesCount,
+                "tableItemsCount": tableItemsCount,
+            }
+
         def addPersistedSqliteReference(value):
             if not value:
                 return
@@ -2334,9 +2443,13 @@ class ProjectService:
         persistedSetRows = mapper.db.fetchAll(
             """
             SELECT
+                s.id,
+                s."projectId",
+                s."protocolDbId",
+                s."objectId",
                 s."outputName",
                 s."setClassName",
-                s."objectId",
+                s."itemClassName",
                 s.properties
               FROM scipion_sets s
               JOIN protocols p
@@ -2405,6 +2518,45 @@ class ProjectService:
 
                 sqliteFiles.append(sqliteItem)
 
+        viewerReadinessBySqliteRef = {}
+
+        for row in persistedSets:
+            properties = row.get("properties") or {}
+
+            if not isinstance(properties, dict):
+                continue
+
+            readiness = buildPostgresqlViewerReadiness(row)
+
+            for key in ("fileName", "_mapperPath"):
+                value = properties.get(key)
+
+                if not value:
+                    continue
+
+                for part in str(value).split(","):
+                    part = normalizePathKey(part)
+
+                    if not part:
+                        continue
+
+                    refs = {
+                        part,
+                        os.path.basename(part),
+                    }
+
+                    if os.path.isabs(part):
+                        refs.add(os.path.abspath(part))
+                    else:
+                        if projectPath:
+                            refs.add(os.path.abspath(os.path.join(str(projectPath), part)))
+
+                        if workingDir and not str(part).startswith("Runs/"):
+                            refs.add(os.path.abspath(os.path.join(str(workingDir), part)))
+
+                    for ref in refs:
+                        viewerReadinessBySqliteRef[ref] = readiness
+
         for sqliteItem in sqliteFiles:
             filePath = sqliteItem.get("path") or ""
             relativePath = sqliteItem.get("relativePath") or ""
@@ -2434,13 +2586,30 @@ class ProjectService:
                 runtimeSqlites.append(sqliteItem)
 
             elif isPersistedOutputSqlite:
+                viewerReadiness = (
+                        viewerReadinessBySqliteRef.get(normalizedFilePath)
+                        or viewerReadinessBySqliteRef.get(normalizedRelativePath)
+                        or viewerReadinessBySqliteRef.get(basename)
+                        or {
+                            "ready": False,
+                            "reason": "viewer_readiness_not_resolved",
+                        }
+                )
+
                 sqliteItem["legacyRole"] = "output_set"
                 sqliteItem["legacyRequired"] = True
                 sqliteItem["cleanupCandidate"] = True
+                sqliteItem["postgresqlViewerReady"] = bool(viewerReadiness.get("ready"))
+                sqliteItem["viewerReadiness"] = viewerReadiness
+                sqliteItem["safeToDeleteForViewers"] = bool(viewerReadiness.get("ready"))
+                sqliteItem["safeToDeleteForRuntime"] = False
                 sqliteItem["safeToDelete"] = False
                 sqliteItem["reason"] = (
-                    "Output is persisted in PostgreSQL, but stored set properties "
-                    "still reference this sqlite through fileName/_mapperPath"
+                    "Output is persisted in PostgreSQL and PostgreSQL viewer readers appear ready, "
+                    "but runtime cleanup is still disabled"
+                    if viewerReadiness.get("ready")
+                    else
+                    "Output is persisted in PostgreSQL, but PostgreSQL viewer readiness could not be confirmed"
                 )
 
                 outputSqlites.append(sqliteItem)
