@@ -2132,27 +2132,30 @@ class ProjectService:
                     }],
                 }
 
-        try:
-            artifactReport = self._buildPostgresqlRuntimeArtifactReport(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=scipionProtocolId,
-                protocol=protocol,
-            )
+        artifactReport = None
 
-            logger.warning(
-                "PostgreSQL runtime artifact report. projectId=%s protocolId=%s report=%s",
-                projectId,
-                scipionProtocolId,
-                artifactReport,
-            )
-        except Exception:
-            logger.warning(
-                "Could not build PostgreSQL runtime artifact report. projectId=%s protocolId=%s",
-                projectId,
-                scipionProtocolId,
-                exc_info=True,
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                artifactReport = self._buildPostgresqlRuntimeArtifactReport(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=scipionProtocolId,
+                    protocol=protocol,
+                )
+
+                logger.debug(
+                    "PostgreSQL runtime artifact report. projectId=%s protocolId=%s report=%s",
+                    projectId,
+                    scipionProtocolId,
+                    artifactReport,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not build PostgreSQL runtime artifact report. projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                    exc_info=True,
+                )
 
         return {
             "protocols": 1,
@@ -2171,7 +2174,6 @@ class ProjectService:
             "protocolId": str(scipionProtocolId),
             "protocolStatus": self._safeCall(protocol, "getStatus", None),
             "outputsRegistered": bool(outputReport.get("persisted")),
-            "legacyArtifacts": artifactReport,
         }
 
     def _buildPostgresqlRuntimeArtifactReport(
