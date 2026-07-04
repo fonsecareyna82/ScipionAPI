@@ -9465,6 +9465,24 @@ class ProjectService:
             setToSave=False,
         )
 
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
+        if usingPostgresqlRuntime:
+            postgresqlLaunchPointerReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+            )
+
+            if postgresqlLaunchPointerReport.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
+                            % postgresqlLaunchPointerReport.get("errors")
+                    ),
+                )
+
         if protocol.useQueue():
             queueName = params.get("_queueName")
             queueParams = params.get("_queueParams")
@@ -9481,26 +9499,33 @@ class ProjectService:
             ]
 
         if errors:
-            try:
-                self.syncProjectProtocolsAndDependencies(
-                    mapper,
-                    projectId,
-                    refresh=True,
-                    checkPid=True,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to sync protocol graph after validation errors. projectId=%s protocolId=%s",
+            if not usingPostgresqlRuntime:
+                try:
+                    self.syncProjectProtocolsAndDependencies(
+                        mapper,
+                        projectId,
+                        refresh=True,
+                        checkPid=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to sync protocol graph after validation errors. projectId=%s protocolId=%s",
+                        projectId,
+                        getattr(protocol, "getObjId", lambda: protocolId)(),
+                    )
+            else:
+                logger.info(
+                    "Skipping legacy graph sync after PostgreSQL runtime validation errors. "
+                    "projectId=%s protocolId=%s errors=%s",
                     projectId,
                     getattr(protocol, "getObjId", lambda: protocolId)(),
+                    errors,
                 )
 
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=errors,
             )
-
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
         if not usingPostgresqlRuntime:
             self.syncProjectProtocolsAndDependencies(
@@ -9540,24 +9565,6 @@ class ProjectService:
                         getattr(protocol, "getObjId", lambda: protocolId)(),
                         cleanupInfo,
                     )
-
-                postgresqlLaunchPointerReport = None
-
-                if self._currentProjectUsesPostgresqlRuntimeMapper():
-                    postgresqlLaunchPointerReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocol,
-                    )
-
-                    if postgresqlLaunchPointerReport.get("errors"):
-                        raise HTTPException(
-                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=(
-                                    "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
-                                    % postgresqlLaunchPointerReport.get("errors")
-                            ),
-                        )
 
                 self.currentProject.launchProtocol(protocol)
 
