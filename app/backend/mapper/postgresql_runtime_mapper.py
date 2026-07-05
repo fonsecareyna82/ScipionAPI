@@ -125,37 +125,104 @@ class PostgresqlRuntimeMapper(Mapper):
         For protocols, check whether the root exists in the fallback mapper. If it
         does not exist, force insert().
         """
-        if self.writeFallbackMapper is None:
-            return
+        protocolId = self._getObjId(protocol)
 
-        objId = self._getObjId(protocol)
+        if protocolId is None:
+            raise RuntimeError("Cannot insert SQLite fallback root without protocol id")
 
-        if objId is None:
-            self.writeFallbackMapper.store(protocol)
-            return
+        protocolId = int(protocolId)
 
-        existsInFallback = False
+        db = getattr(self.writeFallbackMapper, "db", None)
+
+        if db is None:
+            raise RuntimeError("SQLite fallback mapper does not expose db")
+
+        objName = None
 
         try:
-            existsInFallback = bool(self.writeFallbackMapper.exists(objId))
+            objName = protocol.getObjName()
         except Exception:
-            try:
-                existsInFallback = self.writeFallbackMapper.selectById(objId) is not None
-            except Exception:
-                existsInFallback = False
+            objName = None
 
-        if existsInFallback:
-            self.writeFallbackMapper.store(protocol)
-            return
+        if not objName:
+            try:
+                objName = protocol.strId()
+            except Exception:
+                objName = str(protocolId)
+
+        className = self._getClassName(protocol)
+
+        label = None
+        comment = None
+        creation = None
+
+        try:
+            label = protocol.getObjLabel()
+        except Exception:
+            label = None
+
+        try:
+            comment = protocol.getObjComment()
+        except Exception:
+            comment = None
+
+        try:
+            creation = protocol.getObjCreation()
+        except Exception:
+            creation = None
+
+        insertObject = getattr(db, "insertObject", None)
+
+        if not callable(insertObject):
+            raise RuntimeError(
+                "SQLite fallback db does not expose insertObject; "
+                "cannot safely insert protocol root preserving id %s"
+                % protocolId
+            )
 
         logger.info(
-            "Protocol root does not exist in SQLite fallback. "
-            "Forcing insert instead of update. projectId=%s protocolId=%s",
+            "Inserting missing protocol root in SQLite fallback preserving id. "
+            "projectId=%s protocolId=%s className=%s",
             self.projectId,
-            objId,
+            protocolId,
+            className,
         )
 
-        self.writeFallbackMapper.insert(protocol)
+        # Different Scipion/pyworkflow versions expose different insertObject
+        # signatures. Use only the positional arguments accepted by the bound method.
+        # In your current version it expects 6 args, not 8.
+        try:
+            import inspect
+
+            parameters = [
+                p
+                for p in inspect.signature(insertObject).parameters.values()
+                if p.kind in (
+                    p.POSITIONAL_ONLY,
+                    p.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+
+            argCount = len(parameters)
+
+        except Exception:
+            # Current pyworkflow version from the traceback:
+            # insertObject() takes 7 positional arguments including self,
+            # so the bound method accepts 6 arguments.
+            argCount = 6
+
+        baseArgs = [
+            protocolId,
+            None,  # parentId
+            objName,
+            className,
+            None,  # value
+            label,
+            comment,
+            creation,
+        ]
+
+        insertObject(*baseArgs[:argCount])
 
     def store(self, obj):
         if obj is None:
