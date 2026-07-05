@@ -876,10 +876,10 @@ class ProjectService:
                 detail=f"Protocol not found in PostgreSQL: {protocolId}",
             )
 
-
     def _getScipionProtocolByRuntimeId(
             self,
             protocolId: Union[int, str],
+            logFailure: bool = True,
     ):
         if self.currentProject is None:
             raise HTTPException(
