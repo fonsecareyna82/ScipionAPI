@@ -7283,7 +7283,9 @@ class ProjectService:
                     if protVar is None:
                         # Handle Group
                         if isinstance(param, Group):
-                            group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                            group, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar, mapper=mapper,
+                                                                projectId=projectId,
+                                                                protocol=protocol,)
                             if group is not None:
                                 group['collapsed'] = False
                                 group['params'] = []
@@ -7296,14 +7298,20 @@ class ProjectService:
                                             protVar = getattr(protocol, paramLineName, None)
                                             if protVar:
                                                 paramChild, paramValue = self.PreprocessParamForm(
-                                                    paramLine, paramLineName, wizards, None, 0, protVar
+                                                    paramLine, paramLineName, wizards, None, 0, protVar,
+                                                    mapper=mapper,
+                                                    projectId=projectId,
+                                                    protocol=protocol,
                                                 )
                                                 if paramChild:
                                                     group['params'].append(paramChild)
                                                     paramsValue[paramLineName] = paramValue
                                     elif protVar:
                                         paramChild, paramValue = self.PreprocessParamForm(
-                                            paramGroup, paramGroupName, wizards, None, 0, protVar
+                                            paramGroup, paramGroupName, wizards, None, 0, protVar,
+                                            mapper=mapper,
+                                            projectId=projectId,
+                                            protocol=protocol,
                                         )
                                         if paramChild:
                                             group['params'].append(paramChild)
@@ -7316,7 +7324,10 @@ class ProjectService:
 
                         # Handle Line
                         elif isinstance(param, Line):
-                            line, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
+                            line, _ = self.PreprocessParamForm(param, paramName, wizards, None, 0,
+                                                               protVar,mapper=mapper,
+                                                               projectId=projectId,
+                                                               protocol=protocol,)
                             if line is not None:
                                 line['params'] = []
 
@@ -7324,7 +7335,10 @@ class ProjectService:
                                     protVar = getattr(protocol, paramLineName, None)
                                     if protVar:
                                         paramChild, paramValue = self.PreprocessParamForm(
-                                            paramLine, paramLineName, wizards, None, 0, protVar
+                                            paramLine, paramLineName, wizards, None, 0, protVar,
+                                            mapper=mapper,
+                                            projectId=projectId,
+                                            protocol=protocol,
                                         )
                                         if paramChild:
                                             line['params'].append(paramChild)
@@ -7337,7 +7351,10 @@ class ProjectService:
 
                     else:
                         paramProcessed, paramValue = self.PreprocessParamForm(
-                            param, paramName, wizards, None, 0, protVar
+                            param, paramName, wizards, None, 0, protVar,
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocol=protocol,
                         )
                         if paramProcessed:
                             sectionData["params"].append(paramProcessed)
@@ -7438,7 +7455,10 @@ class ProjectService:
                                 param.condition.set(None)
 
                             paramProcessed, paramValue = self.PreprocessParamForm(
-                                param, paramName, wizards, None, 0, None
+                                param, paramName, wizards, None, 0, None,
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocol=protocol,
                             )
 
                             if paramProcessed:
@@ -10203,7 +10223,18 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    def PreprocessParamForm(self, param, paramName, wizards, viewerDict, visualize, protVar):
+    def PreprocessParamForm(
+            self,
+            param,
+            paramName,
+            wizards,
+            viewerDict,
+            visualize,
+            protVar,
+            mapper=None,
+            projectId=None,
+            protocol=None,
+    ):
         """
         Serialize a protocol parameter into a dict, handling scalar, pointer, and multipointer types.
         """
@@ -10243,6 +10274,57 @@ class ProjectService:
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
                     valueList = []
+
+                    if (
+                            mapper is not None
+                            and projectId is not None
+                            and protocol is not None
+                            and self._currentProjectUsesPostgresqlRuntimeMapper()
+                    ):
+                        protocolId = self._getScipionObjectId(protocol)
+
+                        protocolDbId = self._resolvePostgresqlProtocolDbId(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                        )
+
+                        if protocolDbId is not None:
+                            rows = mapper.db.fetchAll(
+                                """
+                                SELECT
+                                    parent."protocolId" AS "parentProtocolId",
+                                    r."parentOutputName"
+                                  FROM protocol_input_refs r
+                             LEFT JOIN protocols parent
+                                    ON parent."projectId" = r."projectId"
+                                   AND parent.id = r."parentProtocolDbId"
+                                 WHERE r."projectId" = %s
+                                   AND r."protocolDbId" = %s
+                                   AND r."inputName" = %s
+                                 ORDER BY r."itemIndex"
+                                """,
+                                (
+                                    int(projectId),
+                                    int(protocolDbId),
+                                    str(paramName),
+                                ),
+                            )
+
+                            valueList = []
+
+                            for row in rows or []:
+                                parentId = row.get("parentProtocolId")
+                                outputName = row.get("parentOutputName")
+
+                                if parentId in (None, "") or not outputName:
+                                    continue
+
+                                valueList.append("%s.%s" % (parentId, outputName))
+
+                            if valueList:
+                                paramDict["readOnly"] = True
+                                return paramDict, valueList
 
                     for pointer in protVar:
                         value = None
@@ -10285,8 +10367,60 @@ class ProjectService:
                     paramDict["readOnly"] = True
 
                 elif isinstance(param, PointerParam):
+
                     parentId = None
                     paramValue = None
+                    if (
+                            mapper is not None
+                            and projectId is not None
+                            and protocol is not None
+                            and self._currentProjectUsesPostgresqlRuntimeMapper()
+                    ):
+                        protocolId = self._getScipionObjectId(protocol)
+
+                        protocolDbId = self._resolvePostgresqlProtocolDbId(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                        )
+
+                        if protocolDbId is not None:
+                            row = mapper.db.fetchOne(
+                                """
+                                SELECT
+                                    parent."protocolId" AS "parentProtocolId",
+                                    r."parentOutputName"
+                                  FROM protocol_input_refs r
+                             LEFT JOIN protocols parent
+                                    ON parent."projectId" = r."projectId"
+                                   AND parent.id = r."parentProtocolDbId"
+                                 WHERE r."projectId" = %s
+                                   AND r."protocolDbId" = %s
+                                   AND r."inputName" = %s
+                                 ORDER BY r."itemIndex"
+                                 LIMIT 1
+                                """,
+                                (
+                                    int(projectId),
+                                    int(protocolDbId),
+                                    str(paramName),
+                                ),
+                            )
+
+                            if row and row.get("parentProtocolId") not in (None, "") and row.get("parentOutputName"):
+                                parentId = str(row.get("parentProtocolId"))
+                                outputName = str(row.get("parentOutputName"))
+
+                                paramValue = "%s.%s" % (parentId, outputName)
+
+                                try:
+                                    paramDict["parentId"] = int(parentId)
+                                except Exception:
+                                    paramDict["parentId"] = parentId
+
+                                paramDict["readOnly"] = True
+
+                                return paramDict, paramValue
                     try:
                         targetObj = protVar.get() if protVar is not None else None
                     except Exception:
@@ -11551,6 +11685,191 @@ class ProjectService:
                     exc_info=True,
                 )
 
+    def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
+        duplicated = []
+        errors = []
+        syncReports = []
+        dependenciesCount = 0
+
+        for item in protocols or []:
+            sourceProtocolId = getattr(item, "id", None)
+
+            if sourceProtocolId is None:
+                continue
+
+            sourceProtocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=sourceProtocolId,
+            )
+
+            sourceScipionProtocolId = self._getScipionObjectId(sourceProtocol)
+
+            sourceProtocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=sourceScipionProtocolId,
+            )
+
+            if sourceProtocolDbId is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Source protocol %s was not found in PostgreSQL" % sourceProtocolId,
+                )
+
+            sourceRow = mapper.db.fetchOne(
+                """
+                SELECT
+                    "protocolClassName",
+                    params
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND id = %s
+                 LIMIT 1
+                """,
+                (
+                    int(projectId),
+                    int(sourceProtocolDbId),
+                ),
+            )
+
+            if not sourceRow:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Source protocol row was not found: %s" % sourceProtocolId,
+                )
+
+            protocolClassName = sourceRow.get("protocolClassName")
+            sourceParams = sourceRow.get("params") or {}
+
+            params = copy.deepcopy(sourceParams)
+
+            # Do not duplicate produced outputs/runtime state.
+            for key in list(params.keys()):
+                try:
+                    param = sourceProtocol.getParam(key)
+                except Exception:
+                    param = None
+
+                if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                    # Pointers are copied from protocol_input_refs below.
+                    params.pop(key, None)
+                    continue
+
+                if str(key).startswith("_outputs"):
+                    params.pop(key, None)
+                    continue
+
+                if key in (
+                        "status",
+                        "initTime",
+                        "endTime",
+                        "_error",
+                        "_resultFiles",
+                        "_outputs",
+                        "_useOutputList",
+                        "_jobId",
+                        "_pid",
+                        "_stepsDone",
+                        "_cpuTime",
+                        "_numberOfSteps",
+                        "lastUpdateTimeStamp",
+                ):
+                    params.pop(key, None)
+
+            try:
+                runName = params.get("runName")
+                if isinstance(runName, dict):
+                    oldValue = runName.get("value") or runName.get("editableValue")
+                    if oldValue:
+                        runName["value"] = "%s copy" % oldValue
+                        runName["editableValue"] = "%s copy" % oldValue
+                elif runName:
+                    params["runName"] = "%s copy" % runName
+            except Exception:
+                pass
+
+            newProtocol, saveErrors = self.saveProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=None,
+                protocolClassName=protocolClassName,
+                params=params,
+                setToSave=False,
+            )
+
+            if saveErrors:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=saveErrors,
+                )
+
+            duplicatedProtocolId = self._getScipionObjectId(newProtocol)
+
+            protocolSync = self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=duplicatedProtocolId,
+                registerOutputs=False,
+            )
+
+            dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                sourceProtocolId=sourceScipionProtocolId,
+                duplicatedProtocolId=duplicatedProtocolId,
+            )
+
+            # Important:
+            # restore real Pointer/PointerList objects only for runtime execution.
+            # The editable value shown in the form must come from protocol_input_refs,
+            # not from targetObj.getObjParentId().
+            pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=newProtocol,
+            )
+
+            if pointerRestore.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to restore duplicated protocol pointers: %s"
+                           % pointerRestore.get("errors"),
+                )
+
+            self.currentProject._storeProtocol(newProtocol)
+
+            duplicated.append({
+                "sourceId": str(sourceScipionProtocolId),
+                "newId": str(duplicatedProtocolId),
+            })
+
+            dependenciesCount += int(dependencySync.get("dependenciesSaved", 0) or 0)
+
+            syncReports.append({
+                "sourceProtocolId": str(sourceScipionProtocolId),
+                "duplicatedProtocolId": str(duplicatedProtocolId),
+                "protocolSync": protocolSync,
+                "dependencySync": dependencySync,
+                "pointerRestore": pointerRestore,
+            })
+
+        if not duplicated:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to duplicate",
+            )
+
+        return self._buildProtocolMutationResult(
+            "Protocol was duplicated successfully",
+            protocolsCount=len(duplicated),
+            dependenciesCount=dependenciesCount,
+            duplicated=duplicated,
+            errors=errors,
+            postgresqlRuntimeDuplicate=True,
+            syncReports=syncReports,
+        )
+
     def duplicateProtocol(self, mapper, projectId, protocols):
         protocolList = []
         sourceIds = []
@@ -11558,7 +11877,12 @@ class ProjectService:
         errors = []
         copyPrepareReports = []
 
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        if usingPostgresqlRuntime:
+            return self._duplicatePostgresqlRuntimeProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protocols,
+            )
 
         for item in protocols or []:
             protocolId = getattr(item, "id", None)
