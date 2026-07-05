@@ -1987,7 +1987,7 @@ class ProjectService:
                 statusValue = existingStatus
 
         mapper.saveProtocol(
-            self._buildProtocolContext(projectId, protocol)
+            self._buildProtocolContext(projectId, protocol, mapper)
         )
 
         return {
@@ -2080,7 +2080,7 @@ class ProjectService:
         if protocol is None:
             protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
-        protocolContext = self._buildProtocolContext(projectId, protocol)
+        protocolContext = self._buildProtocolContext(projectId, protocol, mapper)
 
         storedRow = mapper.getProjectProtocolByProtocolId(
             projectId=projectId,
@@ -2859,7 +2859,7 @@ class ProjectService:
             if protocol is None:
                 continue
 
-            protocolContext = self._buildProtocolContext(projectId, protocol)
+            protocolContext = self._buildProtocolContext(projectId, protocol, mapper)
             protocolDbId = mapper.saveProtocol(protocolContext)
 
             try:
@@ -7086,7 +7086,7 @@ class ProjectService:
 
         return None
 
-    def _buildProtocolContext(self, projectId, protocol) -> dict:
+    def _buildProtocolContext(self, projectId, protocol, mapper=None) -> dict:
         """
         Build the common context dictionary for a protocol,
         including inputs, outputs, definition, status, color, logos, etc.
@@ -7635,7 +7635,7 @@ class ProjectService:
         if not usingPostgresqlRuntime:
             self.currentProject._fixProtParamsConfiguration(protocol)
 
-        return self._buildProtocolContext(projectId, protocol)
+        return self._buildProtocolContext(projectId, protocol, mapper)
 
     def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
         """ Returns the suggestions from the Scipion website for the next protocols to the protocol passed
@@ -11876,6 +11876,8 @@ class ProjectService:
         duplicated = []
         errors = []
         copyPrepareReports = []
+
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
         if usingPostgresqlRuntime:
             return self._duplicatePostgresqlRuntimeProtocols(
