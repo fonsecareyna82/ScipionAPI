@@ -7958,6 +7958,174 @@ class ProjectService:
                         param.set(None)
         return errorList
 
+    def _restorePostgresqlPointerInputsBeforeCopy(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+    ) -> Dict[str, Any]:
+        """
+        Restore PointerParam/MultiPointerParam attributes from protocol_input_refs
+        before calling Scipion's copyProtocol().
+
+        This is only for duplicate/copy operations. Do not use it in runtime mapper
+        or in form loading.
+
+        Why:
+          In PostgreSQL runtime mode, a protocol loaded for web/form usage may have
+          pointer params represented as strings. Scipion copyProtocol() persists the
+          copied protocol through the SQLite-compatible mapper, and that mapper expects
+          Pointer objects, not strings.
+        """
+        protocolId = self._getScipionObjectId(protocol)
+
+        if protocolId is None:
+            return {
+                "protocolId": None,
+                "restored": 0,
+                "skipped": True,
+                "reason": "protocol_without_id",
+            }
+
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return {
+                "protocolId": str(protocolId),
+                "protocolDbId": None,
+                "restored": 0,
+                "skipped": True,
+                "reason": "protocol_not_found_in_postgresql",
+            }
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                "inputName",
+                "itemIndex",
+                "parentProtocolId",
+                "parentOutputName"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "inputName", "itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        refsByInputName: Dict[str, List[Dict[str, Any]]] = {}
+
+        for row in rows or []:
+            inputName = str(row.get("inputName") or "").strip()
+            parentProtocolId = row.get("parentProtocolId")
+            parentOutputName = str(row.get("parentOutputName") or "").strip()
+
+            if not inputName or parentProtocolId in (None, "") or not parentOutputName:
+                continue
+
+            refsByInputName.setdefault(inputName, []).append(dict(row))
+
+        restored = []
+        errors = []
+
+        for inputName, inputRefs in refsByInputName.items():
+            try:
+                param = protocol.getParam(inputName)
+            except Exception:
+                param = None
+
+            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
+            try:
+                if isinstance(param, MultiPointerParam):
+                    pointerList = PointerList()
+
+                    for ref in inputRefs:
+                        parentProtocolId = ref.get("parentProtocolId")
+                        parentOutputName = str(ref.get("parentOutputName") or "").strip()
+
+                        parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
+                            mapper=mapper,
+                            projectId=projectId,
+                            parentId=parentProtocolId,
+                        )
+
+                        pointerList.append(
+                            Pointer(parentProtocol, extended=parentOutputName)
+                        )
+
+                    setattr(protocol, inputName, pointerList)
+                    protocol.setAttributeValue(inputName, pointerList)
+
+                    restored.append({
+                        "inputName": inputName,
+                        "kind": "multipointer",
+                        "count": len(inputRefs),
+                    })
+
+                else:
+                    ref = inputRefs[0]
+                    parentProtocolId = ref.get("parentProtocolId")
+                    parentOutputName = str(ref.get("parentOutputName") or "").strip()
+
+                    parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
+                        mapper=mapper,
+                        projectId=projectId,
+                        parentId=parentProtocolId,
+                    )
+
+                    pointer = Pointer(parentProtocol, extended=parentOutputName)
+
+                    setattr(protocol, inputName, pointer)
+                    protocol.setAttributeValue(inputName, pointer)
+
+                    restored.append({
+                        "inputName": inputName,
+                        "kind": "pointer",
+                        "parentProtocolId": str(parentScipionProtocolId),
+                        "parentOutputName": parentOutputName,
+                    })
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to restore PostgreSQL pointer input before protocol copy. "
+                    "projectId=%s protocolId=%s inputName=%s",
+                    projectId,
+                    protocolId,
+                    inputName,
+                )
+                errors.append({
+                    "inputName": inputName,
+                    "error": str(e),
+                })
+
+        report = {
+            "protocolId": str(protocolId),
+            "protocolDbId": int(protocolDbId),
+            "restored": len(restored),
+            "items": restored,
+            "errors": errors,
+            "skipped": False,
+        }
+
+        logger.info(
+            "Restored PostgreSQL pointer inputs before protocol copy. "
+            "projectId=%s protocolId=%s report=%s",
+            projectId,
+            protocolId,
+            report,
+        )
+
+        return report
+
     def syncPostgresqlRuntimeProtocolInputsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
@@ -10979,16 +11147,39 @@ class ProjectService:
         sourceIds = []
         duplicated = []
         errors = []
+        copyPrepareReports = []
+
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         for item in protocols or []:
             protocolId = getattr(item, "id", None)
             if protocolId is None:
                 continue
+
             sourceIds.append(protocolId)
+
             protocol = self._getScipionProtocolForRuntime(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
+
+            if usingPostgresqlRuntime:
+                report = self._restorePostgresqlPointerInputsBeforeCopy(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=protocol,
+                )
+                copyPrepareReports.append(report)
+
+                if report.get("errors"):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                                "Failed to prepare protocol inputs before duplicate: %s"
+                                % report.get("errors")
+                        ),
+                    )
 
             protocolList.append(protocol)
 
@@ -11000,21 +11191,86 @@ class ProjectService:
 
         try:
             protListResult = self.currentProject.copyProtocol(protocolList)
+
             for index, prot in enumerate(protListResult):
                 protId = str(prot.getObjId())
-                duplicated.append({"sourceId": sourceIds[index], "newId": protId})
-
+                duplicated.append({
+                    "sourceId": sourceIds[index],
+                    "newId": protId,
+                })
 
         except Exception as e:
             protocolIds = [
                 getattr(p, "getObjId", lambda: None)()
                 for p in protocolList
             ]
-            logger.exception("Failed to duplicate protocols. projectId=%s protocolIds=%s",
-                             projectId, protocolIds,)
 
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail=f"Failed to duplicate protocols: {e}",)
+            logger.exception(
+                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
+                projectId,
+                protocolIds,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to duplicate protocols: {e}",
+            )
+
+        if usingPostgresqlRuntime:
+            syncReports = []
+            dependenciesCount = 0
+
+            for prot in protListResult:
+                duplicatedProtocolId = getattr(prot, "getObjId", lambda: None)()
+
+                try:
+                    protocolSync = self.syncPostgresqlRuntimeProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=duplicatedProtocolId,
+                        registerOutputs=False,
+                    )
+
+                    dependencySync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=prot,
+                        params=None,
+                    )
+
+                    dependenciesCount += int(dependencySync.get("dependencies", 0) or 0)
+
+                    syncReports.append({
+                        "protocolId": str(duplicatedProtocolId),
+                        "protocolSync": protocolSync,
+                        "dependencySync": dependencySync,
+                    })
+
+                except Exception as e:
+                    logger.exception(
+                        "Failed to sync duplicated PostgreSQL runtime protocol. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        duplicatedProtocolId,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                                "Protocol was duplicated but PostgreSQL runtime sync failed: %s"
+                                % e
+                        ),
+                    )
+
+            return self._buildProtocolMutationResult(
+                "Protocol was duplicated successfully",
+                protocolsCount=len(protListResult),
+                dependenciesCount=dependenciesCount,
+                duplicated=duplicated,
+                errors=errors,
+                copyPrepareReports=copyPrepareReports,
+                postgresqlRuntimeDuplicate=True,
+                syncReports=syncReports,
+            )
 
         try:
             syncResult = self.syncProjectProtocolsAndDependencies(
@@ -11026,7 +11282,10 @@ class ProjectService:
         except HTTPException:
             raise
         except Exception as e:
-            errors.append("Failed to sync protocol graph after duplication. projectId=%s" %projectId)
+            errors.append(
+                "Failed to sync protocol graph after duplication. projectId=%s"
+                % projectId
+            )
             logger.exception(
                 "Failed to sync protocol graph after duplication. projectId=%s",
                 projectId,
