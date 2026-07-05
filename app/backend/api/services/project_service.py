@@ -11651,14 +11651,29 @@ class ProjectService:
                         duplicatedProtocolId=duplicatedProtocolId,
                     )
 
+                    pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=prot,
+                    )
+
+                    if pointerRestore.get("errors"):
+                        raise RuntimeError(
+                            "Failed to restore duplicated protocol pointers: %s"
+                            % pointerRestore.get("errors")
+                        )
+
+                    self.currentProject._storeProtocol(prot)
+
                     dependenciesCount += int(
                         dependencySync.get("dependenciesSaved", 0) or 0
                     )
 
                     syncReports.append({
-                        "protocolId": str(duplicatedProtocolId),
-                        "protocolSync": protocolSync,
-                        "dependencySync": dependencySync,
+                    "protocolId": str(duplicatedProtocolId),
+                    "protocolSync": protocolSync,
+                    "dependencySync": dependencySync,
+                    "pointerRestore": pointerRestore,
                     })
 
                 except Exception as e:
