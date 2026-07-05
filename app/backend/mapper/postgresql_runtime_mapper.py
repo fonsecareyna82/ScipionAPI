@@ -228,14 +228,11 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is None:
             return
 
-        self._ensureObjId(obj)
-
         if isinstance(obj, Protocol):
-            # PostgreSQL runtime owns protocol persistence.
-            # Do not mirror protocols into the SQLite write fallback.
-            # The fallback is only a compatibility/read bridge during migration.
-            self._storeProtocol(obj)
+            self._storeRuntimeProtocol(obj)
             return
+
+        self._ensureObjId(obj)
 
         if self.writeFallbackMapper is not None:
             self.writeFallbackMapper.store(obj)
@@ -256,6 +253,86 @@ class PostgresqlRuntimeMapper(Mapper):
             type(obj),
         )
 
+    def _storeRuntimeProtocol(self, protocol: Protocol) -> None:
+        """
+        Store a protocol in PostgreSQL runtime mode while keeping the SQLite
+        execution mirror usable.
+
+        Important:
+          - New protocols must let SQLite assign the Scipion objId first.
+            The classic runner still loads protocols from SQLite.
+          - PostgreSQL then stores that same objId as protocols."protocolId".
+          - Existing PostgreSQL protocols are mirrored to SQLite only if the root
+            already exists there. We do not manually fabricate SQLite rows.
+        """
+        protocolId = self._getObjId(protocol)
+
+        if self.writeFallbackMapper is not None:
+            if protocolId is None:
+                # New protocol:
+                # Let SQLite do the normal Scipion insert and assign objId.
+                # Do NOT call _ensureObjId before this.
+                self.writeFallbackMapper.store(protocol)
+                protocolId = self._getObjId(protocol)
+
+                logger.info(
+                    "SQLite fallback assigned protocol id for new runtime protocol. "
+                    "projectId=%s protocolId=%s class=%s",
+                    self.projectId,
+                    protocolId,
+                    self._getClassName(protocol),
+                )
+
+            elif self._existsInWriteFallback(protocolId):
+                # Existing protocol already mirrored in SQLite.
+                # Safe to update it there.
+                objIdBeforeStore = self._getObjId(protocol)
+
+                self.writeFallbackMapper.store(protocol)
+
+                objIdAfterStore = self._getObjId(protocol)
+
+                if str(objIdAfterStore) != str(objIdBeforeStore):
+                    try:
+                        self._setObjId(protocol, int(objIdBeforeStore))
+                    except Exception:
+                        pass
+
+                    raise RuntimeError(
+                        "SQLite fallback changed protocol id from %s to %s. "
+                        "This would create a duplicated protocol node."
+                        % (objIdBeforeStore, objIdAfterStore)
+                    )
+
+            else:
+                # Existing PG protocol not present in SQLite.
+                # Do not call SQLite store(), because it would update children and
+                # create orphan rows like 175.status without root 175.
+                logger.warning(
+                    "Skipping SQLite fallback protocol update because root is missing. "
+                    "projectId=%s protocolId=%s class=%s",
+                    self.projectId,
+                    protocolId,
+                    self._getClassName(protocol),
+                )
+
+        self._ensureObjId(protocol)
+        self._storeProtocol(protocol)
+
+    def _existsInWriteFallback(self, objId) -> bool:
+        if self.writeFallbackMapper is None or objId is None:
+            return False
+
+        try:
+            return bool(self.writeFallbackMapper.exists(objId))
+        except Exception:
+            pass
+
+        try:
+            return self.writeFallbackMapper.selectById(objId) is not None
+        except Exception:
+            return False
+
     def insert(self, obj):
         self._ensureObjId(obj)
         self.store(obj)
@@ -265,9 +342,8 @@ class PostgresqlRuntimeMapper(Mapper):
         Insert/store a child object following the naming convention used by
         SqliteMapper.
 
-        In PostgreSQL runtime mode, do not mirror children of Protocol objects into
-        SQLite fallback. If the protocol root does not exist in SQLite, this creates
-        orphan rows like 175.status, 175.inputSet, etc.
+        For Protocol parents, mirror children into SQLite only when the protocol root
+        already exists in SQLite. Otherwise SQLite creates orphan rows.
         """
         if attr is None:
             return
@@ -290,8 +366,20 @@ class PostgresqlRuntimeMapper(Mapper):
                 exc_info=True,
             )
 
-        if self.writeFallbackMapper is not None and not isinstance(obj, Protocol):
-            self.writeFallbackMapper.insertChild(obj, key, attr, namePrefix=namePrefix)
+        shouldWriteFallback = self.writeFallbackMapper is not None
+
+        if isinstance(obj, Protocol):
+            shouldWriteFallback = shouldWriteFallback and self._existsInWriteFallback(
+                self._getObjId(obj)
+            )
+
+        if shouldWriteFallback:
+            self.writeFallbackMapper.insertChild(
+                obj,
+                key,
+                attr,
+                namePrefix=namePrefix,
+            )
 
         self.store(attr)
 
