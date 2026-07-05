@@ -8349,7 +8349,10 @@ class ProjectService:
         if a pointer is already present on the protocol object, we should preserve it
         even if it is not present in the current request params.
         """
-        if attr in (None, ""):
+        if attr is None:
+            return []
+
+        if isinstance(attr, str) and not attr.strip():
             return []
 
         result: List[str] = []
@@ -8487,7 +8490,10 @@ class ProjectService:
           {"parentProtocolId": 1, "parentOutputName": "outputTSMovies"}
           [{"editableValue": "1.outputA"}, {"parentId": 2, "value": "outputB"}]
         """
-        if rawValue in (None, ""):
+        if rawValue is None:
+            return []
+
+        if isinstance(rawValue, str) and not rawValue.strip():
             return []
 
         if isinstance(rawValue, (list, tuple, set)):
@@ -11142,6 +11148,134 @@ class ProjectService:
 
         return self._buildProtocolMutationResult("Protocol renamed successfully")
 
+    def _copyPostgresqlInputRefsForDuplicatedProtocol(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocolId,
+            duplicatedProtocolId,
+    ) -> Dict[str, Any]:
+        sourceProtocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=sourceProtocolId,
+        )
+
+        duplicatedProtocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=duplicatedProtocolId,
+        )
+
+        if sourceProtocolDbId is None:
+            raise ValueError(
+                "Source protocol %s was not found in PostgreSQL"
+                % sourceProtocolId
+            )
+
+        if duplicatedProtocolDbId is None:
+            raise ValueError(
+                "Duplicated protocol %s was not found in PostgreSQL"
+                % duplicatedProtocolId
+            )
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                "inputName",
+                "itemIndex",
+                "parentProtocolDbId",
+                "parentProtocolId",
+                "parentOutputName",
+                "objectClassName",
+                "objectId"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "inputName", "itemIndex"
+            """,
+            (
+                int(projectId),
+                int(sourceProtocolDbId),
+            ),
+        )
+
+        refs = []
+        parentProtocolDbIds = []
+        parentProtocolIds = []
+
+        for row in rows or []:
+            parentProtocolDbId = row.get("parentProtocolDbId")
+            parentProtocolId = row.get("parentProtocolId")
+
+            if parentProtocolDbId not in (None, ""):
+                parentProtocolDbId = int(parentProtocolDbId)
+
+                if parentProtocolDbId not in parentProtocolDbIds:
+                    parentProtocolDbIds.append(parentProtocolDbId)
+
+            if parentProtocolId not in (None, ""):
+                try:
+                    cleanParentProtocolId = int(parentProtocolId)
+
+                    if cleanParentProtocolId not in parentProtocolIds:
+                        parentProtocolIds.append(cleanParentProtocolId)
+                except Exception:
+                    pass
+
+            refs.append({
+                "projectId": int(projectId),
+                "protocolDbId": int(duplicatedProtocolDbId),
+                "protocolId": str(duplicatedProtocolId),
+                "inputName": row.get("inputName"),
+                "itemIndex": row.get("itemIndex"),
+                "parentProtocolDbId": parentProtocolDbId,
+                "parentProtocolId": str(parentProtocolId) if parentProtocolId not in (None, "") else None,
+                "parentOutputName": row.get("parentOutputName"),
+                "objectClassName": row.get("objectClassName"),
+                "objectId": row.get("objectId"),
+            })
+
+        dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbId=int(duplicatedProtocolDbId),
+            parentProtocolDbIds=parentProtocolDbIds,
+        )
+
+        inputRefsSaved = self._replacePostgresqlInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(duplicatedProtocolDbId),
+            refs=refs,
+        )
+
+        self._updatePostgresqlProtocolParentIds(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(duplicatedProtocolDbId),
+            parentProtocolIds=parentProtocolIds,
+        )
+
+        report = {
+            "sourceProtocolId": str(sourceProtocolId),
+            "sourceProtocolDbId": int(sourceProtocolDbId),
+            "duplicatedProtocolId": str(duplicatedProtocolId),
+            "duplicatedProtocolDbId": int(duplicatedProtocolDbId),
+            "inputRefsSaved": inputRefsSaved,
+            "dependenciesSaved": dependenciesSaved,
+            "parentProtocolIds": parentProtocolIds,
+            "parentProtocolDbIds": parentProtocolDbIds,
+        }
+
+        logger.info(
+            "Copied PostgreSQL input refs for duplicated protocol. projectId=%s report=%s",
+            projectId,
+            report,
+        )
+
+        return report
+
     def duplicateProtocol(self, mapper, projectId, protocols):
         protocolList = []
         sourceIds = []
@@ -11220,7 +11354,7 @@ class ProjectService:
             syncReports = []
             dependenciesCount = 0
 
-            for prot in protListResult:
+            for index, prot in enumerate(protListResult):
                 duplicatedProtocolId = getattr(prot, "getObjId", lambda: None)()
 
                 try:
@@ -11231,14 +11365,16 @@ class ProjectService:
                         registerOutputs=False,
                     )
 
-                    dependencySync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                    sourceProtocolId = sourceIds[index]
+
+                    dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
                         mapper=mapper,
                         projectId=projectId,
-                        protocol=prot,
-                        params=None,
+                        sourceProtocolId=sourceProtocolId,
+                        duplicatedProtocolId=duplicatedProtocolId,
                     )
 
-                    dependenciesCount += int(dependencySync.get("dependencies", 0) or 0)
+                    dependenciesCount += int(dependencySync.get("dependenciesSaved", 0) or 0)
 
                     syncReports.append({
                         "protocolId": str(duplicatedProtocolId),
