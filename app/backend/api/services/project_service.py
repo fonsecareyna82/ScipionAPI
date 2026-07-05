@@ -7888,6 +7888,22 @@ class ProjectService:
                         rawValue=value,
                     )
 
+                    pointerValues = [
+                        v for v in pointerValues
+                        if str(v or "").strip().lower() not in ("", "none", "null", "undefined")
+                    ]
+
+                    if not pointerValues:
+                        logger.info(
+                            "Skipping empty multipointer param without clearing existing value. "
+                            "projectId=%s protocolId=%s inputName=%s value=%s",
+                            projectId,
+                            getattr(protocol, "getObjId", lambda: None)(),
+                            key,
+                            value,
+                        )
+                        continue
+
                     for v in pointerValues:
                         parentId, rawValue = self._splitPointerValue(v)
 
@@ -7965,13 +7981,12 @@ class ProjectService:
                                     '**%s** could not resolve input %s: %s'
                                     % (param.label.get(), v, e)
                                 )
-                        else:
-                            param.set(None)
 
                     if newInputs.isEmpty() and not param.allowsNull.get():
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
 
                     protocol.setAttributeValue(key, newInputs)
+
 
                 elif isinstance(param, PointerParam):
                     pointerValues = self._completeRuntimePointerValuesFromStoredInputRefs(
@@ -7981,8 +7996,28 @@ class ProjectService:
                         inputName=key,
                         rawValue=value,
                     )
-                    pointerValue = pointerValues[0] if pointerValues else None
+                    pointerValues = [
+                        v for v in pointerValues
+                        if str(v or "").strip().lower() not in ("", "none", "null", "undefined")
+                    ]
+                    # Important:
+                    # If the frontend sends an empty pointer for an existing protocol,
+                    # do NOT clear the current protocol attribute. This is common when launching
+                    # duplicated protocols: the real pointer is already restored/copied from
+                    # protocol_input_refs.
+                    if not pointerValues:
+                        logger.info(
+                            "Skipping empty pointer param without clearing existing value. "
+                            "projectId=%s protocolId=%s inputName=%s value=%s",
+                            projectId,
+                            getattr(protocol, "getObjId", lambda: None)(),
+                            key,
+                            value,
+                        )
 
+                        continue
+
+                    pointerValue = pointerValues[0]
                     parentId, rawValue = self._splitPointerValue(pointerValue)
 
                     if rawValue and not parentId:
@@ -7991,7 +8026,6 @@ class ProjectService:
                             % (param.label.get(), pointerValue)
                         )
                         continue
-
                     if rawValue:
                         try:
                             parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
@@ -8079,27 +8113,6 @@ class ProjectService:
                                 % (param.label.get(), value, e)
                             )
 
-                    else:
-                        conditionValue = None
-                        try:
-                            if hasattr(param, "condition") and param.condition is not None:
-                                conditionValue = param.condition.get()
-                        except Exception:
-                            conditionValue = None
-
-                        shouldValidate = True
-                        if isinstance(conditionValue, str):
-                            conditionText = conditionValue.strip()
-                            if conditionText:
-                                try:
-                                    shouldValidate = bool(protocol.evalCondition(conditionText))
-                                except Exception:
-                                    shouldValidate = True
-
-                        if not param.allowsNull.get() and shouldValidate:
-                            errorList.append('**' + param.label.get() + '** it must not be empty.')
-
-                        param.set(None)
         return errorList
 
     def _restorePostgresqlPointerInputsBeforeCopy(
@@ -9995,6 +10008,12 @@ class ProjectService:
             params,
             setToSave=False,
         )
+
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=errors,
+            )
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
