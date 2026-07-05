@@ -681,6 +681,14 @@ class ProjectService:
         }
 
     def _shouldRegisterProtocolOutputs(self, protocol: Any) -> bool:
+        """
+        Return True when the protocol already exposes at least one persistable output.
+
+        Do not depend on protocol status here:
+          - streaming protocols can expose outputs while running
+          - finished protocols should also register outputs
+          - new/launched protocols without outputs will naturally return False
+        """
         try:
             outputs = list(protocol.iterOutputAttributes())
         except Exception:
@@ -689,9 +697,28 @@ class ProjectService:
         if not outputs:
             return False
 
-        status = protocol.getStatus()
+        for outputItem in outputs:
+            if isinstance(outputItem, (tuple, list)) and len(outputItem) >= 2:
+                outputObj = outputItem[1]
+            else:
+                outputObj = outputItem
 
-        return status == STATUS_FINISHED
+            if outputObj is None:
+                continue
+
+            try:
+                if self._isScipionSetLikeOutput(outputObj):
+                    return True
+            except Exception:
+                pass
+
+            try:
+                if self._isPersistableNonSetOutput(outputObj):
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     def _safeCall(self, obj: Any, methodName: str, default: Any = None) -> Any:
         try:
@@ -2041,16 +2068,35 @@ class ProjectService:
                 f"PostgreSQL protocol row not found. projectId={projectId} protocolId={scipionProtocolId}"
             )
 
-        mapper.updateProtocol({
-            "id": row["id"],
-            "status": runtimeStatus,
-        })
+        outputSync = None
+
+        try:
+            outputSync = self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+                registerOutputs=True,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to sync PostgreSQL runtime protocol outputs from run.db. "
+                "Falling back to status-only update. projectId=%s protocolId=%s status=%s",
+                projectId,
+                scipionProtocolId,
+                runtimeStatus,
+            )
+
+            mapper.updateProtocol({
+                "id": row["id"],
+                "status": runtimeStatus,
+            })
 
         return {
             "projectId": projectId,
             "protocolId": str(scipionProtocolId),
             "runDbPath": runDbPath,
             "status": runtimeStatus,
+            "outputSync": outputSync,
         }
 
     def syncPostgresqlRuntimeProtocol(
@@ -2123,7 +2169,6 @@ class ProjectService:
 
         shouldRegisterOutputs = (
                 registerOutputs
-                and self._isRuntimeProtocolTerminal(protocol)
                 and self._shouldRegisterProtocolOutputs(protocol)
         )
 

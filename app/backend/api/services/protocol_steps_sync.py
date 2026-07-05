@@ -69,6 +69,55 @@ def _projectPath(protocol) -> Optional[str]:
     return None
 
 
+def _tryRegisterProtocolOutputs(
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        protocolDbId: int,
+        protocolId: int,
+        protocol,
+) -> None:
+    """
+    Opportunistically register protocol outputs while the runtime process updates
+    steps.
+
+    This is important for streaming protocols: outputs can exist while the
+    protocol is still running.
+    """
+    try:
+        from app.backend.api.services.project_service import ProjectService
+
+        service = ProjectService()
+
+        if not service._shouldRegisterProtocolOutputs(protocol):
+            return
+
+        report = service.registerOutput(
+            projectId=projectId,
+            protocol=protocol,
+            mapper=mapper,
+            returnReport=True,
+        )
+
+        logger.info(
+            "Registered PostgreSQL runtime outputs from steps event. "
+            "projectId=%s protocolDbId=%s protocolId=%s outputs=%s declared=%s errors=%s",
+            projectId,
+            protocolDbId,
+            protocolId,
+            len(report.get("persisted") or []),
+            len(report.get("declared") or []),
+            report.get("errors") or [],
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not register PostgreSQL runtime outputs from steps event. "
+            "projectId=%s protocolDbId=%s protocolId=%s",
+            projectId,
+            protocolDbId,
+            protocolId,
+        )
+
 def _serializeStep(step, event: str) -> Dict[str, Any]:
     elapsed = None
     try:
@@ -128,5 +177,12 @@ def syncProtocolStepsEvent(protocol, event: str, steps: List[Any], step: Any = N
                 protocolId,
                 _serializeStep(step, event),
             )
+        _tryRegisterProtocolOutputs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            protocolId=protocolId,
+            protocol=protocol,
+        )
     finally:
         mapper.db.close()
