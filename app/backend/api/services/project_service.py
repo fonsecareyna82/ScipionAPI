@@ -8162,14 +8162,17 @@ class ProjectService:
         rows = mapper.db.fetchAll(
             """
             SELECT
-                "inputName",
-                "itemIndex",
-                "parentProtocolId",
-                "parentOutputName"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-             ORDER BY "inputName", "itemIndex"
+                r."inputName",
+                r."itemIndex",
+                parent."protocolId" AS "parentProtocolId",
+                r."parentOutputName"
+              FROM protocol_input_refs r
+         LEFT JOIN protocols parent
+                ON parent."projectId" = r."projectId"
+               AND parent.id = r."parentProtocolDbId"
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+             ORDER BY r."inputName", r."itemIndex"
             """,
             (
                 int(projectId),
@@ -10240,6 +10243,7 @@ class ProjectService:
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
                     valueList = []
+
                     for pointer in protVar:
                         value = None
 
@@ -10247,6 +10251,11 @@ class ProjectService:
                             targetObj = pointer.get()
                         except Exception:
                             targetObj = None
+
+                        try:
+                            objValue = pointer.getObjValue()
+                        except Exception:
+                            objValue = None
 
                         try:
                             extended = pointer.getExtended()
@@ -10258,16 +10267,22 @@ class ProjectService:
 
                         elif targetObj is not None:
                             try:
-                                parentId = targetObj.getObjParentId()
-                                value = "%s.%s" % (parentId, extended) if extended else None
+                                parentId = objValue.getObjId() if objValue is not None else None
                             except Exception:
-                                value = None
+                                parentId = None
+
+                            if parentId is None:
+                                try:
+                                    parentId = targetObj.getObjParentId()
+                                except Exception:
+                                    parentId = None
+
+                            value = "%s.%s" % (parentId, extended) if parentId is not None and extended else None
 
                         valueList.append(value)
 
                     paramValue = valueList
                     paramDict["readOnly"] = True
-
 
                 elif isinstance(param, PointerParam):
                     parentId = None
@@ -10300,18 +10315,22 @@ class ProjectService:
 
                         paramValue = targetObj
 
+
                     elif targetObj is not None:
-                        # Normal Scipion pointer: protVar.get() returns the pointed output object.
+                        # Normal Scipion pointer:
+                        # protVar.get() returns the pointed output object,
+                        # but the editable parent id must be the parent protocol id.
+                        # Do NOT use targetObj.getObjParentId() here; that can be an internal
+                        # object id such as 726, not the protocol id shown in the graph.
                         try:
-                            parentId = targetObj.getObjParentId()
+                            parentId = objValue.getObjId() if objValue is not None else None
                         except Exception:
                             parentId = None
-                        if parentId is None and objValue is not None:
+                        if parentId is None:
                             try:
-                                parentId = objValue.getObjId()
+                                parentId = targetObj.getObjParentId()
                             except Exception:
                                 parentId = None
-
                         paramValue = "%s.%s" % (parentId, extended) if parentId is not None and extended else ""
 
                     elif objValue is not None:
@@ -11356,17 +11375,20 @@ class ProjectService:
         rows = mapper.db.fetchAll(
             """
             SELECT
-                "inputName",
-                "itemIndex",
-                "parentProtocolDbId",
-                "parentProtocolId",
-                "parentOutputName",
-                "objectClassName",
-                "objectId"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-             ORDER BY "inputName", "itemIndex"
+                r."inputName",
+                r."itemIndex",
+                r."parentProtocolDbId",
+                parent."protocolId" AS "parentProtocolId",
+                r."parentOutputName",
+                r."objectClassName",
+                r."objectId"
+              FROM protocol_input_refs r
+         LEFT JOIN protocols parent
+                ON parent."projectId" = r."projectId"
+               AND parent.id = r."parentProtocolDbId"
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+             ORDER BY r."inputName", r."itemIndex"
             """,
             (
                 int(projectId),
