@@ -8013,6 +8013,9 @@ class ProjectService:
             except Exception:
                 param = None
 
+            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
             pointerValues = self._normalizeRuntimePointerParamValues(rawParamValue)
 
             if not pointerValues:
@@ -9401,10 +9404,17 @@ class ProjectService:
         # Persist protocol in Scipion always.
         # The setToSave flag only controls whether we also sync the graph to PostgreSQL now.
         try:
-            if protocol.hasObjId():
-                self.currentProject._storeProtocol(protocol)
-            else:
+            isNewProtocol = not protocolId
+
+            if isNewProtocol:
+                # Important in PostgreSQL runtime mode:
+                # A new protocol can already have an objId assigned by the runtime mapper,
+                # but that does not mean it exists as a root object in Scipion's legacy SQLite.
+                # _setupProtocol is the correct path for new protocols.
                 self.currentProject._setupProtocol(protocol)
+            else:
+                self.currentProject._storeProtocol(protocol)
+
         except Exception as e:
             logger.exception(
                 "Failed to persist protocol in Scipion. projectId=%s protocolId=%s protocolClassName=%s",
