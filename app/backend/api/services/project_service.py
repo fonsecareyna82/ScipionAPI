@@ -7794,7 +7794,7 @@ class ProjectService:
                                     parentProtocolDbId=int(parentProtocolDbId),
                                     parentScipionProtocolId=parentScipionProtocolId,
                                     parentProtocol=parentProtocol,
-                                    outputName=output,
+                                    outputName=rawValue,
                                 )
 
                                 if not resolvedOutput.get("exists"):
@@ -11405,28 +11405,22 @@ class ProjectService:
         detachedOutputsByProtocol = []
 
         try:
-            if usingPostgresqlRuntime:
-                for protocol in protocolList:
-                    detachedOutputsByProtocol.append({
-                        "protocol": protocol,
-                        "outputs": self._detachProtocolOutputsForCopy(protocol),
-                    })
+            try:
+                if usingPostgresqlRuntime:
+                    for protocol in protocolList:
+                        detachedOutputsByProtocol.append({
+                            "protocol": protocol,
+                            "outputs": self._detachProtocolOutputsForCopy(protocol),
+                        })
 
-            protListResult = self.currentProject.copyProtocol(protocolList)
+                protListResult = self.currentProject.copyProtocol(protocolList)
 
-            if usingPostgresqlRuntime:
-                # Defensive cleanup:
-                # Even if Scipion copyProtocol() somehow propagated output attrs,
-                # the duplicated protocols must not keep produced outputs.
-                for prot in protListResult:
-                    self._detachProtocolOutputsForCopy(prot)
-
-            for index, prot in enumerate(protListResult):
-                protId = str(prot.getObjId())
-                duplicated.append({
-                    "sourceId": sourceIds[index],
-                    "newId": protId,
-                })
+            finally:
+                for item in detachedOutputsByProtocol:
+                    self._restoreProtocolOutputsAfterCopy(
+                        protocol=item.get("protocol"),
+                        detachedOutputs=item.get("outputs") or [],
+                    )
 
         except Exception as e:
             protocolIds = [
@@ -11445,12 +11439,19 @@ class ProjectService:
                 detail=f"Failed to duplicate protocols: {e}",
             )
 
-        finally:
-            for item in detachedOutputsByProtocol:
-                self._restoreProtocolOutputsAfterCopy(
-                    protocol=item.get("protocol"),
-                    detachedOutputs=item.get("outputs") or [],
-                )
+        if usingPostgresqlRuntime:
+            # Defensive cleanup:
+            # Even if Scipion copyProtocol() somehow propagated output attrs,
+            # the duplicated protocols must not keep produced outputs.
+            for prot in protListResult:
+                self._detachProtocolOutputsForCopy(prot)
+
+        for index, prot in enumerate(protListResult):
+            protId = str(prot.getObjId())
+            duplicated.append({
+                "sourceId": sourceIds[index],
+                "newId": protId,
+            })
 
         if usingPostgresqlRuntime:
             syncReports = []
