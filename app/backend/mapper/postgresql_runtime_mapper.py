@@ -111,18 +111,65 @@ class PostgresqlRuntimeMapper(Mapper):
     # Generic Mapper API
     # ---------------------------------------------------------------------
 
+    def _storeProtocolInWriteFallback(self, protocol: Protocol) -> None:
+        """
+        Store a protocol root in the SQLite write fallback without creating orphan
+        children.
+
+        In PostgreSQL runtime mode, _ensureObjId() assigns the protocol id before the
+        SQLite fallback sees the object. SqliteMapper.store() interprets "has objId"
+        as "already exists" and calls updateTo(), which can insert children like
+        175.status,  and calls updateTo(), which can insert children like
+        175.status, 175.inputSet, etc. without inserting the root object 175.
+
+        For protocols, check whether the root exists in the fallback mapper. If it
+        does not exist, force insert().
+        """
+        if self.writeFallbackMapper is None:
+            return
+
+        objId = self._getObjId(protocol)
+
+        if objId is None:
+            self.writeFallbackMapper.store(protocol)
+            return
+
+        existsInFallback = False
+
+        try:
+            existsInFallback = bool(self.writeFallbackMapper.exists(objId))
+        except Exception:
+            try:
+                existsInFallback = self.writeFallbackMapper.selectById(objId) is not None
+            except Exception:
+                existsInFallback = False
+
+        if existsInFallback:
+            self.writeFallbackMapper.store(protocol)
+            return
+
+        logger.info(
+            "Protocol root does not exist in SQLite fallback. "
+            "Forcing insert instead of update. projectId=%s protocolId=%s",
+            self.projectId,
+            objId,
+        )
+
+        self.writeFallbackMapper.insert(protocol)
+
     def store(self, obj):
         if obj is None:
             return
 
         self._ensureObjId(obj)
 
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.store(obj)
-
         if isinstance(obj, Protocol):
             self._storeProtocol(obj)
+            self._storeProtocolInWriteFallback(obj)
             return
+
+        if self.writeFallbackMapper is not None:
+            self.writeFallbackMapper.store(obj)
 
         if self._shouldSkipInternalRuntimeObject(obj):
             return
