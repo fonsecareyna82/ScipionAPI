@@ -11276,6 +11276,85 @@ class ProjectService:
 
         return report
 
+    def _detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
+        """
+        Temporarily detach output attributes before calling Scipion copyProtocol().
+
+        A duplicated protocol must copy only configuration/inputs, not produced outputs.
+        If outputs remain attached, Scipion may try to persist/copy sets such as
+        295.Tomograms and fail with errors like:
+
+            Object 295.Tomograms has no sampling rate!!!
+        """
+        detached = []
+
+        try:
+            outputAttrs = list(protocol.iterOutputAttributes())
+        except Exception:
+            outputAttrs = []
+
+        for outputName, outputObj in outputAttrs:
+            if not outputName:
+                continue
+
+            hadAttribute = hasattr(protocol, outputName)
+
+            detached.append({
+                "name": outputName,
+                "object": outputObj,
+                "hadAttribute": hadAttribute,
+            })
+
+            if hadAttribute:
+                try:
+                    delattr(protocol, outputName)
+                except Exception:
+                    try:
+                        setattr(protocol, outputName, None)
+                    except Exception:
+                        logger.debug(
+                            "Could not detach protocol output before copy. "
+                            "protocol=%s output=%s",
+                            getattr(protocol, "getObjId", lambda: None)(),
+                            outputName,
+                            exc_info=True,
+                        )
+
+        logger.info(
+            "Detached protocol outputs before duplicate. protocolId=%s outputs=%s",
+            getattr(protocol, "getObjId", lambda: None)(),
+            [item["name"] for item in detached],
+        )
+
+        return detached
+
+    def _restoreProtocolOutputsAfterCopy(
+            self,
+            protocol,
+            detachedOutputs: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Restore outputs detached by _detachProtocolOutputsForCopy.
+        This only restores the in-memory source protocol object.
+        """
+        for item in detachedOutputs or []:
+            outputName = item.get("name")
+            outputObj = item.get("object")
+
+            if not outputName:
+                continue
+
+            try:
+                setattr(protocol, outputName, outputObj)
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol output after copy. "
+                    "protocol=%s output=%s",
+                    getattr(protocol, "getObjId", lambda: None)(),
+                    outputName,
+                    exc_info=True,
+                )
+
     def duplicateProtocol(self, mapper, projectId, protocols):
         protocolList = []
         sourceIds = []
@@ -11323,8 +11402,24 @@ class ProjectService:
                 detail="No valid protocols to duplicate",
             )
 
+        detachedOutputsByProtocol = []
+
         try:
+            if usingPostgresqlRuntime:
+                for protocol in protocolList:
+                    detachedOutputsByProtocol.append({
+                        "protocol": protocol,
+                        "outputs": self._detachProtocolOutputsForCopy(protocol),
+                    })
+
             protListResult = self.currentProject.copyProtocol(protocolList)
+
+            if usingPostgresqlRuntime:
+                # Defensive cleanup:
+                # Even if Scipion copyProtocol() somehow propagated output attrs,
+                # the duplicated protocols must not keep produced outputs.
+                for prot in protListResult:
+                    self._detachProtocolOutputsForCopy(prot)
 
             for index, prot in enumerate(protListResult):
                 protId = str(prot.getObjId())
@@ -11350,6 +11445,13 @@ class ProjectService:
                 detail=f"Failed to duplicate protocols: {e}",
             )
 
+        finally:
+            for item in detachedOutputsByProtocol:
+                self._restoreProtocolOutputsAfterCopy(
+                    protocol=item.get("protocol"),
+                    detachedOutputs=item.get("outputs") or [],
+                )
+
         if usingPostgresqlRuntime:
             syncReports = []
             dependenciesCount = 0
@@ -11374,7 +11476,9 @@ class ProjectService:
                         duplicatedProtocolId=duplicatedProtocolId,
                     )
 
-                    dependenciesCount += int(dependencySync.get("dependenciesSaved", 0) or 0)
+                    dependenciesCount += int(
+                        dependencySync.get("dependenciesSaved", 0) or 0
+                    )
 
                     syncReports.append({
                         "protocolId": str(duplicatedProtocolId),
@@ -11389,6 +11493,7 @@ class ProjectService:
                         projectId,
                         duplicatedProtocolId,
                     )
+
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail=(
@@ -11415,20 +11520,27 @@ class ProjectService:
                 refresh=True,
                 checkPid=True,
             )
+
         except HTTPException:
             raise
+
         except Exception as e:
             errors.append(
                 "Failed to sync protocol graph after duplication. projectId=%s"
                 % projectId
             )
+
             logger.exception(
                 "Failed to sync protocol graph after duplication. projectId=%s",
                 projectId,
             )
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Protocols were duplicated in Scipion but graph sync to PostgreSQL failed: {e}",
+                detail=(
+                        "Protocols were duplicated in Scipion but graph sync "
+                        "to PostgreSQL failed: %s" % e
+                ),
             )
 
         return self._buildProtocolMutationResult(
