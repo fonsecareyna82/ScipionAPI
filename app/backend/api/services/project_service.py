@@ -891,7 +891,7 @@ class ProjectService:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except HTTPException:
             raise
-            except Exception as e:
+        except Exception as e:
             logMessage = (
                 "Failed to load protocol from currentProject. "
                 "protocolId=%s currentProject=%s mapper=%s"
