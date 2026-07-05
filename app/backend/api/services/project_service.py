@@ -891,14 +891,23 @@ class ProjectService:
             protocol = self.currentProject.getProtocol(int(protocolId))
         except HTTPException:
             raise
-        except Exception as e:
-            logger.exception(
+            except Exception as e:
+            logMessage = (
                 "Failed to load protocol from currentProject. "
-                "protocolId=%s currentProject=%s mapper=%s",
+                "protocolId=%s currentProject=%s mapper=%s"
+            )
+
+            logArgs = (
                 protocolId,
                 type(self.currentProject),
                 type(getattr(self.currentProject, "mapper", None)),
             )
+
+            if logFailure:
+                logger.exception(logMessage, *logArgs)
+            else:
+                logger.debug(logMessage, *logArgs)
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
@@ -917,7 +926,10 @@ class ProjectService:
             protocolId: Union[int, str],
     ):
         try:
-            return self._getScipionProtocolByRuntimeId(protocolId)
+            return self._getScipionProtocolByRuntimeId(
+                protocolId,
+                logFailure=False,
+            )
         except Exception:
             return None
 
@@ -942,11 +954,17 @@ class ProjectService:
             protocolId: Union[int, str],
     ):
         try:
-            return self._getScipionProtocolForRuntime(
+            scipionProtocolId = self._resolveScipionProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
+
+            return self._getScipionProtocolByRuntimeId(
+                scipionProtocolId,
+                logFailure=False,
+            )
+
         except Exception:
             return None
 
