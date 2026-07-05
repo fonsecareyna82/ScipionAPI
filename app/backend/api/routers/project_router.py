@@ -563,7 +563,11 @@ async def saveProtocol(
             mapper,
             projectId,
             currentUser,
+            refresh=False if usePostgresqlRuntimeProject else True,
+            checkPid=False,
+            loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
             usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+            usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
         )
         if not project:
             return JSONResponse(

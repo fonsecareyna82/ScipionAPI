@@ -334,6 +334,15 @@ class PostgresqlRuntimeMapper(Mapper):
             return False
 
     def insert(self, obj):
+        if obj is None:
+            return
+
+        if isinstance(obj, Protocol):
+            # Do not pre-allocate PostgreSQL ids for new protocols here.
+            # SQLite fallback must assign the execution id first.
+            self._storeRuntimeProtocol(obj)
+            return
+
         self._ensureObjId(obj)
         self.store(obj)
 

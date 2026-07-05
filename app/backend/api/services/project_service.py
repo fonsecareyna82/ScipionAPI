@@ -10135,6 +10135,27 @@ class ProjectService:
                         cleanupInfo,
                     )
 
+                if usingPostgresqlRuntime:
+                    runtimeMapper = None
+
+                    try:
+                        runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
+                    except Exception:
+                        runtimeMapper = None
+
+                    protocolRuntimeId = getattr(protocol, "getObjId", lambda: protocolId)()
+
+                    if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=(
+                                    "Protocol %s exists in PostgreSQL but not in the SQLite execution DB. "
+                                    "It was probably saved without PostgreSQL runtime write fallback enabled. "
+                                    "Delete/recreate or resave it after enabling write fallback."
+                                    % protocolRuntimeId
+                            ),
+                        )
+
                 self.currentProject.launchProtocol(protocol)
 
                 if usingPostgresqlRuntime:
