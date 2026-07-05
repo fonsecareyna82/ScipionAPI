@@ -231,8 +231,10 @@ class PostgresqlRuntimeMapper(Mapper):
         self._ensureObjId(obj)
 
         if isinstance(obj, Protocol):
+            # PostgreSQL runtime owns protocol persistence.
+            # Do not mirror protocols into the SQLite write fallback.
+            # The fallback is only a compatibility/read bridge during migration.
             self._storeProtocol(obj)
-            self._storeProtocolInWriteFallback(obj)
             return
 
         if self.writeFallbackMapper is not None:
@@ -263,8 +265,9 @@ class PostgresqlRuntimeMapper(Mapper):
         Insert/store a child object following the naming convention used by
         SqliteMapper.
 
-        This is called by Protocol._insertChild when outputs or internal child
-        attributes are registered.
+        In PostgreSQL runtime mode, do not mirror children of Protocol objects into
+        SQLite fallback. If the protocol root does not exist in SQLite, this creates
+        orphan rows like 175.status, 175.inputSet, etc.
         """
         if attr is None:
             return
@@ -287,7 +290,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 exc_info=True,
             )
 
-        if self.writeFallbackMapper is not None:
+        if self.writeFallbackMapper is not None and not isinstance(obj, Protocol):
             self.writeFallbackMapper.insertChild(obj, key, attr, namePrefix=namePrefix)
 
         self.store(attr)
