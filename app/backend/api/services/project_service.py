@@ -11439,9 +11439,189 @@ class ProjectService:
             errors=errors,
         )
 
+    def _refreshPostgresqlRuntimeParentsForChildren(
+            self,
+            mapper,
+            projectId: int,
+            childProtocolDbIds: List[int],
+    ) -> Dict[str, Any]:
+        refreshed = []
+
+        cleanChildDbIds = []
+        seen = set()
+
+        for childDbId in childProtocolDbIds or []:
+            try:
+                childDbId = int(childDbId)
+            except Exception:
+                continue
+
+            if childDbId <= 0 or childDbId in seen:
+                continue
+
+            seen.add(childDbId)
+            cleanChildDbIds.append(childDbId)
+
+        for childDbId in cleanChildDbIds:
+            rows = mapper.db.fetchAll(
+                """
+                SELECT DISTINCT
+                       r."parentProtocolDbId",
+                       r."parentProtocolId"
+                  FROM protocol_input_refs r
+                 WHERE r."projectId" = %s
+                   AND r."protocolDbId" = %s
+                   AND r."parentProtocolDbId" IS NOT NULL
+                 ORDER BY r."parentProtocolDbId"
+                """,
+                (
+                    int(projectId),
+                    int(childDbId),
+                ),
+            )
+
+            parentDbIds = []
+            parentProtocolIds = []
+
+            for row in rows or []:
+                parentDbId = row.get("parentProtocolDbId")
+                parentProtocolId = row.get("parentProtocolId")
+
+                if parentDbId not in (None, ""):
+                    parentDbId = int(parentDbId)
+
+                    if parentDbId not in parentDbIds:
+                        parentDbIds.append(parentDbId)
+
+                if parentProtocolId not in (None, ""):
+                    try:
+                        parentProtocolId = int(parentProtocolId)
+
+                        if parentProtocolId not in parentProtocolIds:
+                            parentProtocolIds.append(parentProtocolId)
+                    except Exception:
+                        pass
+
+            dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                childProtocolDbId=int(childDbId),
+                parentProtocolDbIds=parentDbIds,
+            )
+
+            self._updatePostgresqlProtocolParentIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=int(childDbId),
+                parentProtocolIds=parentProtocolIds,
+            )
+
+            refreshed.append({
+                "childProtocolDbId": int(childDbId),
+                "parentProtocolDbIds": parentDbIds,
+                "parentProtocolIds": parentProtocolIds,
+                "dependenciesSaved": dependenciesSaved,
+            })
+
+        return {
+            "refreshed": refreshed,
+            "count": len(refreshed),
+        }
+
+    def _deletePostgresqlRuntimeProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols: List[Any],
+    ) -> Dict[str, Any]:
+        protocolIds = []
+        protocolDbIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolIds.append(str(protocolId))
+
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            if protocolDbId is not None:
+                protocolDbIds.append(int(protocolDbId))
+
+        if not protocolDbIds:
+            return {
+                "deletedProtocolIds": protocolIds,
+                "deletedProtocolDbIds": [],
+                "affectedChildren": [],
+                "parentsRefresh": {
+                    "refreshed": [],
+                    "count": 0,
+                },
+            }
+
+        affectedRows = mapper.db.fetchAll(
+            """
+            SELECT DISTINCT "protocolDbId"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+               AND NOT ("protocolDbId" = ANY(%s))
+             ORDER BY "protocolDbId"
+            """,
+            (
+                int(projectId),
+                protocolDbIds,
+                protocolDbIds,
+            ),
+        )
+
+        affectedChildDbIds = [
+            int(row["protocolDbId"])
+            for row in affectedRows or []
+            if row.get("protocolDbId") not in (None, "")
+        ]
+
+        with mapper.db.transaction():
+            # Deleting from protocols is enough for protocol_input_refs,
+            # protocol_dependencies, scipion_sets and scipion_objects because
+            # the schema has ON DELETE CASCADE. Keep this operation focused:
+            # do not rebuild the whole graph from SQLite.
+            mapper.db.execute(
+                """
+                DELETE FROM protocols
+                 WHERE "projectId" = %s
+                   AND id = ANY(%s)
+                """,
+                (
+                    int(projectId),
+                    protocolDbIds,
+                ),
+                commit=False,
+            )
+
+        parentsRefresh = self._refreshPostgresqlRuntimeParentsForChildren(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbIds=affectedChildDbIds,
+        )
+
+        return {
+            "deletedProtocolIds": protocolIds,
+            "deletedProtocolDbIds": protocolDbIds,
+            "affectedChildren": affectedChildDbIds,
+            "parentsRefresh": parentsRefresh,
+        }
+
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
+            usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
             for protocolId in protocols or []:
                 protocol = self._getScipionProtocolForRuntime(
@@ -11458,6 +11638,26 @@ class ProjectService:
                 )
 
             self.currentProject.deleteProtocol(*protList)
+
+            if usingPostgresqlRuntime:
+                deleteInfo = self._deletePostgresqlRuntimeProtocols(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protList,
+                )
+
+                return {
+                    "status": 0,
+                    "message": "Protocol deleted successfully",
+                    "protocolsCount": len(deleteInfo.get("deletedProtocolDbIds", [])),
+                    "dependenciesCount": sum(
+                        int(item.get("dependenciesSaved", 0) or 0)
+                        for item in deleteInfo.get("parentsRefresh", {}).get("refreshed", [])
+                    ),
+                    "postgresqlRuntimeDelete": True,
+                    "deleteInfo": deleteInfo,
+                }
+
             mapper.deleteProtocol(projectId, protList)
 
             syncInfo = self.syncProjectProtocolsAndDependencies(
