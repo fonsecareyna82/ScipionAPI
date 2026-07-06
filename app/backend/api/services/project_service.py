@@ -9038,14 +9038,16 @@ class ProjectService:
         """
         Prepare child protocol pointers before launch using protocol_input_refs.
 
-        This does not rewrite PostgreSQL graph and does not persist the protocol again.
-        It only ensures that Scipion runtime can resolve Pointer(parentProtocol, extended=outputName)
-        while launching.
+        This does not rewrite the PostgreSQL graph. It only ensures that Scipion
+        runtime can resolve Pointer(parentProtocol, extended=outputName) while
+        launching.
 
         Important:
-          - Existing runtime outputs are kept untouched.
-          - PostgreSQL proxy is attached only when the parent runtime protocol does not
-            expose the requested output attribute.
+          - PostgreSQL is treated as the source of truth for parent outputs.
+          - A PostgreSQL-backed proxy is attached when the parent output is persisted,
+            replacing any stale runtime output attribute.
+          - The caller must persist the prepared protocol before launching so the
+            execution process can reload the restored pointers.
         """
         protocolId = self._getScipionObjectId(protocol)
 
@@ -10181,6 +10183,19 @@ class ProjectService:
                             % postgresqlLaunchPointerReport.get("errors")
                     ),
                 )
+
+        if postgresqlLaunchPointerReport.get("skipped"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "message": (
+                        "PostgreSQL runtime pointer preparation was skipped. "
+                        "The protocol cannot be launched safely because its "
+                        "runtime inputs may not be restored in the execution DB."
+                    ),
+                    "report": postgresqlLaunchPointerReport,
+                },
+            )
 
         if protocol.useQueue():
             queueName = params.get("_queueName")
