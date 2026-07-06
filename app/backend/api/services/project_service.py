@@ -12494,10 +12494,10 @@ class ProjectService:
         return str(statusValue).strip()
 
     def _validatePostgresqlRuntimeProtocolDelete(
-            self,
-            mapper,
-            projectId: int,
-            protocolDbIds: List[int],
+        self,
+        mapper,
+        projectId: int,
+         selectedProtocolDbIds: List[int],
     ) -> Dict[str, Any]:
         """
         Validate PostgreSQL runtime delete constraints.
@@ -12507,10 +12507,10 @@ class ProjectService:
         leaving downstream protocols outside the selection that are active or
         already have outputs.
         """
-        if not protocolDbIds:
+        if not selectedProtocolDbIds:
             return {
                 "blocked": False,
-                "externalChildren": [],
+                "externalDescendants": [],
             }
 
         blockedStatuses = {
@@ -12545,7 +12545,7 @@ class ProjectService:
                    AND d."parentProtocolDbId" = downstream."protocolDbId"
                  WHERE NOT d."childProtocolDbId" = ANY(downstream.path)
             ),
-            external_downstream AS (
+            external_descendants AS (
                 SELECT DISTINCT "protocolDbId"
                   FROM downstream
                  WHERE NOT "protocolDbId" = ANY(%s)
@@ -12563,7 +12563,10 @@ class ProjectService:
                     ON o."projectId" = p."projectId"
                    AND o."protocolDbId" = p.id
                  WHERE p."projectId" = %s
-                   AND p.id IN (SELECT "protocolDbId" FROM external_downstream)
+                   AND p.id IN (
+                       SELECT "protocolDbId"
+                         FROM external_descendants
+                   )
                  GROUP BY p.id
             )
             SELECT
@@ -12576,27 +12579,31 @@ class ProjectService:
          LEFT JOIN output_counts oc
                 ON oc."protocolDbId" = p.id
              WHERE p."projectId" = %s
-               AND p.id IN (SELECT "protocolDbId" FROM external_downstream)
+               AND p.id IN (
+                   SELECT "protocolDbId"
+                     FROM external_descendants
+               )
              ORDER BY p.id
             """,
             (
                 int(projectId),
-                protocolDbIds,
+                selectedProtocolDbIds,
                 int(projectId),
-                protocolDbIds,
+                selectedProtocolDbIds,
                 int(projectId),
                 int(projectId),
             ),
         )
 
-        blockedChildren = []
+        blockedDescendants = []
 
         for row in rows or []:
             statusText = str(row.get("status") or "").strip().lower()
             setsCount = int(row.get("setsCount") or 0)
             objectsCount = int(row.get("objectsCount") or 0)
-            hasOutputs = setsCount > 0 or objectsCount > 0
+
             isActive = statusText in blockedStatusTexts
+            hasOutputs = setsCount > 0 or objectsCount > 0
 
             if not isActive and not hasOutputs:
                 continue
@@ -12609,7 +12616,7 @@ class ProjectService:
             if hasOutputs:
                 reasons.append("has_outputs")
 
-            blockedChildren.append({
+            blockedDescendants.append({
                 "protocolDbId": int(row.get("protocolDbId")),
                 "protocolId": str(row.get("protocolId")),
                 "status": statusText,
@@ -12619,8 +12626,8 @@ class ProjectService:
             })
 
         return {
-            "blocked": bool(blockedChildren),
-            "externalChildren": blockedChildren,
+            "blocked": bool(blockedDescendants),
+            "externalDescendants": blockedDescendants,
         }
 
     def _deletePostgresqlRuntimeProtocols(
@@ -12788,6 +12795,8 @@ class ProjectService:
                     },
                 )
 
+            deleteValidationInfo = None
+
             if usingPostgresqlRuntime:
                 selectedProtocolDbIds = []
 
@@ -12806,7 +12815,7 @@ class ProjectService:
                 deleteValidationInfo = self._validatePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
                     projectId=projectId,
-                    protocolDbIds=selectedProtocolDbIds,
+                    selectedProtocolDbIds=selectedProtocolDbIds,
                 )
 
                 if deleteValidationInfo.get("blocked"):
@@ -12816,10 +12825,12 @@ class ProjectService:
                             "message": (
                                 "The selected protocols cannot be deleted because there are "
                                 "downstream protocols outside the selection that are active "
-                                "or already have outputs. Select the full subworkflow or stop/reset "
-                                "the affected protocols first."
+                                "or already have outputs. Select the full affected subworkflow "
+                                "or stop/reset the downstream protocols first."
                             ),
-                            "blockedChildren": deleteValidationInfo.get("externalChildren") or [],
+                            "blockedDescendants": (
+                                    deleteValidationInfo.get("externalDescendants") or []
+                            ),
                         },
                     )
             else:
