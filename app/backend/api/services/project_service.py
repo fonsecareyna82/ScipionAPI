@@ -10116,7 +10116,10 @@ class ProjectService:
 
         if executeMode == "stop":
             try:
-                self.stopProtocol(mapper, projectId, [protocolId])
+                result = self.stopProtocol(mapper, projectId, [protocolId])
+
+                if self._currentProjectUsesPostgresqlRuntimeMapper():
+                    return result
 
                 return self.syncProjectProtocolsAndDependencies(
                     mapper,
@@ -10124,8 +10127,10 @@ class ProjectService:
                     refresh=True,
                     checkPid=True,
                 )
+
             except HTTPException:
                 raise
+
             except Exception as e:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -10294,6 +10299,7 @@ class ProjectService:
                         "launchAccepted": True,
                         "protocolId": str(launchedProtocolId),
                         "protocolStatus": STATUS_LAUNCHED,
+                        "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
                     }
 
             if usingPostgresqlRuntime:
@@ -10323,6 +10329,7 @@ class ProjectService:
                     "launchAccepted": True,
                     "syncSkipped": False,
                     "syncSkippedReason": None,
+                    "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
                 })
 
                 return syncResult
