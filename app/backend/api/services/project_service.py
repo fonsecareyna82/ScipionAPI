@@ -12999,31 +12999,32 @@ class ProjectService:
         if not protocolsToResume:
             return self._buildProtocolMutationResult("No protocols to continue")
 
-        if usingPostgresqlRuntime:
-            for protocolToPrepare in protocolsToResume:
-                try:
-                    self._restorePostgresqlPointerInputsBeforeCopy(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocolToPrepare,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Could not restore PostgreSQL runtime pointers before continue-all. "
-                        "projectId=%s protocolId=%s targetProtocolId=%s",
-                        projectId,
-                        protocolId,
-                        getattr(protocolToPrepare, "getObjId", lambda: None)(),
-                        exc_info=True,
-                    )
+        pointerRestoreInfo = None
 
+        if usingPostgresqlRuntime:
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protocolsToResume,
+            )
+
+            if pointerRestoreInfo.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to restore PostgreSQL runtime pointers before continue-all: %s"
+                            % pointerRestoreInfo.get("errors")
+                    ),
+                )
+
+            runtimeMapper = None
+
+            try:
+                runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
+            except Exception:
                 runtimeMapper = None
 
-                try:
-                    runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
-                except Exception:
-                    runtimeMapper = None
-
+            for protocolToPrepare in protocolsToResume:
                 protocolRuntimeId = getattr(protocolToPrepare, "getObjId", lambda: None)()
 
                 if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
@@ -13059,39 +13060,12 @@ class ProjectService:
         postgresqlSync = None
 
         if usingPostgresqlRuntime:
-            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
+                registerOutputs=True,
             )
-
-            if pointerRestoreInfo.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Failed to restore PostgreSQL runtime pointers before continue-all: %s"
-                            % pointerRestoreInfo.get("errors")
-                    ),
-                )
-
-            for protocolToPrepare in protocolsToResume:
-                runtimeMapper = None
-
-                try:
-                    runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
-                except Exception:
-                    runtimeMapper = None
-
-                protocolRuntimeId = getattr(protocolToPrepare, "getObjId", lambda: None)()
-
-                if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=(
-                                "Protocol %s exists in PostgreSQL but not in the SQLite execution DB."
-                                % protocolRuntimeId
-                        ),
-                    )
 
         return self._buildProtocolMutationResult(
             "Protocol subtree continued successfully",
@@ -13151,7 +13125,7 @@ class ProjectService:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=(
-                            "Failed to restore PostgreSQL runtime pointers before restart-all: %s"
+                            "Failed to restore PostgreSQL runtime pointers before reset-from: %s"
                             % pointerRestoreInfo.get("errors")
                     ),
                 )
