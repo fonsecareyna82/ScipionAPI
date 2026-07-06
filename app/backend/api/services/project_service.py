@@ -12681,7 +12681,120 @@ class ProjectService:
             "updatedRefs": int(cur.rowcount or 0),
         }
 
+    def _getPostgresqlRuntimeSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> "collections.OrderedDict[str, Tuple[Any, int]]":
+        """
+        Resolve the downstream subworkflow from PostgreSQL runtime graph.
+
+        The returned shape intentionally matches Scipion's private workflow methods:
+            {
+                protocolId: (protocol, level),
+                ...
+            }
+
+        Do not use currentProject._getSubworkflow() in PostgreSQL runtime mode:
+        the PostgreSQL graph is the source of truth here.
+        """
+        rootProtocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if rootProtocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Protocol %s was not found in PostgreSQL" % protocolId,
+            )
+
+        rows = mapper.db.fetchAll(
+            """
+            WITH RECURSIVE subworkflow("protocolDbId", "level", path) AS (
+                SELECT
+                    p.id,
+                    0,
+                    ARRAY[p.id]
+                  FROM protocols p
+                 WHERE p."projectId" = %s
+                   AND p.id = %s
+
+                UNION ALL
+
+                SELECT
+                    d."childProtocolDbId",
+                    sw."level" + 1,
+                    sw.path || d."childProtocolDbId"
+                  FROM subworkflow sw
+                  JOIN protocol_dependencies d
+                    ON d."projectId" = %s
+                   AND d."parentProtocolDbId" = sw."protocolDbId"
+                 WHERE NOT d."childProtocolDbId" = ANY(sw.path)
+            )
+            SELECT
+                p.id AS "protocolDbId",
+                p."protocolId" AS "protocolId",
+                MIN(sw."level") AS "level"
+              FROM subworkflow sw
+              JOIN protocols p
+                ON p."projectId" = %s
+               AND p.id = sw."protocolDbId"
+             GROUP BY p.id, p."protocolId"
+             ORDER BY MIN(sw."level"), p.id
+            """,
+            (
+                int(projectId),
+                int(rootProtocolDbId),
+                int(projectId),
+                int(projectId),
+            ),
+        )
+
+        result = collections.OrderedDict()
+
+        for row in rows or []:
+            scipionProtocolId = row.get("protocolId")
+            level = int(row.get("level") or 0)
+
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+            )
+
+            result[str(scipionProtocolId)] = (protocol, level)
+
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No PostgreSQL runtime subworkflow found for protocol %s" % protocolId,
+            )
+
+        return result
+
+    def _workflowProtocolMapToProtocols(self, workflowProtocolMap) -> List[Any]:
+        if not workflowProtocolMap:
+            return []
+
+        if isinstance(workflowProtocolMap, dict):
+            protocols = []
+
+            for value in workflowProtocolMap.values():
+                if isinstance(value, (tuple, list)) and value:
+                    protocols.append(value[0])
+                else:
+                    protocols.append(value)
+
+            return protocols
+
+        return list(workflowProtocolMap or [])
+
     def restartProtocolAll(self, mapper, projectId: int, protocolId):
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
@@ -12689,7 +12802,16 @@ class ProjectService:
         )
 
         try:
-            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+            if usingPostgresqlRuntime:
+                workflowProtocolList = self._getPostgresqlRuntimeSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+                _activeProtocolList = {}
+            else:
+                workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+
         except Exception as e:
             logger.exception(
                 "Failed to resolve subworkflow for restart-all. projectId=%s protocolId=%s",
@@ -12701,12 +12823,12 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        workflowProtocols = self._workflowProtocolMapToProtocols(workflowProtocolList)
 
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
             projectId=projectId,
-            protocols=workflowProtocolList,
+            protocols=workflowProtocols,
         )
 
         refCleanupInfo = None
@@ -12715,7 +12837,7 @@ class ProjectService:
             refCleanupInfo = self._clearPostgresqlInputRefObjectIdsForParentProtocols(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=workflowProtocolList,
+                protocols=workflowProtocols,
             )
 
         logger.info(
@@ -12754,7 +12876,7 @@ class ProjectService:
             postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=workflowProtocolList,
+                protocols=workflowProtocols,
                 registerOutputs=False,
             )
 
@@ -12772,6 +12894,8 @@ class ProjectService:
         )
 
     def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
@@ -12779,7 +12903,16 @@ class ProjectService:
         )
 
         try:
-            workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
+            if usingPostgresqlRuntime:
+                workflowProtocolList = self._getPostgresqlRuntimeSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+                activeProtocolList = {}
+            else:
+                workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
+
         except Exception as e:
             logger.exception(
                 "Failed to resolve subworkflow for continue-all. projectId=%s protocolId=%s",
@@ -12791,40 +12924,28 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
-        protocolsToResume = activeProtocolList or workflowProtocolList or []
+        continuedProtList = activeProtocolList or workflowProtocolList
+        protocolsToResume = self._workflowProtocolMapToProtocols(continuedProtList)
+
         if not protocolsToResume:
             return self._buildProtocolMutationResult("No protocols to continue")
 
-        for item in protocolsToResume:
-            protocolToLaunch = item
-
-            if not hasattr(protocolToLaunch, "runMode"):
-                protocolToLaunch = self._getScipionProtocolForRuntime(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=item,
-                )
-
-            if self._currentProjectUsesPostgresqlRuntimeMapper():
-                protocolRuntimeId = getattr(protocolToLaunch, "getObjId", lambda: item)()
-
+        if usingPostgresqlRuntime:
+            for protocolToPrepare in protocolsToResume:
                 try:
-                    self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                    self._restorePostgresqlPointerInputsBeforeCopy(
                         mapper=mapper,
                         projectId=projectId,
-                        protocol=protocolToLaunch,
+                        protocol=protocolToPrepare,
                     )
                 except Exception:
-                    logger.exception(
-                        "Failed to prepare PostgreSQL runtime pointers before continue-all. "
-                        "projectId=%s protocolId=%s item=%s",
+                    logger.debug(
+                        "Could not restore PostgreSQL runtime pointers before continue-all. "
+                        "projectId=%s protocolId=%s targetProtocolId=%s",
                         projectId,
                         protocolId,
-                        protocolRuntimeId,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to prepare protocol pointers before continue",
+                        getattr(protocolToPrepare, "getObjId", lambda: None)(),
+                        exc_info=True,
                     )
 
                 runtimeMapper = None
@@ -12833,6 +12954,8 @@ class ProjectService:
                     runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
                 except Exception:
                     runtimeMapper = None
+
+                protocolRuntimeId = getattr(protocolToPrepare, "getObjId", lambda: None)()
 
                 if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
                     raise HTTPException(
@@ -12843,50 +12966,35 @@ class ProjectService:
                         ),
                     )
 
-            try:
-                protocolToLaunch.runMode.set(MODE_RESUME)
-            except Exception:
-                logger.debug(
-                    "Could not set MODE_RESUME before continue-all. projectId=%s protocolId=%s item=%s",
-                    projectId,
-                    protocolId,
-                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
-                    exc_info=True,
-                )
+        errorList = []
 
-            try:
-                self.currentProject.launchProtocol(protocolToLaunch)
-            except Exception as e:
-                logger.exception(
-                    "Failed to continue protocol. projectId=%s protocolId=%s item=%s",
-                    projectId,
-                    protocolId,
-                    getattr(protocolToLaunch, "getObjId", lambda: item)(),
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to continue protocol: {e}",
-                )
+        try:
+            self.currentProject._continueWorkflow(errorList, continuedProtList)
+        except Exception as e:
+            logger.exception(
+                "Failed to continue workflow subtree. projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to continue protocol subtree: {e}",
+            )
 
-            if self._currentProjectUsesPostgresqlRuntimeMapper():
-                try:
-                    protocolToLaunch.setStatus(STATUS_LAUNCHED)
-                except Exception:
-                    statusAttr = getattr(protocolToLaunch, "status", None)
-                    setter = getattr(statusAttr, "set", None)
-                    if callable(setter):
-                        setter(STATUS_LAUNCHED)
-
-                self.currentProject._storeProtocol(protocolToLaunch)
+        if errorList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=[str(e) for e in errorList],
+            )
 
         postgresqlSync = None
 
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
+        if usingPostgresqlRuntime:
             postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
-                registerOutputs=False,
+                registerOutputs=True,
             )
 
         return self._buildProtocolMutationResult(
@@ -12901,6 +13009,8 @@ class ProjectService:
         )
 
     def resetProtocolFrom(self, mapper, projectId: int, protocolId):
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
@@ -12908,7 +13018,16 @@ class ProjectService:
         )
 
         try:
-            workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+            if usingPostgresqlRuntime:
+                workflowProtocolList = self._getPostgresqlRuntimeSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+                _activeProtocolList = {}
+            else:
+                workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
+
         except Exception as e:
             logger.exception(
                 "Failed to resolve subworkflow for reset-from. projectId=%s protocolId=%s",
@@ -12920,12 +13039,12 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        workflowProtocols = self._workflowProtocolMapToProtocols(workflowProtocolList)
 
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
             projectId=projectId,
-            protocols=workflowProtocolList,
+            protocols=workflowProtocols,
         )
 
         refCleanupInfo = None
@@ -12934,7 +13053,7 @@ class ProjectService:
             refCleanupInfo = self._clearPostgresqlInputRefObjectIdsForParentProtocols(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=workflowProtocolList,
+                protocols=workflowProtocols,
             )
 
         logger.info(
@@ -12971,7 +13090,7 @@ class ProjectService:
             postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=workflowProtocolList,
+                protocols=workflowProtocols,
                 registerOutputs=False,
             )
 
