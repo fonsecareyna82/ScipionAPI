@@ -13153,7 +13153,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
-                registerOutputs=True,
+                registerOutputs=False,
             )
 
         return self._buildProtocolMutationResult(
@@ -13327,8 +13327,67 @@ class ProjectService:
                 )
 
         try:
+            scheduledStopped = []
+            nativeStopped = []
+
             for protocol in resolvedProtocols:
+                protocolStatus = None
+
+                try:
+                    protocolStatus = protocol.getStatus()
+                except Exception:
+                    statusAttr = getattr(protocol, "status", None)
+
+                    try:
+                        protocolStatus = statusAttr.get() if statusAttr is not None else None
+                    except Exception:
+                        protocolStatus = None
+
+                protocolRuntimeId = getattr(protocol, "getObjId", lambda: None)()
+
+                if usingPostgresqlRuntime and protocolStatus == STATUS_SCHEDULED:
+                    logger.info(
+                        "Cancelling scheduled PostgreSQL runtime protocol without native stop. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        protocolRuntimeId,
+                    )
+
+                    try:
+                        protocol.setStatus(STATUS_NEW)
+                    except Exception:
+                        statusAttr = getattr(protocol, "status", None)
+
+                        if hasattr(statusAttr, "set"):
+                            statusAttr.set(STATUS_NEW)
+
+                    for attrName, emptyValue in (
+                            ("_jobId", ""),
+                            ("_pid", None),
+                    ):
+                        attr = getattr(protocol, attrName, None)
+
+                        try:
+                            if hasattr(attr, "set"):
+                                attr.set(emptyValue)
+                            elif attr is not None:
+                                setattr(protocol, attrName, emptyValue)
+                        except Exception:
+                            logger.debug(
+                                "Could not clear scheduled protocol runtime attribute. "
+                                "projectId=%s protocolId=%s attr=%s",
+                                projectId,
+                                protocolRuntimeId,
+                                attrName,
+                                exc_info=True,
+                            )
+
+                    self.currentProject._storeProtocol(protocol)
+                    scheduledStopped.append(str(protocolRuntimeId))
+                    continue
+
                 self.currentProject.stopProtocol(protocol)
+                nativeStopped.append(str(protocolRuntimeId))
 
             postgresqlSync = None
 
@@ -13350,6 +13409,8 @@ class ProjectService:
                 postgresqlPointerRestore=pointerRestoreInfo,
                 postgresqlRuntimeStop=True,
                 postgresqlRuntimeSync=postgresqlSync,
+                scheduledStopped=scheduledStopped,
+                nativeStopped=nativeStopped,
             )
 
         except Exception as e:
