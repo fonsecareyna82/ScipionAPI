@@ -13124,14 +13124,14 @@ class ProjectService:
                 except Exception:
                     pass
 
-                pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protocolsToResume,
-                    prepareOutputsForLaunch=False,
-                    allowMissingParentOutputs=True,
-                    parentProtocolsById=parentProtocolsById,
-                )
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protocolsToResume,
+                prepareOutputsForLaunch=False,
+                allowMissingParentOutputs=True,
+                parentProtocolsById=parentProtocolsById,
+            )
 
             if pointerRestoreInfo.get("errors"):
                 raise HTTPException(
@@ -13160,113 +13160,6 @@ class ProjectService:
                                 % protocolRuntimeId
                         ),
                     )
-
-        def _cleanupExecutionDbOrphanObjects():
-            runtimeMapper = None
-
-            try:
-                runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
-            except Exception:
-                runtimeMapper = None
-
-            writeFallbackMapper = getattr(runtimeMapper, "writeFallbackMapper", None)
-
-            if writeFallbackMapper is None:
-                return {
-                    "enabled": False,
-                    "reason": "missing_write_fallback_mapper",
-                    "deleted": 0,
-                }
-
-            db = getattr(writeFallbackMapper, "db", None)
-
-            if db is None:
-                db = getattr(writeFallbackMapper, "_db", None)
-
-            if db is None:
-                return {
-                    "enabled": False,
-                    "reason": "missing_sqlite_db",
-                    "deleted": 0,
-                }
-
-            deleted = 0
-
-            try:
-                # Detect parent column name defensively.
-                rows = db.select("PRAGMA table_info(objects)")
-                columnNames = {
-                    str(row[1] if not isinstance(row, dict) else row.get("name"))
-                    for row in rows
-                }
-
-                parentColumn = None
-
-                for candidate in ("parent_id", "parentId", "parent"):
-                    if candidate in columnNames:
-                        parentColumn = candidate
-                        break
-
-                if parentColumn is None:
-                    return {
-                        "enabled": False,
-                        "reason": "objects_parent_column_not_found",
-                        "deleted": 0,
-                        "columns": list(columnNames),
-                    }
-
-                countRows = db.select(
-                    """
-                    SELECT COUNT(*) 
-                      FROM objects child
-                 LEFT JOIN objects parent
-                        ON parent.id = child.%s
-                     WHERE child.%s IS NOT NULL
-                       AND parent.id IS NULL
-                    """ % (parentColumn, parentColumn)
-                )
-
-                try:
-                    deleted = int(countRows[0][0]) if countRows else 0
-                except Exception:
-                    deleted = 0
-
-                if deleted:
-                    db.execute(
-                        """
-                        DELETE FROM objects
-                         WHERE %s IS NOT NULL
-                           AND %s NOT IN (
-                               SELECT id FROM objects
-                           )
-                        """ % (parentColumn, parentColumn)
-                    )
-
-                return {
-                    "enabled": True,
-                    "deleted": deleted,
-                    "parentColumn": parentColumn,
-                }
-
-            except Exception as e:
-                logger.exception(
-                    "Failed to cleanup SQLite execution DB orphan objects before continue-all. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    protocolId,
-                )
-
-                return {
-                    "enabled": False,
-                    "reason": str(e),
-                    "deleted": 0,
-                }
-
-        executionDbCleanupInfo = None
-
-        if usingPostgresqlRuntime:
-            executionDbCleanupInfo = _cleanupExecutionDbOrphanObjects()
-
         errorList = []
 
         try:
