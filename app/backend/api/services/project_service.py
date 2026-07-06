@@ -10182,6 +10182,12 @@ class ProjectService:
                     ),
                 )
 
+        if protocol.useQueue():
+            queueName = params.get("_queueName")
+            queueParams = params.get("_queueParams")
+            protocol.setQueueParams([queueName, queueParams])
+
+        if usingPostgresqlRuntime:
             try:
                 self.currentProject._storeProtocol(protocol)
                 postgresqlLaunchPointerReport["storedPreparedProtocol"] = True
@@ -10199,12 +10205,6 @@ class ProjectService:
                             % str(e)
                     ),
                 )
-
-        if protocol.useQueue():
-            queueName = params.get("_queueName")
-            queueParams = params.get("_queueParams")
-            protocol.setQueueParams([queueName, queueParams])
-
         try:
             validationErrors = protocol._validate()
             if validationErrors:
