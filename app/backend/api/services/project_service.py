@@ -12775,6 +12775,57 @@ class ProjectService:
 
         return result
 
+    def _restorePostgresqlRuntimePointersForProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+    ) -> Dict[str, Any]:
+        reports = []
+        errors = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            try:
+                report = self._restorePostgresqlPointerInputsBeforeCopy(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=protocol,
+                )
+
+                reports.append({
+                    "protocolId": str(protocolId),
+                    "report": report,
+                })
+
+                if report.get("errors"):
+                    errors.append({
+                        "protocolId": str(protocolId),
+                        "errors": report.get("errors"),
+                    })
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to restore PostgreSQL runtime pointers. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "errors": [str(e)],
+                })
+
+        return {
+            "reports": reports,
+            "errors": errors,
+        }
+
     def _workflowProtocolMapToProtocols(self, workflowProtocolMap) -> List[Any]:
         if not workflowProtocolMap:
             return []
@@ -12824,6 +12875,23 @@ class ProjectService:
             )
 
         workflowProtocols = self._workflowProtocolMapToProtocols(workflowProtocolList)
+        pointerRestoreInfo = None
+
+        if usingPostgresqlRuntime:
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocols,
+            )
+
+            if pointerRestoreInfo.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to restore PostgreSQL runtime pointers before restart-all: %s"
+                            % pointerRestoreInfo.get("errors")
+                    ),
+                )
 
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
@@ -12884,11 +12952,12 @@ class ProjectService:
             "Protocol subtree restarted successfully",
             protocolsCount=(
                 int(postgresqlSync.get("protocolsCount", 0) or 0)
-                if postgresqlSync else len(workflowProtocolList or [])
+                if postgresqlSync else len(workflowProtocols or [])
             ),
             dependenciesCount=0,
             postgresqlCleanup=cleanupInfo,
             postgresqlInputRefCleanup=refCleanupInfo,
+            postgresqlPointerRestore=pointerRestoreInfo,
             postgresqlRuntimeRestart=True,
             postgresqlRuntimeSync=postgresqlSync,
         )
@@ -12990,12 +13059,39 @@ class ProjectService:
         postgresqlSync = None
 
         if usingPostgresqlRuntime:
-            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
-                registerOutputs=True,
             )
+
+            if pointerRestoreInfo.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to restore PostgreSQL runtime pointers before continue-all: %s"
+                            % pointerRestoreInfo.get("errors")
+                    ),
+                )
+
+            for protocolToPrepare in protocolsToResume:
+                runtimeMapper = None
+
+                try:
+                    runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
+                except Exception:
+                    runtimeMapper = None
+
+                protocolRuntimeId = getattr(protocolToPrepare, "getObjId", lambda: None)()
+
+                if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                                "Protocol %s exists in PostgreSQL but not in the SQLite execution DB."
+                                % protocolRuntimeId
+                        ),
+                    )
 
         return self._buildProtocolMutationResult(
             "Protocol subtree continued successfully",
@@ -13004,6 +13100,7 @@ class ProjectService:
                 if postgresqlSync else len(protocolsToResume or [])
             ),
             dependenciesCount=0,
+            postgresqlPointerRestore=pointerRestoreInfo,
             postgresqlRuntimeContinue=True,
             postgresqlRuntimeSync=postgresqlSync,
         )
@@ -13040,6 +13137,24 @@ class ProjectService:
             )
 
         workflowProtocols = self._workflowProtocolMapToProtocols(workflowProtocolList)
+
+        pointerRestoreInfo = None
+
+        if usingPostgresqlRuntime:
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocols,
+            )
+
+            if pointerRestoreInfo.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to restore PostgreSQL runtime pointers before restart-all: %s"
+                            % pointerRestoreInfo.get("errors")
+                    ),
+                )
 
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
@@ -13101,6 +13216,7 @@ class ProjectService:
                 if postgresqlSync else len(workflowProtocolList or [])
             ),
             dependenciesCount=0,
+            postgresqlPointerRestore=pointerRestoreInfo,
             postgresqlCleanup=cleanupInfo,
             postgresqlInputRefCleanup=refCleanupInfo,
             postgresqlRuntimeReset=True,
