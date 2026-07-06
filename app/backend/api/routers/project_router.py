@@ -1099,11 +1099,21 @@ def continueProtocolAll(
 def resetProtocolFrom(
     projectId: int,
     protocolId: int,
+    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False if usePostgresqlRuntimeProject else True,
+        checkPid=False,
+        loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1111,7 +1121,33 @@ def resetProtocolFrom(
         )
 
     try:
-        service.resetProtocolFrom(mapper, projectId, protocolId)
+        result = service.resetProtocolFrom(mapper, projectId, protocolId)
+
+        workflow = []
+
+        if usePostgresqlRuntimeProject:
+            refreshedProject = service.getProjectById(
+                mapper,
+                projectId,
+                currentUser,
+                refresh=False,
+                checkPid=False,
+                loadWorkflowFromPostgresql=True,
+                usePostgresqlRuntimeProject=True,
+                usePostgresqlRuntimeWriteFallback=True,
+            )
+
+            if refreshedProject:
+                workflow = refreshedProject.get("protocols", [])
+
+            response = {
+                "status": result.get("status", 0),
+                "errors": result.get("errors", []),
+                "workflow": workflow,
+            }
+
+            return _appendProtocolSyncCounts(response, result)
+
         syncResult = service.syncProjectGraphAfterMutation(
             mapper,
             projectId,
