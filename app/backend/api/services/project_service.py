@@ -8347,13 +8347,6 @@ class ProjectService:
                         )
 
                     setattr(protocol, inputName, pointerList)
-                    protocol.setAttributeValue(inputName, pointerList)
-
-                    restored.append({
-                        "inputName": inputName,
-                        "kind": "multipointer",
-                        "count": len(inputRefs),
-                    })
 
                 else:
                     ref = inputRefs[0]
@@ -8369,7 +8362,6 @@ class ProjectService:
                     pointer = Pointer(parentProtocol, extended=parentOutputName)
 
                     setattr(protocol, inputName, pointer)
-                    protocol.setAttributeValue(inputName, pointer)
 
                     restored.append({
                         "inputName": inputName,
@@ -13313,13 +13305,34 @@ class ProjectService:
                 detail="No valid protocols to stop",
             )
 
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        pointerRestoreInfo = None
+
+        if usingPostgresqlRuntime:
+            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=resolvedProtocols,
+                prepareOutputsForLaunch=True,
+                allowMissingParentOutputs=True,
+            )
+
+            if pointerRestoreInfo.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to restore PostgreSQL runtime pointers before stop: %s"
+                            % pointerRestoreInfo.get("errors")
+                    ),
+                )
+
         try:
             for protocol in resolvedProtocols:
                 self.currentProject.stopProtocol(protocol)
 
             postgresqlSync = None
 
-            if self._currentProjectUsesPostgresqlRuntimeMapper():
+            if usingPostgresqlRuntime:
                 postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
                     mapper=mapper,
                     projectId=projectId,
@@ -13334,9 +13347,11 @@ class ProjectService:
                     if postgresqlSync else len(resolvedProtocols or [])
                 ),
                 dependenciesCount=0,
+                postgresqlPointerRestore=pointerRestoreInfo,
                 postgresqlRuntimeStop=True,
                 postgresqlRuntimeSync=postgresqlSync,
             )
+
         except Exception as e:
             logger.exception(
                 "Failed to stop protocols. projectId=%s protocolIds=%s",
