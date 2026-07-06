@@ -9023,6 +9023,7 @@ class ProjectService:
             mapper,
             projectId: int,
             protocol,
+            allowMissingParentOutputs: bool = False,
     ) -> Dict[str, Any]:
         """
         Prepare child protocol pointers before launch using protocol_input_refs.
@@ -9154,27 +9155,31 @@ class ProjectService:
                     )
 
                     if not outputInfo.get("exists"):
-                        raise ValueError(
-                            "Parent output %s.%s was not found in PostgreSQL"
-                            % (str(parentScipionProtocolId), parentOutputName)
+                        if allowMissingParentOutputs:
+                            itemReport["missingParentOutput"] = True
+                            itemReport["missingParentOutputReason"] = "parent_output_not_produced_yet"
+                        else:
+                            raise ValueError(
+                                "Parent output %s.%s was not found in PostgreSQL"
+                                % (str(parentScipionProtocolId), parentOutputName)
+                            )
+                    else:
+                        self._attachPostgresqlRuntimeOutputPlaceholder(
+                            parentProtocol=parentProtocol,
+                            outputName=parentOutputName,
+                            outputInfo=outputInfo,
+                            mapper=mapper,
                         )
 
-                    self._attachPostgresqlRuntimeOutputPlaceholder(
-                        parentProtocol=parentProtocol,
-                        outputName=parentOutputName,
-                        outputInfo=outputInfo,
-                        mapper=mapper,
-                    )
-
-                    itemReport["attachedProxy"] = True
-                    itemReport["outputInfo"] = {
-                        "kind": outputInfo.get("kind"),
-                        "setId": outputInfo.get("setId"),
-                        "objectId": outputInfo.get("objectId"),
-                        "className": outputInfo.get("className"),
-                        "itemClassName": outputInfo.get("itemClassName"),
-                        "itemsCount": outputInfo.get("itemsCount"),
-                    }
+                        itemReport["attachedProxy"] = True
+                        itemReport["outputInfo"] = {
+                            "kind": outputInfo.get("kind"),
+                            "setId": outputInfo.get("setId"),
+                            "objectId": outputInfo.get("objectId"),
+                            "className": outputInfo.get("className"),
+                            "itemClassName": outputInfo.get("itemClassName"),
+                            "itemsCount": outputInfo.get("itemsCount"),
+                        }
 
                 param = protocol.getParam(inputName)
 
@@ -10144,17 +10149,12 @@ class ProjectService:
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
-        # if usingPostgresqlRuntime:
-        #
-        #
-        #     if postgresqlLaunchPointerReport.get("errors"):
-        #         raise HTTPException(
-        #             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        #             detail=(
-        #                     "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
-        #                     % postgresqlLaunchPointerReport.get("errors")
-        #             ),
-        #         )
+        self._preparePostgresqlRuntimePointerOutputsForLaunch(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            allowMissingParentOutputs=False,
+        )
 
         if protocol.useQueue():
             queueName = params.get("_queueName")
@@ -12830,6 +12830,7 @@ class ProjectService:
             projectId: int,
             protocols,
             prepareOutputsForLaunch: bool = False,
+            allowMissingParentOutputs: bool = False,
     ) -> Dict[str, Any]:
         reports = []
         errors = []
@@ -12867,6 +12868,7 @@ class ProjectService:
                         mapper=mapper,
                         projectId=projectId,
                         protocol=protocol,
+                        allowMissingParentOutputs=allowMissingParentOutputs,
                     )
 
                     protocolReport["prepareOutputs"] = prepareReport
@@ -12955,6 +12957,7 @@ class ProjectService:
                 projectId=projectId,
                 protocols=workflowProtocols,
                 prepareOutputsForLaunch=True,
+                allowMissingParentOutputs=True,
             )
 
             if pointerRestoreInfo.get("errors"):
@@ -13080,6 +13083,7 @@ class ProjectService:
                 projectId=projectId,
                 protocols=protocolsToResume,
                 prepareOutputsForLaunch=True,
+                allowMissingParentOutputs=True,
             )
 
             if pointerRestoreInfo.get("errors"):
@@ -13194,6 +13198,7 @@ class ProjectService:
                 projectId=projectId,
                 protocols=workflowProtocols,
                 prepareOutputsForLaunch=True,
+                allowMissingParentOutputs=True,
             )
 
             if pointerRestoreInfo.get("errors"):
