@@ -12920,16 +12920,30 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
             projectId=projectId,
             protocols=workflowProtocolList,
         )
+
+        refCleanupInfo = None
+
+        if usingPostgresqlRuntime:
+            refCleanupInfo = self._clearPostgresqlInputRefObjectIdsForParentProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocolList,
+            )
+
         logger.info(
-            "Deleted persisted protocol outputs before reset-from. projectId=%s protocolId=%s cleanup=%s",
+            "Deleted persisted protocol outputs before reset-from. "
+            "projectId=%s protocolId=%s cleanup=%s refCleanup=%s",
             projectId,
             protocolId,
             cleanupInfo,
+            refCleanupInfo,
         )
 
         try:
@@ -12951,9 +12965,27 @@ class ProjectService:
                 detail=[str(e) for e in resetErrors],
             )
 
+        postgresqlSync = None
+
+        if usingPostgresqlRuntime:
+            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocolList,
+                registerOutputs=False,
+            )
+
         return self._buildProtocolMutationResult(
             "Protocol subtree reset successfully",
+            protocolsCount=(
+                int(postgresqlSync.get("protocolsCount", 0) or 0)
+                if postgresqlSync else len(workflowProtocolList or [])
+            ),
+            dependenciesCount=0,
             postgresqlCleanup=cleanupInfo,
+            postgresqlInputRefCleanup=refCleanupInfo,
+            postgresqlRuntimeReset=True,
+            postgresqlRuntimeSync=postgresqlSync,
         )
 
     def stopProtocol(self, mapper, projectId: int, protocolIds):
@@ -13007,8 +13039,6 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to stop protocols: {e}",
             )
-
-        return self._buildProtocolMutationResult("Protocol stopped successfully")
 
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
         return str(protocolId).strip() == "-1"
