@@ -13201,7 +13201,6 @@ class ProjectService:
             postgresqlPointerRestore=pointerRestoreInfo,
             postgresqlRuntimeContinue=True,
             postgresqlRuntimeSync=postgresqlSync,
-            postgresqlExecutionDbCleanup=executionDbCleanupInfo,
         )
 
     def resetProtocolFrom(self, mapper, projectId: int, protocolId):
