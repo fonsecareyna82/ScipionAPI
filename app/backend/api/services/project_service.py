@@ -1686,6 +1686,59 @@ class ProjectService:
 
         return candidatePath
 
+    def _clearPostgresqlInputRefObjectIdsForParentProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+    ) -> Dict[str, Any]:
+        parentDbIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            if protocolDbId is None:
+                continue
+
+            protocolDbId = int(protocolDbId)
+
+            if protocolDbId not in parentDbIds:
+                parentDbIds.append(protocolDbId)
+
+        if not parentDbIds:
+            return {
+                "parents": [],
+                "updatedRefs": 0,
+            }
+
+        cur = mapper.db.execute(
+            """
+            UPDATE protocol_input_refs
+               SET "objectId" = NULL,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+            """,
+            (
+                int(projectId),
+                parentDbIds,
+            ),
+        )
+
+        return {
+            "parents": parentDbIds,
+            "updatedRefs": int(cur.rowcount or 0),
+        }
+
     def _deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             self,
             mapper,
@@ -12525,6 +12578,109 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    def _syncPostgresqlRuntimeProtocolsAfterMutation(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+            registerOutputs: bool = False,
+    ) -> Dict[str, Any]:
+        reports = []
+        errors = []
+        protocolsCount = 0
+        outputsCount = 0
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
+
+            if protocolId in (None, ""):
+                continue
+
+            try:
+                report = self.syncPostgresqlRuntimeProtocol(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    registerOutputs=registerOutputs,
+                )
+
+                reports.append(report)
+                protocolsCount += int(report.get("protocols", 0) or 0)
+                outputsCount += int(report.get("outputs", 0) or 0)
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to sync PostgreSQL runtime protocol after mutation. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": str(e),
+                })
+
+        return {
+            "protocolsCount": protocolsCount,
+            "outputsCount": outputsCount,
+            "errors": errors,
+            "reports": reports,
+        }
+
+    def _clearPostgresqlInputRefObjectIdsForParentProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+    ) -> Dict[str, Any]:
+        parentDbIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            if protocolDbId is None:
+                continue
+
+            protocolDbId = int(protocolDbId)
+
+            if protocolDbId not in parentDbIds:
+                parentDbIds.append(protocolDbId)
+
+        if not parentDbIds:
+            return {
+                "parents": [],
+                "updatedRefs": 0,
+            }
+
+        cur = mapper.db.execute(
+            """
+            UPDATE protocol_input_refs
+               SET "objectId" = NULL,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+            """,
+            (
+                int(projectId),
+                parentDbIds,
+            ),
+        )
+
+        return {
+            "parents": parentDbIds,
+            "updatedRefs": int(cur.rowcount or 0),
+        }
+
     def restartProtocolAll(self, mapper, projectId: int, protocolId):
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
@@ -12545,19 +12701,34 @@ class ProjectService:
                 detail=f"Failed to resolve protocol subworkflow: {e}",
             )
 
+        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+
         cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             mapper=mapper,
             projectId=projectId,
             protocols=workflowProtocolList,
         )
+
+        refCleanupInfo = None
+
+        if usingPostgresqlRuntime:
+            refCleanupInfo = self._clearPostgresqlInputRefObjectIdsForParentProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocolList,
+            )
+
         logger.info(
-            "Deleted persisted protocol outputs before restart-all. projectId=%s protocolId=%s cleanup=%s",
+            "Deleted persisted protocol outputs before restart-all. "
+            "projectId=%s protocolId=%s cleanup=%s refCleanup=%s",
             projectId,
             protocolId,
             cleanupInfo,
+            refCleanupInfo,
         )
 
         errorList = []
+
         try:
             self.currentProject._restartWorkflow(errorList, workflowProtocolList)
         except Exception as e:
@@ -12577,9 +12748,27 @@ class ProjectService:
                 detail=[str(e) for e in errorList],
             )
 
+        postgresqlSync = None
+
+        if usingPostgresqlRuntime:
+            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=workflowProtocolList,
+                registerOutputs=False,
+            )
+
         return self._buildProtocolMutationResult(
             "Protocol subtree restarted successfully",
+            protocolsCount=(
+                int(postgresqlSync.get("protocolsCount", 0) or 0)
+                if postgresqlSync else len(workflowProtocolList or [])
+            ),
+            dependenciesCount=0,
             postgresqlCleanup=cleanupInfo,
+            postgresqlInputRefCleanup=refCleanupInfo,
+            postgresqlRuntimeRestart=True,
+            postgresqlRuntimeSync=postgresqlSync,
         )
 
     def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
@@ -12616,6 +12805,44 @@ class ProjectService:
                     protocolId=item,
                 )
 
+            if self._currentProjectUsesPostgresqlRuntimeMapper():
+                protocolRuntimeId = getattr(protocolToLaunch, "getObjId", lambda: item)()
+
+                try:
+                    self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=protocolToLaunch,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to prepare PostgreSQL runtime pointers before continue-all. "
+                        "projectId=%s protocolId=%s item=%s",
+                        projectId,
+                        protocolId,
+                        protocolRuntimeId,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to prepare protocol pointers before continue",
+                    )
+
+                runtimeMapper = None
+
+                try:
+                    runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
+                except Exception:
+                    runtimeMapper = None
+
+                if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                                "Protocol %s exists in PostgreSQL but not in the SQLite execution DB."
+                                % protocolRuntimeId
+                        ),
+                    )
+
             try:
                 protocolToLaunch.runMode.set(MODE_RESUME)
             except Exception:
@@ -12626,6 +12853,17 @@ class ProjectService:
                     getattr(protocolToLaunch, "getObjId", lambda: item)(),
                     exc_info=True,
                 )
+
+            if self._currentProjectUsesPostgresqlRuntimeMapper():
+                try:
+                    protocolToLaunch.setStatus(STATUS_LAUNCHED)
+                except Exception:
+                    statusAttr = getattr(protocolToLaunch, "status", None)
+                    setter = getattr(statusAttr, "set", None)
+                    if callable(setter):
+                        setter(STATUS_LAUNCHED)
+
+                self.currentProject._storeProtocol(protocolToLaunch)
 
             try:
                 self.currentProject.launchProtocol(protocolToLaunch)
@@ -12641,7 +12879,26 @@ class ProjectService:
                     detail=f"Failed to continue protocol: {e}",
                 )
 
-        return self._buildProtocolMutationResult("Protocol subtree continued successfully")
+        postgresqlSync = None
+
+        if self._currentProjectUsesPostgresqlRuntimeMapper():
+            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protocolsToResume,
+                registerOutputs=False,
+            )
+
+        return self._buildProtocolMutationResult(
+            "Protocol subtree continued successfully",
+            protocolsCount=(
+                int(postgresqlSync.get("protocolsCount", 0) or 0)
+                if postgresqlSync else len(protocolsToResume or [])
+            ),
+            dependenciesCount=0,
+            postgresqlRuntimeContinue=True,
+            postgresqlRuntimeSync=postgresqlSync,
+        )
 
     def resetProtocolFrom(self, mapper, projectId: int, protocolId):
         protocol = self._getScipionProtocolForRuntime(
@@ -12719,6 +12976,27 @@ class ProjectService:
         try:
             for protocol in resolvedProtocols:
                 self.currentProject.stopProtocol(protocol)
+
+            postgresqlSync = None
+
+            if self._currentProjectUsesPostgresqlRuntimeMapper():
+                postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=resolvedProtocols,
+                    registerOutputs=True,
+                )
+
+            return self._buildProtocolMutationResult(
+                "Protocol stopped successfully",
+                protocolsCount=(
+                    int(postgresqlSync.get("protocolsCount", 0) or 0)
+                    if postgresqlSync else len(resolvedProtocols or [])
+                ),
+                dependenciesCount=0,
+                postgresqlRuntimeStop=True,
+                postgresqlRuntimeSync=postgresqlSync,
+            )
         except Exception as e:
             logger.exception(
                 "Failed to stop protocols. projectId=%s protocolIds=%s",
