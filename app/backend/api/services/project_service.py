@@ -9141,55 +9141,54 @@ class ProjectService:
 
                 itemReport["hadRuntimeAttribute"] = bool(hasRuntimeAttribute)
 
-                if not hasRuntimeAttribute:
-                    resolvedParentProtocolDbId = parentProtocolDbId
+                resolvedParentProtocolDbId = parentProtocolDbId
 
-                    if resolvedParentProtocolDbId is None:
-                        resolvedParentProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=parentScipionProtocolId,
-                        )
-
-                    if resolvedParentProtocolDbId is None:
-                        raise ValueError(
-                            "Parent protocol %s was not found in PostgreSQL"
-                            % str(parentScipionProtocolId)
-                        )
-
-                    outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                if resolvedParentProtocolDbId is None:
+                    resolvedParentProtocolDbId = self._resolvePostgresqlProtocolDbId(
                         mapper=mapper,
                         projectId=projectId,
-                        parentProtocolDbId=int(resolvedParentProtocolDbId),
-                        outputName=parentOutputName,
+                        protocolId=parentScipionProtocolId,
                     )
 
-                    if not outputInfo.get("exists"):
-                        if allowMissingParentOutputs:
-                            itemReport["missingParentOutput"] = True
-                            itemReport["missingParentOutputReason"] = "parent_output_not_produced_yet"
-                        else:
-                            raise ValueError(
-                                "Parent output %s.%s was not found in PostgreSQL"
-                                % (str(parentScipionProtocolId), parentOutputName)
-                            )
-                    else:
-                        self._attachPostgresqlRuntimeOutputPlaceholder(
-                            parentProtocol=parentProtocol,
-                            outputName=parentOutputName,
-                            outputInfo=outputInfo,
-                            mapper=mapper,
-                        )
+                if resolvedParentProtocolDbId is None:
+                    raise ValueError(
+                        "Parent protocol %s was not found in PostgreSQL"
+                        % str(parentScipionProtocolId)
+                    )
 
-                        itemReport["attachedProxy"] = True
-                        itemReport["outputInfo"] = {
-                            "kind": outputInfo.get("kind"),
-                            "setId": outputInfo.get("setId"),
-                            "objectId": outputInfo.get("objectId"),
-                            "className": outputInfo.get("className"),
-                            "itemClassName": outputInfo.get("itemClassName"),
-                            "itemsCount": outputInfo.get("itemsCount"),
-                        }
+                outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbId=int(resolvedParentProtocolDbId),
+                    outputName=parentOutputName,
+                )
+
+                if not outputInfo.get("exists"):
+                    if allowMissingParentOutputs:
+                        itemReport["missingParentOutput"] = True
+                        itemReport["missingParentOutputReason"] = "parent_output_not_produced_yet"
+                    else:
+                        raise ValueError(
+                            "Parent output %s.%s was not found in PostgreSQL"
+                            % (str(parentScipionProtocolId), parentOutputName)
+                        )
+                else:
+                    self._attachPostgresqlRuntimeOutputPlaceholder(
+                        parentProtocol=parentProtocol,
+                        outputName=parentOutputName,
+                        outputInfo=outputInfo,
+                        mapper=mapper,
+                    )
+
+                    itemReport["attachedProxy"] = True
+                    itemReport["outputInfo"] = {
+                        "kind": outputInfo.get("kind"),
+                        "setId": outputInfo.get("setId"),
+                        "objectId": outputInfo.get("objectId"),
+                        "className": outputInfo.get("className"),
+                        "itemClassName": outputInfo.get("itemClassName"),
+                        "itemsCount": outputInfo.get("itemsCount"),
+                    }
 
                 param = protocol.getParam(inputName)
 
@@ -10180,6 +10179,24 @@ class ProjectService:
                     detail=(
                             "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
                             % postgresqlLaunchPointerReport.get("errors")
+                    ),
+                )
+
+            try:
+                self.currentProject._storeProtocol(protocol)
+                postgresqlLaunchPointerReport["storedPreparedProtocol"] = True
+            except Exception as e:
+                logger.exception(
+                    "Failed to persist PostgreSQL-prepared protocol pointers before launch. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    getattr(protocol, "getObjId", lambda: protocolId)(),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to persist PostgreSQL-prepared protocol pointers before launch: %s"
+                            % str(e)
                     ),
                 )
 
