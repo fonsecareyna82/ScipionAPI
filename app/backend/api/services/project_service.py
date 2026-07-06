@@ -12462,6 +12462,37 @@ class ProjectService:
             "count": len(refreshed),
         }
 
+    def _getPostgresqlRuntimeProtocolStatus(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Optional[str]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                str(protocolId),
+            ),
+        )
+
+        if not rows:
+            return None
+
+        statusValue = rows[0].get("status")
+
+        if statusValue is None:
+            return None
+
+        return str(statusValue).strip()
+
     def _deletePostgresqlRuntimeProtocols(
             self,
             mapper,
@@ -12577,25 +12608,42 @@ class ProjectService:
                 STATUS_SCHEDULED,
             }
 
+            blockedStatusTexts = {
+                str(statusValue).strip().lower()
+                for statusValue in blockedStatuses
+            }
+
             blockedProtocols = []
 
             for protocol in protList:
                 protocolId = getattr(protocol, "getObjId", lambda: None)()
 
-                try:
-                    protocolStatus = protocol.getStatus()
-                except Exception:
-                    statusAttr = getattr(protocol, "status", None)
+                protocolStatus = None
 
+                if usingPostgresqlRuntime:
+                    protocolStatus = self._getPostgresqlRuntimeProtocolStatus(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+
+                if protocolStatus is None:
                     try:
-                        protocolStatus = statusAttr.get() if statusAttr is not None else None
+                        protocolStatus = protocol.getStatus()
                     except Exception:
-                        protocolStatus = None
+                        statusAttr = getattr(protocol, "status", None)
 
-                if protocolStatus in blockedStatuses:
+                        try:
+                            protocolStatus = statusAttr.get() if statusAttr is not None else None
+                        except Exception:
+                            protocolStatus = None
+
+                protocolStatusText = str(protocolStatus or "").strip().lower()
+
+                if protocolStatusText in blockedStatusTexts:
                     blockedProtocols.append({
                         "protocolId": str(protocolId),
-                        "status": str(protocolStatus),
+                        "status": protocolStatusText,
                     })
 
             if blockedProtocols:
