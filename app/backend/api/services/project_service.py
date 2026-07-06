@@ -13093,7 +13093,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
-                prepareOutputsForLaunch=True,
+                prepareOutputsForLaunch=False,
                 allowMissingParentOutputs=True,
             )
 
