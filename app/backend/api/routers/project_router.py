@@ -975,6 +975,22 @@ def restartProtocolAll(
 
             return _appendProtocolSyncCounts(response, result)
 
+        syncResult = service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="restart protocol subtree",
+            refresh=True,
+            checkPid=True,
+        ) or {}
+
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
+
     except HTTPException as e:
         return JSONResponse(
             status_code=e.status_code,
@@ -1046,6 +1062,22 @@ def continueProtocolAll(
             }
 
             return _appendProtocolSyncCounts(response, result)
+
+        syncResult = service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="continue protocol subtree",
+            refresh=True,
+            checkPid=True,
+        ) or {}
+
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1168,6 +1200,22 @@ def stopProtocol(
             }
 
             return _appendProtocolSyncCounts(response, result)
+
+        syncResult = service.syncProjectGraphAfterMutation(
+            mapper,
+            projectId,
+            actionLabel="stop protocol",
+            refresh=True,
+            checkPid=True,
+        ) or {}
+
+        response = {
+            "status": 0,
+            "errors": [],
+            "workflow": [],
+        }
+
+        return _appendProtocolSyncCounts(response, syncResult)
 
     except HTTPException as e:
         return JSONResponse(
