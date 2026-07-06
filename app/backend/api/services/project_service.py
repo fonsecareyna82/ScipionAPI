@@ -8277,6 +8277,12 @@ class ProjectService:
                 "reason": "protocol_not_found_in_postgresql",
             }
 
+        self._assertNoPostgresqlRuntimeSelfInputRefs(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+        )
+
         rows = mapper.db.fetchAll(
             """
             SELECT
@@ -12775,11 +12781,55 @@ class ProjectService:
 
         return result
 
+    def _assertNoPostgresqlRuntimeSelfInputRefs(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+    ) -> None:
+        protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+        if protocolId in (None, ""):
+            return
+
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                r."inputName",
+                r."parentOutputName",
+                r."parentProtocolDbId"
+              FROM protocol_input_refs r
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+               AND r."parentProtocolDbId" = r."protocolDbId"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        if rows:
+            raise ValueError(
+                "Protocol %s has self input refs in PostgreSQL: %s"
+                % (protocolId, rows)
+            )
+
     def _restorePostgresqlRuntimePointersForProtocols(
             self,
             mapper,
             projectId: int,
             protocols,
+            prepareOutputsForLaunch: bool = False,
     ) -> Dict[str, Any]:
         reports = []
         errors = []
@@ -12790,23 +12840,45 @@ class ProjectService:
             if protocolId in (None, ""):
                 continue
 
+            protocolReport = {
+                "protocolId": str(protocolId),
+                "restore": None,
+                "prepareOutputs": None,
+            }
+
             try:
-                report = self._restorePostgresqlPointerInputsBeforeCopy(
+                restoreReport = self._restorePostgresqlPointerInputsBeforeCopy(
                     mapper=mapper,
                     projectId=projectId,
                     protocol=protocol,
                 )
 
-                reports.append({
-                    "protocolId": str(protocolId),
-                    "report": report,
-                })
+                protocolReport["restore"] = restoreReport
 
-                if report.get("errors"):
+                if restoreReport.get("errors"):
                     errors.append({
                         "protocolId": str(protocolId),
-                        "errors": report.get("errors"),
+                        "stage": "restore",
+                        "errors": restoreReport.get("errors"),
                     })
+
+                if prepareOutputsForLaunch:
+                    prepareReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=protocol,
+                    )
+
+                    protocolReport["prepareOutputs"] = prepareReport
+
+                    if prepareReport.get("errors"):
+                        errors.append({
+                            "protocolId": str(protocolId),
+                            "stage": "prepareOutputs",
+                            "errors": prepareReport.get("errors"),
+                        })
+
+                reports.append(protocolReport)
 
             except Exception as e:
                 logger.exception(
@@ -12882,6 +12954,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=workflowProtocols,
+                prepareOutputsForLaunch=True,
             )
 
             if pointerRestoreInfo.get("errors"):
@@ -13006,6 +13079,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=protocolsToResume,
+                prepareOutputsForLaunch=True,
             )
 
             if pointerRestoreInfo.get("errors"):
@@ -13119,6 +13193,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=workflowProtocols,
+                prepareOutputsForLaunch=True,
             )
 
             if pointerRestoreInfo.get("errors"):
