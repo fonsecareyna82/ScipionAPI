@@ -10149,12 +10149,24 @@ class ProjectService:
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
-        self._preparePostgresqlRuntimePointerOutputsForLaunch(
-            mapper=mapper,
-            projectId=projectId,
-            protocol=protocol,
-            allowMissingParentOutputs=False,
-        )
+        postgresqlLaunchPointerReport = None
+
+        if usingPostgresqlRuntime:
+            postgresqlLaunchPointerReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                allowMissingParentOutputs=False,
+            )
+
+            if postgresqlLaunchPointerReport.get("errors"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
+                            % postgresqlLaunchPointerReport.get("errors")
+                    ),
+                )
 
         if protocol.useQueue():
             queueName = params.get("_queueName")
