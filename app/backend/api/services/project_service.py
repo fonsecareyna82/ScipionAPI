@@ -8239,6 +8239,7 @@ class ProjectService:
             mapper,
             projectId: int,
             protocol,
+            parentProtocolsById: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Restore PointerParam/MultiPointerParam attributes from protocol_input_refs
@@ -8320,6 +8321,26 @@ class ProjectService:
         restored = []
         errors = []
 
+        def resolveParentProtocol(parentProtocolId):
+            parentScipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=parentProtocolId,
+            )
+
+            parentProtocol = None
+
+            if parentProtocolsById:
+                parentProtocol = (
+                        parentProtocolsById.get(str(parentScipionProtocolId))
+                        or parentProtocolsById.get(parentScipionProtocolId)
+                )
+
+            if parentProtocol is None:
+                parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
+
+            return parentScipionProtocolId, parentProtocol
+
         for inputName, inputRefs in refsByInputName.items():
             try:
                 param = protocol.getParam(inputName)
@@ -8337,11 +8358,7 @@ class ProjectService:
                         parentProtocolId = ref.get("parentProtocolId")
                         parentOutputName = str(ref.get("parentOutputName") or "").strip()
 
-                        parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-                            mapper=mapper,
-                            projectId=projectId,
-                            parentId=parentProtocolId,
-                        )
+                        parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
 
                         pointerList.append(
                             Pointer(parentProtocol, extended=parentOutputName)
@@ -12843,6 +12860,7 @@ class ProjectService:
             protocols,
             prepareOutputsForLaunch: bool = False,
             allowMissingParentOutputs: bool = False,
+            parentProtocolsById: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         reports = []
         errors = []
@@ -12864,6 +12882,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     protocol=protocol,
+                    parentProtocolsById=parentProtocolsById,
                 )
 
                 protocolReport["restore"] = restoreReport
@@ -13090,13 +13109,29 @@ class ProjectService:
         pointerRestoreInfo = None
 
         if usingPostgresqlRuntime:
-            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=protocolsToResume,
-                prepareOutputsForLaunch=False,
-                allowMissingParentOutputs=True,
-            )
+            parentProtocolsById = {}
+
+            for cachedProtocol in self._workflowProtocolMapToProtocols(workflowProtocolList):
+                cachedProtocolId = getattr(cachedProtocol, "getObjId", lambda: None)()
+
+                if cachedProtocolId is None:
+                    continue
+
+                parentProtocolsById[str(cachedProtocolId)] = cachedProtocol
+
+                try:
+                    parentProtocolsById[int(cachedProtocolId)] = cachedProtocol
+                except Exception:
+                    pass
+
+                pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protocolsToResume,
+                    prepareOutputsForLaunch=False,
+                    allowMissingParentOutputs=True,
+                    parentProtocolsById=parentProtocolsById,
+                )
 
             if pointerRestoreInfo.get("errors"):
                 raise HTTPException(
