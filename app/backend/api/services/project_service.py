@@ -9265,8 +9265,32 @@ class ProjectService:
         try:
             outputObj.setSetOfTiltSeries(tiltSeriesSet)
 
-            # Persist the protocol that owns the CTF output. This is the object
-            # that the launched Scipion process will reload.
+            # Important:
+            # setSetOfTiltSeries updates an internal pointer stored as a Set
+            # property. Persist the Set properties into its own sqlite, not only
+            # the parent protocol object.
+            try:
+                outputObj.write(properties=True)
+                report["ctfSetPropertiesWritten"] = True
+            except Exception as writeError:
+                report["ctfSetPropertiesWritten"] = False
+                report["ctfSetPropertiesWriteError"] = str(writeError)
+
+                logger.exception(
+                    "Failed to persist CTF tomo Set properties after repairing "
+                    "SetOfCTFTomoSeries -> SetOfTiltSeries relation. "
+                    "projectId=%s ctfParentProtocolId=%s ctfParentProtocolDbId=%s "
+                    "ctfOutput=%s tiltSeriesOutput=%s",
+                    projectId,
+                    parentScipionProtocolId,
+                    parentProtocolDbId,
+                    outputName,
+                    tiltSeriesOutputName,
+                )
+                raise
+
+            # Also persist the protocol that owns the CTF output. This keeps the
+            # execution DB protocol object aligned with the repaired output.
             self.currentProject._storeProtocol(parentProtocol)
 
             report["repaired"] = True
