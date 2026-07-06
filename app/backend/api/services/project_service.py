@@ -12854,17 +12854,6 @@ class ProjectService:
                     exc_info=True,
                 )
 
-            if self._currentProjectUsesPostgresqlRuntimeMapper():
-                try:
-                    protocolToLaunch.setStatus(STATUS_LAUNCHED)
-                except Exception:
-                    statusAttr = getattr(protocolToLaunch, "status", None)
-                    setter = getattr(statusAttr, "set", None)
-                    if callable(setter):
-                        setter(STATUS_LAUNCHED)
-
-                self.currentProject._storeProtocol(protocolToLaunch)
-
             try:
                 self.currentProject.launchProtocol(protocolToLaunch)
             except Exception as e:
@@ -12878,6 +12867,17 @@ class ProjectService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to continue protocol: {e}",
                 )
+
+            if self._currentProjectUsesPostgresqlRuntimeMapper():
+                try:
+                    protocolToLaunch.setStatus(STATUS_LAUNCHED)
+                except Exception:
+                    statusAttr = getattr(protocolToLaunch, "status", None)
+                    setter = getattr(statusAttr, "set", None)
+                    if callable(setter):
+                        setter(STATUS_LAUNCHED)
+
+                self.currentProject._storeProtocol(protocolToLaunch)
 
         postgresqlSync = None
 
