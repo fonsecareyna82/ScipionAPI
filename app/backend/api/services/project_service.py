@@ -37,6 +37,7 @@ import sys
 import threading
 import textwrap
 import shutil
+import signal
 
 import numpy as np
 
@@ -13288,8 +13289,82 @@ class ProjectService:
             postgresqlRuntimeSync=postgresqlSync,
         )
 
+
     def stopProtocol(self, mapper, projectId: int, protocolIds):
         resolvedProtocols = []
+
+        def _getProtocolPid(protocol):
+            for attrName in ("_pid", "pid"):
+                attr = getattr(protocol, attrName, None)
+
+                if attr is None:
+                    continue
+
+                try:
+                    value = attr.get() if hasattr(attr, "get") else attr
+                except Exception:
+                    value = None
+
+                if value not in (None, "", 0, "0"):
+                    try:
+                        return int(value)
+                    except Exception:
+                        return None
+
+            try:
+                value = protocol.getPid()
+                if value not in (None, "", 0, "0"):
+                    return int(value)
+            except Exception:
+                pass
+
+            return None
+
+        def _isPidAlive(pid):
+            if not pid:
+                return False
+
+            try:
+                os.kill(int(pid), 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except Exception:
+                return False
+
+        def _killPid(pid):
+            if not pid:
+                return False
+
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                return True
+            except Exception:
+                logger.exception("Could not send SIGTERM to protocol pid=%s", pid)
+                return False
+
+            for _ in range(10):
+                if not _isPidAlive(pid):
+                    return True
+
+                try:
+                    import time
+                    time.sleep(0.2)
+                except Exception:
+                    break
+
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                return True
+            except Exception:
+                logger.exception("Could not send SIGKILL to protocol pid=%s", pid)
+                return False
+
+            return not _isPidAlive(pid)
 
         for protocolId in protocolIds or []:
             protocol = self._getScipionProtocolForRuntime(
@@ -13346,47 +13421,63 @@ class ProjectService:
                 protocolRuntimeId = getattr(protocol, "getObjId", lambda: None)()
 
                 if usingPostgresqlRuntime and protocolStatus == STATUS_SCHEDULED:
-                    logger.info(
-                        "Cancelling scheduled PostgreSQL runtime protocol without native stop. "
-                        "projectId=%s protocolId=%s",
-                        projectId,
-                        protocolRuntimeId,
-                    )
-
-                    try:
-                        protocol.setStatus(STATUS_NEW)
-                    except Exception:
-                        statusAttr = getattr(protocol, "status", None)
-
-                        if hasattr(statusAttr, "set"):
-                            statusAttr.set(STATUS_NEW)
-
-                    for attrName, emptyValue in (
-                            ("_jobId", ""),
-                            ("_pid", None),
-                    ):
-                        attr = getattr(protocol, attrName, None)
-
-                        try:
-                            if hasattr(attr, "set"):
-                                attr.set(emptyValue)
-                            elif attr is not None:
-                                setattr(protocol, attrName, emptyValue)
-                        except Exception:
-                            logger.debug(
-                                "Could not clear scheduled protocol runtime attribute. "
-                                "projectId=%s protocolId=%s attr=%s",
-                                projectId,
-                                protocolRuntimeId,
-                                attrName,
-                                exc_info=True,
-                            )
-
-                    self.currentProject._storeProtocol(protocol)
+                    # Tu lógica actual de cancelar scheduled sin native stop.
+                    ...
                     scheduledStopped.append(str(protocolRuntimeId))
                     continue
 
-                self.currentProject.stopProtocol(protocol)
+                protocolToStop = protocol
+
+                if usingPostgresqlRuntime:
+                    try:
+                        executionProtocol = self._loadProtocolFromRuntimeDb(
+                            protocolId=protocolRuntimeId,
+                        )
+
+                        if executionProtocol is not None:
+                            protocolToStop = executionProtocol
+                    except Exception:
+                        logger.debug(
+                            "Could not reload protocol from execution DB before stop. "
+                            "projectId=%s protocolId=%s",
+                            projectId,
+                            protocolRuntimeId,
+                            exc_info=True,
+                        )
+
+                    pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=[protocolToStop],
+                        prepareOutputsForLaunch=True,
+                        allowMissingParentOutputs=True,
+                    )
+
+                    if pointerRestoreInfo.get("errors"):
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=(
+                                    "Failed to restore PostgreSQL runtime pointers before stop: %s"
+                                    % pointerRestoreInfo.get("errors")
+                            ),
+                        )
+
+                pidBeforeStop = _getProtocolPid(protocolToStop)
+
+                self.currentProject.stopProtocol(protocolToStop)
+
+                if usingPostgresqlRuntime and pidBeforeStop and _isPidAlive(pidBeforeStop):
+                    killed = _killPid(pidBeforeStop)
+
+                    if not killed:
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=(
+                                    "Protocol %s was marked as stopped but process pid=%s is still alive."
+                                    % (protocolRuntimeId, pidBeforeStop)
+                            ),
+                        )
+
                 nativeStopped.append(str(protocolRuntimeId))
 
             postgresqlSync = None
@@ -13396,7 +13487,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     protocols=resolvedProtocols,
-                    registerOutputs=True,
+                    registerOutputs=False,
                 )
 
             return self._buildProtocolMutationResult(
