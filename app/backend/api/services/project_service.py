@@ -12571,6 +12571,45 @@ class ProjectService:
                     detail="No valid protocols to delete",
                 )
 
+            blockedStatuses = {
+                STATUS_RUNNING,
+                STATUS_LAUNCHED,
+                STATUS_SCHEDULED,
+            }
+
+            blockedProtocols = []
+
+            for protocol in protList:
+                protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+                try:
+                    protocolStatus = protocol.getStatus()
+                except Exception:
+                    statusAttr = getattr(protocol, "status", None)
+
+                    try:
+                        protocolStatus = statusAttr.get() if statusAttr is not None else None
+                    except Exception:
+                        protocolStatus = None
+
+                if protocolStatus in blockedStatuses:
+                    blockedProtocols.append({
+                        "protocolId": str(protocolId),
+                        "status": str(protocolStatus),
+                    })
+
+            if blockedProtocols:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": (
+                            "Running, launched or scheduled protocols cannot be deleted. "
+                            "Stop them first and delete them afterwards."
+                        ),
+                        "blockedProtocols": blockedProtocols,
+                    },
+                )
+
             self.currentProject.deleteProtocol(*protList)
 
             if usingPostgresqlRuntime:
