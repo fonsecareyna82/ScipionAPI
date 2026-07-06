@@ -11547,6 +11547,8 @@ class ProjectService:
             projectId: int,
             sourceProtocolId,
             duplicatedProtocolId,
+            sourceToDuplicatedProtocolId: Optional[Dict[str, str]] = None,
+            sourceDbToDuplicatedDbId: Optional[Dict[int, int]] = None,
     ) -> Dict[str, Any]:
         sourceProtocolDbId = self._resolvePostgresqlProtocolDbId(
             mapper=mapper,
@@ -11571,6 +11573,18 @@ class ProjectService:
                 "Duplicated protocol %s was not found in PostgreSQL"
                 % duplicatedProtocolId
             )
+
+        sourceToDuplicatedProtocolId = {
+            str(k): str(v)
+            for k, v in (sourceToDuplicatedProtocolId or {}).items()
+            if k is not None and v is not None
+        }
+
+        sourceDbToDuplicatedDbId = {
+            int(k): int(v)
+            for k, v in (sourceDbToDuplicatedDbId or {}).items()
+            if k is not None and v is not None
+        }
 
         rows = mapper.db.fetchAll(
             """
@@ -11601,14 +11615,50 @@ class ProjectService:
         parentProtocolIds = []
 
         for row in rows or []:
-            parentProtocolDbId = row.get("parentProtocolDbId")
-            parentProtocolId = row.get("parentProtocolId")
+            originalParentProtocolDbId = row.get("parentProtocolDbId")
+            originalParentProtocolId = row.get("parentProtocolId")
+
+            parentProtocolDbId = originalParentProtocolDbId
+            parentProtocolId = originalParentProtocolId
+            remappedToDuplicatedParent = False
+
+            if originalParentProtocolDbId not in (None, ""):
+                try:
+                    originalParentProtocolDbIdInt = int(originalParentProtocolDbId)
+
+                    if originalParentProtocolDbIdInt in sourceDbToDuplicatedDbId:
+                        parentProtocolDbId = sourceDbToDuplicatedDbId[originalParentProtocolDbIdInt]
+                        remappedToDuplicatedParent = True
+                    else:
+                        parentProtocolDbId = originalParentProtocolDbIdInt
+
+                except Exception:
+                    parentProtocolDbId = originalParentProtocolDbId
+
+            if originalParentProtocolId not in (None, ""):
+                originalParentProtocolIdText = str(originalParentProtocolId).strip()
+
+                if originalParentProtocolIdText in sourceToDuplicatedProtocolId:
+                    parentProtocolId = sourceToDuplicatedProtocolId[originalParentProtocolIdText]
+                    remappedToDuplicatedParent = True
+                else:
+                    parentProtocolId = originalParentProtocolIdText
+
+            if parentProtocolDbId in (None, "") and parentProtocolId not in (None, ""):
+                parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=parentProtocolId,
+                )
 
             if parentProtocolDbId not in (None, ""):
-                parentProtocolDbId = int(parentProtocolDbId)
+                try:
+                    parentProtocolDbId = int(parentProtocolDbId)
 
-                if parentProtocolDbId not in parentProtocolDbIds:
-                    parentProtocolDbIds.append(parentProtocolDbId)
+                    if parentProtocolDbId not in parentProtocolDbIds:
+                        parentProtocolDbIds.append(parentProtocolDbId)
+                except Exception:
+                    pass
 
             if parentProtocolId not in (None, ""):
                 try:
@@ -11629,7 +11679,11 @@ class ProjectService:
                 "parentProtocolId": str(parentProtocolId) if parentProtocolId not in (None, "") else None,
                 "parentOutputName": row.get("parentOutputName"),
                 "objectClassName": row.get("objectClassName"),
-                "objectId": row.get("objectId"),
+
+                # Important:
+                # If the parent was remapped to a duplicated protocol, the old objectId
+                # belongs to the original parent's output. Do not carry it over.
+                "objectId": None if remappedToDuplicatedParent else row.get("objectId"),
             })
 
         dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
@@ -11757,6 +11811,16 @@ class ProjectService:
         syncReports = []
         dependenciesCount = 0
 
+        sourceItems = []
+        duplicatedItems = []
+
+        sourceToDuplicatedProtocolId: Dict[str, str] = {}
+        sourceDbToDuplicatedDbId: Dict[int, int] = {}
+
+        # ------------------------------------------------------------------
+        # Phase 1: resolve all source protocols and create all duplicated
+        # protocol rows, without copying refs yet.
+        # ------------------------------------------------------------------
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
 
@@ -11810,7 +11874,7 @@ class ProjectService:
 
             params = copy.deepcopy(sourceParams)
 
-            # Do not duplicate produced outputs/runtime state.
+            # Do not duplicate runtime/output state.
             for key in list(params.keys()):
                 try:
                     param = sourceProtocol.getParam(key)
@@ -11818,7 +11882,7 @@ class ProjectService:
                     param = None
 
                 if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                    # Pointers are copied from protocol_input_refs below.
+                    # Pointers are restored from protocol_input_refs in phase 2.
                     params.pop(key, None)
                     continue
 
@@ -11872,59 +11936,118 @@ class ProjectService:
 
             duplicatedProtocolId = self._getScipionObjectId(newProtocol)
 
-            protocolSync = self.syncPostgresqlRuntimeProtocol(
+            duplicatedProtocolDbId = self._resolvePostgresqlProtocolDbId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=duplicatedProtocolId,
-                registerOutputs=False,
             )
 
-            dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                sourceProtocolId=sourceScipionProtocolId,
-                duplicatedProtocolId=duplicatedProtocolId,
-            )
-
-            # Important:
-            # restore real Pointer/PointerList objects only for runtime execution.
-            # The editable value shown in the form must come from protocol_input_refs,
-            # not from targetObj.getObjParentId().
-            pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=newProtocol,
-            )
-
-            if pointerRestore.get("errors"):
+            if duplicatedProtocolDbId is None:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to restore duplicated protocol pointers: %s"
-                           % pointerRestore.get("errors"),
+                    detail="Duplicated protocol %s was not found in PostgreSQL" % duplicatedProtocolId,
                 )
 
-            self.currentProject._storeProtocol(newProtocol)
+            sourceToDuplicatedProtocolId[str(sourceScipionProtocolId)] = str(duplicatedProtocolId)
+            sourceDbToDuplicatedDbId[int(sourceProtocolDbId)] = int(duplicatedProtocolDbId)
+
+            sourceItems.append({
+                "sourceProtocolId": sourceProtocolId,
+                "sourceScipionProtocolId": sourceScipionProtocolId,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "protocolClassName": protocolClassName,
+            })
+
+            duplicatedItems.append({
+                "sourceScipionProtocolId": sourceScipionProtocolId,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "duplicatedProtocol": newProtocol,
+                "duplicatedProtocolId": duplicatedProtocolId,
+                "duplicatedProtocolDbId": duplicatedProtocolDbId,
+            })
 
             duplicated.append({
                 "sourceId": str(sourceScipionProtocolId),
                 "newId": str(duplicatedProtocolId),
             })
 
-            dependenciesCount += int(dependencySync.get("dependenciesSaved", 0) or 0)
-
-            syncReports.append({
-                "sourceProtocolId": str(sourceScipionProtocolId),
-                "duplicatedProtocolId": str(duplicatedProtocolId),
-                "protocolSync": protocolSync,
-                "dependencySync": dependencySync,
-                "pointerRestore": pointerRestore,
-            })
-
-        if not duplicated:
+        if not duplicatedItems:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No valid protocols to duplicate",
             )
+
+        # ------------------------------------------------------------------
+        # Phase 2: copy refs/dependencies using the full old -> new map.
+        # ------------------------------------------------------------------
+        for item in duplicatedItems:
+            newProtocol = item["duplicatedProtocol"]
+            sourceScipionProtocolId = item["sourceScipionProtocolId"]
+            duplicatedProtocolId = item["duplicatedProtocolId"]
+
+            try:
+                protocolSync = self.syncPostgresqlRuntimeProtocol(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=duplicatedProtocolId,
+                    registerOutputs=False,
+                )
+
+                dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
+                    mapper=mapper,
+                    projectId=projectId,
+                    sourceProtocolId=sourceScipionProtocolId,
+                    duplicatedProtocolId=duplicatedProtocolId,
+                    sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
+                    sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
+                )
+
+                pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=newProtocol,
+                )
+
+                if pointerRestore.get("errors"):
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to restore duplicated protocol pointers: %s"
+                               % pointerRestore.get("errors"),
+                    )
+
+                self.currentProject._storeProtocol(newProtocol)
+
+                dependenciesCount += int(
+                    dependencySync.get("dependenciesSaved", 0) or 0
+                )
+
+                syncReports.append({
+                    "sourceProtocolId": str(sourceScipionProtocolId),
+                    "duplicatedProtocolId": str(duplicatedProtocolId),
+                    "protocolSync": protocolSync,
+                    "dependencySync": dependencySync,
+                    "pointerRestore": pointerRestore,
+                })
+
+            except HTTPException:
+                raise
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to sync duplicated PostgreSQL runtime protocol. "
+                    "projectId=%s sourceProtocolId=%s duplicatedProtocolId=%s",
+                    projectId,
+                    sourceScipionProtocolId,
+                    duplicatedProtocolId,
+                )
+
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                            "Protocol was duplicated but PostgreSQL runtime sync failed: %s"
+                            % e
+                    ),
+                )
 
         return self._buildProtocolMutationResult(
             "Protocol was duplicated successfully",
@@ -11934,6 +12057,13 @@ class ProjectService:
             errors=errors,
             postgresqlRuntimeDuplicate=True,
             syncReports=syncReports,
+            duplicateRemap={
+                "protocolIds": sourceToDuplicatedProtocolId,
+                "protocolDbIds": {
+                    str(k): str(v)
+                    for k, v in sourceDbToDuplicatedDbId.items()
+                },
+            },
         )
 
     def duplicateProtocol(self, mapper, projectId, protocols):
