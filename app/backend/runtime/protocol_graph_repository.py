@@ -522,6 +522,56 @@ class ProtocolGraphRepository:
 
         return len(cleanRefs)
 
+    def loadParentRefsForChildProtocol(
+            self,
+            mapper,
+            projectId: int,
+            childProtocolDbId: int,
+    ) -> Dict[str, Any]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT DISTINCT
+                   r."parentProtocolDbId",
+                   r."parentProtocolId"
+              FROM protocol_input_refs r
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+               AND r."parentProtocolDbId" IS NOT NULL
+             ORDER BY r."parentProtocolDbId"
+            """,
+            (
+                int(projectId),
+                int(childProtocolDbId),
+            ),
+        )
+
+        parentDbIds = []
+        parentProtocolIds = []
+
+        for row in rows or []:
+            parentDbId = row.get("parentProtocolDbId")
+            parentProtocolId = row.get("parentProtocolId")
+
+            if parentDbId not in (None, ""):
+                parentDbId = int(parentDbId)
+
+                if parentDbId not in parentDbIds:
+                    parentDbIds.append(parentDbId)
+
+            if parentProtocolId not in (None, ""):
+                try:
+                    parentProtocolId = int(parentProtocolId)
+
+                    if parentProtocolId not in parentProtocolIds:
+                        parentProtocolIds.append(parentProtocolId)
+                except Exception:
+                    pass
+
+        return {
+            "parentProtocolDbIds": parentDbIds,
+            "parentProtocolIds": parentProtocolIds,
+        }
+
     @staticmethod
     def toOptionalInt(value: Any) -> Optional[int]:
         if value is None or value == "":
