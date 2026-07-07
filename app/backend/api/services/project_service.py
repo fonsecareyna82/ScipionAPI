@@ -11854,20 +11854,6 @@ class ProjectService:
             childProtocolDbIds=childProtocolDbIds,
         )
 
-    def _getPostgresqlRuntimeProtocolStatus(
-            self,
-            mapper,
-            projectId: int,
-            protocolId,
-    ) -> Optional[str]:
-        protocolGraphRepository = ProtocolGraphRepository()
-
-        return protocolGraphRepository.getProtocolStatusByScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
     def _validatePostgresqlRuntimeProtocolDelete(
         self,
         mapper,
