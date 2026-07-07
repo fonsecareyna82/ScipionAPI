@@ -187,7 +187,7 @@ class ProtocolIdentityResolver:
         return protocolIds
 
     def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
-        protocolIds = self.extractProtocolIdsFromProtocols(protocols)
+        protocolIds = ProtocolIdentityResolver.extractProtocolIdsFromProtocols(protocols)
         protocolDbIds = []
         missingProtocolIds = []
 
