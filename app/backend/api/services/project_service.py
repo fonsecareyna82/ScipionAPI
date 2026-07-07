@@ -11925,6 +11925,13 @@ class ProjectService:
             protocolIds: Optional[List[str]] = None,
             protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
     ) -> Dict[str, Any]:
+        """
+        Delete PostgreSQL runtime protocol rows and refresh affected children.
+
+        In the normal deleteProtocol flow, protocolDbIds and protocolIds are
+        already resolved before this helper is called. The fallback resolution is
+        kept for compatibility with direct/internal calls.
+        """
         if protocolDbIds is None:
             protocolIdentityResolver = ProtocolIdentityResolver(
                 mapper=mapper,
