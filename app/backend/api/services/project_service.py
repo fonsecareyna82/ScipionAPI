@@ -11845,6 +11845,7 @@ class ProjectService:
         mapper,
         projectId: int,
         selectedProtocolDbIds: List[int],
+        protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
     ) -> Dict[str, Any]:
         """
         Validate PostgreSQL runtime delete constraints.
@@ -11871,7 +11872,8 @@ class ProjectService:
             for statusValue in blockedStatuses
         }
 
-        protocolGraphRepository = ProtocolGraphRepository()
+        if protocolGraphRepository is None:
+            protocolGraphRepository = ProtocolGraphRepository()
 
         rows = protocolGraphRepository.loadExternalDescendantsForDeleteValidation(
             mapper=mapper,
@@ -12066,6 +12068,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     selectedProtocolDbIds=selectedProtocolDbIds,
+                    protocolGraphRepository=protocolGraphRepository,
                 )
 
                 if deleteValidationInfo.get("blocked"):
