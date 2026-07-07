@@ -135,3 +135,25 @@ class ProtocolIdentityResolver:
             return int(float(str(value).strip()))
         except Exception:
             return None
+
+    def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
+        protocolIds = []
+        protocolDbIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolIds.append(str(protocolId))
+
+            protocolDbId = self.resolvePostgresqlProtocolDbId(protocolId)
+
+            if protocolDbId is not None:
+                protocolDbIds.append(int(protocolDbId))
+
+        return {
+            "protocolIds": protocolIds,
+            "protocolDbIds": protocolDbIds,
+        }

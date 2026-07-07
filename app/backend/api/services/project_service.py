@@ -12040,25 +12040,18 @@ class ProjectService:
             projectId: int,
             protocols: List[Any],
     ) -> Dict[str, Any]:
-        protocolIds = []
-        protocolDbIds = []
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
 
-        for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: None)()
+        protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
+            protocols
+        )
 
-            if protocolId in (None, ""):
-                continue
-
-            protocolIds.append(str(protocolId))
-
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            if protocolDbId is not None:
-                protocolDbIds.append(int(protocolDbId))
+        protocolIds = protocolIdentityData.get("protocolIds") or []
+        protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
 
         if not protocolDbIds:
             return {
