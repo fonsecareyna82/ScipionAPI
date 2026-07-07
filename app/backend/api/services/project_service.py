@@ -11949,15 +11949,13 @@ class ProjectService:
             protocols: List[Any],
             protocolDbIds: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        protocolIds = []
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
 
         if protocolDbIds is None:
-            protocolIdentityResolver = ProtocolIdentityResolver(
-                mapper=mapper,
-                projectId=projectId,
-                db=mapper.db,
-            )
-
             protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
                 protocols
             )
@@ -11965,12 +11963,6 @@ class ProjectService:
             protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
         else:
-            protocolIdentityResolver = ProtocolIdentityResolver(
-                mapper=mapper,
-                projectId=projectId,
-                db=mapper.db,
-            )
-
             protocolIds = protocolIdentityResolver.extractProtocolIdsFromProtocols(
                 protocols
             )
