@@ -8089,18 +8089,12 @@ class ProjectService:
                 "reason": "protocol_not_found",
             }
 
-        parentProtocolDbIds: List[int] = []
-        parentProtocolIds: List[int] = []
-        inputRefs: List[Dict[str, Any]] = []
-
         rawParams = params or {}
 
         params = self._mergeRuntimePointerParamsWithProtocolState(
             protocol=protocol,
             params=rawParams,
         )
-
-        detectedPointerParams = []
 
         logger.debug(
             "Runtime dependency sync merged pointer params. projectId=%s protocolId=%s "
@@ -8111,121 +8105,25 @@ class ProjectService:
             params,
         )
 
-        for inputName, rawParamValue in params.items():
-            try:
-                param = protocol.getParam(inputName)
-            except Exception:
-                param = None
+        pointerResolver = RuntimePointerResolver()
 
-            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                continue
-
-            pointerValues = self._normalizeRuntimePointerParamValues(rawParamValue)
-
-            if not pointerValues:
-                continue
-
-            validPointerValues = []
-
-            for pointerValue in pointerValues:
-                parentId, outputName = self._splitPointerValue(pointerValue)
-
-                if parentId and outputName:
-                    validPointerValues.append(pointerValue)
-
-            if not validPointerValues:
-                continue
-
-            detectedPointerParams.append({
-                "inputName": inputName,
-                "paramClass": param.__class__.__name__ if param is not None else None,
-                "isPointerParam": isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
-                "rawValue": rawParamValue,
-                "pointerValues": validPointerValues,
-            })
-
-            for itemIndex, pointerValue in enumerate(pointerValues):
-                parentId, outputName = self._splitPointerValue(pointerValue)
-
-                if not parentId or not outputName:
-                    continue
-
-                try:
-                    parentScipionProtocolId = self._resolveScipionProtocolId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=parentId,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Could not resolve parent protocol id from pointer param. "
-                        "projectId=%s childProtocolId=%s inputName=%s value=%s",
-                        projectId,
-                        protocolId,
-                        inputName,
-                        pointerValue,
-                    )
-                    continue
-
-                parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=parentScipionProtocolId,
-                )
-
-                if parentProtocolDbId is None:
-                    logger.warning(
-                        "Parent protocol row not found while syncing runtime dependency. "
-                        "projectId=%s childProtocolId=%s parentProtocolId=%s inputName=%s outputName=%s",
-                        projectId,
-                        protocolId,
-                        parentScipionProtocolId,
-                        inputName,
-                        outputName,
-                    )
-                    continue
-
-                parentProtocolDbId = int(parentProtocolDbId)
-                parentScipionProtocolId = int(parentScipionProtocolId)
-
-                if parentProtocolDbId not in parentProtocolDbIds:
-                    parentProtocolDbIds.append(parentProtocolDbId)
-
-                if parentScipionProtocolId not in parentProtocolIds:
-                    parentProtocolIds.append(parentScipionProtocolId)
-
-                outputInfo = self._getPersistedOutputInfoForInputRef(
-                    mapper=mapper,
-                    projectId=projectId,
-                    parentProtocolDbId=parentProtocolDbId,
-                    outputName=outputName,
-                )
-
-                inputRefs.append({
-                    "projectId": int(projectId),
-                    "protocolDbId": int(protocolDbId),
-                    "protocolId": str(protocolId),
-                    "inputName": str(inputName),
-                    "itemIndex": int(itemIndex),
-                    "parentProtocolDbId": parentProtocolDbId,
-                    "parentProtocolId": str(parentScipionProtocolId),
-                    "parentOutputName": str(outputName),
-                    "objectClassName": outputInfo.get("className"),
-                    "objectId": outputInfo.get("objectId"),
-                })
-
-        logger.debug(
-            "Runtime dependency sync from params. projectId=%s childProtocolId=%s protocolDbId=%s "
-            "parentProtocolDbIds=%s parentProtocolIds=%s inputRefs=%s detectedPointerParams=%s allParams=%s",
-            projectId,
-            protocolId,
-            protocolDbId,
-            parentProtocolDbIds,
-            parentProtocolIds,
-            inputRefs,
-            detectedPointerParams,
-            params,
+        pointerSyncData = pointerResolver.buildInputRefsFromPointerParams(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+            protocolId=protocolId,
+            params=params,
+            getParamCallback=protocol.getParam,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+            getPersistedOutputInfoCallback=self._getPersistedOutputInfoForInputRef,
+            isPointerParamCallback=lambda param: isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
         )
+
+        parentProtocolDbIds = pointerSyncData.get("parentProtocolDbIds") or []
+        parentProtocolIds = pointerSyncData.get("parentProtocolIds") or []
+        inputRefs = pointerSyncData.get("inputRefs") or []
+        detectedPointerParams = pointerSyncData.get("detectedPointerParams") or []
 
         dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
             mapper=mapper,
