@@ -26,7 +26,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from pyworkflow.object import PointerList
+from pyworkflow.object import Pointer, PointerList
 
 
 logger = logging.getLogger(__name__)
@@ -425,6 +425,87 @@ class RuntimePointerResolver:
             refsByInputName.setdefault(inputName, []).append(dict(row))
 
         return refsByInputName
+
+    def restorePointerAttributeFromInputRefs(
+            self,
+            protocol,
+            inputName: str,
+            inputRefs: List[Dict[str, Any]],
+            isMultiPointer: bool,
+            resolveParentProtocolCallback,
+    ) -> Dict[str, Any]:
+        """
+        Restore a Scipion Pointer/PointerList attribute from input refs.
+
+        This is used before Scipion copyProtocol(), because copyProtocol() expects
+        real Pointer objects, not PostgreSQL textual values.
+        """
+        restoredItems = []
+
+        if isMultiPointer:
+            pointerList = PointerList()
+
+            for ref in inputRefs:
+                parentProtocolId = ref.get("parentProtocolId")
+                parentOutputName = str(ref.get("parentOutputName") or "").strip()
+
+                if parentProtocolId in (None, "") or not parentOutputName:
+                    continue
+
+                parentScipionProtocolId, parentProtocol = resolveParentProtocolCallback(parentProtocolId)
+
+                pointerList.append(
+                    Pointer(parentProtocol, extended=parentOutputName)
+                )
+
+                restoredItems.append({
+                    "inputName": inputName,
+                    "kind": "multipointer",
+                    "parentProtocolId": str(parentScipionProtocolId),
+                    "parentOutputName": parentOutputName,
+                })
+
+            setattr(protocol, inputName, pointerList)
+
+            return {
+                "restored": restoredItems,
+                "skipped": False,
+            }
+
+        if not inputRefs:
+            return {
+                "restored": [],
+                "skipped": True,
+                "reason": "empty_input_refs",
+            }
+
+        ref = inputRefs[0]
+        parentProtocolId = ref.get("parentProtocolId")
+        parentOutputName = str(ref.get("parentOutputName") or "").strip()
+
+        if parentProtocolId in (None, "") or not parentOutputName:
+            return {
+                "restored": [],
+                "skipped": True,
+                "reason": "invalid_input_ref",
+            }
+
+        parentScipionProtocolId, parentProtocol = resolveParentProtocolCallback(parentProtocolId)
+
+        pointer = Pointer(parentProtocol, extended=parentOutputName)
+        setattr(protocol, inputName, pointer)
+
+        restoredItems.append({
+            "inputName": inputName,
+            "kind": "pointer",
+            "parentProtocolId": str(parentScipionProtocolId),
+            "parentOutputName": parentOutputName,
+        })
+
+        return {
+            "restored": restoredItems,
+            "skipped": False,
+        }
 
     def resolvePointerTarget(
             self,
