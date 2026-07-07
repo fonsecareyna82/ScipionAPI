@@ -12591,21 +12591,12 @@ class ProjectService:
         if protocolDbId is None:
             return
 
-        rows = mapper.db.fetchAll(
-            """
-            SELECT
-                r."inputName",
-                r."parentOutputName",
-                r."parentProtocolDbId"
-              FROM protocol_input_refs r
-             WHERE r."projectId" = %s
-               AND r."protocolDbId" = %s
-               AND r."parentProtocolDbId" = r."protocolDbId"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        rows = protocolGraphRepository.loadSelfInputRefs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
         )
 
         if rows:
