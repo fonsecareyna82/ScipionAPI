@@ -11951,26 +11951,27 @@ class ProjectService:
     ) -> Dict[str, Any]:
         protocolIds = []
 
-        for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: None)()
-
-            if protocolId in (None, ""):
-                continue
-
-            protocolIds.append(str(protocolId))
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
 
         if protocolDbIds is None:
-            protocolIdentityResolver = ProtocolIdentityResolver(
-                mapper=mapper,
-                projectId=projectId,
-                db=mapper.db,
-            )
-
             protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
                 protocols
             )
 
+            protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
+        else:
+            for protocol in protocols or []:
+                protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+                if protocolId in (None, ""):
+                    continue
+
+                protocolIds.append(str(protocolId))
 
         protocolGraphRepository = ProtocolGraphRepository()
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
