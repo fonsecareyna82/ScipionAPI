@@ -103,6 +103,7 @@ from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
@@ -7695,16 +7696,8 @@ class ProjectService:
         return parentScipionProtocolId, parentProtocol
 
     def _splitPointerValue(self, value):
-        valueText = str(value or "").strip()
-
-        if not valueText:
-            return "", ""
-
-        if "." not in valueText:
-            return "", valueText
-
-        parentId, outputName = valueText.split(".", 1)
-        return parentId.strip(), outputName.strip()
+        pointerResolver = RuntimePointerResolver()
+        return pointerResolver.splitPointerValue(value)
 
     def _completeRuntimePointerValuesFromStoredInputRefs(
             self,
@@ -8478,215 +8471,23 @@ class ProjectService:
         }
 
     def _normalizeRuntimePointerValuesFromProtocolAttribute(self, attr: Any) -> List[str]:
-        """
-        Extract normalized pointer values from an already-applied Scipion pointer attribute.
-
-        This protects PostgreSQL runtime dependency sync from partial launch payloads:
-        if a pointer is already present on the protocol object, we should preserve it
-        even if it is not present in the current request params.
-        """
-        if attr is None:
-            return []
-
-        if isinstance(attr, str) and not attr.strip():
-            return []
-
-        result: List[str] = []
-
-        def addValue(parentId, outputName):
-            if parentId in (None, "") or outputName in (None, ""):
-                return
-
-            value = "%s.%s" % (str(parentId).strip(), str(outputName).strip())
-            if value not in result:
-                result.append(value)
-
-        # PointerList / MultiPointer-like case.
-        try:
-            if isinstance(attr, PointerList):
-                for item in attr:
-                    for value in self._normalizeRuntimePointerValuesFromProtocolAttribute(item):
-                        if value not in result:
-                            result.append(value)
-
-                return result
-        except Exception:
-            pass
-
-        # Plain list/tuple fallback, just in case.
-        if isinstance(attr, (list, tuple, set)):
-            for item in attr:
-                for value in self._normalizeRuntimePointerValuesFromProtocolAttribute(item):
-                    if value not in result:
-                        result.append(value)
-
-            return result
-
-        # Raw value already stored as frontend-like representation.
-        if isinstance(attr, (str, dict)):
-            return self._normalizeRuntimePointerParamValues(attr)
-
-        targetObj = None
-        objValue = None
-        extended = None
-
-        try:
-            targetObj = attr.get() if hasattr(attr, "get") else None
-        except Exception:
-            targetObj = None
-
-        try:
-            objValue = attr.getObjValue() if hasattr(attr, "getObjValue") else None
-        except Exception:
-            objValue = None
-
-        try:
-            extended = attr.getExtended() if hasattr(attr, "getExtended") else None
-        except Exception:
-            extended = None
-
-        # Sometimes the pointer target itself is a raw string: "1175.outputTiltSeriesM".
-        if isinstance(targetObj, str):
-            return self._normalizeRuntimePointerParamValues(targetObj)
-
-        parentId = None
-
-        # Normal Pointer: objValue is the parent protocol.
-        if objValue is not None:
-            try:
-                parentId = objValue.getObjId()
-            except Exception:
-                parentId = None
-
-        # Sometimes attr.get() returns the pointed output object.
-        if parentId is None and targetObj is not None:
-            try:
-                parentId = targetObj.getObjParentId()
-            except Exception:
-                parentId = None
-
-        if parentId is None and targetObj is not None:
-            try:
-                parentObj = targetObj.getObjParent()
-                if parentObj is not None:
-                    parentId = parentObj.getObjId()
-            except Exception:
-                parentId = None
-
-        addValue(parentId, extended)
-
-        return result
+        pointerResolver = RuntimePointerResolver()
+        return pointerResolver.normalizePointerValuesFromProtocolAttribute(attr)
 
     def _mergeRuntimePointerParamsWithProtocolState(
             self,
             protocol,
             params: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """
-        Merge request params with pointer values already present in the protocol.
-
-        Important:
-          - If a param is explicitly present in params, respect the request value.
-          - If a pointer param is missing from params, preserve the value already
-            applied on the protocol object.
-        """
-        mergedParams: Dict[str, Any] = dict(params or {})
-        explicitParamNames = set(mergedParams.keys())
-
-        try:
-            inputAttributes = list(protocol.iterInputAttributes())
-        except Exception:
-            inputAttributes = []
-
-        for inputName, attr in inputAttributes:
-            if inputName in explicitParamNames:
-                # The request explicitly sent this param. Do not resurrect old values
-                # if the frontend intentionally cleared it.
-                continue
-
-            pointerValues = self._normalizeRuntimePointerValuesFromProtocolAttribute(attr)
-
-            if not pointerValues:
-                continue
-
-            mergedParams[inputName] = pointerValues[0] if len(pointerValues) == 1 else pointerValues
-
-        return mergedParams
+        pointerResolver = RuntimePointerResolver()
+        return pointerResolver.mergePointerParamsWithProtocolState(
+            protocol=protocol,
+            params=params,
+        )
 
     def _normalizeRuntimePointerParamValues(self, rawValue: Any) -> List[str]:
-        """
-        Normalize PointerParam/MultiPointerParam values coming from the frontend.
-
-        Supported shapes:
-          "1.outputTSMovies"
-          {"editableValue": "1.outputTSMovies"}
-          {"value": "1.outputTSMovies"}
-          {"parentId": 1, "value": "outputTSMovies"}
-          {"parentId": 1, "outputName": "outputTSMovies"}
-          {"parentProtocolId": 1, "parentOutputName": "outputTSMovies"}
-          [{"editableValue": "1.outputA"}, {"parentId": 2, "value": "outputB"}]
-        """
-        if rawValue is None:
-            return []
-
-        if isinstance(rawValue, str) and not rawValue.strip():
-            return []
-
-        if isinstance(rawValue, (list, tuple, set)):
-            result: List[str] = []
-
-            for item in rawValue:
-                result.extend(self._normalizeRuntimePointerParamValues(item))
-
-            return result
-
-        if isinstance(rawValue, dict):
-            parentId = (
-                    rawValue.get("parentId")
-                    or rawValue.get("protocolId")
-                    or rawValue.get("parentProtocolId")
-            )
-
-            outputName = (
-                    rawValue.get("outputName")
-                    or rawValue.get("parentOutputName")
-                    or rawValue.get("extended")
-            )
-
-            if parentId not in (None, ""):
-                # If value/editableValue already has "1.outputX", keep that.
-                for key in ("editableValue", "value", "default", "objValue", "name"):
-                    candidate = rawValue.get(key)
-
-                    if candidate in (None, "", []):
-                        continue
-
-                    candidateText = str(candidate).strip()
-
-                    if "." in candidateText:
-                        return self._normalizeRuntimePointerParamValues(candidateText)
-
-                    if outputName in (None, ""):
-                        outputName = candidateText
-
-                    break
-
-                if outputName not in (None, ""):
-                    return [f"{parentId}.{outputName}"]
-
-            # Direct textual value case, without separate parentId.
-            for key in ("editableValue", "value", "default", "objValue"):
-                value = rawValue.get(key)
-
-                if value in (None, "", []):
-                    continue
-
-                return self._normalizeRuntimePointerParamValues(value)
-
-            return []
-
-        valueText = str(rawValue or "").strip()
-        return [valueText] if valueText else []
+        pointerResolver = RuntimePointerResolver()
+        return pointerResolver.normalizePointerParamValues(rawValue)
 
     def _getPostgresqlRuntimeOutputInfo(
             self,
