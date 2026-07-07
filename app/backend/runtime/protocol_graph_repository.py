@@ -422,6 +422,58 @@ class ProtocolGraphRepository:
             "count": len(refreshed),
         }
 
+    def deleteProtocolsAndRefreshChildren(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbIds: List[int],
+    ) -> Dict[str, Any]:
+        protocolDbIds = [
+            int(protocolDbId)
+            for protocolDbId in protocolDbIds or []
+            if protocolDbId not in (None, "")
+        ]
+
+        if not protocolDbIds:
+            return {
+                "deletedProtocolDbIds": [],
+                "affectedChildren": [],
+                "parentsRefresh": {
+                    "refreshed": [],
+                    "count": 0,
+                },
+            }
+
+        affectedChildDbIds = self.loadAffectedChildProtocolDbIdsForDeletedParents(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbIds=protocolDbIds,
+        )
+
+        with mapper.db.transaction():
+            # Deleting from protocols is enough for protocol_input_refs,
+            # protocol_dependencies, scipion_sets and scipion_objects because
+            # the schema has ON DELETE CASCADE. Keep this operation focused:
+            # do not rebuild the whole graph from SQLite.
+            self.deleteProtocolsByDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbIds=protocolDbIds,
+                commit=False,
+            )
+
+        parentsRefresh = self.refreshParentsForChildren(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbIds=affectedChildDbIds,
+        )
+
+        return {
+            "deletedProtocolDbIds": protocolDbIds,
+            "affectedChildren": affectedChildDbIds,
+            "parentsRefresh": parentsRefresh,
+        }
+
     def deleteProtocolsByDbIds(
             self,
             mapper,
