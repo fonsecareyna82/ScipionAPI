@@ -98,20 +98,40 @@ class ProtocolIdentityResolver:
             return None
 
         try:
-            return self.db.fetchOne(
-                """
-                SELECT id, "protocolId"
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND (id = %s OR "protocolId" = %s)
-                 LIMIT 1
-                """,
-                (
-                    int(self.projectId),
-                    protocolIdInt,
-                    protocolIdText,
-                ),
-            )
+            if protocolIdInt is not None:
+                protocolRow = self.db.fetchOne(
+                    """
+                    SELECT id, "protocolId"
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND id = %s
+                     LIMIT 1
+                    """,
+                    (
+                        int(self.projectId),
+                        protocolIdInt,
+                    ),
+                )
+
+                if protocolRow is not None:
+                    return protocolRow
+
+            if protocolIdText:
+                return self.db.fetchOne(
+                    """
+                    SELECT id, "protocolId"
+                      FROM protocols
+                     WHERE "projectId" = %s
+                       AND "protocolId" = %s
+                     LIMIT 1
+                    """,
+                    (
+                        int(self.projectId),
+                        protocolIdText,
+                    ),
+                )
+
+            return None
         except Exception:
             logger.debug(
                 "Could not resolve protocol identity. projectId=%s protocolId=%s",
