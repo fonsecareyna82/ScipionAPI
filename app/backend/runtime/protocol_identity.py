@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -172,10 +172,8 @@ class ProtocolIdentityResolver:
         except Exception:
             return None
 
-    def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
+    def extractProtocolIdsFromProtocols(self, protocols) -> List[str]:
         protocolIds = []
-        protocolDbIds = []
-        missingProtocolIds = []
 
         for protocol in protocols or []:
             protocolId = getattr(protocol, "getObjId", lambda: None)()
@@ -183,16 +181,17 @@ class ProtocolIdentityResolver:
             if protocolId in (None, ""):
                 continue
 
-            protocolIdText = str(protocolId)
-            protocolIds.append(protocolIdText)
+            protocolIds.append(str(protocolId))
 
-            protocolDbId = self.resolvePostgresqlProtocolDbId(protocolId)
+        return protocolIds
 
-            if protocolDbId is None:
-                missingProtocolIds.append(protocolIdText)
-                continue
+    def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
+        protocolIds = self.extractProtocolIdsFromProtocols(protocols)
+        protocolDbIds = []
+        missingProtocolIds = []
 
-            protocolDbIds.append(int(protocolDbId))
+        for protocolIdText in protocolIds:
+            protocolId = protocolIdText
 
         return {
             "protocolIds": protocolIds,

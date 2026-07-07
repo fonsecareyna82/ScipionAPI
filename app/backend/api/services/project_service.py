@@ -11965,13 +11965,15 @@ class ProjectService:
             protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
         else:
-            for protocol in protocols or []:
-                protocolId = getattr(protocol, "getObjId", lambda: None)()
+            protocolIdentityResolver = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+                db=mapper.db,
+            )
 
-                if protocolId in (None, ""):
-                    continue
-
-                protocolIds.append(str(protocolId))
+            protocolIds = protocolIdentityResolver.extractProtocolIdsFromProtocols(
+                protocols
+            )
 
         protocolGraphRepository = ProtocolGraphRepository()
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
