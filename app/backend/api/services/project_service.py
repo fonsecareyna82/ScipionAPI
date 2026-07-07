@@ -11948,6 +11948,7 @@ class ProjectService:
             projectId: int,
             protocols: List[Any],
             protocolDbIds: Optional[List[int]] = None,
+            protocolIds: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if protocolDbIds is None:
             protocolIdentityResolver = ProtocolIdentityResolver(
@@ -11962,7 +11963,7 @@ class ProjectService:
             protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
         else:
-            protocolIds = ProtocolIdentityResolver.extractProtocolIdsFromProtocols(
+            protocolIds = protocolIds or ProtocolIdentityResolver.extractProtocolIdsFromProtocols(
                 protocols
             )
 
@@ -12073,6 +12074,7 @@ class ProjectService:
 
                 selectedProtocolDbIds = protocolIdentityData.get("protocolDbIds") or []
                 missingPostgresqlProtocols = protocolIdentityData.get("missingProtocolIds") or []
+                selectedProtocolIds = protocolIdentityData.get("protocolIds") or []
 
                 if missingPostgresqlProtocols:
                     raise HTTPException(
@@ -12119,6 +12121,7 @@ class ProjectService:
                     projectId=projectId,
                     protocols=protList,
                     protocolDbIds=selectedProtocolDbIds,
+                    protocolIds=selectedProtocolIds,
                 )
 
                 return {
