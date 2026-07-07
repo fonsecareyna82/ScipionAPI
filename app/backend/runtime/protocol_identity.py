@@ -175,6 +175,7 @@ class ProtocolIdentityResolver:
     def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
         protocolIds = []
         protocolDbIds = []
+        missingProtocolIds = []
 
         for protocol in protocols or []:
             protocolId = getattr(protocol, "getObjId", lambda: None)()
@@ -182,14 +183,19 @@ class ProtocolIdentityResolver:
             if protocolId in (None, ""):
                 continue
 
-            protocolIds.append(str(protocolId))
+            protocolIdText = str(protocolId)
+            protocolIds.append(protocolIdText)
 
             protocolDbId = self.resolvePostgresqlProtocolDbId(protocolId)
 
-            if protocolDbId is not None:
-                protocolDbIds.append(int(protocolDbId))
+            if protocolDbId is None:
+                missingProtocolIds.append(protocolIdText)
+                continue
+
+            protocolDbIds.append(int(protocolDbId))
 
         return {
             "protocolIds": protocolIds,
             "protocolDbIds": protocolDbIds,
+            "missingProtocolIds": missingProtocolIds,
         }
