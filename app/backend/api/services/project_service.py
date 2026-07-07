@@ -12175,47 +12175,31 @@ class ProjectService:
             deleteValidationInfo = None
 
             if usingPostgresqlRuntime:
-                selectedProtocolDbIds = []
+                protocolIdentityResolver = ProtocolIdentityResolver(
+                    mapper=mapper,
+                    projectId=projectId,
+                    db=mapper.db,
+                )
 
-                for protocol in protList:
-                    protocolId = getattr(protocol, "getObjId", lambda: None)()
+                protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
+                    protList
+                )
 
-                    protocolDbId = self._resolvePostgresqlProtocolDbId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
+                selectedProtocolDbIds = protocolIdentityData.get("protocolDbIds") or []
+                missingPostgresqlProtocols = protocolIdentityData.get("missingProtocolIds") or []
+
+                if missingPostgresqlProtocols:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "message": (
+                                "Some selected protocols exist in the execution runtime but "
+                                "were not found in PostgreSQL. Delete was aborted to avoid "
+                                "leaving the runtime graph inconsistent."
+                            ),
+                            "protocolIds": missingPostgresqlProtocols,
+                        },
                     )
-
-                    selectedProtocolDbIds = []
-                    missingPostgresqlProtocols = []
-
-                    for protocol in protList:
-                        protocolId = getattr(protocol, "getObjId", lambda: None)()
-
-                        protocolDbId = self._resolvePostgresqlProtocolDbId(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolId,
-                        )
-
-                        if protocolDbId is None:
-                            missingPostgresqlProtocols.append(str(protocolId))
-                            continue
-
-                        selectedProtocolDbIds.append(int(protocolDbId))
-
-                    if missingPostgresqlProtocols:
-                        raise HTTPException(
-                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail={
-                                "message": (
-                                    "Some selected protocols exist in the execution runtime but "
-                                    "were not found in PostgreSQL. Delete was aborted to avoid "
-                                    "leaving the runtime graph inconsistent."
-                                ),
-                                "protocolIds": missingPostgresqlProtocols,
-                            },
-                        )
 
                 deleteValidationInfo = self._validatePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
