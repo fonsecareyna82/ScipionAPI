@@ -11923,6 +11923,7 @@ class ProjectService:
             protocols: List[Any],
             protocolDbIds: Optional[List[int]] = None,
             protocolIds: Optional[List[str]] = None,
+            protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
     ) -> Dict[str, Any]:
         if protocolDbIds is None:
             protocolIdentityResolver = ProtocolIdentityResolver(
@@ -11941,7 +11942,9 @@ class ProjectService:
                 protocols
             )
 
-        protocolGraphRepository = ProtocolGraphRepository()
+        if protocolGraphRepository is None:
+            protocolGraphRepository = ProtocolGraphRepository()
+
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
             mapper=mapper,
             projectId=projectId,
@@ -12098,6 +12101,7 @@ class ProjectService:
                     protocols=protList,
                     protocolDbIds=selectedProtocolDbIds,
                     protocolIds=selectedProtocolIds,
+                    protocolGraphRepository=protocolGraphRepository,
                 )
 
                 return {
