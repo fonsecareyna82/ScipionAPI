@@ -102,8 +102,11 @@ from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
+
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
@@ -9208,37 +9211,12 @@ class ProjectService:
             protocolDbId: int,
             parentProtocolIds: List[int],
     ) -> None:
-        cleanParentIds = []
-        seen = set()
-
-        for parentId in parentProtocolIds or []:
-            try:
-                parentId = int(parentId)
-            except Exception:
-                continue
-
-            if parentId <= 0:
-                continue
-
-            if parentId in seen:
-                continue
-
-            seen.add(parentId)
-            cleanParentIds.append(parentId)
-
-        mapper.db.execute(
-            """
-            UPDATE protocols
-               SET "parentIds" = %s,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND id = %s
-            """,
-            (
-                cleanParentIds,
-                int(projectId),
-                int(protocolDbId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+        return protocolGraphRepository.updateProtocolParentIds(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            parentProtocolIds=parentProtocolIds,
         )
 
     def _replacePostgresqlDependenciesForProtocol(
@@ -9248,65 +9226,13 @@ class ProjectService:
             childProtocolDbId: int,
             parentProtocolDbIds: List[int],
     ) -> int:
-        cleanParentDbIds = []
-        seen = set()
-
-        for parentDbId in parentProtocolDbIds or []:
-            try:
-                parentDbId = int(parentDbId)
-            except Exception:
-                continue
-
-            if parentDbId <= 0:
-                continue
-
-            if parentDbId == int(childProtocolDbId):
-                continue
-
-            if parentDbId in seen:
-                continue
-
-            seen.add(parentDbId)
-            cleanParentDbIds.append(parentDbId)
-
-        with mapper.db.transaction():
-            mapper.db.execute(
-                """
-                DELETE FROM protocol_dependencies
-                 WHERE "projectId" = %s
-                   AND "childProtocolDbId" = %s
-                """,
-                (projectId, childProtocolDbId),
-                commit=False,
-            )
-
-            if not cleanParentDbIds:
-                return 0
-
-            valuesSql = ",".join(["(%s, %s, %s)"] * len(cleanParentDbIds))
-            params = []
-
-            for parentDbId in cleanParentDbIds:
-                params.extend([
-                    int(projectId),
-                    int(parentDbId),
-                    int(childProtocolDbId),
-                ])
-
-            mapper.db.execute(
-                f"""
-                INSERT INTO protocol_dependencies (
-                    "projectId",
-                    "parentProtocolDbId",
-                    "childProtocolDbId"
-                )
-                VALUES {valuesSql}
-                """,
-                tuple(params),
-                commit=False,
-            )
-
-        return len(cleanParentDbIds)
+        protocolGraphRepository = ProtocolGraphRepository()
+        return protocolGraphRepository.replaceDependenciesForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbId=childProtocolDbId,
+            parentProtocolDbIds=parentProtocolDbIds,
+        )
 
     def _replacePostgresqlInputRefsForProtocol(
             self,
@@ -9315,118 +9241,13 @@ class ProjectService:
             protocolDbId: int,
             refs: List[Dict[str, Any]],
     ) -> int:
-        def toOptionalInt(value: Any) -> Optional[int]:
-            if value is None or value == "":
-                return None
-
-            try:
-                return int(value)
-            except Exception:
-                try:
-                    return int(float(value))
-                except Exception:
-                    return None
-
-        cleanRefs = []
-        seen = set()
-
-        for ref in refs or []:
-            inputName = str(ref.get("inputName") or "").strip()
-            if not inputName:
-                continue
-
-            itemIndex = toOptionalInt(ref.get("itemIndex"))
-            if itemIndex is None or itemIndex < 0:
-                itemIndex = 0
-
-            protocolId = str(ref.get("protocolId") or "").strip()
-            if not protocolId:
-                continue
-
-            key = (inputName, itemIndex)
-            if key in seen:
-                continue
-
-            seen.add(key)
-
-            cleanRefs.append({
-                "projectId": int(projectId),
-                "protocolDbId": int(protocolDbId),
-                "protocolId": protocolId,
-                "inputName": inputName,
-                "itemIndex": int(itemIndex),
-                "parentProtocolDbId": toOptionalInt(ref.get("parentProtocolDbId")),
-                "parentProtocolId": str(ref.get("parentProtocolId")).strip()
-                if ref.get("parentProtocolId") not in (None, "") else None,
-                "parentOutputName": str(ref.get("parentOutputName")).strip()
-                if ref.get("parentOutputName") not in (None, "") else None,
-                "objectClassName": str(ref.get("objectClassName")).strip()
-                if ref.get("objectClassName") not in (None, "") else None,
-                "objectId": str(ref.get("objectId")).strip()
-                if ref.get("objectId") not in (None, "") else None,
-            })
-
-        with mapper.db.transaction():
-            mapper.db.execute(
-                """
-                DELETE FROM protocol_input_refs
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
-                """,
-                (projectId, protocolDbId),
-                commit=False,
-            )
-
-            if not cleanRefs:
-                return 0
-
-            valuesSql = ",".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(cleanRefs))
-            params = []
-
-            for ref in cleanRefs:
-                params.extend([
-                    ref["projectId"],
-                    ref["protocolDbId"],
-                    ref["protocolId"],
-                    ref["inputName"],
-                    ref["itemIndex"],
-                    ref["parentProtocolDbId"],
-                    ref["parentProtocolId"],
-                    ref["parentOutputName"],
-                    ref["objectClassName"],
-                    ref["objectId"],
-                ])
-
-            mapper.db.execute(
-                f"""
-                INSERT INTO protocol_input_refs (
-                    "projectId",
-                    "protocolDbId",
-                    "protocolId",
-                    "inputName",
-                    "itemIndex",
-                    "parentProtocolDbId",
-                    "parentProtocolId",
-                    "parentOutputName",
-                    "objectClassName",
-                    "objectId"
-                )
-                VALUES {valuesSql}
-                ON CONFLICT ("projectId", "protocolDbId", "inputName", "itemIndex")
-                DO UPDATE SET
-                    "protocolId" = EXCLUDED."protocolId",
-                    "parentProtocolDbId" = EXCLUDED."parentProtocolDbId",
-                    "parentProtocolId" = EXCLUDED."parentProtocolId",
-                    "parentOutputName" = EXCLUDED."parentOutputName",
-                    "objectClassName" = EXCLUDED."objectClassName",
-                    "objectId" = EXCLUDED."objectId",
-                    "updatedAt" = NOW()
-                """,
-                tuple(params),
-                commit=False,
-            )
-
-        return len(cleanRefs)
+        protocolGraphRepository = ProtocolGraphRepository()
+        return protocolGraphRepository.replaceInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            refs=refs,
+        )
 
     def setPointerParam(
             self,
