@@ -11951,13 +11951,13 @@ class ProjectService:
     ) -> Dict[str, Any]:
         protocolIds = []
 
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-            db=mapper.db,
-        )
-
         if protocolDbIds is None:
+            protocolIdentityResolver = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+                db=mapper.db,
+            )
+
             protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
                 protocols
             )
