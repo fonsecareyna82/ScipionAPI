@@ -11978,17 +11978,6 @@ class ProjectService:
                 if protocolDbId not in (None, "")
             ]
 
-        if not protocolDbIds:
-            return {
-                "deletedProtocolIds": protocolIds,
-                "deletedProtocolDbIds": [],
-                "affectedChildren": [],
-                "parentsRefresh": {
-                    "refreshed": [],
-                    "count": 0,
-                },
-            }
-
         protocolGraphRepository = ProtocolGraphRepository()
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
             mapper=mapper,
