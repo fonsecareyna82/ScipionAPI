@@ -8128,21 +8128,23 @@ class ProjectService:
         inputRefs = pointerSyncData.get("inputRefs") or []
         detectedPointerParams = pointerSyncData.get("detectedPointerParams") or []
 
-        dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
             mapper=mapper,
             projectId=projectId,
             childProtocolDbId=int(protocolDbId),
             parentProtocolDbIds=parentProtocolDbIds,
         )
 
-        inputRefsSaved = self._replacePostgresqlInputRefsForProtocol(
+        inputRefsSaved = protocolGraphRepository.replaceInputRefsForProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolDbId=int(protocolDbId),
             refs=inputRefs,
         )
 
-        self._updatePostgresqlProtocolParentIds(
+        protocolGraphRepository.updateProtocolParentIds(
             mapper=mapper,
             projectId=projectId,
             protocolDbId=int(protocolDbId),
