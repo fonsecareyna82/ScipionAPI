@@ -11906,30 +11906,13 @@ class ProjectService:
             projectId: int,
             protocolId,
     ) -> Optional[str]:
-        rows = mapper.db.fetchAll(
-            """
-            SELECT status
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-             ORDER BY id DESC
-             LIMIT 1
-            """,
-            (
-                int(projectId),
-                str(protocolId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        return protocolGraphRepository.getProtocolStatusByScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
         )
-
-        if not rows:
-            return None
-
-        statusValue = rows[0].get("status")
-
-        if statusValue is None:
-            return None
-
-        return str(statusValue).strip()
 
     def _validatePostgresqlRuntimeProtocolDelete(
         self,
