@@ -11938,8 +11938,9 @@ class ProjectService:
             protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
         else:
-            protocolIds = protocolIds or ProtocolIdentityResolver.extractProtocolIdsFromProtocols(
-                protocols
+            protocolIds = (
+                    protocolIds
+                    or ProtocolIdentityResolver.extractProtocolIdsFromProtocols(protocols)
             )
 
         if not protocolDbIds:
