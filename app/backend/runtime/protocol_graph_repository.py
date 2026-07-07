@@ -169,6 +169,88 @@ class ProtocolGraphRepository:
             for row in rows or []
         ]
 
+    def loadExternalDescendantsForDeleteValidation(
+            self,
+            mapper,
+            projectId: int,
+            selectedProtocolDbIds: List[int],
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            WITH RECURSIVE downstream("protocolDbId", path) AS (
+                SELECT
+                    d."childProtocolDbId",
+                    ARRAY[d."parentProtocolDbId", d."childProtocolDbId"]
+                  FROM protocol_dependencies d
+                 WHERE d."projectId" = %s
+                   AND d."parentProtocolDbId" = ANY(%s)
+
+                UNION ALL
+
+                SELECT
+                    d."childProtocolDbId",
+                    downstream.path || d."childProtocolDbId"
+                  FROM downstream
+                  JOIN protocol_dependencies d
+                    ON d."projectId" = %s
+                   AND d."parentProtocolDbId" = downstream."protocolDbId"
+                 WHERE NOT d."childProtocolDbId" = ANY(downstream.path)
+            ),
+            external_descendants AS (
+                SELECT DISTINCT "protocolDbId"
+                  FROM downstream
+                 WHERE NOT "protocolDbId" = ANY(%s)
+            ),
+            output_counts AS (
+                SELECT
+                    p.id AS "protocolDbId",
+                    COUNT(DISTINCT s.id) AS "setsCount",
+                    COUNT(DISTINCT o.id) AS "objectsCount"
+                  FROM protocols p
+             LEFT JOIN scipion_sets s
+                    ON s."projectId" = p."projectId"
+                   AND s."protocolDbId" = p.id
+             LEFT JOIN scipion_objects o
+                    ON o."projectId" = p."projectId"
+                   AND o."protocolDbId" = p.id
+                 WHERE p."projectId" = %s
+                   AND p.id IN (
+                       SELECT "protocolDbId"
+                         FROM external_descendants
+                   )
+                 GROUP BY p.id
+            )
+            SELECT
+                p.id AS "protocolDbId",
+                p."protocolId",
+                p.status,
+                COALESCE(oc."setsCount", 0) AS "setsCount",
+                COALESCE(oc."objectsCount", 0) AS "objectsCount"
+              FROM protocols p
+         LEFT JOIN output_counts oc
+                ON oc."protocolDbId" = p.id
+             WHERE p."projectId" = %s
+               AND p.id IN (
+                   SELECT "protocolDbId"
+                     FROM external_descendants
+               )
+             ORDER BY p.id
+            """,
+            (
+                int(projectId),
+                selectedProtocolDbIds,
+                int(projectId),
+                selectedProtocolDbIds,
+                int(projectId),
+                int(projectId),
+            ),
+        )
+
+        return [
+            dict(row)
+            for row in rows or []
+        ]
+
     def updateProtocolParentIds(
             self,
             mapper,
