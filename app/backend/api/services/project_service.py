@@ -102,6 +102,7 @@ from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
 import pyworkflow.utils as pwutils
@@ -832,77 +833,15 @@ class ProjectService:
     def _resolveScipionProtocolId(
             self,
             mapper,
-            projectId: Optional[int],
-            protocolId: Union[int, str],
-    ) -> int:
-        rawProtocolId = str(protocolId).strip()
+            projectId: int,
+            protocolId,
+    ) -> Optional[int]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
 
-        if not rawProtocolId:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing protocol id",
-            )
-
-        if mapper is None or projectId is None:
-            try:
-                return int(rawProtocolId)
-            except Exception:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid Scipion protocol id: {protocolId}",
-                )
-
-        protocolDbIdCandidate = None
-        try:
-            protocolDbIdCandidate = int(rawProtocolId)
-        except Exception:
-            protocolDbIdCandidate = None
-
-        try:
-            if protocolDbIdCandidate is not None:
-                row = mapper.db.fetchOne(
-                    """
-                    SELECT "protocolId"
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND (id = %s OR "protocolId" = %s)
-                     LIMIT 1
-                    """,
-                    (projectId, protocolDbIdCandidate, rawProtocolId),
-                )
-            else:
-                row = mapper.db.fetchOne(
-                    """
-                    SELECT "protocolId"
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND "protocolId" = %s
-                     LIMIT 1
-                    """,
-                    (projectId, rawProtocolId),
-                )
-
-            if row:
-                value = row.get("protocolId") if isinstance(row, dict) else row[0]
-                if value is not None:
-                    return int(value)
-
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception(
-                "Failed to resolve Scipion protocol id from PostgreSQL. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-
-        try:
-            return int(rawProtocolId)
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
+        return protocolIdentityResolver.resolveScipionProtocolId(protocolId)
 
     def _getScipionProtocolByRuntimeId(
             self,
@@ -999,100 +938,15 @@ class ProjectService:
     def _resolvePostgresqlProtocolDbId(
             self,
             mapper,
-            projectId: Optional[int],
-            protocolId: Union[int, str],
-    ) -> Optional[int]:
-        if mapper is None or projectId is None or protocolId is None:
-            return None
-
-        rawProtocolId = str(protocolId).strip()
-        if not rawProtocolId:
-            return None
-
-        protocolDbIdCandidate = None
-        try:
-            protocolDbIdCandidate = int(rawProtocolId)
-        except Exception:
-            protocolDbIdCandidate = None
-
-        try:
-            if protocolDbIdCandidate is not None:
-                row = mapper.db.fetchOne(
-                    """
-                    SELECT id
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND (id = %s OR "protocolId" = %s)
-                     LIMIT 1
-                    """,
-                    (projectId, protocolDbIdCandidate, rawProtocolId),
-                )
-            else:
-                row = mapper.db.fetchOne(
-                    """
-                    SELECT id
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND "protocolId" = %s
-                     LIMIT 1
-                    """,
-                    (projectId, rawProtocolId),
-                )
-
-            if row:
-                value = row.get("id") if isinstance(row, dict) else row[0]
-                if value is not None:
-                    return int(value)
-
-        except Exception:
-            logger.exception(
-                "Failed to resolve PostgreSQL protocol id. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-
-        return None
-
-    def _resolveProtocolDbIdForOutputPersistence(
-            self,
-            db,
             projectId: int,
-            protocol: Any,
+            protocolId,
     ) -> Optional[int]:
-        protocolId = self._getScipionObjectId(protocol)
-        if protocolId is None:
-            return None
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
 
-        try:
-            row = db.fetchOne(
-                """
-                SELECT id
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND "protocolId" = %s
-                 LIMIT 1
-                """,
-                (projectId, str(protocolId)),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to resolve protocol db id for output persistence. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            return None
-
-        if not row:
-            return None
-
-        value = row.get("id") if isinstance(row, dict) else row[0]
-        if value is None:
-            return None
-
-        try:
-            return int(value)
-        except Exception:
-            return None
+        return protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
 
     def _raisePostgresqlViewerUnavailable(
             self,
@@ -7097,29 +6951,17 @@ class ProjectService:
         if scipionProtocolId is None:
             raise ValueError("Cannot persist Scipion outputs without protocol getObjId()/getId()")
 
-        row = db.fetchOne(
-            """
-            SELECT id
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-            """,
-            (projectId, str(scipionProtocolId)),
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            projectId=projectId,
+            db=db,
         )
-        if row is not None:
-            return int(row["id"])
 
-        row = db.fetchOne(
-            """
-            SELECT id
-              FROM protocols
-             WHERE id = %s
-               AND "projectId" = %s
-            """,
-            (scipionProtocolId, projectId),
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            scipionProtocolId,
         )
-        if row is not None:
-            return int(row["id"])
+
+        if protocolDbId is not None:
+            return int(protocolDbId)
 
         raise ValueError(
             "Protocol %s was not found in PostgreSQL protocols table for project %s"
