@@ -11874,14 +11874,14 @@ class ProjectService:
             parentDbIds = parentRefs.get("parentProtocolDbIds") or []
             parentProtocolIds = parentRefs.get("parentProtocolIds") or []
 
-            dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
+            dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
                 mapper=mapper,
                 projectId=projectId,
                 childProtocolDbId=int(childDbId),
                 parentProtocolDbIds=parentDbIds,
             )
 
-            self._updatePostgresqlProtocolParentIds(
+            protocolGraphRepository.updateProtocolParentIds(
                 mapper=mapper,
                 projectId=projectId,
                 protocolDbId=int(childDbId),
