@@ -8002,38 +8002,15 @@ class ProjectService:
                 continue
 
             try:
-                if isinstance(param, MultiPointerParam):
-                    pointerList = PointerList()
+                restoreReport = pointerResolver.restorePointerAttributeFromInputRefs(
+                    protocol=protocol,
+                    inputName=inputName,
+                    inputRefs=inputRefs,
+                    isMultiPointer=isinstance(param, MultiPointerParam),
+                    resolveParentProtocolCallback=resolveParentProtocol,
+                )
 
-                    for ref in inputRefs:
-                        parentProtocolId = ref.get("parentProtocolId")
-                        parentOutputName = str(ref.get("parentOutputName") or "").strip()
-
-                        parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
-
-                        pointerList.append(
-                            Pointer(parentProtocol, extended=parentOutputName)
-                        )
-
-                    setattr(protocol, inputName, pointerList)
-
-                else:
-                    ref = inputRefs[0]
-                    parentProtocolId = ref.get("parentProtocolId")
-                    parentOutputName = str(ref.get("parentOutputName") or "").strip()
-
-                    parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
-
-                    pointer = Pointer(parentProtocol, extended=parentOutputName)
-
-                    setattr(protocol, inputName, pointer)
-
-                    restored.append({
-                        "inputName": inputName,
-                        "kind": "pointer",
-                        "parentProtocolId": str(parentScipionProtocolId),
-                        "parentOutputName": parentOutputName,
-                    })
+                restored.extend(restoreReport.get("restored") or [])
 
             except Exception as e:
                 logger.exception(
