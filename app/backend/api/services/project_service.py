@@ -11840,6 +11840,19 @@ class ProjectService:
             errors=errors,
         )
 
+    @staticmethod
+    def _getRuntimeBlockedStatusTexts() -> set:
+        blockedStatuses = {
+            STATUS_RUNNING,
+            STATUS_LAUNCHED,
+            STATUS_SCHEDULED,
+        }
+
+        return {
+            str(statusValue).strip().lower()
+            for statusValue in blockedStatuses
+        }
+
     def _validatePostgresqlRuntimeProtocolDelete(
         self,
         mapper,
@@ -11864,16 +11877,7 @@ class ProjectService:
                 "externalDescendants": [],
             }
 
-        blockedStatuses = {
-            STATUS_RUNNING,
-            STATUS_LAUNCHED,
-            STATUS_SCHEDULED,
-        }
-
-        blockedStatusTexts = {
-            str(statusValue).strip().lower()
-            for statusValue in blockedStatuses
-        }
+        blockedStatusTexts = self._getRuntimeBlockedStatusTexts()
 
         if protocolGraphRepository is None:
             protocolGraphRepository = ProtocolGraphRepository()
@@ -12002,16 +12006,7 @@ class ProjectService:
                     detail="No valid protocols to delete",
                 )
 
-            blockedStatuses = {
-                STATUS_RUNNING,
-                STATUS_LAUNCHED,
-                STATUS_SCHEDULED,
-            }
-
-            blockedStatusTexts = {
-                str(statusValue).strip().lower()
-                for statusValue in blockedStatuses
-            }
+            blockedStatusTexts = self._getRuntimeBlockedStatusTexts()
 
             blockedProtocols = []
             protocolGraphRepository = ProtocolGraphRepository() if usingPostgresqlRuntime else None
