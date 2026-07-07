@@ -374,6 +374,58 @@ class RuntimePointerResolver:
 
         return completeValues
 
+    def loadInputRefsByInputName(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Load PostgreSQL input refs grouped by input name.
+
+        This is used when restoring Pointer/PointerList attributes before
+        Scipion copyProtocol(), where Scipion expects real Pointer objects.
+        """
+        db = getattr(mapper, "db", None)
+
+        if db is None or protocolDbId in (None, ""):
+            return {}
+
+        rows = db.fetchAll(
+            """
+            SELECT
+                r."inputName",
+                r."itemIndex",
+                parent."protocolId" AS "parentProtocolId",
+                r."parentOutputName"
+              FROM protocol_input_refs r
+         LEFT JOIN protocols parent
+                ON parent."projectId" = r."projectId"
+               AND parent.id = r."parentProtocolDbId"
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+             ORDER BY r."inputName", r."itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        refsByInputName: Dict[str, List[Dict[str, Any]]] = {}
+
+        for row in rows or []:
+            inputName = str(row.get("inputName") or "").strip()
+            parentProtocolId = row.get("parentProtocolId")
+            parentOutputName = str(row.get("parentOutputName") or "").strip()
+
+            if not inputName or parentProtocolId in (None, "") or not parentOutputName:
+                continue
+
+            refsByInputName.setdefault(inputName, []).append(dict(row))
+
+        return refsByInputName
+
     def resolvePointerTarget(
             self,
             mapper,
