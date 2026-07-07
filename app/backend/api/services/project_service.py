@@ -11840,20 +11840,6 @@ class ProjectService:
             errors=errors,
         )
 
-    def _refreshPostgresqlRuntimeParentsForChildren(
-            self,
-            mapper,
-            projectId: int,
-            childProtocolDbIds: List[int],
-    ) -> Dict[str, Any]:
-        protocolGraphRepository = ProtocolGraphRepository()
-
-        return protocolGraphRepository.refreshParentsForChildren(
-            mapper=mapper,
-            projectId=projectId,
-            childProtocolDbIds=childProtocolDbIds,
-        )
-
     def _validatePostgresqlRuntimeProtocolDelete(
         self,
         mapper,
