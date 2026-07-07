@@ -172,7 +172,8 @@ class ProtocolIdentityResolver:
         except Exception:
             return None
 
-    def extractProtocolIdsFromProtocols(self, protocols) -> List[str]:
+    @staticmethod
+    def extractProtocolIdsFromProtocols(protocols) -> List[str]:
         protocolIds = []
 
         for protocol in protocols or []:
