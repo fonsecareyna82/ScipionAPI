@@ -7742,6 +7742,8 @@ class ProjectService:
     ):
         """Apply pointer parameters to protocol."""
         errorList = []
+        pointerResolver = RuntimePointerResolver()
+
         for key, value in params.items():
             param = protocol.getParam(key)
             if param is None:
@@ -7760,10 +7762,7 @@ class ProjectService:
                         rawValue=value,
                     )
 
-                    pointerValues = [
-                        v for v in pointerValues
-                        if str(v or "").strip().lower() not in ("", "none", "null", "undefined")
-                    ]
+                    pointerValues = pointerResolver.filterEmptyPointerValues(pointerValues)
 
                     if not pointerValues:
                         logger.info(
@@ -7859,7 +7858,6 @@ class ProjectService:
 
                     protocol.setAttributeValue(key, newInputs)
 
-
                 elif isinstance(param, PointerParam):
                     pointerValues = self._completeRuntimePointerValuesFromStoredInputRefs(
                         mapper=mapper,
@@ -7868,10 +7866,7 @@ class ProjectService:
                         inputName=key,
                         rawValue=value,
                     )
-                    pointerValues = [
-                        v for v in pointerValues
-                        if str(v or "").strip().lower() not in ("", "none", "null", "undefined")
-                    ]
+                    pointerValues = pointerResolver.filterEmptyPointerValues(pointerValues)
                     # Important:
                     # If the frontend sends an empty pointer for an existing protocol,
                     # do NOT clear the current protocol attribute. This is common when launching
