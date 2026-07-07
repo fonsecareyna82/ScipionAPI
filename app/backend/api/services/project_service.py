@@ -11847,58 +11847,12 @@ class ProjectService:
             childProtocolDbIds: List[int],
     ) -> Dict[str, Any]:
         protocolGraphRepository = ProtocolGraphRepository()
-        refreshed = []
 
-        cleanChildDbIds = []
-        seen = set()
-
-        for childDbId in childProtocolDbIds or []:
-            try:
-                childDbId = int(childDbId)
-            except Exception:
-                continue
-
-            if childDbId <= 0 or childDbId in seen:
-                continue
-
-            seen.add(childDbId)
-            cleanChildDbIds.append(childDbId)
-
-        for childDbId in cleanChildDbIds:
-            parentRefs = protocolGraphRepository.loadParentRefsForChildProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                childProtocolDbId=childDbId,
-            )
-
-            parentDbIds = parentRefs.get("parentProtocolDbIds") or []
-            parentProtocolIds = parentRefs.get("parentProtocolIds") or []
-
-            dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                childProtocolDbId=int(childDbId),
-                parentProtocolDbIds=parentDbIds,
-            )
-
-            protocolGraphRepository.updateProtocolParentIds(
-                mapper=mapper,
-                projectId=projectId,
-                protocolDbId=int(childDbId),
-                parentProtocolIds=parentProtocolIds,
-            )
-
-            refreshed.append({
-                "childProtocolDbId": int(childDbId),
-                "parentProtocolDbIds": parentDbIds,
-                "parentProtocolIds": parentProtocolIds,
-                "dependenciesSaved": dependenciesSaved,
-            })
-
-        return {
-            "refreshed": refreshed,
-            "count": len(refreshed),
-        }
+        return protocolGraphRepository.refreshParentsForChildren(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbIds=childProtocolDbIds,
+        )
 
     def _getPostgresqlRuntimeProtocolStatus(
             self,

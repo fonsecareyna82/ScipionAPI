@@ -363,6 +363,65 @@ class ProtocolGraphRepository:
 
         return str(statusValue).strip()
 
+    def refreshParentsForChildren(
+            self,
+            mapper,
+            projectId: int,
+            childProtocolDbIds: List[int],
+    ) -> Dict[str, Any]:
+        refreshed = []
+
+        cleanChildDbIds = []
+        seen = set()
+
+        for childDbId in childProtocolDbIds or []:
+            try:
+                childDbId = int(childDbId)
+            except Exception:
+                continue
+
+            if childDbId <= 0 or childDbId in seen:
+                continue
+
+            seen.add(childDbId)
+            cleanChildDbIds.append(childDbId)
+
+        for childDbId in cleanChildDbIds:
+            parentRefs = self.loadParentRefsForChildProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                childProtocolDbId=childDbId,
+            )
+
+            parentDbIds = parentRefs.get("parentProtocolDbIds") or []
+            parentProtocolIds = parentRefs.get("parentProtocolIds") or []
+
+            dependenciesSaved = self.replaceDependenciesForProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                childProtocolDbId=int(childDbId),
+                parentProtocolDbIds=parentDbIds,
+            )
+
+            self.updateProtocolParentIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=int(childDbId),
+                parentProtocolIds=parentProtocolIds,
+            )
+
+            refreshed.append({
+                "childProtocolDbId": int(childDbId),
+                "parentProtocolDbIds": parentDbIds,
+                "parentProtocolIds": parentProtocolIds,
+                "dependenciesSaved": dependenciesSaved,
+            })
+
+        return {
+            "refreshed": refreshed,
+            "count": len(refreshed),
+        }
+
     def deleteProtocolsByDbIds(
             self,
             mapper,
