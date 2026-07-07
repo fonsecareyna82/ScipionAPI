@@ -88,6 +88,34 @@ class ProtocolGraphRepository:
             "className": row.get("className"),
         }
 
+    def loadSelfInputRefs(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                r."inputName",
+                r."parentOutputName",
+                r."parentProtocolDbId"
+              FROM protocol_input_refs r
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+               AND r."parentProtocolDbId" = r."protocolDbId"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        return [
+            dict(row)
+            for row in rows or []
+        ]
+
     def updateProtocolParentIds(
             self,
             mapper,
