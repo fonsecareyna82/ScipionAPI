@@ -12015,14 +12015,15 @@ class ProjectService:
             }
 
             blockedProtocols = []
+            protocolGraphRepository = ProtocolGraphRepository() if usingPostgresqlRuntime else None
 
             for protocol in protList:
                 protocolId = getattr(protocol, "getObjId", lambda: None)()
 
                 protocolStatus = None
 
-                if usingPostgresqlRuntime:
-                    protocolStatus = self._getPostgresqlRuntimeProtocolStatus(
+                if protocolGraphRepository is not None:
+                    protocolStatus = protocolGraphRepository.getProtocolStatusByScipionProtocolId(
                         mapper=mapper,
                         projectId=projectId,
                         protocolId=protocolId,
