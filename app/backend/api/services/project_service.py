@@ -9161,50 +9161,13 @@ class ProjectService:
             parentProtocolDbId: int,
             outputName: str,
     ) -> Dict[str, Any]:
-        row = mapper.db.fetchOne(
-            """
-            SELECT
-                s."objectId"::text AS "objectId",
-                s."setClassName" AS "className"
-              FROM scipion_sets s
-             WHERE s."projectId" = %s
-               AND s."protocolDbId" = %s
-               AND s."outputName" = %s
-
-            UNION ALL
-
-            SELECT
-                o."scipionObjId"::text AS "objectId",
-                o."className" AS "className"
-              FROM scipion_objects o
-             WHERE o."projectId" = %s
-               AND o."protocolDbId" = %s
-               AND o."parentObjectId" IS NULL
-               AND (o.path = %s OR o.name = %s)
-
-             LIMIT 1
-            """,
-            (
-                projectId,
-                parentProtocolDbId,
-                outputName,
-                projectId,
-                parentProtocolDbId,
-                outputName,
-                outputName,
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+        return protocolGraphRepository.getPersistedOutputInfoForInputRef(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbId=parentProtocolDbId,
+            outputName=outputName,
         )
-
-        if not row:
-            return {
-                "objectId": None,
-                "className": None,
-            }
-
-        return {
-            "objectId": row.get("objectId"),
-            "className": row.get("className"),
-        }
 
     def _updatePostgresqlProtocolParentIds(
             self,
