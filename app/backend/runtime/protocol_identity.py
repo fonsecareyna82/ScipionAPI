@@ -191,7 +191,13 @@ class ProtocolIdentityResolver:
         missingProtocolIds = []
 
         for protocolIdText in protocolIds:
-            protocolId = protocolIdText
+            protocolDbId = self.resolvePostgresqlProtocolDbId(protocolIdText)
+
+            if protocolDbId is None:
+                missingProtocolIds.append(protocolIdText)
+                continue
+
+            protocolDbIds.append(int(protocolDbId))
 
         return {
             "protocolIds": protocolIds,
