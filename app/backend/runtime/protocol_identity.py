@@ -52,7 +52,10 @@ class ProtocolIdentityResolver:
         Accept PostgreSQL protocols.id or Scipion protocols.protocolId.
         Return the Scipion runtime protocol id.
         """
-        protocolRow = self.getProtocolRow(protocolId)
+        protocolRow = self.getProtocolRowByDbId(protocolId)
+
+        if protocolRow is None:
+            protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
 
         if protocolRow is not None:
             scipionProtocolId = self.toOptionalInt(protocolRow.get("protocolId"))
@@ -66,7 +69,10 @@ class ProtocolIdentityResolver:
         Accept PostgreSQL protocols.id or Scipion protocols.protocolId.
         Return PostgreSQL protocols.id.
         """
-        protocolRow = self.getProtocolRow(protocolId)
+        protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is None:
+            protocolRow = self.getProtocolRowByDbId(protocolId)
 
         if protocolRow is None:
             return None
@@ -87,51 +93,61 @@ class ProtocolIdentityResolver:
 
         return self.toOptionalInt(protocolId)
 
-    def getProtocolRow(self, protocolId: Any) -> Optional[Dict[str, Any]]:
+    def getProtocolRowByDbId(self, protocolDbId: Any) -> Optional[Dict[str, Any]]:
         if self.db is None or self.projectId is None:
             return None
 
-        protocolIdInt = self.toOptionalInt(protocolId)
+        protocolDbId = self.toOptionalInt(protocolDbId)
+
+        if protocolDbId is None:
+            return None
+
+        return self.db.fetchOne(
+            """
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE "projectId" = %s
+               AND id = %s
+             LIMIT 1
+            """,
+            (
+                int(self.projectId),
+                protocolDbId,
+            ),
+        )
+
+    def getProtocolRowByScipionProtocolId(self, protocolId: Any) -> Optional[Dict[str, Any]]:
+        if self.db is None or self.projectId is None:
+            return None
+
         protocolIdText = str(protocolId).strip() if protocolId not in (None, "") else ""
 
-        if protocolIdInt is None and not protocolIdText:
+        if not protocolIdText:
             return None
 
+        return self.db.fetchOne(
+            """
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+             LIMIT 1
+            """,
+            (
+                int(self.projectId),
+                protocolIdText,
+            ),
+        )
+
+    def getProtocolRow(self, protocolId: Any) -> Optional[Dict[str, Any]]:
         try:
-            if protocolIdInt is not None:
-                protocolRow = self.db.fetchOne(
-                    """
-                    SELECT id, "protocolId"
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND id = %s
-                     LIMIT 1
-                    """,
-                    (
-                        int(self.projectId),
-                        protocolIdInt,
-                    ),
-                )
+            protocolRow = self.getProtocolRowByDbId(protocolId)
 
-                if protocolRow is not None:
-                    return protocolRow
+            if protocolRow is not None:
+                return protocolRow
 
-            if protocolIdText:
-                return self.db.fetchOne(
-                    """
-                    SELECT id, "protocolId"
-                      FROM protocols
-                     WHERE "projectId" = %s
-                       AND "protocolId" = %s
-                     LIMIT 1
-                    """,
-                    (
-                        int(self.projectId),
-                        protocolIdText,
-                    ),
-                )
+            return self.getProtocolRowByScipionProtocolId(protocolId)
 
-            return None
         except Exception:
             logger.debug(
                 "Could not resolve protocol identity. projectId=%s protocolId=%s",
