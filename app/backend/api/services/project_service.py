@@ -12039,19 +12039,32 @@ class ProjectService:
             mapper,
             projectId: int,
             protocols: List[Any],
+            protocolDbIds: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-            db=mapper.db,
-        )
+        protocolIds = [
+            str(getattr(protocol, "getObjId", lambda: None)())
+            for protocol in protocols or []
+            if getattr(protocol, "getObjId", lambda: None)() not in (None, "")
+        ]
 
-        protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
-            protocols
-        )
+        if protocolDbIds is None:
+            protocolIdentityResolver = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+                db=mapper.db,
+            )
 
-        protocolIds = protocolIdentityData.get("protocolIds") or []
-        protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
+            protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
+                protocols
+            )
+
+            protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
+        else:
+            protocolDbIds = [
+                int(protocolDbId)
+                for protocolDbId in protocolDbIds or []
+                if protocolDbId not in (None, "")
+            ]
 
         if not protocolDbIds:
             return {
@@ -12232,6 +12245,7 @@ class ProjectService:
                     mapper=mapper,
                     projectId=projectId,
                     protocols=protList,
+                    protocolDbIds=selectedProtocolDbIds,
                 )
 
                 return {
