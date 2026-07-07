@@ -24,7 +24,9 @@
 # *
 # ******************************************************************************
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 
 __all__ = [
     "ProtocolIdentityResolver",
+    "RuntimePointerResolver",
 ]
