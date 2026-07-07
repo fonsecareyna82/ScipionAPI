@@ -116,6 +116,59 @@ class ProtocolGraphRepository:
             for row in rows or []
         ]
 
+    def loadSubworkflowRows(
+            self,
+            mapper,
+            projectId: int,
+            rootProtocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            WITH RECURSIVE subworkflow("protocolDbId", "level", path) AS (
+                SELECT
+                    p.id,
+                    0,
+                    ARRAY[p.id]
+                  FROM protocols p
+                 WHERE p."projectId" = %s
+                   AND p.id = %s
+
+                UNION ALL
+
+                SELECT
+                    d."childProtocolDbId",
+                    sw."level" + 1,
+                    sw.path || d."childProtocolDbId"
+                  FROM subworkflow sw
+                  JOIN protocol_dependencies d
+                    ON d."projectId" = %s
+                   AND d."parentProtocolDbId" = sw."protocolDbId"
+                 WHERE NOT d."childProtocolDbId" = ANY(sw.path)
+            )
+            SELECT
+                p.id AS "protocolDbId",
+                p."protocolId" AS "protocolId",
+                MIN(sw."level") AS "level"
+              FROM subworkflow sw
+              JOIN protocols p
+                ON p."projectId" = %s
+               AND p.id = sw."protocolDbId"
+             GROUP BY p.id, p."protocolId"
+             ORDER BY MIN(sw."level"), p.id
+            """,
+            (
+                int(projectId),
+                int(rootProtocolDbId),
+                int(projectId),
+                int(projectId),
+            ),
+        )
+
+        return [
+            dict(row)
+            for row in rows or []
+        ]
+
     def updateProtocolParentIds(
             self,
             mapper,

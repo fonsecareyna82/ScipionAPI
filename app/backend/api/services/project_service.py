@@ -12507,46 +12507,12 @@ class ProjectService:
                 detail="Protocol %s was not found in PostgreSQL" % protocolId,
             )
 
-        rows = mapper.db.fetchAll(
-            """
-            WITH RECURSIVE subworkflow("protocolDbId", "level", path) AS (
-                SELECT
-                    p.id,
-                    0,
-                    ARRAY[p.id]
-                  FROM protocols p
-                 WHERE p."projectId" = %s
-                   AND p.id = %s
+        protocolGraphRepository = ProtocolGraphRepository()
 
-                UNION ALL
-
-                SELECT
-                    d."childProtocolDbId",
-                    sw."level" + 1,
-                    sw.path || d."childProtocolDbId"
-                  FROM subworkflow sw
-                  JOIN protocol_dependencies d
-                    ON d."projectId" = %s
-                   AND d."parentProtocolDbId" = sw."protocolDbId"
-                 WHERE NOT d."childProtocolDbId" = ANY(sw.path)
-            )
-            SELECT
-                p.id AS "protocolDbId",
-                p."protocolId" AS "protocolId",
-                MIN(sw."level") AS "level"
-              FROM subworkflow sw
-              JOIN protocols p
-                ON p."projectId" = %s
-               AND p.id = sw."protocolDbId"
-             GROUP BY p.id, p."protocolId"
-             ORDER BY MIN(sw."level"), p.id
-            """,
-            (
-                int(projectId),
-                int(rootProtocolDbId),
-                int(projectId),
-                int(projectId),
-            ),
+        rows = protocolGraphRepository.loadSubworkflowRows(
+            mapper=mapper,
+            projectId=projectId,
+            rootProtocolDbId=rootProtocolDbId,
         )
 
         result = collections.OrderedDict()
