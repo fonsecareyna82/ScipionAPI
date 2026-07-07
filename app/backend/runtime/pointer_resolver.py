@@ -23,9 +23,13 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import logging
 from typing import Any, Dict, List, Optional
 
 from pyworkflow.object import PointerList
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimePointerResolver:
@@ -263,6 +267,112 @@ class RuntimePointerResolver:
             mergedParams[inputName] = pointerValues[0] if len(pointerValues) == 1 else pointerValues
 
         return mergedParams
+
+    def completePointerValuesFromInputRefs(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId,
+            protocolId,
+            inputName: str,
+            rawValue: Any,
+    ) -> List[str]:
+        """
+        Complete pointer values that arrive without parent protocol id.
+
+        Example:
+            "outputTiltSeries"
+
+        becomes:
+            "123.outputTiltSeries"
+
+        using protocol_input_refs for this protocol/inputName.
+        """
+        pointerValues = self.normalizePointerParamValues(rawValue)
+
+        if not pointerValues:
+            return []
+
+        completeValues = []
+        missingParentOutputNames = []
+
+        for pointerValue in pointerValues:
+            parentId, outputName = self.splitPointerValue(pointerValue)
+
+            if parentId:
+                completeValues.append(pointerValue)
+                continue
+
+            if outputName:
+                missingParentOutputNames.append(outputName)
+
+        if not missingParentOutputNames:
+            return completeValues
+
+        db = getattr(mapper, "db", None)
+
+        if protocolDbId in (None, "") or db is None:
+            return completeValues + missingParentOutputNames
+
+        rows = db.fetchAll(
+            """
+            SELECT
+                "itemIndex",
+                "parentProtocolId",
+                "parentOutputName"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "inputName" = %s
+             ORDER BY "itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                str(inputName),
+            ),
+        )
+
+        refsByOutputName = {}
+
+        for row in rows or []:
+            parentProtocolId = row.get("parentProtocolId")
+            parentOutputName = str(row.get("parentOutputName") or "").strip()
+
+            if parentProtocolId in (None, "") or not parentOutputName:
+                continue
+
+            refsByOutputName.setdefault(parentOutputName, []).append(row)
+
+        for outputName in missingParentOutputNames:
+            candidates = refsByOutputName.get(outputName) or []
+
+            if len(candidates) == 1:
+                parentProtocolId = candidates[0].get("parentProtocolId")
+                completedValue = "%s.%s" % (
+                    str(parentProtocolId).strip(),
+                    str(outputName).strip(),
+                )
+
+                if completedValue not in completeValues:
+                    completeValues.append(completedValue)
+
+                logger.info(
+                    "Completed pointer value from PostgreSQL input refs. "
+                    "projectId=%s protocolId=%s protocolDbId=%s inputName=%s value=%s",
+                    projectId,
+                    protocolId,
+                    protocolDbId,
+                    inputName,
+                    completedValue,
+                )
+
+            else:
+                # Keep original value. The caller will produce a validation error.
+                if outputName not in completeValues:
+                    completeValues.append(outputName)
+
+        return completeValues
 
     def filterEmptyPointerValues(self, pointerValues: List[Any]) -> List[Any]:
         return [

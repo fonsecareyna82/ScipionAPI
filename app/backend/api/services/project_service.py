@@ -7710,110 +7710,28 @@ class ProjectService:
         """
         Complete pointer values that arrive from the frontend without parent id.
 
-        Example:
-            "outputTiltSeries"
-        becomes:
-            "123.outputTiltSeries"
-
-        using protocol_input_refs for this protocol/inputName.
-
-        This is mainly needed for duplicated PostgreSQL runtime protocols: duplicate
-        copies protocol_input_refs correctly, but the form may send only the output
-        name when launching.
+        Keep this wrapper while ProjectService still owns applyParamsToProtocol.
+        The actual pointer completion logic lives in RuntimePointerResolver.
         """
-        pointerValues = self._normalizeRuntimePointerParamValues(rawValue)
-
-        if not pointerValues:
-            return []
-
-        completeValues = []
-        missingParentOutputNames = []
-
-        for pointerValue in pointerValues:
-            parentId, outputName = self._splitPointerValue(pointerValue)
-
-            if parentId:
-                completeValues.append(pointerValue)
-                continue
-
-            if outputName:
-                missingParentOutputNames.append(outputName)
-
-        if not missingParentOutputNames:
-            return completeValues
-
+        pointerResolver = RuntimePointerResolver()
         protocolId = self._getScipionObjectId(protocol)
 
-        if protocolId is None:
-            return completeValues + missingParentOutputNames
+        protocolDbId = None
+        if protocolId is not None:
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
+        return pointerResolver.completePointerValuesFromInputRefs(
             mapper=mapper,
             projectId=projectId,
+            protocolDbId=protocolDbId,
             protocolId=protocolId,
+            inputName=inputName,
+            rawValue=rawValue,
         )
-
-        if protocolDbId is None:
-            return completeValues + missingParentOutputNames
-
-        rows = mapper.db.fetchAll(
-            """
-            SELECT
-                "itemIndex",
-                "parentProtocolId",
-                "parentOutputName"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-               AND "inputName" = %s
-             ORDER BY "itemIndex"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-                str(inputName),
-            ),
-        )
-
-        refsByOutputName = {}
-
-        for row in rows or []:
-            parentProtocolId = row.get("parentProtocolId")
-            parentOutputName = str(row.get("parentOutputName") or "").strip()
-
-            if parentProtocolId in (None, "") or not parentOutputName:
-                continue
-
-            refsByOutputName.setdefault(parentOutputName, []).append(row)
-
-        for outputName in missingParentOutputNames:
-            candidates = refsByOutputName.get(outputName) or []
-
-            if len(candidates) == 1:
-                parentProtocolId = candidates[0].get("parentProtocolId")
-                completedValue = "%s.%s" % (
-                    str(parentProtocolId).strip(),
-                    str(outputName).strip(),
-                )
-
-                if completedValue not in completeValues:
-                    completeValues.append(completedValue)
-
-                logger.info(
-                    "Completed pointer value from PostgreSQL input refs. "
-                    "projectId=%s protocolId=%s inputName=%s value=%s",
-                    projectId,
-                    protocolId,
-                    inputName,
-                    completedValue,
-                )
-
-            else:
-                # Keep original value. The caller will produce a validation error.
-                if outputName not in completeValues:
-                    completeValues.append(outputName)
-
-        return completeValues
 
     def applyParamsToProtocol(
             self,
