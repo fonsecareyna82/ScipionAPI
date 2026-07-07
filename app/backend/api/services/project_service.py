@@ -106,6 +106,7 @@ from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -11842,86 +11843,23 @@ class ProjectService:
 
     @staticmethod
     def _getRuntimeBlockedStatusTexts() -> set:
-        blockedStatuses = {
-            STATUS_RUNNING,
-            STATUS_LAUNCHED,
-            STATUS_SCHEDULED,
-        }
-
-        return {
-            str(statusValue).strip().lower()
-            for statusValue in blockedStatuses
-        }
+        return RuntimeProtocolDeleteService.getRuntimeBlockedStatusTexts()
 
     def _validatePostgresqlRuntimeProtocolDelete(
-        self,
-        mapper,
-        projectId: int,
-        selectedProtocolDbIds: List[int],
-        protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
+            self,
+            mapper,
+            projectId: int,
+            selectedProtocolDbIds: List[int],
+            protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
     ) -> Dict[str, Any]:
-        """
-        Validate PostgreSQL runtime delete constraints.
+        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
 
-        A selected protocol can be deleted with its outputs if it is part of the
-        selected deletion set. What is not allowed is deleting a protocol while
-        leaving downstream protocols outside the selection that are active or
-        already have outputs.
-
-        protocolGraphRepository can be passed by callers that already created
-        one for the current delete flow.
-        """
-        if not selectedProtocolDbIds:
-            return {
-                "blocked": False,
-                "externalDescendants": [],
-            }
-
-        blockedStatusTexts = self._getRuntimeBlockedStatusTexts()
-
-        if protocolGraphRepository is None:
-            protocolGraphRepository = ProtocolGraphRepository()
-
-        rows = protocolGraphRepository.loadExternalDescendantsForDeleteValidation(
+        return runtimeProtocolDeleteService.validatePostgresqlRuntimeProtocolDelete(
             mapper=mapper,
             projectId=projectId,
             selectedProtocolDbIds=selectedProtocolDbIds,
+            protocolGraphRepository=protocolGraphRepository,
         )
-
-        blockedDescendants = []
-
-        for row in rows or []:
-            statusText = str(row.get("status") or "").strip().lower()
-            setsCount = int(row.get("setsCount") or 0)
-            objectsCount = int(row.get("objectsCount") or 0)
-
-            isActive = statusText in blockedStatusTexts
-            hasOutputs = setsCount > 0 or objectsCount > 0
-
-            if not isActive and not hasOutputs:
-                continue
-
-            reasons = []
-
-            if isActive:
-                reasons.append("active")
-
-            if hasOutputs:
-                reasons.append("has_outputs")
-
-            blockedDescendants.append({
-                "protocolDbId": int(row.get("protocolDbId")),
-                "protocolId": str(row.get("protocolId")),
-                "status": statusText,
-                "setsCount": setsCount,
-                "objectsCount": objectsCount,
-                "reasons": reasons,
-            })
-
-        return {
-            "blocked": bool(blockedDescendants),
-            "externalDescendants": blockedDescendants,
-        }
 
     def _deletePostgresqlRuntimeProtocols(
             self,
@@ -11932,60 +11870,16 @@ class ProjectService:
             protocolIds: Optional[List[str]] = None,
             protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
     ) -> Dict[str, Any]:
-        """
-        Delete PostgreSQL runtime protocol rows and refresh affected children.
+        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
 
-        In the normal deleteProtocol flow, protocolDbIds and protocolIds are
-        already resolved before this helper is called. The fallback resolution is
-        kept for compatibility with direct/internal calls.
-        """
-        if protocolDbIds is None:
-            protocolIdentityResolver = ProtocolIdentityResolver(
-                mapper=mapper,
-                projectId=projectId,
-                db=mapper.db,
-            )
-            protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
-                protocols
-            )
-
-            protocolIds = protocolIdentityData.get("protocolIds") or []
-            protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
-        else:
-            protocolIds = (
-                protocolIds
-                or ProtocolIdentityResolver.extractProtocolIdsFromProtocols(protocols)
-            )
-
-        if not protocolDbIds:
-            return {
-                "deletedProtocolIds": protocolIds or [],
-                "deletedProtocolDbIds": [],
-                "affectedChildren": [],
-                "parentsRefresh": {
-                    "refreshed": [],
-                    "count": 0,
-                },
-            }
-
-        if protocolGraphRepository is None:
-            protocolGraphRepository = ProtocolGraphRepository()
-
-        deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
+        return runtimeProtocolDeleteService.deletePostgresqlRuntimeProtocols(
             mapper=mapper,
             projectId=projectId,
+            protocols=protocols,
             protocolDbIds=protocolDbIds,
+            protocolIds=protocolIds,
+            protocolGraphRepository=protocolGraphRepository,
         )
-
-        return {
-            "deletedProtocolIds": protocolIds,
-            "deletedProtocolDbIds": deleteGraphInfo.get("deletedProtocolDbIds") or [],
-            "affectedChildren": deleteGraphInfo.get("affectedChildren") or [],
-            "parentsRefresh": deleteGraphInfo.get("parentsRefresh") or {
-                "refreshed": [],
-                "count": 0,
-            },
-        }
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
