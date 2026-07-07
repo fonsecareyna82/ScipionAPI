@@ -282,6 +282,31 @@ class ProtocolGraphRepository:
             if row.get("protocolDbId") not in (None, "")
         ]
 
+    def deleteProtocolsByDbIds(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbIds: List[int],
+            commit: bool = True,
+    ) -> int:
+        if not protocolDbIds:
+            return 0
+
+        cur = mapper.db.execute(
+            """
+            DELETE FROM protocols
+             WHERE "projectId" = %s
+               AND id = ANY(%s)
+            """,
+            (
+                int(projectId),
+                protocolDbIds,
+            ),
+            commit=commit,
+        )
+
+        return int(cur.rowcount or 0)
+
     def updateProtocolParentIds(
             self,
             mapper,

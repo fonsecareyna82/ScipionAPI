@@ -12084,16 +12084,10 @@ class ProjectService:
             # protocol_dependencies, scipion_sets and scipion_objects because
             # the schema has ON DELETE CASCADE. Keep this operation focused:
             # do not rebuild the whole graph from SQLite.
-            mapper.db.execute(
-                """
-                DELETE FROM protocols
-                 WHERE "projectId" = %s
-                   AND id = ANY(%s)
-                """,
-                (
-                    int(projectId),
-                    protocolDbIds,
-                ),
+            protocolGraphRepository.deleteProtocolsByDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbIds=protocolDbIds,
                 commit=False,
             )
 
