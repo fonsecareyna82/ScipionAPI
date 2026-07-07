@@ -12041,11 +12041,15 @@ class ProjectService:
             protocols: List[Any],
             protocolDbIds: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        protocolIds = [
-            str(getattr(protocol, "getObjId", lambda: None)())
-            for protocol in protocols or []
-            if getattr(protocol, "getObjId", lambda: None)() not in (None, "")
-        ]
+        protocolIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolIds.append(str(protocolId))
 
         if protocolDbIds is None:
             protocolIdentityResolver = ProtocolIdentityResolver(
