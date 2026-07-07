@@ -7776,82 +7776,44 @@ class ProjectService:
                         continue
 
                     for v in pointerValues:
-                        parentId, rawValue = self._splitPointerValue(v)
+                        resolvedPointerTarget = pointerResolver.resolvePointerTarget(
+                            mapper=mapper,
+                            projectId=projectId,
+                            pointerValue=v,
+                            paramLabel=param.label.get(),
+                            getParentProtocolCallback=self._getParentProtocolForPointer,
+                            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+                            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+                        )
 
-                        if rawValue and not parentId:
-                            errorList.append(
-                                '**%s** could not resolve parent protocol for input %s'
-                                % (param.label.get(), v)
-                            )
+                        if not resolvedPointerTarget.get("ok"):
+                            errorList.append(resolvedPointerTarget.get("error"))
                             continue
 
-                        if rawValue:
-                            try:
-                                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-                                    mapper=mapper,
-                                    projectId=projectId,
-                                    parentId=parentId,
-                                )
+                        parentScipionProtocolId = resolvedPointerTarget.get("parentScipionProtocolId")
+                        parentProtocol = resolvedPointerTarget.get("parentProtocol")
+                        outputName = resolvedPointerTarget.get("outputName")
+                        resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
 
-                                parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                                    mapper=mapper,
-                                    projectId=projectId,
-                                    protocolId=parentScipionProtocolId,
-                                )
+                        newInputs.append(
+                            Pointer(parentProtocol, extended=outputName)
+                        )
 
-                                if parentProtocolDbId is None:
-                                    errorList.append(
-                                        '**%s** parent protocol %s was not found in PostgreSQL.'
-                                        % (param.label.get(), parentScipionProtocolId)
-                                    )
-                                    continue
+                        logger.debug(
+                            "MultiPointer param %s set from parent %s output %s source=%s hasRuntimeAttribute=%s",
+                            key,
+                            parentScipionProtocolId,
+                            outputName,
+                            resolvedOutput.get("source"),
+                            resolvedOutput.get("hasRuntimeAttribute"),
+                        )
 
-                                resolvedOutput = self._resolveParentOutputForRuntimePointer(
-                                    mapper=mapper,
-                                    projectId=projectId,
-                                    parentProtocolDbId=int(parentProtocolDbId),
-                                    parentScipionProtocolId=parentScipionProtocolId,
-                                    parentProtocol=parentProtocol,
-                                    outputName=rawValue,
-                                )
-
-                                if not resolvedOutput.get("exists"):
-                                    errorList.append(
-                                        '**%s** parent protocol %s does not have output %s in PostgreSQL or runtime.'
-                                        % (param.label.get(), parentScipionProtocolId, rawValue)
-                                    )
-                                    continue
-
-                                newInputs.append(
-                                    Pointer(parentProtocol, extended=rawValue)
-                                )
-
-                                logger.debug(
-                                    "MultiPointer param %s set from parent %s output %s source=%s hasRuntimeAttribute=%s",
-                                    key,
-                                    parentScipionProtocolId,
-                                    rawValue,
-                                    resolvedOutput.get("source"),
-                                    resolvedOutput.get("hasRuntimeAttribute"),
-                                )
-
-                                logger.info(
-                                    "[INFO] MultiPointer param %s set from parent %s output %s",
-                                    key,
-                                    parentScipionProtocolId,
-                                    rawValue,
-                                )
-
-                            except Exception as e:
-                                logger.exception(
-                                    "[ERROR] Could not set multipointer param %s from value %s",
-                                    key,
-                                    v,
-                                )
-                                errorList.append(
-                                    '**%s** could not resolve input %s: %s'
-                                    % (param.label.get(), v, e)
-                                )
+                        logger.info(
+                            "[INFO] MultiPointer param %s set from parent %s output %s",
+                            key,
+                            parentScipionProtocolId,
+                            outputName,
+                        )
 
                     if newInputs.isEmpty() and not param.allowsNull.get():
                         errorList.append('**' + param.label.get() + '** it must not be empty.')
@@ -7885,100 +7847,62 @@ class ProjectService:
                         continue
 
                     pointerValue = pointerValues[0]
-                    parentId, rawValue = self._splitPointerValue(pointerValue)
 
-                    if rawValue and not parentId:
-                        errorList.append(
-                            '**%s** could not resolve parent protocol for input %s'
-                            % (param.label.get(), pointerValue)
-                        )
+                    resolvedPointerTarget = pointerResolver.resolvePointerTarget(
+                        mapper=mapper,
+                        projectId=projectId,
+                        pointerValue=pointerValue,
+                        paramLabel=param.label.get(),
+                        getParentProtocolCallback=self._getParentProtocolForPointer,
+                        resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+                        resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+                    )
+
+                    if not resolvedPointerTarget.get("ok"):
+                        errorList.append(resolvedPointerTarget.get("error"))
                         continue
-                    if rawValue:
-                        try:
-                            parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-                                mapper=mapper,
-                                projectId=projectId,
-                                parentId=parentId,
-                            )
 
-                            output = rawValue
-                            val = f"{parentScipionProtocolId}.{output}"
+                    parentScipionProtocolId = resolvedPointerTarget.get("parentScipionProtocolId")
+                    parentProtocol = resolvedPointerTarget.get("parentProtocol")
+                    outputName = resolvedPointerTarget.get("outputName")
+                    resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
 
-                            parentProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                                mapper=mapper,
-                                projectId=projectId,
-                                protocolId=parentScipionProtocolId,
-                            )
+                    val = f"{parentScipionProtocolId}.{outputName}"
+                    pointer = getattr(protocol, key, None)
 
-                            if parentProtocolDbId is None:
-                                errorList.append(
-                                    '**%s** parent protocol %s was not found in PostgreSQL.'
-                                    % (param.label.get(), parentScipionProtocolId)
-                                )
-                                continue
+                    if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
+                        pointer = Pointer(parentProtocol, extended=outputName)
+                        setattr(protocol, key, pointer)
+                    else:
+                        pointer.set(parentProtocol)
+                        pointer.setExtended(outputName)
 
-                            resolvedOutput = self._resolveParentOutputForRuntimePointer(
-                                mapper=mapper,
-                                projectId=projectId,
-                                parentProtocolDbId=int(parentProtocolDbId),
-                                parentScipionProtocolId=parentScipionProtocolId,
-                                parentProtocol=parentProtocol,
-                                outputName=output,
-                            )
+                    # Keep the form/default textual representation if available,
+                    # but do not call param.set(val), because that stores the input as string.
+                    try:
+                        param.default.set(val)
+                    except Exception:
+                        pass
 
-                            if not resolvedOutput.get("exists"):
-                                errorList.append(
-                                    '**%s** parent protocol %s does not have output %s in PostgreSQL or runtime.'
-                                    % (param.label.get(), parentScipionProtocolId, output)
-                                )
-                                continue
-
-                            pointer = getattr(protocol, key, None)
-
-                            if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
-                                pointer = Pointer(parentProtocol, extended=output)
-                                setattr(protocol, key, pointer)
-                            else:
-                                pointer.set(parentProtocol)
-                                pointer.setExtended(output)
-
-                            # Keep the form/default textual representation if available,
-                            # but do not call param.set(val), because that stores the input as string.
-                            try:
-                                param.default.set(val)
-                            except Exception:
-                                pass
-
-                            logger.debug(
-                                "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s "
-                                "source=%s hasRuntimeAttribute=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
-                                key,
-                                getattr(protocol, "getObjId", lambda: None)(),
-                                parentScipionProtocolId,
-                                output,
-                                resolvedOutput.get("source"),
-                                resolvedOutput.get("hasRuntimeAttribute"),
-                                pointer,
-                                getattr(pointer, "getObjValue", lambda: None)() if pointer is not None else None,
-                                getattr(pointer, "getExtended", lambda: None)() if pointer is not None else None,
-                                getattr(
-                                    getattr(pointer, "getObjValue", lambda: None)(),
-                                    "getObjId",
-                                    lambda: None,
-                                )() if pointer is not None else None,
-                                getattr(pointer, "get", lambda: None)() if pointer is not None else None,
-                            )
-
-                        except Exception as e:
-                            logger.exception(
-                                "[ERROR] Could not set pointer param %s from value %s",
-                                key,
-                                value,
-                            )
-                            errorList.append(
-                                '**%s** could not resolve input %s: %s'
-                                % (param.label.get(), value, e)
-                            )
+                    logger.debug(
+                        "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s "
+                        "source=%s hasRuntimeAttribute=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
+                        key,
+                        getattr(protocol, "getObjId", lambda: None)(),
+                        parentScipionProtocolId,
+                        outputName,
+                        resolvedOutput.get("source"),
+                        resolvedOutput.get("hasRuntimeAttribute"),
+                        pointer,
+                        getattr(pointer, "getObjValue", lambda: None)() if pointer is not None else None,
+                        getattr(pointer, "getExtended", lambda: None)() if pointer is not None else None,
+                        getattr(
+                            getattr(pointer, "getObjValue", lambda: None)(),
+                            "getObjId",
+                            lambda: None,
+                        )() if pointer is not None else None,
+                        getattr(pointer, "get", lambda: None)() if pointer is not None else None,
+                    )
 
         return errorList
 

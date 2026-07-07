@@ -374,6 +374,116 @@ class RuntimePointerResolver:
 
         return completeValues
 
+    def resolvePointerTarget(
+            self,
+            mapper,
+            projectId: int,
+            pointerValue: Any,
+            paramLabel: str,
+            getParentProtocolCallback,
+            resolvePostgresqlProtocolDbIdCallback,
+            resolveParentOutputCallback,
+    ) -> Dict[str, Any]:
+        """
+        Resolve one normalized pointer value into its parent protocol and output.
+
+        This method intentionally receives callbacks for Scipion/PostgreSQL
+        operations. RuntimePointerResolver owns pointer semantics, while the
+        caller still owns project/runtime access during this refactor step.
+        """
+        parentId, outputName = self.splitPointerValue(pointerValue)
+
+        if outputName and not parentId:
+            return {
+                "ok": False,
+                "error": "**%s** could not resolve parent protocol for input %s"
+                         % (paramLabel, pointerValue),
+                "parentId": parentId,
+                "outputName": outputName,
+            }
+
+        if not outputName:
+            return {
+                "ok": False,
+                "error": "**%s** could not resolve empty pointer input %s"
+                         % (paramLabel, pointerValue),
+                "parentId": parentId,
+                "outputName": outputName,
+            }
+
+        try:
+            parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
+                mapper=mapper,
+                projectId=projectId,
+                parentId=parentId,
+            )
+
+            parentProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=parentScipionProtocolId,
+            )
+
+            if parentProtocolDbId is None:
+                return {
+                    "ok": False,
+                    "error": "**%s** parent protocol %s was not found in PostgreSQL."
+                             % (paramLabel, parentScipionProtocolId),
+                    "parentId": parentId,
+                    "outputName": outputName,
+                    "parentScipionProtocolId": parentScipionProtocolId,
+                    "parentProtocol": parentProtocol,
+                    "parentProtocolDbId": None,
+                }
+
+            resolvedOutput = resolveParentOutputCallback(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(parentProtocolDbId),
+                parentScipionProtocolId=parentScipionProtocolId,
+                parentProtocol=parentProtocol,
+                outputName=outputName,
+            )
+
+            if not resolvedOutput.get("exists"):
+                return {
+                    "ok": False,
+                    "error": "**%s** parent protocol %s does not have output %s in PostgreSQL or runtime."
+                             % (paramLabel, parentScipionProtocolId, outputName),
+                    "parentId": parentId,
+                    "outputName": outputName,
+                    "parentScipionProtocolId": parentScipionProtocolId,
+                    "parentProtocol": parentProtocol,
+                    "parentProtocolDbId": parentProtocolDbId,
+                    "resolvedOutput": resolvedOutput,
+                }
+
+            return {
+                "ok": True,
+                "parentId": parentId,
+                "outputName": outputName,
+                "parentScipionProtocolId": parentScipionProtocolId,
+                "parentProtocol": parentProtocol,
+                "parentProtocolDbId": int(parentProtocolDbId),
+                "resolvedOutput": resolvedOutput,
+            }
+
+        except Exception as e:
+            logger.exception(
+                "Could not resolve runtime pointer target. projectId=%s pointerValue=%s",
+                projectId,
+                pointerValue,
+            )
+
+            return {
+                "ok": False,
+                "error": "**%s** could not resolve input %s: %s"
+                         % (paramLabel, pointerValue, e),
+                "parentId": parentId,
+                "outputName": outputName,
+                "exception": e,
+            }
+
     def filterEmptyPointerValues(self, pointerValues: List[Any]) -> List[Any]:
         return [
             value for value in pointerValues
