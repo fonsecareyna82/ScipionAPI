@@ -11971,12 +11971,6 @@ class ProjectService:
             )
 
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
-        else:
-            protocolDbIds = [
-                int(protocolDbId)
-                for protocolDbId in protocolDbIds or []
-                if protocolDbId not in (None, "")
-            ]
 
         protocolGraphRepository = ProtocolGraphRepository()
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
