@@ -8009,7 +8009,11 @@ class ProjectService:
                 )
 
             if parentProtocol is None:
-                parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
+                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=parentProtocolId,
+                )
 
             return parentScipionProtocolId, parentProtocol
 
