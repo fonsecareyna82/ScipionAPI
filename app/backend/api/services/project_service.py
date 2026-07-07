@@ -7984,7 +7984,11 @@ class ProjectService:
                 )
 
             if parentProtocol is None:
-                parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
+                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=parentProtocolId,
+                )
 
             return parentScipionProtocolId, parentProtocol
 
@@ -8018,11 +8022,7 @@ class ProjectService:
                     parentProtocolId = ref.get("parentProtocolId")
                     parentOutputName = str(ref.get("parentOutputName") or "").strip()
 
-                    parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-                        mapper=mapper,
-                        projectId=projectId,
-                        parentId=parentProtocolId,
-                    )
+                    parentScipionProtocolId, parentProtocol = resolveParentProtocol(parentProtocolId)
 
                     pointer = Pointer(parentProtocol, extended=parentOutputName)
 
