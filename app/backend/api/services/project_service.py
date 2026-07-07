@@ -11846,6 +11846,7 @@ class ProjectService:
             projectId: int,
             childProtocolDbIds: List[int],
     ) -> Dict[str, Any]:
+        protocolGraphRepository = ProtocolGraphRepository()
         refreshed = []
 
         cleanChildDbIds = []
@@ -11864,44 +11865,14 @@ class ProjectService:
             cleanChildDbIds.append(childDbId)
 
         for childDbId in cleanChildDbIds:
-            rows = mapper.db.fetchAll(
-                """
-                SELECT DISTINCT
-                       r."parentProtocolDbId",
-                       r."parentProtocolId"
-                  FROM protocol_input_refs r
-                 WHERE r."projectId" = %s
-                   AND r."protocolDbId" = %s
-                   AND r."parentProtocolDbId" IS NOT NULL
-                 ORDER BY r."parentProtocolDbId"
-                """,
-                (
-                    int(projectId),
-                    int(childDbId),
-                ),
+            parentRefs = protocolGraphRepository.loadParentRefsForChildProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                childProtocolDbId=childDbId,
             )
 
-            parentDbIds = []
-            parentProtocolIds = []
-
-            for row in rows or []:
-                parentDbId = row.get("parentProtocolDbId")
-                parentProtocolId = row.get("parentProtocolId")
-
-                if parentDbId not in (None, ""):
-                    parentDbId = int(parentDbId)
-
-                    if parentDbId not in parentDbIds:
-                        parentDbIds.append(parentDbId)
-
-                if parentProtocolId not in (None, ""):
-                    try:
-                        parentProtocolId = int(parentProtocolId)
-
-                        if parentProtocolId not in parentProtocolIds:
-                            parentProtocolIds.append(parentProtocolId)
-                    except Exception:
-                        pass
+            parentDbIds = parentRefs.get("parentProtocolDbIds") or []
+            parentProtocolIds = parentRefs.get("parentProtocolIds") or []
 
             dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
                 mapper=mapper,
