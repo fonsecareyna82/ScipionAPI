@@ -11949,23 +11949,20 @@ class ProjectService:
             protocols: List[Any],
             protocolDbIds: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-            db=mapper.db,
+        protocolIds = ProtocolIdentityResolver.extractProtocolIdsFromProtocols(
+            protocols
         )
 
         if protocolDbIds is None:
+            protocolIdentityResolver = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+                db=mapper.db,
+            )
             protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
                 protocols
             )
-
-            protocolIds = protocolIdentityData.get("protocolIds") or []
             protocolDbIds = protocolIdentityData.get("protocolDbIds") or []
-        else:
-            protocolIds = protocolIdentityResolver.extractProtocolIdsFromProtocols(
-                protocols
-            )
 
         protocolGraphRepository = ProtocolGraphRepository()
         deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
