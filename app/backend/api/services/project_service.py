@@ -11854,6 +11854,9 @@ class ProjectService:
         selected deletion set. What is not allowed is deleting a protocol while
         leaving downstream protocols outside the selection that are active or
         already have outputs.
+
+        protocolGraphRepository can be passed by callers that already created
+        one for the current delete flow.
         """
         if not selectedProtocolDbIds:
             return {
