@@ -12071,27 +12071,13 @@ class ProjectService:
                 },
             }
 
-        affectedRows = mapper.db.fetchAll(
-            """
-            SELECT DISTINCT "protocolDbId"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "parentProtocolDbId" = ANY(%s)
-               AND NOT ("protocolDbId" = ANY(%s))
-             ORDER BY "protocolDbId"
-            """,
-            (
-                int(projectId),
-                protocolDbIds,
-                protocolDbIds,
-            ),
-        )
+        protocolGraphRepository = ProtocolGraphRepository()
 
-        affectedChildDbIds = [
-            int(row["protocolDbId"])
-            for row in affectedRows or []
-            if row.get("protocolDbId") not in (None, "")
-        ]
+        affectedChildDbIds = protocolGraphRepository.loadAffectedChildProtocolDbIdsForDeletedParents(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbIds=protocolDbIds,
+        )
 
         with mapper.db.transaction():
             # Deleting from protocols is enough for protocol_input_refs,

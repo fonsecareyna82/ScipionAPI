@@ -251,6 +251,37 @@ class ProtocolGraphRepository:
             for row in rows or []
         ]
 
+    def loadAffectedChildProtocolDbIdsForDeletedParents(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbIds: List[int],
+    ) -> List[int]:
+        if not parentProtocolDbIds:
+            return []
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT DISTINCT "protocolDbId"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+               AND NOT ("protocolDbId" = ANY(%s))
+             ORDER BY "protocolDbId"
+            """,
+            (
+                int(projectId),
+                parentProtocolDbIds,
+                parentProtocolDbIds,
+            ),
+        )
+
+        return [
+            int(row["protocolDbId"])
+            for row in rows or []
+            if row.get("protocolDbId") not in (None, "")
+        ]
+
     def updateProtocolParentIds(
             self,
             mapper,
