@@ -617,6 +617,143 @@ class RuntimePointerResolver:
                 "exception": e,
             }
 
+    def buildInputRefsFromPointerParams(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            protocolId,
+            params: Dict[str, Any],
+            getParamCallback,
+            resolveScipionProtocolIdCallback,
+            resolvePostgresqlProtocolDbIdCallback,
+            getPersistedOutputInfoCallback,
+            isPointerParamCallback,
+    ) -> Dict[str, Any]:
+        """
+        Build PostgreSQL input refs from normalized pointer params.
+
+        This method does not persist anything. It only inspects params and returns:
+          - parentProtocolDbIds
+          - parentProtocolIds
+          - inputRefs
+          - detectedPointerParams
+        """
+        parentProtocolDbIds: List[int] = []
+        parentProtocolIds: List[int] = []
+        inputRefs: List[Dict[str, Any]] = []
+        detectedPointerParams = []
+
+        for inputName, rawParamValue in params.items():
+            try:
+                param = getParamCallback(inputName)
+            except Exception:
+                param = None
+
+            if not isPointerParamCallback(param):
+                continue
+
+            pointerValues = self.normalizePointerParamValues(rawParamValue)
+
+            if not pointerValues:
+                continue
+
+            validPointerValues = []
+
+            for pointerValue in pointerValues:
+                parentId, outputName = self.splitPointerValue(pointerValue)
+
+                if parentId and outputName:
+                    validPointerValues.append(pointerValue)
+
+            if not validPointerValues:
+                continue
+
+            detectedPointerParams.append({
+                "inputName": inputName,
+                "paramClass": param.__class__.__name__ if param is not None else None,
+                "isPointerParam": isPointerParamCallback(param),
+                "rawValue": rawParamValue,
+                "pointerValues": validPointerValues,
+            })
+
+            for itemIndex, pointerValue in enumerate(pointerValues):
+                parentId, outputName = self.splitPointerValue(pointerValue)
+
+                if not parentId or not outputName:
+                    continue
+
+                try:
+                    parentScipionProtocolId = resolveScipionProtocolIdCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=parentId,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not resolve parent protocol id from pointer param. "
+                        "projectId=%s childProtocolId=%s inputName=%s value=%s",
+                        projectId,
+                        protocolId,
+                        inputName,
+                        pointerValue,
+                    )
+                    continue
+
+                parentProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=parentScipionProtocolId,
+                )
+
+                if parentProtocolDbId is None:
+                    logger.warning(
+                        "Parent protocol row not found while syncing runtime dependency. "
+                        "projectId=%s childProtocolId=%s parentProtocolId=%s inputName=%s outputName=%s",
+                        projectId,
+                        protocolId,
+                        parentScipionProtocolId,
+                        inputName,
+                        outputName,
+                    )
+                    continue
+
+                parentProtocolDbId = int(parentProtocolDbId)
+                parentScipionProtocolId = int(parentScipionProtocolId)
+
+                if parentProtocolDbId not in parentProtocolDbIds:
+                    parentProtocolDbIds.append(parentProtocolDbId)
+
+                if parentScipionProtocolId not in parentProtocolIds:
+                    parentProtocolIds.append(parentScipionProtocolId)
+
+                outputInfo = getPersistedOutputInfoCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbId=parentProtocolDbId,
+                    outputName=outputName,
+                )
+
+                inputRefs.append({
+                    "projectId": int(projectId),
+                    "protocolDbId": int(protocolDbId),
+                    "protocolId": str(protocolId),
+                    "inputName": str(inputName),
+                    "itemIndex": int(itemIndex),
+                    "parentProtocolDbId": parentProtocolDbId,
+                    "parentProtocolId": str(parentScipionProtocolId),
+                    "parentOutputName": str(outputName),
+                    "objectClassName": outputInfo.get("className"),
+                    "objectId": outputInfo.get("objectId"),
+                })
+
+        return {
+            "parentProtocolDbIds": parentProtocolDbIds,
+            "parentProtocolIds": parentProtocolIds,
+            "inputRefs": inputRefs,
+            "detectedPointerParams": detectedPointerParams,
+        }
+
     def filterEmptyPointerValues(self, pointerValues: List[Any]) -> List[Any]:
         return [
             value for value in pointerValues
