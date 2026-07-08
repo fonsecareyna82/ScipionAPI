@@ -11861,41 +11861,13 @@ class ProjectService:
                 )
 
             runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
-            blockedStatusTexts = runtimeProtocolDeleteService.getRuntimeBlockedStatusTexts()
-
-            blockedProtocols = []
             protocolGraphRepository = ProtocolGraphRepository() if usingPostgresqlRuntime else None
-
-            for protocol in protList:
-                protocolId = getattr(protocol, "getObjId", lambda: None)()
-
-                protocolStatus = None
-
-                if protocolGraphRepository is not None:
-                    protocolStatus = protocolGraphRepository.getProtocolStatusByScipionProtocolId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
-
-                if protocolStatus is None:
-                    try:
-                        protocolStatus = protocol.getStatus()
-                    except Exception:
-                        statusAttr = getattr(protocol, "status", None)
-
-                        try:
-                            protocolStatus = statusAttr.get() if statusAttr is not None else None
-                        except Exception:
-                            protocolStatus = None
-
-                protocolStatusText = str(protocolStatus or "").strip().lower()
-
-                if protocolStatusText in blockedStatusTexts:
-                    blockedProtocols.append({
-                        "protocolId": str(protocolId),
-                        "status": protocolStatusText,
-                    })
+            blockedProtocols = runtimeProtocolDeleteService.buildBlockedProtocolReports(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protList,
+                protocolGraphRepository=protocolGraphRepository,
+            )
 
             if blockedProtocols:
                 raise HTTPException(
