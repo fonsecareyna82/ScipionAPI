@@ -12017,27 +12017,26 @@ class ProjectService:
             projectId: int,
             protocols,
     ) -> Dict[str, Any]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
+        protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
+            protocols
+        )
+
         parentDbIds = []
+        seenParentDbIds = set()
 
-        for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
-
-            if protocolId in (None, ""):
-                continue
-
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            if protocolDbId is None:
-                continue
-
+        for protocolDbId in protocolIdentityData.get("protocolDbIds") or []:
             protocolDbId = int(protocolDbId)
 
-            if protocolDbId not in parentDbIds:
-                parentDbIds.append(protocolDbId)
+            if protocolDbId in seenParentDbIds:
+                continue
+
+            seenParentDbIds.add(protocolDbId)
+            parentDbIds.append(protocolDbId)
 
         if not parentDbIds:
             return {
