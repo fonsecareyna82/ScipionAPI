@@ -11303,7 +11303,6 @@ class ProjectService:
         syncReports = []
         dependenciesCount = 0
 
-        sourceItems = []
         duplicatedItems = []
 
         sourceToDuplicatedProtocolId: Dict[str, str] = {}
@@ -11391,16 +11390,13 @@ class ProjectService:
                 )
 
             runtimeProtocolDuplicateService.registerDuplicatedProtocol(
-                sourceProtocolId=sourceProtocolId,
                 sourceScipionProtocolId=sourceScipionProtocolId,
                 sourceProtocolDbId=sourceProtocolDbId,
-                protocolClassName=protocolClassName,
                 duplicatedProtocol=newProtocol,
                 duplicatedProtocolId=duplicatedProtocolId,
                 duplicatedProtocolDbId=duplicatedProtocolDbId,
                 sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
                 sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
-                sourceItems=sourceItems,
                 duplicatedItems=duplicatedItems,
                 duplicated=duplicated,
             )
