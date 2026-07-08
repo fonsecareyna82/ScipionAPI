@@ -1,0 +1,416 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+
+logger = logging.getLogger(__name__)
+
+
+class RuntimeOutputRelationRepairService:
+    """Repair missing runtime relations between persisted PostgreSQL outputs."""
+
+    def __init__(self):
+        self.protocolGraphRepository = ProtocolGraphRepository()
+
+    @staticmethod
+    def isPostgresqlProxy(obj) -> bool:
+        try:
+            checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
+            return callable(checker) and bool(checker())
+        except Exception:
+            return False
+
+    @staticmethod
+    def outputInfoMatchesRule(
+            outputInfo: Dict[str, Any],
+            relationRule: Dict[str, Any],
+    ) -> bool:
+        className = str(outputInfo.get("className") or "")
+        itemClassName = str(outputInfo.get("itemClassName") or "")
+
+        targetClassNames = relationRule.get("targetClassNames") or []
+        targetItemClassNames = relationRule.get("targetItemClassNames") or []
+
+        for targetClassName in targetClassNames:
+            targetClassName = str(targetClassName or "")
+
+            if not targetClassName:
+                continue
+
+            if targetClassName in className or className.endswith(targetClassName):
+                return True
+
+        for targetItemClassName in targetItemClassNames:
+            targetItemClassName = str(targetItemClassName or "")
+
+            if not targetItemClassName:
+                continue
+
+            if itemClassName.endswith(targetItemClassName):
+                return True
+
+        return False
+
+    def findRelatedOutputCandidates(
+            self,
+            mapper,
+            projectId: int,
+            inputRefRows: List[Dict[str, Any]],
+            currentInputName: str,
+            preferredParentProtocolDbId: int,
+            relationRule: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        candidates = []
+
+        for ref in inputRefRows or []:
+            candidateInputName = str(ref.get("inputName") or "").strip()
+            candidateOutputName = str(ref.get("parentOutputName") or "").strip()
+            candidateParentProtocolDbId = ref.get("parentProtocolDbId")
+            candidateParentProtocolId = ref.get("parentProtocolId")
+
+            if not candidateInputName or not candidateOutputName:
+                continue
+
+            if candidateInputName == currentInputName:
+                continue
+
+            if candidateParentProtocolDbId in (None, ""):
+                continue
+
+            try:
+                outputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbId=int(candidateParentProtocolDbId),
+                    outputName=candidateOutputName,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not inspect input ref while repairing runtime output relation. "
+                    "projectId=%s inputName=%s parentProtocolDbId=%s outputName=%s",
+                    projectId,
+                    candidateInputName,
+                    candidateParentProtocolDbId,
+                    candidateOutputName,
+                    exc_info=True,
+                )
+                continue
+
+            if not outputInfo.get("exists"):
+                continue
+
+            if not self.outputInfoMatchesRule(outputInfo, relationRule):
+                continue
+
+            try:
+                sameParent = int(candidateParentProtocolDbId) == int(preferredParentProtocolDbId)
+            except Exception:
+                sameParent = False
+
+            candidates.append({
+                "ref": ref,
+                "outputInfo": outputInfo,
+                "sameParent": sameParent,
+                "parentProtocolId": candidateParentProtocolId,
+                "parentProtocolDbId": candidateParentProtocolDbId,
+                "outputName": candidateOutputName,
+            })
+
+        candidates.sort(key=lambda item: 0 if item.get("sameParent") else 1)
+
+        return candidates
+
+    def repairMissingOutputRelations(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocol,
+            parentProtocolDbId: int,
+            parentScipionProtocolId,
+            outputName: str,
+            outputObj,
+            inputRefRows: List[Dict[str, Any]],
+            currentInputName: str,
+            relationRules: List[Dict[str, Any]],
+            getParentProtocolCallback: Callable,
+            repairOutputMapperCallback: Optional[Callable] = None,
+            storeProtocolCallback: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        lastReport = {
+            "checked": False,
+            "repaired": False,
+            "reason": "no_runtime_relation_rule_matched",
+            "outputName": outputName,
+        }
+
+        for relationRule in relationRules or []:
+            report = self.repairMissingOutputRelation(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocol=parentProtocol,
+                parentProtocolDbId=parentProtocolDbId,
+                parentScipionProtocolId=parentScipionProtocolId,
+                outputName=outputName,
+                outputObj=outputObj,
+                inputRefRows=inputRefRows,
+                currentInputName=currentInputName,
+                relationRule=relationRule,
+                getParentProtocolCallback=getParentProtocolCallback,
+                repairOutputMapperCallback=repairOutputMapperCallback,
+                storeProtocolCallback=storeProtocolCallback,
+            )
+
+            lastReport = report
+
+            if report.get("checked"):
+                return report
+
+        return lastReport
+
+    def repairMissingOutputRelation(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocol,
+            parentProtocolDbId: int,
+            parentScipionProtocolId,
+            outputName: str,
+            outputObj,
+            inputRefRows: List[Dict[str, Any]],
+            currentInputName: str,
+            relationRule: Dict[str, Any],
+            getParentProtocolCallback: Callable,
+            repairOutputMapperCallback: Optional[Callable] = None,
+            storeProtocolCallback: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        relationName = relationRule.get("name")
+        getterName = relationRule.get("getterName")
+        setterName = relationRule.get("setterName")
+
+        report = {
+            "checked": False,
+            "repaired": False,
+            "reason": None,
+            "relationName": relationName,
+            "outputName": outputName,
+            "relatedOutputName": None,
+            "relatedParentProtocolId": None,
+            "relatedParentProtocolDbId": None,
+        }
+
+        if not getterName or not setterName:
+            report["reason"] = "invalid_relation_rule"
+            return report
+
+        if (
+                outputObj is None
+                or self.isPostgresqlProxy(outputObj)
+                or not hasattr(outputObj, setterName)
+                or not hasattr(outputObj, getterName)
+        ):
+            try:
+                parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=parentScipionProtocolId,
+                )
+                outputObj = getattr(parentProtocol, outputName, None)
+            except Exception as e:
+                report["reason"] = "parent_protocol_not_loaded"
+                report["error"] = str(e)
+                return report
+
+        if outputObj is None:
+            report["reason"] = "missing_output_object"
+            return report
+
+        if not hasattr(outputObj, setterName) or not hasattr(outputObj, getterName):
+            report["reason"] = "relation_not_supported"
+            return report
+
+        report["checked"] = True
+
+        try:
+            currentRelatedOutput = getattr(outputObj, getterName)()
+        except Exception:
+            currentRelatedOutput = None
+
+        if currentRelatedOutput is not None:
+            report["reason"] = "already_has_runtime_relation"
+            return report
+
+        candidates = self.findRelatedOutputCandidates(
+            mapper=mapper,
+            projectId=projectId,
+            inputRefRows=inputRefRows,
+            currentInputName=currentInputName,
+            preferredParentProtocolDbId=parentProtocolDbId,
+            relationRule=relationRule,
+        )
+
+        if not candidates:
+            report["reason"] = "related_output_input_not_found"
+            return report
+
+        candidate = candidates[0]
+
+        relatedParentProtocolId = candidate.get("parentProtocolId")
+        relatedParentProtocolDbId = candidate.get("parentProtocolDbId")
+        relatedOutputName = candidate.get("outputName")
+        relatedOutputInfo = candidate.get("outputInfo") or {}
+
+        report["relatedOutputName"] = relatedOutputName
+        report["relatedParentProtocolId"] = (
+            str(relatedParentProtocolId)
+            if relatedParentProtocolId not in (None, "")
+            else None
+        )
+        report["relatedParentProtocolDbId"] = (
+            int(relatedParentProtocolDbId)
+            if relatedParentProtocolDbId not in (None, "")
+            else None
+        )
+
+        try:
+            if int(relatedParentProtocolDbId) == int(parentProtocolDbId):
+                relatedParentProtocol = parentProtocol
+            else:
+                _relatedScipionProtocolId, relatedParentProtocol = getParentProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=relatedParentProtocolId,
+                )
+        except Exception as e:
+            report["reason"] = "related_parent_protocol_not_loaded"
+            report["error"] = str(e)
+            return report
+
+        try:
+            relatedOutputObj = getattr(relatedParentProtocol, relatedOutputName, None)
+        except Exception:
+            relatedOutputObj = None
+
+        if relatedOutputObj is None or self.isPostgresqlProxy(relatedOutputObj):
+            try:
+                _relatedScipionProtocolId, freshRelatedParentProtocol = getParentProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=relatedParentProtocolId,
+                )
+                relatedOutputObj = getattr(freshRelatedParentProtocol, relatedOutputName, None)
+            except Exception as e:
+                report["reason"] = "related_output_object_not_loaded"
+                report["error"] = str(e)
+                return report
+
+        if relatedOutputObj is None:
+            report["reason"] = "related_runtime_output_missing"
+            return report
+
+        if repairOutputMapperCallback is not None:
+            try:
+                repairOutputMapperCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    outputObj=relatedOutputObj,
+                    outputInfo=relatedOutputInfo,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not repair related output mapper before linking runtime relation. "
+                    "projectId=%s relatedParentProtocolId=%s relatedOutputName=%s",
+                    projectId,
+                    relatedParentProtocolId,
+                    relatedOutputName,
+                    exc_info=True,
+                )
+
+        try:
+            getattr(outputObj, setterName)(relatedOutputObj)
+
+            try:
+                outputObj.write(properties=True)
+                report["relationPropertiesWritten"] = True
+            except TypeError:
+                outputObj.write()
+                report["relationPropertiesWritten"] = True
+            except Exception as writeError:
+                report["relationPropertiesWritten"] = False
+                report["relationPropertiesWriteError"] = str(writeError)
+
+                logger.exception(
+                    "Failed to persist runtime output relation properties. "
+                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                    "outputName=%s relationName=%s relatedOutputName=%s",
+                    projectId,
+                    parentScipionProtocolId,
+                    parentProtocolDbId,
+                    outputName,
+                    relationName,
+                    relatedOutputName,
+                )
+                raise
+
+            if storeProtocolCallback is not None:
+                storeProtocolCallback(parentProtocol)
+
+            report["repaired"] = True
+            report["reason"] = "linked_runtime_output_relation"
+
+            logger.info(
+                "Repaired PostgreSQL runtime output relation. "
+                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                "outputName=%s relationName=%s relatedParentProtocolId=%s "
+                "relatedParentProtocolDbId=%s relatedOutputName=%s",
+                projectId,
+                parentScipionProtocolId,
+                parentProtocolDbId,
+                outputName,
+                relationName,
+                relatedParentProtocolId,
+                relatedParentProtocolDbId,
+                relatedOutputName,
+            )
+
+        except Exception as e:
+            logger.exception(
+                "Failed to repair PostgreSQL runtime output relation. "
+                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                "outputName=%s relationName=%s relatedOutputName=%s",
+                projectId,
+                parentScipionProtocolId,
+                parentProtocolDbId,
+                outputName,
+                relationName,
+                relatedOutputName,
+            )
+            report["reason"] = "repair_failed"
+            report["error"] = str(e)
+
+        return report

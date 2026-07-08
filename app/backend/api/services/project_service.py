@@ -111,7 +111,7 @@ from app.backend.runtime.project_runtime_repository import ProjectRuntimeReposit
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
-from app.backend.runtime import RuntimeProtocolLaunchPrepareService
+from app.backend.runtime import RuntimeProtocolLaunchPrepareService, RuntimeOutputRelationRepairService
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -7945,7 +7945,7 @@ class ProjectService:
             mapper=mapper,
         )
 
-    def _repairPostgresqlRuntimeCtfTomoSeriesTiltSeriesRelation(
+    def _repairPostgresqlRuntimeOutputRelations(
             self,
             mapper,
             projectId: int,
@@ -7957,291 +7957,35 @@ class ProjectService:
             inputRefRows: List[Dict[str, Any]],
             currentInputName: str,
     ) -> Dict[str, Any]:
-        """
-        Repair SetOfCTFTomoSeries -> SetOfTiltSeries runtime relation.
+        runtimeOutputRelationRepairService = RuntimeOutputRelationRepairService()
 
-        Do not create a second helper for this. This method handles both cases:
-
-          1. C.inputTS  -> B.outputTS
-             C.inputCTF -> B.outputCTF
-
-          2. C.inputTS  -> A.outputTS
-             C.inputCTF -> B.outputCTF
-
-        The relation must be repaired on the real CTF output object stored in
-        the SQLite execution DB, because the launched Scipion process reloads
-        the protocol from there.
-        """
-        report = {
-            "checked": False,
-            "repaired": False,
-            "reason": None,
-            "outputName": outputName,
-            "tiltSeriesOutputName": None,
-            "tiltSeriesParentProtocolId": None,
-            "tiltSeriesParentProtocolDbId": None,
-        }
-
-        def isPostgresqlProxy(obj) -> bool:
-            try:
-                checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
-                return callable(checker) and bool(checker())
-            except Exception:
-                return False
-
-        def loadRuntimeProtocol(protocolId):
-            scipionProtocolId = self._resolveScipionProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            runtimeProtocol = self._loadProtocolFromRuntimeDb(
-                protocolId=scipionProtocolId,
-            )
-
-            if runtimeProtocol is None:
-                runtimeProtocol = self._getScipionProtocolByRuntimeId(
-                    scipionProtocolId,
-                )
-
-            return scipionProtocolId, runtimeProtocol
-
-        # If the object already has a PostgreSQL proxy attached from a previous
-        # preparation attempt, reload the parent protocol and get the real output
-        # object from the execution DB.
-        if outputObj is None or isPostgresqlProxy(outputObj) or not hasattr(outputObj, "setSetOfTiltSeries"):
-            try:
-                parentScipionProtocolId, parentProtocol = loadRuntimeProtocol(
-                    parentScipionProtocolId
-                )
-                outputObj = getattr(parentProtocol, outputName, None)
-            except Exception as e:
-                report["reason"] = "ctf_parent_protocol_not_loaded"
-                report["error"] = str(e)
-                return report
-
-        if outputObj is None:
-            report["reason"] = "missing_output_object"
-            return report
-
-        if not hasattr(outputObj, "setSetOfTiltSeries"):
-            report["reason"] = "not_ctf_tomo_series_output"
-            return report
-
-        report["checked"] = True
-
-        try:
-            currentTiltSeriesSet = outputObj.getSetOfTiltSeries()
-        except Exception:
-            currentTiltSeriesSet = None
-
-        if currentTiltSeriesSet is not None:
-            report["reason"] = "already_has_tilt_series_relation"
-            return report
-
-        candidateRefs = []
-
-        for ref in inputRefRows or []:
-            candidateInputName = str(ref.get("inputName") or "").strip()
-            candidateOutputName = str(ref.get("parentOutputName") or "").strip()
-            candidateParentProtocolDbId = ref.get("parentProtocolDbId")
-            candidateParentProtocolId = ref.get("parentProtocolId")
-
-            if not candidateInputName or not candidateOutputName:
-                continue
-
-            if candidateInputName == currentInputName:
-                continue
-
-            if candidateParentProtocolDbId in (None, ""):
-                continue
-
-            try:
-                outputInfo = self._getPostgresqlRuntimeOutputInfo(
-                    mapper=mapper,
-                    projectId=projectId,
-                    parentProtocolDbId=int(candidateParentProtocolDbId),
-                    outputName=candidateOutputName,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not inspect input ref while repairing CTF tomo relation. "
-                    "projectId=%s inputName=%s parentProtocolDbId=%s outputName=%s",
-                    projectId,
-                    candidateInputName,
-                    candidateParentProtocolDbId,
-                    candidateOutputName,
-                    exc_info=True,
-                )
-                continue
-
-            if not outputInfo.get("exists"):
-                continue
-
-            className = str(outputInfo.get("className") or "")
-            itemClassName = str(outputInfo.get("itemClassName") or "")
-
-            isTiltSeriesOutput = (
-                    "SetOfTiltSeries" in className
-                    or className.endswith("SetOfTiltSeries")
-                    or itemClassName.endswith("TiltSeries")
-            )
-
-            if not isTiltSeriesOutput:
-                continue
-
-            try:
-                sameParent = int(candidateParentProtocolDbId) == int(parentProtocolDbId)
-            except Exception:
-                sameParent = False
-
-            candidateRefs.append({
-                "ref": ref,
-                "outputInfo": outputInfo,
-                "sameParent": sameParent,
-                "parentProtocolId": candidateParentProtocolId,
-                "parentProtocolDbId": candidateParentProtocolDbId,
-                "outputName": candidateOutputName,
-            })
-
-        if not candidateRefs:
-            report["reason"] = "tilt_series_input_not_found"
-            return report
-
-        # Prefer the same parent when available, but do not require it.
-        candidateRefs.sort(key=lambda item: 0 if item.get("sameParent") else 1)
-        candidate = candidateRefs[0]
-
-        tiltSeriesParentProtocolId = candidate.get("parentProtocolId")
-        tiltSeriesParentProtocolDbId = candidate.get("parentProtocolDbId")
-        tiltSeriesOutputName = candidate.get("outputName")
-        tiltSeriesOutputInfo = candidate.get("outputInfo") or {}
-
-        report["tiltSeriesOutputName"] = tiltSeriesOutputName
-        report["tiltSeriesParentProtocolId"] = (
-            str(tiltSeriesParentProtocolId)
-            if tiltSeriesParentProtocolId not in (None, "")
-            else None
+        return runtimeOutputRelationRepairService.repairMissingOutputRelations(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocol=parentProtocol,
+            parentProtocolDbId=parentProtocolDbId,
+            parentScipionProtocolId=parentScipionProtocolId,
+            outputName=outputName,
+            outputObj=outputObj,
+            inputRefRows=inputRefRows,
+            currentInputName=currentInputName,
+            getParentProtocolCallback=self._getParentProtocolForPointer,
+            repairOutputMapperCallback=self._repairPostgresqlRuntimeSetMapperInfo,
+            storeProtocolCallback=self.currentProject._storeProtocol,
+            relationRules=[
+                {
+                    "name": "set_of_tilt_series",
+                    "getterName": "getSetOfTiltSeries",
+                    "setterName": "setSetOfTiltSeries",
+                    "targetClassNames": [
+                        "SetOfTiltSeries",
+                    ],
+                    "targetItemClassNames": [
+                        "TiltSeries",
+                    ],
+                },
+            ],
         )
-        report["tiltSeriesParentProtocolDbId"] = (
-            int(tiltSeriesParentProtocolDbId)
-            if tiltSeriesParentProtocolDbId not in (None, "")
-            else None
-        )
-
-        try:
-            if int(tiltSeriesParentProtocolDbId) == int(parentProtocolDbId):
-                tiltSeriesParentProtocol = parentProtocol
-            else:
-                _tiltSeriesScipionProtocolId, tiltSeriesParentProtocol = loadRuntimeProtocol(
-                    tiltSeriesParentProtocolId
-                )
-        except Exception as e:
-            report["reason"] = "tilt_series_parent_protocol_not_loaded"
-            report["error"] = str(e)
-            return report
-
-        try:
-            tiltSeriesSet = getattr(tiltSeriesParentProtocol, tiltSeriesOutputName, None)
-        except Exception:
-            tiltSeriesSet = None
-
-        if tiltSeriesSet is None or isPostgresqlProxy(tiltSeriesSet):
-            try:
-                _tiltSeriesScipionProtocolId, freshTiltSeriesParentProtocol = loadRuntimeProtocol(
-                    tiltSeriesParentProtocolId
-                )
-                tiltSeriesSet = getattr(freshTiltSeriesParentProtocol, tiltSeriesOutputName, None)
-            except Exception as e:
-                report["reason"] = "tilt_series_output_object_not_loaded"
-                report["error"] = str(e)
-                return report
-
-        if tiltSeriesSet is None:
-            report["reason"] = "tilt_series_runtime_output_missing"
-            return report
-
-        try:
-            self._repairPostgresqlRuntimeSetMapperInfo(
-                mapper=mapper,
-                projectId=projectId,
-                outputObj=tiltSeriesSet,
-                outputInfo=tiltSeriesOutputInfo,
-            )
-        except Exception:
-            logger.debug(
-                "Could not repair tilt-series mapper before linking CTF tomo series. "
-                "projectId=%s tiltSeriesParentProtocolId=%s tiltSeriesOutputName=%s",
-                projectId,
-                tiltSeriesParentProtocolId,
-                tiltSeriesOutputName,
-                exc_info=True,
-            )
-
-        try:
-            outputObj.setSetOfTiltSeries(tiltSeriesSet)
-
-            # Important:
-            # setSetOfTiltSeries updates an internal pointer stored as a Set
-            # property. Persist the Set properties into its own sqlite, not only
-            # the parent protocol object.
-            try:
-                outputObj.write(properties=True)
-                report["ctfSetPropertiesWritten"] = True
-            except Exception as writeError:
-                report["ctfSetPropertiesWritten"] = False
-                report["ctfSetPropertiesWriteError"] = str(writeError)
-
-                logger.exception(
-                    "Failed to persist CTF tomo Set properties after repairing "
-                    "SetOfCTFTomoSeries -> SetOfTiltSeries relation. "
-                    "projectId=%s ctfParentProtocolId=%s ctfParentProtocolDbId=%s "
-                    "ctfOutput=%s tiltSeriesOutput=%s",
-                    projectId,
-                    parentScipionProtocolId,
-                    parentProtocolDbId,
-                    outputName,
-                    tiltSeriesOutputName,
-                )
-                raise
-
-            # Also persist the protocol that owns the CTF output. This keeps the
-            # execution DB protocol object aligned with the repaired output.
-            self.currentProject._storeProtocol(parentProtocol)
-
-            report["repaired"] = True
-            report["reason"] = "linked_ctf_tomo_series_to_tilt_series"
-
-            logger.info(
-                "Repaired PostgreSQL runtime CTF tomo relation. "
-                "projectId=%s ctfParentProtocolId=%s ctfParentProtocolDbId=%s "
-                "ctfOutput=%s tiltSeriesParentProtocolId=%s "
-                "tiltSeriesParentProtocolDbId=%s tiltSeriesOutput=%s",
-                projectId,
-                parentScipionProtocolId,
-                parentProtocolDbId,
-                outputName,
-                tiltSeriesParentProtocolId,
-                tiltSeriesParentProtocolDbId,
-                tiltSeriesOutputName,
-            )
-
-        except Exception as e:
-            logger.exception(
-                "Failed to repair PostgreSQL runtime CTF tomo relation. "
-                "projectId=%s ctfParentProtocolId=%s ctfParentProtocolDbId=%s "
-                "ctfOutput=%s tiltSeriesOutput=%s",
-                projectId,
-                parentScipionProtocolId,
-                parentProtocolDbId,
-                outputName,
-                tiltSeriesOutputName,
-            )
-            report["reason"] = "repair_failed"
-            report["error"] = str(e)
-
-        return report
 
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
             self,
@@ -8259,7 +8003,7 @@ class ProjectService:
             allowMissingParentOutputs=allowMissingParentOutputs,
             getProtocolIdCallback=self._getScipionObjectId,
             getParentProtocolCallback=self._getParentProtocolForPointer,
-            repairOutputRelationsCallback=self._repairPostgresqlRuntimeCtfTomoSeriesTiltSeriesRelation,
+            repairOutputRelationsCallback=self._repairPostgresqlRuntimeOutputRelations,
         )
 
     def _repairPostgresqlRuntimeSetMapperInfo(

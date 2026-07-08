@@ -191,7 +191,7 @@ class RuntimeProtocolLaunchPrepareService:
                         )
 
                         if relationRepairReport.get("checked"):
-                            itemReport["ctfTiltSeriesRelationRepair"] = relationRepairReport
+                            itemReport["runtimeOutputRelationRepair"] = relationRepairReport
 
                     runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
                         parentProtocol=parentProtocol,
