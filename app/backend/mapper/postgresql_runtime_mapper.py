@@ -654,6 +654,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         parentExtended = self._normalizeRelationExtended(parentExtended)
         childExtended = self._normalizeRelationExtended(childExtended)
+
         self.db.execute(
             """
             INSERT INTO scipion_relations (
@@ -679,6 +680,161 @@ class PostgresqlRuntimeMapper(Mapper):
             ),
         )
 
+        self._insertCanonicalObjectRelationData(
+            relName=relName,
+            creatorId=creatorId,
+            parentId=parentId,
+            childId=childId,
+            parentExtended=parentExtended,
+            childExtended=childExtended,
+        )
+
+    def _insertCanonicalObjectRelationData(
+            self,
+            relName,
+            creatorId,
+            parentId,
+            childId,
+            parentExtended=None,
+            childExtended=None,
+    ):
+        """
+        Best-effort dual write for PostgreSQL canonical object relations.
+
+        scipion_relations keeps Mapper/Scipion runtime ids.
+        scipion_object_relations keeps PostgreSQL scipion_objects.id FKs.
+
+        Not every runtime relation can be canonicalized immediately because some
+        objects may still exist only in the fallback mapper. In that case we keep
+        the compatibility row and skip the canonical row.
+        """
+        creatorObjectId = self._resolveCanonicalScipionObjectRowId(creatorId)
+        parentObjectId = self._resolveCanonicalScipionObjectRowId(parentId)
+        childObjectId = self._resolveCanonicalScipionObjectRowId(childId)
+
+        if creatorObjectId is None or parentObjectId is None or childObjectId is None:
+            logger.debug(
+                "Skipping canonical object relation dual-write because some objects "
+                "are not persisted yet. projectId=%s relation=%s creatorId=%s "
+                "parentId=%s childId=%s creatorObjectId=%s parentObjectId=%s "
+                "childObjectId=%s",
+                self.projectId,
+                relName,
+                creatorId,
+                parentId,
+                childId,
+                creatorObjectId,
+                parentObjectId,
+                childObjectId,
+            )
+            return
+
+        canonicalParentExtended = parentExtended or None
+        canonicalChildExtended = childExtended or None
+
+        metadata = {
+            "source": "postgresql_runtime_mapper",
+            "runtimeRelationTable": "scipion_relations",
+            "runtimeCreatorObjId": int(creatorId),
+            "runtimeParentObjId": int(parentId),
+            "runtimeChildObjId": int(childId),
+        }
+
+        self.db.execute(
+            """
+            INSERT INTO scipion_object_relations (
+                "projectId",
+                "creatorObjectId",
+                "parentObjectId",
+                "childObjectId",
+                name,
+                "parentExtended",
+                "childExtended",
+                metadata
+            )
+            SELECT %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+            WHERE NOT EXISTS (
+                SELECT 1
+                  FROM scipion_object_relations existing
+                 WHERE existing."projectId" = %s
+                   AND existing.name = %s
+                   AND existing."creatorObjectId" = %s
+                   AND existing."parentObjectId" = %s
+                   AND existing."childObjectId" = %s
+                   AND COALESCE(existing."parentExtended", '') = COALESCE(%s, '')
+                   AND COALESCE(existing."childExtended", '') = COALESCE(%s, '')
+            )
+            """,
+            (
+                self.projectId,
+                int(creatorObjectId),
+                int(parentObjectId),
+                int(childObjectId),
+                str(relName),
+                canonicalParentExtended,
+                canonicalChildExtended,
+                json.dumps(metadata),
+                self.projectId,
+                str(relName),
+                int(creatorObjectId),
+                int(parentObjectId),
+                int(childObjectId),
+                canonicalParentExtended,
+                canonicalChildExtended,
+            ),
+        )
+
+    def _resolveCanonicalScipionObjectRowId(self, runtimeObjId) -> Optional[int]:
+        runtimeObjId = self._toOptionalInt(runtimeObjId)
+
+        if runtimeObjId is None:
+            return None
+
+        row = self.db.fetchOne(
+            """
+            SELECT o.id
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND (
+                    o."scipionObjId" = %s
+                    OR o.id = %s
+               )
+             ORDER BY
+               CASE WHEN o."scipionObjId" = %s THEN 0 ELSE 1 END,
+               o.id DESC
+             LIMIT 1
+            """,
+            (
+                self.projectId,
+                int(runtimeObjId),
+                int(runtimeObjId),
+                int(runtimeObjId),
+            ),
+        )
+
+        if not row:
+            return None
+
+        return self._toOptionalInt(row.get("id"))
+
+    def _deleteCanonicalObjectRelationsByCreatorId(self, creatorId) -> None:
+        creatorObjectId = self._resolveCanonicalScipionObjectRowId(creatorId)
+
+        if creatorObjectId is None:
+            return
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_object_relations
+             WHERE "projectId" = %s
+               AND "creatorObjectId" = %s
+            """,
+            (
+                self.projectId,
+                int(creatorObjectId),
+            ),
+        )
+
     def deleteRelations(self, creatorObj):
         if self.writeFallbackMapper is not None:
             self.writeFallbackMapper.deleteRelations(creatorObj)
@@ -695,6 +851,8 @@ class PostgresqlRuntimeMapper(Mapper):
             """,
             (self.projectId, int(creatorId)),
         )
+
+        self._deleteCanonicalObjectRelationsByCreatorId(creatorId)
 
     def getRelationsByCreator(self, creatorObj):
         if self.readFallbackMapper is not None:
