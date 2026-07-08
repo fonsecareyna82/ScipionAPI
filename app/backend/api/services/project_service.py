@@ -11306,7 +11306,6 @@ class ProjectService:
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
         protocolGraphRepository = ProtocolGraphRepository()
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
@@ -11382,7 +11381,6 @@ class ProjectService:
                     detail="Duplicated protocol %s was not found in PostgreSQL" % duplicatedProtocolId,
                 )
 
-            protocolGraphRepository = ProtocolGraphRepository()
             runtimeProtocolDuplicateService.registerDuplicatedProtocol(
                 state=duplicateState,
                 sourceScipionProtocolId=sourceScipionProtocolId,
