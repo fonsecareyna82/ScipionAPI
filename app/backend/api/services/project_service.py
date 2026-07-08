@@ -7789,7 +7789,6 @@ class ProjectService:
                             pointerValue=v,
                             paramLabel=param.label.get(),
                             getParentProtocolCallback=self._getParentProtocolForPointer,
-                            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
                             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
                         )
 
@@ -7861,7 +7860,6 @@ class ProjectService:
                         pointerValue=pointerValue,
                         paramLabel=param.label.get(),
                         getParentProtocolCallback=self._getParentProtocolForPointer,
-                        resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
                         resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
                     )
 
