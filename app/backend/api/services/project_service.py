@@ -11050,35 +11050,6 @@ class ProjectService:
 
         return self._buildProtocolMutationResult("Protocol renamed successfully")
 
-    def _copyPostgresqlInputRefsForDuplicatedProtocol(
-            self,
-            mapper,
-            projectId: int,
-            sourceProtocolId,
-            duplicatedProtocolId,
-            sourceToDuplicatedProtocolId: Optional[Dict[str, str]] = None,
-            sourceDbToDuplicatedDbId: Optional[Dict[int, int]] = None,
-    ) -> Dict[str, Any]:
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-
-        report = runtimeProtocolDuplicateService.copyPostgresqlInputRefsForDuplicatedProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            sourceProtocolId=sourceProtocolId,
-            duplicatedProtocolId=duplicatedProtocolId,
-            sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
-            sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
-            resolveProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
-        )
-
-        logger.info(
-            "Copied PostgreSQL input refs for duplicated protocol. projectId=%s report=%s",
-            projectId,
-            report,
-        )
-
-        return report
-
     def _detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
         """
         Temporarily detach output attributes before calling Scipion copyProtocol().
@@ -11275,13 +11246,20 @@ class ProjectService:
                     registerOutputs=False,
                 )
 
-                dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
+                dependencySync = runtimeProtocolDuplicateService.copyPostgresqlInputRefsForDuplicatedProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     sourceProtocolId=sourceScipionProtocolId,
                     duplicatedProtocolId=duplicatedProtocolId,
                     sourceToDuplicatedProtocolId=duplicateState.sourceToDuplicatedProtocolId,
                     sourceDbToDuplicatedDbId=duplicateState.sourceDbToDuplicatedDbId,
+                    resolveProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+                )
+
+                logger.info(
+                    "Copied PostgreSQL input refs for duplicated protocol. projectId=%s report=%s",
+                    projectId,
+                    dependencySync,
                 )
 
                 pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
