@@ -110,6 +110,41 @@ class RuntimeProtocolDeleteService:
             protocols
         )
 
+    def preparePostgresqlRuntimeProtocolDelete(
+        self,
+        mapper,
+        projectId: int,
+        protocols: List[Any],
+        protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
+    ) -> Dict[str, Any]:
+        protocolIdentityData = self.resolveProtocolDeleteIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+        )
+
+        selectedProtocolDbIds = protocolIdentityData.get("protocolDbIds") or []
+        missingPostgresqlProtocols = protocolIdentityData.get("missingProtocolIds") or []
+        selectedProtocolIds = protocolIdentityData.get("protocolIds") or []
+
+        deleteValidationInfo = None
+
+        if not missingPostgresqlProtocols:
+            deleteValidationInfo = self.validatePostgresqlRuntimeProtocolDelete(
+                mapper=mapper,
+                projectId=projectId,
+                selectedProtocolDbIds=selectedProtocolDbIds,
+                protocolGraphRepository=protocolGraphRepository,
+            )
+
+        return {
+            "protocolIdentityData": protocolIdentityData,
+            "selectedProtocolDbIds": selectedProtocolDbIds,
+            "missingPostgresqlProtocols": missingPostgresqlProtocols,
+            "selectedProtocolIds": selectedProtocolIds,
+            "deleteValidationInfo": deleteValidationInfo,
+        }
+
     def validatePostgresqlRuntimeProtocolDelete(
         self,
         mapper,
