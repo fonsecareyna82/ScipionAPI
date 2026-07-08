@@ -8132,57 +8132,6 @@ class ProjectService:
             "outputInfo": outputInfo,
         }
 
-
-    def setPointerParam(
-            self,
-            mapper,
-            projectId: int,
-            protocol,
-            key,
-            value,
-            parentId,
-    ):
-        """Resolve and set a pointer param from parent protocol outputs."""
-        param = protocol.getParam(key)
-        if not isinstance(param, PointerParam):
-            logger.warning(f"[WARN] Param {key} is not a PointerParam")
-            return
-
-        parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-            mapper=mapper,
-            projectId=projectId,
-            parentId=parentId,
-        )
-
-        editableValue = value.get("editableValue") if isinstance(value, dict) else value
-
-        if editableValue and "." in str(editableValue):
-            _rawParentId, outputName = str(editableValue).split(".", 1)
-            editableValue = f"{parentScipionProtocolId}.{outputName}"
-        else:
-            outputName = str(editableValue or "").strip()
-
-        if outputName and not hasattr(parentProtocol, outputName):
-            raise ValueError(
-                "Parent protocol %s does not have output %s"
-                % (parentScipionProtocolId, outputName)
-            )
-
-        pointer = getattr(protocol, key, None)
-
-        if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
-            pointer = Pointer(parentProtocol, extended=outputName)
-            setattr(protocol, key, pointer)
-        else:
-            pointer.set(parentProtocol)
-            if outputName:
-                pointer.setExtended(outputName)
-
-        try:
-            param.default.set(editableValue)
-        except Exception:
-            pass
-
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
         errorList = []
 
