@@ -91,6 +91,88 @@ class RuntimeOutputRelationRepairService:
 
         return False
 
+    @staticmethod
+    def buildAccessorNamesFromRelationName(relationName):
+        relationName = str(relationName or "").strip()
+
+        if not relationName:
+            return None, None
+
+        if "_" in relationName:
+            baseName = "".join(
+                part[:1].upper() + part[1:]
+                for part in relationName.split("_")
+                if part
+            )
+        else:
+            baseName = relationName[:1].upper() + relationName[1:]
+
+        if not baseName:
+            return None, None
+
+        return f"get{baseName}", f"set{baseName}"
+
+    def buildRelationRuleFromPersistedRelation(
+            self,
+            persistedRelation: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        metadata = persistedRelation.get("metadata") or {}
+        relationName = persistedRelation.get("relationName")
+
+        getterName = (
+                metadata.get("getterName")
+                or persistedRelation.get("getterName")
+        )
+        setterName = (
+                metadata.get("setterName")
+                or persistedRelation.get("setterName")
+        )
+
+        if not getterName or not setterName:
+            getterName, setterName = self.buildAccessorNamesFromRelationName(
+                relationName,
+            )
+
+        return {
+            "name": relationName,
+            "getterName": getterName,
+            "setterName": setterName,
+            "source": "scipion_object_relations",
+        }
+
+    def buildRelatedOutputCandidateFromPersistedRelation(
+            self,
+            mapper,
+            projectId: int,
+            persistedRelation: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        targetProtocolDbId = persistedRelation.get("targetProtocolDbId")
+        targetProtocolId = persistedRelation.get("targetProtocolId")
+        targetOutputName = str(persistedRelation.get("targetOutputName") or "").strip()
+
+        if targetProtocolDbId in (None, "") or not targetOutputName:
+            return None
+
+        outputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbId=int(targetProtocolDbId),
+            outputName=targetOutputName,
+        )
+
+        if not outputInfo.get("exists"):
+            return None
+
+        return {
+            "ref": persistedRelation,
+            "outputInfo": outputInfo,
+            "sameParent": False,
+            "parentProtocolId": targetProtocolId,
+            "parentProtocolDbId": targetProtocolDbId,
+            "outputName": targetOutputName,
+            "source": "scipion_object_relations",
+        }
+
     def findRelatedOutputCandidates(
             self,
             mapper,
@@ -160,6 +242,86 @@ class RuntimeOutputRelationRepairService:
 
         return candidates
 
+    def repairPersistedOutputRelations(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocol,
+            parentProtocolDbId: int,
+            parentScipionProtocolId,
+            outputName: str,
+            outputObj,
+            inputRefRows: List[Dict[str, Any]],
+            currentInputName: str,
+            getParentProtocolCallback: Callable,
+            repairOutputMapperCallback: Optional[Callable] = None,
+            storeProtocolCallback: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        lastReport = {
+            "checked": False,
+            "repaired": False,
+            "reason": "no_persisted_runtime_output_relation",
+            "outputName": outputName,
+            "relationSource": "scipion_object_relations",
+        }
+
+        persistedRelations = self.protocolGraphRepository.loadRuntimeOutputRelations(
+            mapper=mapper,
+            projectId=projectId,
+            sourceProtocolDbId=int(parentProtocolDbId),
+            sourceOutputName=outputName,
+        )
+
+        for persistedRelation in persistedRelations or []:
+            relationRule = self.buildRelationRuleFromPersistedRelation(
+                persistedRelation,
+            )
+
+            relatedOutputCandidate = self.buildRelatedOutputCandidateFromPersistedRelation(
+                mapper=mapper,
+                projectId=projectId,
+                persistedRelation=persistedRelation,
+            )
+
+            if relatedOutputCandidate is None:
+                lastReport = {
+                    "checked": False,
+                    "repaired": False,
+                    "reason": "persisted_related_output_not_available",
+                    "outputName": outputName,
+                    "relationName": persistedRelation.get("relationName"),
+                    "relationId": persistedRelation.get("relationId"),
+                    "relationSource": "scipion_object_relations",
+                }
+                continue
+
+            report = self.repairMissingOutputRelation(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocol=parentProtocol,
+                parentProtocolDbId=parentProtocolDbId,
+                parentScipionProtocolId=parentScipionProtocolId,
+                outputName=outputName,
+                outputObj=outputObj,
+                inputRefRows=inputRefRows,
+                currentInputName=currentInputName,
+                relationRule=relationRule,
+                getParentProtocolCallback=getParentProtocolCallback,
+                repairOutputMapperCallback=repairOutputMapperCallback,
+                storeProtocolCallback=storeProtocolCallback,
+                relatedOutputCandidate=relatedOutputCandidate,
+            )
+
+            report["relationId"] = persistedRelation.get("relationId")
+            report["relationSource"] = "scipion_object_relations"
+
+            lastReport = report
+
+            if report.get("checked"):
+                return report
+
+        return lastReport
+
     def repairMissingOutputRelations(
             self,
             mapper,
@@ -176,12 +338,31 @@ class RuntimeOutputRelationRepairService:
             storeProtocolCallback: Optional[Callable] = None,
             relationRules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        lastReport = {
+        persistedRelationReport = self.repairPersistedOutputRelations(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocol=parentProtocol,
+            parentProtocolDbId=parentProtocolDbId,
+            parentScipionProtocolId=parentScipionProtocolId,
+            outputName=outputName,
+            outputObj=outputObj,
+            inputRefRows=inputRefRows,
+            currentInputName=currentInputName,
+            getParentProtocolCallback=getParentProtocolCallback,
+            repairOutputMapperCallback=repairOutputMapperCallback,
+            storeProtocolCallback=storeProtocolCallback,
+        )
+
+        if persistedRelationReport.get("checked"):
+            return persistedRelationReport
+
+        lastReport = persistedRelationReport or {
             "checked": False,
             "repaired": False,
             "reason": "no_runtime_relation_rule_matched",
             "outputName": outputName,
         }
+
         relationRules = relationRules or self.defaultRelationRules
 
         for relationRule in relationRules or []:
@@ -204,6 +385,7 @@ class RuntimeOutputRelationRepairService:
             lastReport = report
 
             if report.get("checked"):
+                report["relationSource"] = "default_relation_rules"
                 return report
 
         return lastReport
@@ -223,6 +405,7 @@ class RuntimeOutputRelationRepairService:
             getParentProtocolCallback: Callable,
             repairOutputMapperCallback: Optional[Callable] = None,
             storeProtocolCallback: Optional[Callable] = None,
+            relatedOutputCandidate: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         relationName = relationRule.get("name")
         getterName = relationRule.get("getterName")
@@ -280,14 +463,17 @@ class RuntimeOutputRelationRepairService:
             report["reason"] = "already_has_runtime_relation"
             return report
 
-        candidates = self.findRelatedOutputCandidates(
-            mapper=mapper,
-            projectId=projectId,
-            inputRefRows=inputRefRows,
-            currentInputName=currentInputName,
-            preferredParentProtocolDbId=parentProtocolDbId,
-            relationRule=relationRule,
-        )
+        if relatedOutputCandidate is not None:
+            candidates = [relatedOutputCandidate]
+        else:
+            candidates = self.findRelatedOutputCandidates(
+                mapper=mapper,
+                projectId=projectId,
+                inputRefRows=inputRefRows,
+                currentInputName=currentInputName,
+                preferredParentProtocolDbId=parentProtocolDbId,
+                relationRule=relationRule,
+            )
 
         if not candidates:
             report["reason"] = "related_output_input_not_found"
