@@ -11298,15 +11298,8 @@ class ProjectService:
                 )
 
     def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
-        duplicated = []
-        errors = []
-        syncReports = []
-        dependenciesCount = 0
-
-        duplicatedItems = []
-
-        sourceToDuplicatedProtocolId: Dict[str, str] = {}
-        sourceDbToDuplicatedDbId: Dict[int, int] = {}
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
+        duplicateState = runtimeProtocolDuplicateService.createDuplicateState()
 
         # ------------------------------------------------------------------
         # Phase 1: resolve all source protocols and create all duplicated
@@ -11389,19 +11382,17 @@ class ProjectService:
                     detail="Duplicated protocol %s was not found in PostgreSQL" % duplicatedProtocolId,
                 )
 
+            protocolGraphRepository = ProtocolGraphRepository()
             runtimeProtocolDuplicateService.registerDuplicatedProtocol(
+                state=duplicateState,
                 sourceScipionProtocolId=sourceScipionProtocolId,
                 sourceProtocolDbId=sourceProtocolDbId,
                 duplicatedProtocol=newProtocol,
                 duplicatedProtocolId=duplicatedProtocolId,
                 duplicatedProtocolDbId=duplicatedProtocolDbId,
-                sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
-                sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
-                duplicatedItems=duplicatedItems,
-                duplicated=duplicated,
             )
 
-        if not runtimeProtocolDuplicateService.hasDuplicatedProtocols(duplicatedItems):
+        if not runtimeProtocolDuplicateService.hasDuplicatedProtocols(duplicateState):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No valid protocols to duplicate",
@@ -11410,7 +11401,7 @@ class ProjectService:
         # ------------------------------------------------------------------
         # Phase 2: copy refs/dependencies using the full old -> new map.
         # ------------------------------------------------------------------
-        for item in duplicatedItems:
+        for item in duplicateState.duplicatedItems:
             syncContext = runtimeProtocolDuplicateService.buildDuplicatedProtocolSyncContext(item)
 
             newProtocol = syncContext["duplicatedProtocol"]
@@ -11430,8 +11421,8 @@ class ProjectService:
                     projectId=projectId,
                     sourceProtocolId=sourceScipionProtocolId,
                     duplicatedProtocolId=duplicatedProtocolId,
-                    sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
-                    sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
+                    sourceToDuplicatedProtocolId=duplicateState.sourceToDuplicatedProtocolId,
+                    sourceDbToDuplicatedDbId=duplicateState.sourceDbToDuplicatedDbId,
                 )
 
                 pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
@@ -11449,14 +11440,13 @@ class ProjectService:
 
                 self.currentProject._storeProtocol(newProtocol)
 
-                dependenciesCount = runtimeProtocolDuplicateService.registerDuplicatedProtocolSyncReport(
+                runtimeProtocolDuplicateService.registerDuplicatedProtocolSyncReport(
+                    state=duplicateState,
                     sourceScipionProtocolId=sourceScipionProtocolId,
                     duplicatedProtocolId=duplicatedProtocolId,
                     protocolSync=protocolSync,
                     dependencySync=dependencySync,
                     pointerRestore=pointerRestore,
-                    syncReports=syncReports,
-                    dependenciesCount=dependenciesCount,
                 )
 
             except HTTPException:
@@ -11480,12 +11470,7 @@ class ProjectService:
                 )
 
         resultPayload = runtimeProtocolDuplicateService.buildPostgresqlRuntimeDuplicateResultPayload(
-            duplicated=duplicated,
-            dependenciesCount=dependenciesCount,
-            errors=errors,
-            syncReports=syncReports,
-            sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
-            sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
+            state=duplicateState,
         )
 
         return self._buildProtocolMutationResult(

@@ -33,6 +33,19 @@ from pyworkflow.protocol.params import (
 )
 
 
+class RuntimeProtocolDuplicateState:
+    """Mutable state collected while duplicating PostgreSQL runtime protocols."""
+
+    def __init__(self):
+        self.duplicated: List[Dict[str, Any]] = []
+        self.errors: List[Any] = []
+        self.syncReports: List[Dict[str, Any]] = []
+        self.dependenciesCount: int = 0
+        self.duplicatedItems: List[Dict[str, Any]] = []
+        self.sourceToDuplicatedProtocolId: Dict[str, str] = {}
+        self.sourceDbToDuplicatedDbId: Dict[int, int] = {}
+
+
 class RuntimeProtocolDuplicateService:
     """Runtime helpers for PostgreSQL protocol duplication."""
 
@@ -51,6 +64,9 @@ class RuntimeProtocolDuplicateService:
         "_numberOfSteps",
         "lastUpdateTimeStamp",
     )
+
+    def createDuplicateState(self) -> RuntimeProtocolDuplicateState:
+        return RuntimeProtocolDuplicateState()
 
     def buildDuplicatedProtocolParams(
             self,
@@ -107,61 +123,53 @@ class RuntimeProtocolDuplicateService:
 
     def buildPostgresqlRuntimeDuplicateResultPayload(
             self,
-            duplicated: List[Dict[str, Any]],
-            dependenciesCount: int,
-            errors: List[Any],
-            syncReports: List[Dict[str, Any]],
-            sourceToDuplicatedProtocolId: Dict[str, str],
-            sourceDbToDuplicatedDbId: Dict[int, int],
+            state: RuntimeProtocolDuplicateState,
     ) -> Dict[str, Any]:
         return {
-            "protocolsCount": len(duplicated or []),
-            "dependenciesCount": int(dependenciesCount or 0),
-            "duplicated": duplicated or [],
-            "errors": errors or [],
+            "protocolsCount": len(state.duplicated or []),
+            "dependenciesCount": int(state.dependenciesCount or 0),
+            "duplicated": state.duplicated or [],
+            "errors": state.errors or [],
             "postgresqlRuntimeDuplicate": True,
-            "syncReports": syncReports or [],
+            "syncReports": state.syncReports or [],
             "duplicateRemap": {
-                "protocolIds": sourceToDuplicatedProtocolId or {},
+                "protocolIds": state.sourceToDuplicatedProtocolId or {},
                 "protocolDbIds": {
                     str(k): str(v)
-                    for k, v in (sourceDbToDuplicatedDbId or {}).items()
+                    for k, v in (state.sourceDbToDuplicatedDbId or {}).items()
                 },
             },
         }
 
     def registerDuplicatedProtocol(
             self,
+            state: RuntimeProtocolDuplicateState,
             sourceScipionProtocolId,
             sourceProtocolDbId,
             duplicatedProtocol,
             duplicatedProtocolId,
             duplicatedProtocolDbId,
-            sourceToDuplicatedProtocolId: Dict[str, str],
-            sourceDbToDuplicatedDbId: Dict[int, int],
-            duplicatedItems: List[Dict[str, Any]],
-            duplicated: List[Dict[str, Any]],
     ) -> None:
-        sourceToDuplicatedProtocolId[str(sourceScipionProtocolId)] = str(duplicatedProtocolId)
-        sourceDbToDuplicatedDbId[int(sourceProtocolDbId)] = int(duplicatedProtocolDbId)
+        state.sourceToDuplicatedProtocolId[str(sourceScipionProtocolId)] = str(duplicatedProtocolId)
+        state.sourceDbToDuplicatedDbId[int(sourceProtocolDbId)] = int(duplicatedProtocolDbId)
 
-        duplicatedItems.append({
+        state.duplicatedItems.append({
             "sourceScipionProtocolId": sourceScipionProtocolId,
             "duplicatedProtocol": duplicatedProtocol,
             "duplicatedProtocolId": duplicatedProtocolId,
             "duplicatedProtocolDbId": duplicatedProtocolDbId,
         })
 
-        duplicated.append({
+        state.duplicated.append({
             "sourceId": str(sourceScipionProtocolId),
             "newId": str(duplicatedProtocolId),
         })
 
     def hasDuplicatedProtocols(
             self,
-            duplicatedItems: List[Dict[str, Any]],
+            state: RuntimeProtocolDuplicateState,
     ) -> bool:
-        return bool(duplicatedItems)
+        return bool(state.duplicatedItems)
 
     def buildDuplicatedProtocolSyncContext(
             self,
@@ -175,15 +183,14 @@ class RuntimeProtocolDuplicateService:
 
     def registerDuplicatedProtocolSyncReport(
             self,
+            state: RuntimeProtocolDuplicateState,
             sourceScipionProtocolId,
             duplicatedProtocolId,
             protocolSync: Dict[str, Any],
             dependencySync: Dict[str, Any],
             pointerRestore: Dict[str, Any],
-            syncReports: List[Dict[str, Any]],
-            dependenciesCount: int,
-    ) -> int:
-        syncReports.append({
+    ) -> None:
+        state.syncReports.append({
             "sourceProtocolId": str(sourceScipionProtocolId),
             "duplicatedProtocolId": str(duplicatedProtocolId),
             "protocolSync": protocolSync,
@@ -191,6 +198,6 @@ class RuntimeProtocolDuplicateService:
             "pointerRestore": pointerRestore,
         })
 
-        return int(dependenciesCount or 0) + int(
+        state.dependenciesCount = int(state.dependenciesCount or 0) + int(
             (dependencySync or {}).get("dependenciesSaved", 0) or 0
         )
