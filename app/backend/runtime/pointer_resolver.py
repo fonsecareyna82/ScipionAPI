@@ -37,10 +37,9 @@ class RuntimePointerResolver:
     """
     Normalize Scipion pointer values used by the PostgreSQL runtime migration.
 
-    This class does not resolve parent protocols or outputs. It only converts the
-    different frontend/runtime shapes into stable pointer values like:
-
-        123.outputParticles
+    This class owns pointer value semantics and may resolve parent protocol
+    identities through ProtocolIdentityResolver. It still does not resolve
+    parent output objects directly; output lookup remains caller-provided.
     """
 
     emptyPointerTexts = ("", "none", "null", "undefined")
