@@ -7919,136 +7919,16 @@ class ProjectService:
             protocol,
             parentProtocolsById: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Restore PointerParam/MultiPointerParam attributes from protocol_input_refs
-        before calling Scipion's copyProtocol().
 
-        This is only for duplicate/copy operations. Do not use it in runtime mapper
-        or in form loading.
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
-        Why:
-          In PostgreSQL runtime mode, a protocol loaded for web/form usage may have
-          pointer params represented as strings. Scipion copyProtocol() persists the
-          copied protocol through the SQLite-compatible mapper, and that mapper expects
-          Pointer objects, not strings.
-        """
-        protocolId = self._getScipionObjectId(protocol)
-
-        if protocolId is None:
-            return {
-                "protocolId": None,
-                "restored": 0,
-                "skipped": True,
-                "reason": "protocol_without_id",
-            }
-
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        if protocolDbId is None:
-            return {
-                "protocolId": str(protocolId),
-                "protocolDbId": None,
-                "restored": 0,
-                "skipped": True,
-                "reason": "protocol_not_found_in_postgresql",
-            }
-
-        self._assertNoPostgresqlRuntimeSelfInputRefs(
+        return runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
             mapper=mapper,
             projectId=projectId,
             protocol=protocol,
+            parentProtocolsById=parentProtocolsById,
+            getParentProtocolCallback=self._getParentProtocolForPointer,
         )
-
-        pointerResolver = RuntimePointerResolver()
-
-        refsByInputName = pointerResolver.loadInputRefsByInputName(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-        )
-
-        restored = []
-        errors = []
-
-        def resolveParentProtocol(parentProtocolId):
-            parentScipionProtocolId = self._resolveScipionProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=parentProtocolId,
-            )
-
-            parentProtocol = None
-
-            if parentProtocolsById:
-                parentProtocol = (
-                        parentProtocolsById.get(str(parentScipionProtocolId))
-                        or parentProtocolsById.get(parentScipionProtocolId)
-                )
-
-            if parentProtocol is None:
-                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
-                    mapper=mapper,
-                    projectId=projectId,
-                    parentId=parentProtocolId,
-                )
-
-            return parentScipionProtocolId, parentProtocol
-
-        for inputName, inputRefs in refsByInputName.items():
-            try:
-                param = protocol.getParam(inputName)
-            except Exception:
-                param = None
-
-            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                continue
-
-            try:
-                restoreReport = pointerResolver.restorePointerAttributeFromInputRefs(
-                    protocol=protocol,
-                    inputName=inputName,
-                    inputRefs=inputRefs,
-                    isMultiPointer=isinstance(param, MultiPointerParam),
-                    resolveParentProtocolCallback=resolveParentProtocol,
-                )
-
-                restored.extend(restoreReport.get("restored") or [])
-
-            except Exception as e:
-                logger.exception(
-                    "Failed to restore PostgreSQL pointer input before protocol copy. "
-                    "projectId=%s protocolId=%s inputName=%s",
-                    projectId,
-                    protocolId,
-                    inputName,
-                )
-                errors.append({
-                    "inputName": inputName,
-                    "error": str(e),
-                })
-
-        report = {
-            "protocolId": str(protocolId),
-            "protocolDbId": int(protocolDbId),
-            "restored": len(restored),
-            "items": restored,
-            "errors": errors,
-            "skipped": False,
-        }
-
-        logger.info(
-            "Restored PostgreSQL pointer inputs before protocol copy. "
-            "projectId=%s protocolId=%s report=%s",
-            projectId,
-            protocolId,
-            report,
-        )
-
-        return report
 
     def syncPostgresqlRuntimeProtocolInputsAndDependencies(
             self,
