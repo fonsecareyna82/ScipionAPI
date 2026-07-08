@@ -1044,6 +1044,55 @@ class ProtocolGraphRepository:
 
         return int(cur.rowcount or 0)
 
+    def clearInputRefObjectIdsForParentProtocolDbIds(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbIds: List[int],
+    ) -> Dict[str, Any]:
+        cleanParentDbIds = []
+        seen = set()
+
+        for parentDbId in parentProtocolDbIds or []:
+            try:
+                parentDbId = int(parentDbId)
+            except Exception:
+                continue
+
+            if parentDbId <= 0:
+                continue
+
+            if parentDbId in seen:
+                continue
+
+            seen.add(parentDbId)
+            cleanParentDbIds.append(parentDbId)
+
+        if not cleanParentDbIds:
+            return {
+                "parents": [],
+                "updatedRefs": 0,
+            }
+
+        cur = mapper.db.execute(
+            """
+            UPDATE protocol_input_refs
+               SET "objectId" = NULL,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+            """,
+            (
+                int(projectId),
+                cleanParentDbIds,
+            ),
+        )
+
+        return {
+            "parents": cleanParentDbIds,
+            "updatedRefs": int(cur.rowcount or 0),
+        }
+
     def updateProtocolParentIds(
             self,
             mapper,

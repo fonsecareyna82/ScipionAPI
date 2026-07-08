@@ -1050,59 +1050,6 @@ class ProjectService:
             allowedRoot=allowedRoot,
         )
 
-    def _clearPostgresqlInputRefObjectIdsForParentProtocols(
-            self,
-            mapper,
-            projectId: int,
-            protocols,
-    ) -> Dict[str, Any]:
-        parentDbIds = []
-
-        for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
-
-            if protocolId in (None, ""):
-                continue
-
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            if protocolDbId is None:
-                continue
-
-            protocolDbId = int(protocolDbId)
-
-            if protocolDbId not in parentDbIds:
-                parentDbIds.append(protocolDbId)
-
-        if not parentDbIds:
-            return {
-                "parents": [],
-                "updatedRefs": 0,
-            }
-
-        cur = mapper.db.execute(
-            """
-            UPDATE protocol_input_refs
-               SET "objectId" = NULL,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND "parentProtocolDbId" = ANY(%s)
-            """,
-            (
-                int(projectId),
-                parentDbIds,
-            ),
-        )
-
-        return {
-            "parents": parentDbIds,
-            "updatedRefs": int(cur.rowcount or 0),
-        }
-
     def _deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
             self,
             mapper,
@@ -9379,44 +9326,38 @@ class ProjectService:
             projectId: int,
             protocols,
     ) -> Dict[str, Any]:
+        parentDbIds = []
+
         protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
             projectId=projectId,
-            db=mapper.db,
-        )
-        protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
-            protocols
         )
 
-        parentDbIds = []
-        seenParentDbIds = set()
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
 
-        for protocolDbId in protocolIdentityData.get("protocolDbIds") or []:
-            protocolDbId = int(protocolDbId)
-
-            if protocolDbId in seenParentDbIds:
+            if protocolId in (None, ""):
                 continue
 
-            seenParentDbIds.add(protocolDbId)
-            parentDbIds.append(protocolDbId)
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                protocolId,
+            )
 
-        if not parentDbIds:
-            return {
-                "parents": [],
-                "updatedRefs": 0,
-            }
+            if protocolDbId is None:
+                continue
+
+            protocolDbId = int(protocolDbId)
+
+            if protocolDbId not in parentDbIds:
+                parentDbIds.append(protocolDbId)
 
         protocolGraphRepository = ProtocolGraphRepository()
-        updatedRefs = protocolGraphRepository.clearInputRefObjectIdsForParentProtocols(
+
+        return protocolGraphRepository.clearInputRefObjectIdsForParentProtocolDbIds(
             mapper=mapper,
             projectId=projectId,
             parentProtocolDbIds=parentDbIds,
         )
-
-        return {
-            "parents": parentDbIds,
-            "updatedRefs": updatedRefs,
-        }
 
     def _getPostgresqlRuntimeSubworkflow(
             self,
