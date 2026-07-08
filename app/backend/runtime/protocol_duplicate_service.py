@@ -185,7 +185,6 @@ class RuntimeProtocolDuplicateService:
             "sourceScipionProtocolId": sourceScipionProtocolId,
             "duplicatedProtocol": duplicatedProtocol,
             "duplicatedProtocolId": duplicatedProtocolId,
-            "duplicatedProtocolDbId": duplicatedProtocolDbId,
         })
 
         state.duplicated.append({
