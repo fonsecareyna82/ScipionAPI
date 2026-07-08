@@ -34,6 +34,7 @@ class ProtocolGraphRepository:
     This repository owns:
       - protocol_dependencies
       - protocol_input_refs
+      - scipion_object_relations for runtime output relations
       - protocols.parentIds
     """
 
@@ -43,6 +44,224 @@ class ProtocolGraphRepository:
             dict(row)
             for row in rows or []
         ]
+
+    def getPersistedSetOutputRow(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                s.id AS "setId",
+                s."projectId",
+                s."protocolDbId",
+                p."protocolId",
+                s."objectId",
+                s."outputName",
+                s."setClassName" AS "className",
+                s."itemClassName",
+                s.properties
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p."projectId" = s."projectId"
+               AND p.id = s."protocolDbId"
+             WHERE s."projectId" = %s
+               AND s."protocolDbId" = %s
+               AND s."outputName" = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                outputName,
+            ),
+        )
+
+        return dict(row) if row else None
+
+    def replaceRuntimeOutputRelation(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocolDbId: int,
+            sourceOutputName: str,
+            relationName: str,
+            targetProtocolDbId: int,
+            targetOutputName: str,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        sourceOutput = self.getPersistedSetOutputRow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=sourceProtocolDbId,
+            outputName=sourceOutputName,
+        )
+
+        if not sourceOutput or sourceOutput.get("objectId") in (None, ""):
+            return {
+                "saved": False,
+                "reason": "source_output_not_found",
+                "relationName": relationName,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "sourceOutputName": sourceOutputName,
+            }
+
+        targetOutput = self.getPersistedSetOutputRow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=targetProtocolDbId,
+            outputName=targetOutputName,
+        )
+
+        if not targetOutput or targetOutput.get("objectId") in (None, ""):
+            return {
+                "saved": False,
+                "reason": "target_output_not_found",
+                "relationName": relationName,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "sourceOutputName": sourceOutputName,
+                "targetProtocolDbId": targetProtocolDbId,
+                "targetOutputName": targetOutputName,
+            }
+
+        metadata = dict(metadata or {})
+        metadata.update({
+            "sourceProtocolDbId": int(sourceProtocolDbId),
+            "sourceProtocolId": str(sourceOutput.get("protocolId")),
+            "sourceOutputName": sourceOutputName,
+            "sourceClassName": sourceOutput.get("className"),
+            "targetProtocolDbId": int(targetProtocolDbId),
+            "targetProtocolId": str(targetOutput.get("protocolId")),
+            "targetOutputName": targetOutputName,
+            "targetClassName": targetOutput.get("className"),
+            "relationScope": "runtime_output",
+        })
+
+        with mapper.db.transaction():
+            mapper.db.execute(
+                """
+                DELETE FROM scipion_object_relations
+                 WHERE "projectId" = %s
+                   AND "parentObjectId" = %s
+                   AND name = %s
+                   AND COALESCE("parentExtended", '') = %s
+                """,
+                (
+                    int(projectId),
+                    int(sourceOutput["objectId"]),
+                    relationName,
+                    sourceOutputName,
+                ),
+                commit=False,
+            )
+
+            mapper.db.execute(
+                """
+                INSERT INTO scipion_object_relations (
+                    "projectId",
+                    "creatorObjectId",
+                    "parentObjectId",
+                    "childObjectId",
+                    name,
+                    "parentExtended",
+                    "childExtended",
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    int(projectId),
+                    int(sourceOutput["objectId"]),
+                    int(sourceOutput["objectId"]),
+                    int(targetOutput["objectId"]),
+                    relationName,
+                    sourceOutputName,
+                    targetOutputName,
+                    json.dumps(metadata),
+                ),
+                commit=False,
+            )
+
+        return {
+            "saved": True,
+            "relationName": relationName,
+            "sourceProtocolDbId": int(sourceProtocolDbId),
+            "sourceOutputName": sourceOutputName,
+            "sourceObjectId": int(sourceOutput["objectId"]),
+            "targetProtocolDbId": int(targetProtocolDbId),
+            "targetOutputName": targetOutputName,
+            "targetObjectId": int(targetOutput["objectId"]),
+        }
+
+    def loadRuntimeOutputRelations(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocolDbId: int,
+            sourceOutputName: str,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                r.id AS "relationId",
+                r.name AS "relationName",
+                r."parentExtended" AS "sourceOutputName",
+                r."childExtended" AS "targetOutputName",
+                r.metadata,
+                source_set.id AS "sourceSetId",
+                source_set."protocolDbId" AS "sourceProtocolDbId",
+                source_protocol."protocolId" AS "sourceProtocolId",
+                source_set."setClassName" AS "sourceClassName",
+                source_set."itemClassName" AS "sourceItemClassName",
+                target_set.id AS "targetSetId",
+                target_set."protocolDbId" AS "targetProtocolDbId",
+                target_protocol."protocolId" AS "targetProtocolId",
+                target_set."setClassName" AS "targetClassName",
+                target_set."itemClassName" AS "targetItemClassName"
+              FROM scipion_sets source_set
+              JOIN scipion_object_relations r
+                ON r."projectId" = source_set."projectId"
+               AND r."parentObjectId" = source_set."objectId"
+              JOIN scipion_sets target_set
+                ON target_set."projectId" = r."projectId"
+               AND target_set."objectId" = r."childObjectId"
+              JOIN protocols source_protocol
+                ON source_protocol."projectId" = source_set."projectId"
+               AND source_protocol.id = source_set."protocolDbId"
+              JOIN protocols target_protocol
+                ON target_protocol."projectId" = target_set."projectId"
+               AND target_protocol.id = target_set."protocolDbId"
+             WHERE source_set."projectId" = %s
+               AND source_set."protocolDbId" = %s
+               AND source_set."outputName" = %s
+             ORDER BY r.id ASC
+            """,
+            (
+                int(projectId),
+                int(sourceProtocolDbId),
+                sourceOutputName,
+            ),
+        )
+
+        result = []
+
+        for row in rows or []:
+            item = dict(row)
+            metadata = item.get("metadata") or {}
+
+            if not isinstance(metadata, dict):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+
+            item["metadata"] = metadata
+            result.append(item)
+
+        return result
 
     def getPersistedOutputInfoForInputRef(
             self,
