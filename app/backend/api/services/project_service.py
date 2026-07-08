@@ -11401,7 +11401,7 @@ class ProjectService:
                 duplicated=duplicated,
             )
 
-        if not duplicatedItems:
+        if not runtimeProtocolDuplicateService.hasDuplicatedProtocols(duplicatedItems):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="No valid protocols to duplicate",

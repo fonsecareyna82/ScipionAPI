@@ -158,6 +158,12 @@ class RuntimeProtocolDuplicateService:
             "newId": str(duplicatedProtocolId),
         })
 
+    def hasDuplicatedProtocols(
+            self,
+            duplicatedItems: List[Dict[str, Any]],
+    ) -> bool:
+        return bool(duplicatedItems)
+
     def registerDuplicatedProtocolSyncReport(
             self,
             sourceScipionProtocolId,
