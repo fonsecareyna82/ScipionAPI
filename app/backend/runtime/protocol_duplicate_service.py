@@ -129,3 +129,51 @@ class RuntimeProtocolDuplicateService:
                 },
             },
         }
+
+    def registerDuplicatedProtocol(
+            self,
+            sourceProtocolId,
+            sourceScipionProtocolId,
+            sourceProtocolDbId,
+            protocolClassName: str,
+            duplicatedProtocol,
+            duplicatedProtocolId,
+            duplicatedProtocolDbId,
+            sourceToDuplicatedProtocolId: Dict[str, str],
+            sourceDbToDuplicatedDbId: Dict[int, int],
+            sourceItems: List[Dict[str, Any]],
+            duplicatedItems: List[Dict[str, Any]],
+            duplicated: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        sourceToDuplicatedProtocolId[str(sourceScipionProtocolId)] = str(duplicatedProtocolId)
+        sourceDbToDuplicatedDbId[int(sourceProtocolDbId)] = int(duplicatedProtocolDbId)
+
+        sourceItem = {
+            "sourceProtocolId": sourceProtocolId,
+            "sourceScipionProtocolId": sourceScipionProtocolId,
+            "sourceProtocolDbId": sourceProtocolDbId,
+            "protocolClassName": protocolClassName,
+        }
+
+        duplicatedItem = {
+            "sourceScipionProtocolId": sourceScipionProtocolId,
+            "sourceProtocolDbId": sourceProtocolDbId,
+            "duplicatedProtocol": duplicatedProtocol,
+            "duplicatedProtocolId": duplicatedProtocolId,
+            "duplicatedProtocolDbId": duplicatedProtocolDbId,
+        }
+
+        duplicatedSummary = {
+            "sourceId": str(sourceScipionProtocolId),
+            "newId": str(duplicatedProtocolId),
+        }
+
+        sourceItems.append(sourceItem)
+        duplicatedItems.append(duplicatedItem)
+        duplicated.append(duplicatedSummary)
+
+        return {
+            "sourceItem": sourceItem,
+            "duplicatedItem": duplicatedItem,
+            "duplicatedSummary": duplicatedSummary,
+        }
