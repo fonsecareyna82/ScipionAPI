@@ -8308,25 +8308,12 @@ class ProjectService:
                 "errors": [],
             }
 
-        rows = mapper.db.fetchAll(
-            """
-            SELECT
-                "inputName",
-                "itemIndex",
-                "parentProtocolDbId",
-                "parentProtocolId",
-                "parentOutputName",
-                "objectClassName",
-                "objectId"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-             ORDER BY "inputName", "itemIndex"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        rows = protocolGraphRepository.loadInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
         )
 
         preparedItems = []

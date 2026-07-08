@@ -269,6 +269,35 @@ class ProtocolGraphRepository:
 
         return self._rowsToDicts(rows)
 
+    def loadInputRefsForProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                "inputName",
+                "itemIndex",
+                "parentProtocolDbId",
+                "parentProtocolId",
+                "parentOutputName",
+                "objectClassName",
+                "objectId"
+              FROM protocol_input_refs
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "inputName", "itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        return self._rowsToDicts(rows)
+
     def loadSubworkflowRows(
             self,
             mapper,
