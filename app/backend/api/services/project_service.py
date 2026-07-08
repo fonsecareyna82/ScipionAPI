@@ -11900,7 +11900,8 @@ class ProjectService:
                     detail="No valid protocols to delete",
                 )
 
-            blockedStatusTexts = self._getRuntimeBlockedStatusTexts()
+            runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
+            blockedStatusTexts = runtimeProtocolDeleteService.getRuntimeBlockedStatusTexts()
 
             blockedProtocols = []
             protocolGraphRepository = ProtocolGraphRepository() if usingPostgresqlRuntime else None
@@ -11978,7 +11979,7 @@ class ProjectService:
                         },
                     )
 
-                deleteValidationInfo = self._validatePostgresqlRuntimeProtocolDelete(
+                deleteValidationInfo = runtimeProtocolDeleteService.validatePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
                     projectId=projectId,
                     selectedProtocolDbIds=selectedProtocolDbIds,
@@ -12006,7 +12007,7 @@ class ProjectService:
             self.currentProject.deleteProtocol(*protList)
 
             if usingPostgresqlRuntime:
-                deleteInfo = self._deletePostgresqlRuntimeProtocols(
+                deleteInfo = runtimeProtocolDeleteService.deletePostgresqlRuntimeProtocols(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=protList,
