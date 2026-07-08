@@ -213,44 +213,6 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
-        self.db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scipion_relations (
-                id SERIAL PRIMARY KEY,
-                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                "creatorObjId" INTEGER NOT NULL,
-                "parentObjId" INTEGER NOT NULL,
-                "childObjId" INTEGER NOT NULL,
-                "parentExtended" TEXT NOT NULL DEFAULT '',
-                "childExtended" TEXT NOT NULL DEFAULT '',
-                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                UNIQUE (
-                    "projectId",
-                    name,
-                    "creatorObjId",
-                    "parentObjId",
-                    "childObjId",
-                    "parentExtended",
-                    "childExtended"
-                )
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_scipion_relations_project_name
-              ON scipion_relations("projectId", name);
-
-            CREATE INDEX IF NOT EXISTS idx_scipion_relations_creator
-              ON scipion_relations("projectId", "creatorObjId");
-
-            CREATE INDEX IF NOT EXISTS idx_scipion_relations_parent
-              ON scipion_relations("projectId", "parentObjId");
-
-            CREATE INDEX IF NOT EXISTS idx_scipion_relations_child
-              ON scipion_relations("projectId", "childObjId");
-            """
-        )
-
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS protocol_steps (
                 id SERIAL PRIMARY KEY,
