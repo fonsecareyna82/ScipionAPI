@@ -44,7 +44,6 @@ class RuntimeProtocolDuplicateState:
 
     def __init__(self):
         self.duplicated: List[Dict[str, Any]] = []
-        self.errors: List[Any] = []
         self.syncReports: List[Dict[str, Any]] = []
         self.dependenciesCount: int = 0
         self.duplicatedItems: List[Dict[str, Any]] = []
@@ -158,7 +157,7 @@ class RuntimeProtocolDuplicateService:
             "protocolsCount": len(state.duplicated or []),
             "dependenciesCount": int(state.dependenciesCount or 0),
             "duplicated": state.duplicated or [],
-            "errors": state.errors or [],
+            "errors": [],
             "postgresqlRuntimeDuplicate": True,
             "syncReports": state.syncReports or [],
             "duplicateRemap": {
