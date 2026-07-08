@@ -7972,19 +7972,6 @@ class ProjectService:
             getParentProtocolCallback=self._getParentProtocolForPointer,
             repairOutputMapperCallback=self._repairPostgresqlRuntimeSetMapperInfo,
             storeProtocolCallback=self.currentProject._storeProtocol,
-            relationRules=[
-                {
-                    "name": "set_of_tilt_series",
-                    "getterName": "getSetOfTiltSeries",
-                    "setterName": "setSetOfTiltSeries",
-                    "targetClassNames": [
-                        "SetOfTiltSeries",
-                    ],
-                    "targetItemClassNames": [
-                        "TiltSeries",
-                    ],
-                },
-            ],
         )
 
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
