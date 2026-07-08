@@ -18,11 +18,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """
-    Canonical relation table is scipion_object_relations.
+    Backfill canonical object relations from runtime mapper relations.
 
-    scipion_relations was an old initTables-only table using legacy object ids.
-    If present, migrate mappable rows to scipion_object_relations and keep the
-    old table renamed as scipion_relations_legacy for safety.
+    scipion_relations is still used by the Mapper-compatible relations API and
+    stores Scipion runtime object ids. scipion_object_relations stores canonical
+    PostgreSQL object row ids. This migration copies mappable legacy/runtime
+    rows into scipion_object_relations without deleting or renaming
+    scipion_relations.
     """
     op.execute(
         """
