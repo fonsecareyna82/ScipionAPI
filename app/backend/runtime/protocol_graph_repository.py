@@ -36,6 +36,13 @@ class ProtocolGraphRepository:
       - protocols.parentIds
     """
 
+    @staticmethod
+    def _rowsToDicts(rows) -> List[Dict[str, Any]]:
+        return [
+            dict(row)
+            for row in rows or []
+        ]
+
     def getPersistedOutputInfoForInputRef(
             self,
             mapper,
@@ -111,10 +118,7 @@ class ProtocolGraphRepository:
             ),
         )
 
-        return [
-            dict(row)
-            for row in rows or []
-        ]
+        return self._rowsToDicts(rows)
 
     def loadSubworkflowRows(
             self,
@@ -164,10 +168,7 @@ class ProtocolGraphRepository:
             ),
         )
 
-        return [
-            dict(row)
-            for row in rows or []
-        ]
+        return self._rowsToDicts(rows)
 
     def loadExternalDescendantsForDeleteValidation(
             self,
@@ -246,10 +247,7 @@ class ProtocolGraphRepository:
             ),
         )
 
-        return [
-            dict(row)
-            for row in rows or []
-        ]
+        return self._rowsToDicts(rows)
 
     def loadAffectedChildProtocolDbIdsForDeletedParents(
             self,
