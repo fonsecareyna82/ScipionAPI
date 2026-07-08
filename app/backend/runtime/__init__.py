@@ -32,6 +32,7 @@ from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplic
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
 from app.backend.runtime.protocol_launch_prepare_service import RuntimeProtocolLaunchPrepareService
+from app.backend.runtime.output_relation_repair_service import RuntimeOutputRelationRepairService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -43,4 +44,5 @@ __all__ = [
     "RuntimeProtocolInputSyncService",
     "RuntimeOutputProxyService",
     "RuntimeProtocolLaunchPrepareService",
+    "RuntimeOutputRelationRepairService",
 ]
