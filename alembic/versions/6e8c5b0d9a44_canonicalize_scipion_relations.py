@@ -1,5 +1,5 @@
 
-"""canonicalize scipion relations
+"""backfill scipion object relations from runtime relations
 
 Revision ID: 6e8c5b0d9a44
 Revises: 2fc2cd4da2e2
@@ -107,12 +107,6 @@ def upgrade() -> None:
                        AND COALESCE(existing."parentExtended", '') = COALESCE(legacy."parentExtended", '')
                        AND COALESCE(existing."childExtended", '') = COALESCE(legacy."childExtended", '')
                 );
-
-                IF to_regclass('public.scipion_relations_legacy') IS NULL THEN
-                    ALTER TABLE public.scipion_relations RENAME TO scipion_relations_legacy;
-                ELSE
-                    DROP TABLE public.scipion_relations;
-                END IF;
             END IF;
         END $$;
         """
@@ -122,12 +116,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         """
-        DO $$
-        BEGIN
-            IF to_regclass('public.scipion_relations') IS NULL
-               AND to_regclass('public.scipion_relations_legacy') IS NOT NULL THEN
-                ALTER TABLE public.scipion_relations_legacy RENAME TO scipion_relations;
-            END IF;
-        END $$;
+        DELETE FROM public.scipion_object_relations
+         WHERE metadata ->> 'migratedFrom' = 'scipion_relations';
         """
     )

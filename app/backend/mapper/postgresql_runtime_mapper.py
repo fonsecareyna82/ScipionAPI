@@ -631,7 +631,7 @@ class PostgresqlRuntimeMapper(Mapper):
     def insertRelation(self, relName, creatorObj, parentObj, childObj,
                        parentExt=None, childExt=None):
         if self.writeFallbackMapper is not None:
-            return self.writeFallbackMapper.insertRelation(
+            self.writeFallbackMapper.insertRelation(
                 relName,
                 creatorObj,
                 parentObj,
