@@ -8010,7 +8010,6 @@ class ProjectService:
             protocolId=protocolId,
             params=params,
             getParamCallback=protocol.getParam,
-            getPersistedOutputInfoCallback=self._getPersistedOutputInfoForInputRef,
             isPointerParamCallback=lambda param: isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
         )
 
