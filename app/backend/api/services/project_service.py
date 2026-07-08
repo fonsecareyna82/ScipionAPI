@@ -110,7 +110,6 @@ from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteSer
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
-from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
 from app.backend.runtime import (
     RuntimeProtocolLaunchPrepareService,
     RuntimeOutputRelationRepairService,
@@ -7934,21 +7933,6 @@ class ProjectService:
             outputName=outputName,
         )
 
-    def _attachPostgresqlRuntimeOutputPlaceholder(
-            self,
-            parentProtocol,
-            outputName: str,
-            outputInfo: Dict[str, Any],
-            mapper=None,
-    ):
-        runtimeOutputProxyService = RuntimeOutputProxyService()
-
-        return runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
-            parentProtocol=parentProtocol,
-            outputName=outputName,
-            outputInfo=outputInfo,
-            mapper=mapper,
-        )
 
     def _repairPostgresqlRuntimeOutputRelations(
             self,
