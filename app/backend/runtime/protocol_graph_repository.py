@@ -420,6 +420,31 @@ class ProtocolGraphRepository:
             "count": len(refreshed),
         }
 
+    def clearInputRefObjectIdsForParentProtocols(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbIds: List[int],
+    ) -> int:
+        if not parentProtocolDbIds:
+            return 0
+
+        cur = mapper.db.execute(
+            """
+            UPDATE protocol_input_refs
+               SET "objectId" = NULL,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "parentProtocolDbId" = ANY(%s)
+            """,
+            (
+                int(projectId),
+                parentProtocolDbIds,
+            ),
+        )
+
+        return int(cur.rowcount or 0)
+
     def deleteProtocolsAndRefreshChildren(
             self,
             mapper,

@@ -12045,23 +12045,16 @@ class ProjectService:
                 "updatedRefs": 0,
             }
 
-        cur = mapper.db.execute(
-            """
-            UPDATE protocol_input_refs
-               SET "objectId" = NULL,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND "parentProtocolDbId" = ANY(%s)
-            """,
-            (
-                int(projectId),
-                parentDbIds,
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+        updatedRefs = protocolGraphRepository.clearInputRefObjectIdsForParentProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbIds=parentDbIds,
         )
 
         return {
             "parents": parentDbIds,
-            "updatedRefs": int(cur.rowcount or 0),
+            "updatedRefs": updatedRefs,
         }
 
     def _getPostgresqlRuntimeSubworkflow(
