@@ -23,16 +23,32 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
-from app.backend.runtime.pointer_resolver import RuntimePointerResolver
-from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
-from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
-from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+from typing import Optional
 
-__all__ = [
-    "ProtocolIdentityResolver",
-    "RuntimePointerResolver",
-    "ProtocolGraphRepository",
-    "RuntimeProtocolDeleteService",
-    "ProjectRuntimeRepository",
-]
+
+class ProjectRuntimeRepository:
+    """PostgreSQL runtime project metadata lookup."""
+
+    def getProjectNameById(
+            self,
+            mapper,
+            projectId: int,
+    ) -> Optional[str]:
+        row = mapper.db.fetchOne(
+            """
+            SELECT name
+              FROM projects
+             WHERE id = %s
+            """,
+            (int(projectId),),
+        )
+
+        if not row:
+            return None
+
+        rawPath = row.get("name") if isinstance(row, dict) else row[0]
+
+        if not rawPath:
+            return None
+
+        return str(rawPath)
