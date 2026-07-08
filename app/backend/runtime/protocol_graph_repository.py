@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 from typing import Any, Dict, List, Optional
 
 
@@ -94,6 +95,154 @@ class ProtocolGraphRepository:
             "objectId": row.get("objectId"),
             "className": row.get("className"),
         }
+
+    def getPostgresqlRuntimeOutputInfo(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        """
+        Resolve a persisted parent output from PostgreSQL.
+
+        This is used by runtime input resolution so child protocols do not depend
+        exclusively on the parent runtime db exposing the output as a live attribute.
+        """
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                'set' AS kind,
+                s.id AS "setId",
+                s."objectId"::text AS "objectId",
+                s."outputName" AS "outputName",
+                s."setClassName" AS "className",
+                s."itemClassName" AS "itemClassName",
+                s.properties AS properties
+              FROM scipion_sets s
+             WHERE s."projectId" = %s
+               AND s."protocolDbId" = %s
+               AND s."outputName" = %s
+
+            UNION ALL
+
+            SELECT
+                'object' AS kind,
+                NULL AS "setId",
+                o."scipionObjId"::text AS "objectId",
+                o.name AS "outputName",
+                o."className" AS "className",
+                NULL AS "itemClassName",
+                o.metadata AS properties
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = %s
+               AND o."parentObjectId" IS NULL
+               AND (o.path = %s OR o.name = %s)
+
+             LIMIT 1
+            """,
+            (
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                projectId,
+                parentProtocolDbId,
+                outputName,
+                outputName,
+            ),
+        )
+
+        if not row:
+            return {
+                "exists": False,
+                "kind": None,
+                "setId": None,
+                "objectId": None,
+                "outputName": outputName,
+                "className": None,
+                "itemClassName": None,
+                "properties": {},
+                "itemsCount": None,
+                "tablesCount": None,
+                "tableItemsCount": None,
+            }
+
+        info = dict(row)
+        properties = info.get("properties") or {}
+
+        if not isinstance(properties, dict):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        info["properties"] = properties
+        info["exists"] = True
+
+        setId = info.get("setId")
+
+        itemsCount = None
+        tablesCount = None
+        tableItemsCount = None
+
+        if setId is not None:
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM scipion_set_items
+                     WHERE "setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                itemsCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                itemsCount = None
+
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM scipion_set_tables
+                     WHERE "setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                tablesCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                tablesCount = None
+
+            try:
+                countRow = mapper.db.fetchOne(
+                    """
+                    SELECT COUNT(ti.id) AS count
+                      FROM scipion_set_tables t
+                      JOIN scipion_set_table_items ti
+                        ON ti."tableId" = t.id
+                     WHERE t."setId" = %s
+                    """,
+                    (int(setId),),
+                )
+                tableItemsCount = int(countRow.get("count") or 0) if countRow else 0
+            except Exception:
+                tableItemsCount = None
+
+        if itemsCount is None:
+            try:
+                itemsCount = int(
+                    properties.get("itemsCount")
+                    or properties.get("_size")
+                    or 0
+                )
+            except Exception:
+                itemsCount = None
+
+        info["itemsCount"] = itemsCount
+        info["tablesCount"] = tablesCount
+        info["tableItemsCount"] = tableItemsCount
+
+        return info
 
     def loadSelfInputRefs(
             self,
