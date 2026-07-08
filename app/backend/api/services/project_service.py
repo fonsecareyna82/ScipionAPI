@@ -11884,14 +11884,10 @@ class ProjectService:
             deleteValidationInfo = None
 
             if usingPostgresqlRuntime:
-                protocolIdentityResolver = ProtocolIdentityResolver(
+                protocolIdentityData = runtimeProtocolDeleteService.resolveProtocolDeleteIdentity(
                     mapper=mapper,
                     projectId=projectId,
-                    db=mapper.db,
-                )
-
-                protocolIdentityData = protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
-                    protList
+                    protocols=protList,
                 )
 
                 selectedProtocolDbIds = protocolIdentityData.get("protocolDbIds") or []
