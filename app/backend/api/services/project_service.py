@@ -11939,18 +11939,10 @@ class ProjectService:
                     protocolGraphRepository=protocolGraphRepository,
                 )
 
-                return {
-                    "status": 0,
-                    "message": "Protocol deleted successfully",
-                    "protocolsCount": len(deleteInfo.get("deletedProtocolDbIds", [])),
-                    "dependenciesCount": sum(
-                        int(item.get("dependenciesSaved", 0) or 0)
-                        for item in deleteInfo.get("parentsRefresh", {}).get("refreshed", [])
-                    ),
-                    "postgresqlRuntimeDelete": True,
-                    "deleteValidationInfo": deleteValidationInfo,
-                    "deleteInfo": deleteInfo,
-                }
+                return runtimeProtocolDeleteService.buildPostgresqlRuntimeDeleteResult(
+                    deleteInfo=deleteInfo,
+                    deleteValidationInfo=deleteValidationInfo,
+                )
 
             mapper.deleteProtocol(projectId, protList)
 
