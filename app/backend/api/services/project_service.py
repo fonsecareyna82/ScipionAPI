@@ -11402,7 +11402,7 @@ class ProjectService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Source protocol %s was not found in PostgreSQL" % sourceProtocolId,
                 )
-
+            protocolGraphRepository = ProtocolGraphRepository()
             sourceRow = protocolGraphRepository.getProtocolRuntimeInfoByDbId(
                 mapper=mapper,
                 projectId=projectId,
