@@ -109,6 +109,7 @@ from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepositor
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
+from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -7937,112 +7938,14 @@ class ProjectService:
             protocol,
             params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Sync input refs and dependency edges for one PostgreSQL-runtime protocol.
+        runtimeProtocolInputSyncService = RuntimeProtocolInputSyncService()
 
-        Important:
-          - Dependency edges are resolved from raw params, not only from Scipion Pointer objects.
-          - The workflow graph loaded from PostgreSQL uses protocol_dependencies.
-        """
-        protocolIdentityResolver = ProtocolIdentityResolver(
+        return runtimeProtocolInputSyncService.syncProtocolInputsAndDependencies(
             mapper=mapper,
             projectId=projectId,
-        )
-
-        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
-            self._getScipionObjectId(protocol),
-        )
-
-        if protocolId is None:
-            return {
-                "protocolId": None,
-                "protocolDbId": None,
-                "parents": [],
-                "parentProtocolIds": [],
-                "inputRefs": [],
-                "detectedPointerParams": [],
-                "dependencies": 0,
-                "inputRefsSaved": 0,
-                "skipped": True,
-                "reason": "protocol_without_id",
-            }
-
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            protocolId,
-        )
-
-        if protocolDbId is None:
-            return {
-                "protocolId": str(protocolId),
-                "protocolDbId": None,
-                "parents": [],
-                "parentProtocolIds": [],
-                "inputRefs": [],
-                "detectedPointerParams": [],
-                "dependencies": 0,
-                "inputRefsSaved": 0,
-                "skipped": True,
-                "reason": "protocol_not_found",
-            }
-
-        rawParams = params or {}
-
-        params = self._mergeRuntimePointerParamsWithProtocolState(
             protocol=protocol,
-            params=rawParams,
-        )
-
-        logger.debug(
-            "Runtime dependency sync merged pointer params. projectId=%s protocolId=%s "
-            "rawParams=%s mergedParams=%s",
-            projectId,
-            protocolId,
-            rawParams,
-            params,
-        )
-
-        pointerResolver = RuntimePointerResolver()
-
-        pointerSyncData = pointerResolver.buildInputRefsFromPointerParams(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
-            protocolId=protocolId,
             params=params,
-            getParamCallback=protocol.getParam,
-            isPointerParamCallback=lambda param: isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
         )
-
-        parentProtocolDbIds = pointerSyncData.get("parentProtocolDbIds") or []
-        parentProtocolIds = pointerSyncData.get("parentProtocolIds") or []
-        inputRefs = pointerSyncData.get("inputRefs") or []
-        detectedPointerParams = pointerSyncData.get("detectedPointerParams") or []
-
-        protocolGraphRepository = ProtocolGraphRepository()
-
-        inputGraphSync = protocolGraphRepository.replaceInputGraphForProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
-            parentProtocolDbIds=parentProtocolDbIds,
-            parentProtocolIds=parentProtocolIds,
-            inputRefs=inputRefs,
-        )
-
-        dependenciesSaved = inputGraphSync.get("dependencies", 0)
-        inputRefsSaved = inputGraphSync.get("inputRefsSaved", 0)
-
-        return {
-            "protocolId": str(protocolId),
-            "protocolDbId": int(protocolDbId),
-            "parents": parentProtocolDbIds,
-            "parentProtocolIds": parentProtocolIds,
-            "inputRefs": inputRefs,
-            "detectedPointerParams": detectedPointerParams,
-            "dependencies": dependenciesSaved,
-            "inputRefsSaved": inputRefsSaved,
-            "skipped": False,
-        }
 
     def _normalizeRuntimePointerValuesFromProtocolAttribute(self, attr: Any) -> List[str]:
         pointerResolver = RuntimePointerResolver()

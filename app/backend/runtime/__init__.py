@@ -29,6 +29,7 @@ from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepositor
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
+from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -37,4 +38,5 @@ __all__ = [
     "RuntimeProtocolDeleteService",
     "ProjectRuntimeRepository",
     "RuntimeProtocolDuplicateService",
+    "RuntimeProtocolInputSyncService",
 ]
