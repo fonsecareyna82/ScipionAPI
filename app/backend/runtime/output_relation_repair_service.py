@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 class RuntimeOutputRelationRepairService:
     """Repair missing runtime relations between persisted PostgreSQL outputs."""
 
+    defaultRelationRules = [
+        {
+            "name": "set_of_tilt_series",
+            "getterName": "getSetOfTiltSeries",
+            "setterName": "setSetOfTiltSeries",
+            "targetClassNames": [
+                "SetOfTiltSeries",
+            ],
+            "targetItemClassNames": [
+                "TiltSeries",
+            ],
+        },
+    ]
+
     def __init__(self):
         self.protocolGraphRepository = ProtocolGraphRepository()
 
@@ -157,10 +171,10 @@ class RuntimeOutputRelationRepairService:
             outputObj,
             inputRefRows: List[Dict[str, Any]],
             currentInputName: str,
-            relationRules: List[Dict[str, Any]],
             getParentProtocolCallback: Callable,
             repairOutputMapperCallback: Optional[Callable] = None,
             storeProtocolCallback: Optional[Callable] = None,
+            relationRules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         lastReport = {
             "checked": False,
@@ -168,6 +182,7 @@ class RuntimeOutputRelationRepairService:
             "reason": "no_runtime_relation_rule_matched",
             "outputName": outputName,
         }
+        relationRules = relationRules or self.defaultRelationRules
 
         for relationRule in relationRules or []:
             report = self.repairMissingOutputRelation(
