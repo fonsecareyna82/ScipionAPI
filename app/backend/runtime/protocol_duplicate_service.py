@@ -205,12 +205,11 @@ class RuntimeProtocolDuplicateService:
 
     def copyPostgresqlInputRefsForDuplicatedProtocol(
             self,
+            state: RuntimeProtocolDuplicateState,
             mapper,
             projectId: int,
             sourceProtocolId,
             duplicatedProtocolId,
-            sourceToDuplicatedProtocolId: Optional[Dict[str, str]] = None,
-            sourceDbToDuplicatedDbId: Optional[Dict[int, int]] = None,
             resolveProtocolDbIdCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         if resolveProtocolDbIdCallback is None:
@@ -242,13 +241,13 @@ class RuntimeProtocolDuplicateService:
 
         sourceToDuplicatedProtocolId = {
             str(k): str(v)
-            for k, v in (sourceToDuplicatedProtocolId or {}).items()
+            for k, v in (state.sourceToDuplicatedProtocolId or {}).items()
             if k is not None and v is not None
         }
 
         sourceDbToDuplicatedDbId = {
             int(k): int(v)
-            for k, v in (sourceDbToDuplicatedDbId or {}).items()
+            for k, v in (state.sourceDbToDuplicatedDbId or {}).items()
             if k is not None and v is not None
         }
 
