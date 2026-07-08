@@ -27,6 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from pyworkflow.object import Pointer, PointerList
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
 
@@ -38,8 +39,8 @@ class RuntimePointerResolver:
     Normalize Scipion pointer values used by the PostgreSQL runtime migration.
 
     This class owns pointer value semantics and may resolve parent protocol
-    identities through ProtocolIdentityResolver. It still does not resolve
-    parent output objects directly; output lookup remains caller-provided.
+    identities through ProtocolIdentityResolver. It may also look up persisted
+    output metadata through ProtocolGraphRepository when building input refs.
     """
 
     emptyPointerTexts = ("", "none", "null", "undefined")
@@ -625,7 +626,6 @@ class RuntimePointerResolver:
             protocolId,
             params: Dict[str, Any],
             getParamCallback,
-            getPersistedOutputInfoCallback,
             isPointerParamCallback,
     ) -> Dict[str, Any]:
         """
@@ -646,6 +646,8 @@ class RuntimePointerResolver:
             mapper=mapper,
             projectId=projectId,
         )
+
+        protocolGraphRepository = ProtocolGraphRepository()
 
         for inputName, rawParamValue in params.items():
             try:
@@ -726,7 +728,7 @@ class RuntimePointerResolver:
                 if parentScipionProtocolId not in parentProtocolIds:
                     parentProtocolIds.append(parentScipionProtocolId)
 
-                outputInfo = getPersistedOutputInfoCallback(
+                outputInfo = protocolGraphRepository.getPersistedOutputInfoForInputRef(
                     mapper=mapper,
                     projectId=projectId,
                     parentProtocolDbId=parentProtocolDbId,
