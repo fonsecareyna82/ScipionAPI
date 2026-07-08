@@ -1,17 +1,19 @@
+"""canonicalize_scipion_relations
 
-"""backfill scipion object relations from runtime relations
+Revision ID: d7c68b46162e
+Revises: cfe01c5b48d9
+Create Date: 2026-07-08 19:21:47.408589
 
-Revision ID: 6e8c5b0d9a44
-Revises: 2fc2cd4da2e2
-Create Date: 2026-07-08
 """
 from typing import Sequence, Union
 
 from alembic import op
+import sqlalchemy as sa
 
 
-revision: str = "6e8c5b0d9a44"
-down_revision: Union[str, None] = "2fc2cd4da2e2"
+# revision identifiers, used by Alembic.
+revision: str = 'd7c68b46162e'
+down_revision: Union[str, None] = 'cfe01c5b48d9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
