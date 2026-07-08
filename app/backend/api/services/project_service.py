@@ -11491,21 +11491,18 @@ class ProjectService:
                     ),
                 )
 
+        resultPayload = runtimeProtocolDuplicateService.buildPostgresqlRuntimeDuplicateResultPayload(
+            duplicated=duplicated,
+            dependenciesCount=dependenciesCount,
+            errors=errors,
+            syncReports=syncReports,
+            sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
+            sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
+        )
+
         return self._buildProtocolMutationResult(
             "Protocol was duplicated successfully",
-            protocolsCount=len(duplicated),
-            dependenciesCount=dependenciesCount,
-            duplicated=duplicated,
-            errors=errors,
-            postgresqlRuntimeDuplicate=True,
-            syncReports=syncReports,
-            duplicateRemap={
-                "protocolIds": sourceToDuplicatedProtocolId,
-                "protocolDbIds": {
-                    str(k): str(v)
-                    for k, v in sourceDbToDuplicatedDbId.items()
-                },
-            },
+            **resultPayload,
         )
 
     def duplicateProtocol(self, mapper, projectId, protocols):
