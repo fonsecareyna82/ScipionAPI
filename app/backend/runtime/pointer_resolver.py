@@ -27,6 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from pyworkflow.object import Pointer, PointerList
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
 
 logger = logging.getLogger(__name__)
@@ -625,8 +626,6 @@ class RuntimePointerResolver:
             protocolId,
             params: Dict[str, Any],
             getParamCallback,
-            resolveScipionProtocolIdCallback,
-            resolvePostgresqlProtocolDbIdCallback,
             getPersistedOutputInfoCallback,
             isPointerParamCallback,
     ) -> Dict[str, Any]:
@@ -643,6 +642,11 @@ class RuntimePointerResolver:
         parentProtocolIds: List[int] = []
         inputRefs: List[Dict[str, Any]] = []
         detectedPointerParams = []
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         for inputName, rawParamValue in params.items():
             try:
@@ -684,10 +688,8 @@ class RuntimePointerResolver:
                     continue
 
                 try:
-                    parentScipionProtocolId = resolveScipionProtocolIdCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=parentId,
+                    parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
+                        parentId,
                     )
                 except Exception:
                     logger.exception(
@@ -700,10 +702,8 @@ class RuntimePointerResolver:
                     )
                     continue
 
-                parentProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=parentScipionProtocolId,
+                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                    parentScipionProtocolId,
                 )
 
                 if parentProtocolDbId is None:

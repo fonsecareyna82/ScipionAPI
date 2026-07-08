@@ -8010,8 +8010,6 @@ class ProjectService:
             protocolId=protocolId,
             params=params,
             getParamCallback=protocol.getParam,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
-            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             getPersistedOutputInfoCallback=self._getPersistedOutputInfoForInputRef,
             isPointerParamCallback=lambda param: isinstance(param, (PointerParam, MultiPointerParam, RelationParam)),
         )
