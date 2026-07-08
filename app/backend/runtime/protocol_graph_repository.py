@@ -361,6 +361,33 @@ class ProtocolGraphRepository:
 
         return str(statusValue).strip()
 
+    def getProtocolRuntimeInfoByDbId(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Optional[Dict[str, Any]]:
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                "protocolClassName",
+                params
+              FROM protocols
+             WHERE "projectId" = %s
+               AND id = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        if not row:
+            return None
+
+        return dict(row)
+
     def refreshParentsForChildren(
             self,
             mapper,
