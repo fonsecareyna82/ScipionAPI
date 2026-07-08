@@ -108,6 +108,7 @@ from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -11313,6 +11314,7 @@ class ProjectService:
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
         protocolGraphRepository = ProtocolGraphRepository()
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
@@ -11354,52 +11356,10 @@ class ProjectService:
             protocolClassName = sourceRow.get("protocolClassName")
             sourceParams = sourceRow.get("params") or {}
 
-            params = copy.deepcopy(sourceParams)
-
-            # Do not duplicate runtime/output state.
-            for key in list(params.keys()):
-                try:
-                    param = sourceProtocol.getParam(key)
-                except Exception:
-                    param = None
-
-                if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                    # Pointers are restored from protocol_input_refs in phase 2.
-                    params.pop(key, None)
-                    continue
-
-                if str(key).startswith("_outputs"):
-                    params.pop(key, None)
-                    continue
-
-                if key in (
-                        "status",
-                        "initTime",
-                        "endTime",
-                        "_error",
-                        "_resultFiles",
-                        "_outputs",
-                        "_useOutputList",
-                        "_jobId",
-                        "_pid",
-                        "_stepsDone",
-                        "_cpuTime",
-                        "_numberOfSteps",
-                        "lastUpdateTimeStamp",
-                ):
-                    params.pop(key, None)
-
-            try:
-                runName = params.get("runName")
-                if isinstance(runName, dict):
-                    oldValue = runName.get("value") or runName.get("editableValue")
-                    if oldValue:
-                        runName["value"] = "%s copy" % oldValue
-                        runName["editableValue"] = "%s copy" % oldValue
-                elif runName:
-                    params["runName"] = "%s copy" % runName
-            except Exception:
-                pass
+            params = runtimeProtocolDuplicateService.buildDuplicatedProtocolParams(
+                sourceProtocol=sourceProtocol,
+                sourceParams=sourceParams,
+            )
 
             newProtocol, saveErrors = self.saveProtocol(
                 mapper=mapper,
