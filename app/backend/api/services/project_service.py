@@ -107,6 +107,7 @@ from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
+from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -10326,17 +10327,11 @@ class ProjectService:
             mapper,
             projectId: int,
     ) -> Optional[str]:
-        if mapper is None or not hasattr(mapper, "db"):
-            return None
-
         try:
-            row = mapper.db.fetchOne(
-                """
-                SELECT name
-                  FROM projects
-                 WHERE id = %s
-                """,
-                (projectId,),
+            projectRuntimeRepository = ProjectRuntimeRepository()
+            rawPath = projectRuntimeRepository.getProjectNameById(
+                mapper=mapper,
+                projectId=projectId,
             )
         except Exception:
             logger.debug(
@@ -10346,10 +10341,6 @@ class ProjectService:
             )
             return None
 
-        if not row:
-            return None
-
-        rawPath = row.get("name") if isinstance(row, dict) else row[0]
         if not rawPath:
             return None
 
