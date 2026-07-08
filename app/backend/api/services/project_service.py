@@ -11390,28 +11390,20 @@ class ProjectService:
                     detail="Duplicated protocol %s was not found in PostgreSQL" % duplicatedProtocolId,
                 )
 
-            sourceToDuplicatedProtocolId[str(sourceScipionProtocolId)] = str(duplicatedProtocolId)
-            sourceDbToDuplicatedDbId[int(sourceProtocolDbId)] = int(duplicatedProtocolDbId)
-
-            sourceItems.append({
-                "sourceProtocolId": sourceProtocolId,
-                "sourceScipionProtocolId": sourceScipionProtocolId,
-                "sourceProtocolDbId": sourceProtocolDbId,
-                "protocolClassName": protocolClassName,
-            })
-
-            duplicatedItems.append({
-                "sourceScipionProtocolId": sourceScipionProtocolId,
-                "sourceProtocolDbId": sourceProtocolDbId,
-                "duplicatedProtocol": newProtocol,
-                "duplicatedProtocolId": duplicatedProtocolId,
-                "duplicatedProtocolDbId": duplicatedProtocolDbId,
-            })
-
-            duplicated.append({
-                "sourceId": str(sourceScipionProtocolId),
-                "newId": str(duplicatedProtocolId),
-            })
+            runtimeProtocolDuplicateService.registerDuplicatedProtocol(
+                sourceProtocolId=sourceProtocolId,
+                sourceScipionProtocolId=sourceScipionProtocolId,
+                sourceProtocolDbId=sourceProtocolDbId,
+                protocolClassName=protocolClassName,
+                duplicatedProtocol=newProtocol,
+                duplicatedProtocolId=duplicatedProtocolId,
+                duplicatedProtocolDbId=duplicatedProtocolDbId,
+                sourceToDuplicatedProtocolId=sourceToDuplicatedProtocolId,
+                sourceDbToDuplicatedDbId=sourceDbToDuplicatedDbId,
+                sourceItems=sourceItems,
+                duplicatedItems=duplicatedItems,
+                duplicated=duplicated,
+            )
 
         if not duplicatedItems:
             raise HTTPException(
