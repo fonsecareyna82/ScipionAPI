@@ -515,15 +515,14 @@ class RuntimePointerResolver:
             pointerValue: Any,
             paramLabel: str,
             getParentProtocolCallback,
-            resolvePostgresqlProtocolDbIdCallback,
             resolveParentOutputCallback,
     ) -> Dict[str, Any]:
         """
         Resolve one normalized pointer value into its parent protocol and output.
 
-        This method intentionally receives callbacks for Scipion/PostgreSQL
-        operations. RuntimePointerResolver owns pointer semantics, while the
-        caller still owns project/runtime access during this refactor step.
+        This method owns pointer target identity resolution. The caller still
+        provides project/runtime access for loading parent protocols and
+        resolving parent output objects during this refactor step.
         """
         parentId, outputName = self.splitPointerValue(pointerValue)
 
@@ -545,6 +544,11 @@ class RuntimePointerResolver:
                 "outputName": outputName,
             }
 
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
         try:
             parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
                 mapper=mapper,
@@ -552,10 +556,8 @@ class RuntimePointerResolver:
                 parentId=parentId,
             )
 
-            parentProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=parentScipionProtocolId,
+            parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                parentScipionProtocolId,
             )
 
             if parentProtocolDbId is None:
