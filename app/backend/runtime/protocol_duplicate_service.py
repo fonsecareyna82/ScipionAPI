@@ -147,7 +147,6 @@ class RuntimeProtocolDuplicateService:
 
         duplicatedItems.append({
             "sourceScipionProtocolId": sourceScipionProtocolId,
-            "sourceProtocolDbId": sourceProtocolDbId,
             "duplicatedProtocol": duplicatedProtocol,
             "duplicatedProtocolId": duplicatedProtocolId,
             "duplicatedProtocolDbId": duplicatedProtocolDbId,
