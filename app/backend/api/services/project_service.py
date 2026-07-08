@@ -8132,65 +8132,6 @@ class ProjectService:
             "outputInfo": outputInfo,
         }
 
-    def _getPersistedOutputInfoForInputRef(
-            self,
-            mapper,
-            projectId: int,
-            parentProtocolDbId: int,
-            outputName: str,
-    ) -> Dict[str, Any]:
-        protocolGraphRepository = ProtocolGraphRepository()
-        return protocolGraphRepository.getPersistedOutputInfoForInputRef(
-            mapper=mapper,
-            projectId=projectId,
-            parentProtocolDbId=parentProtocolDbId,
-            outputName=outputName,
-        )
-
-    def _updatePostgresqlProtocolParentIds(
-            self,
-            mapper,
-            projectId: int,
-            protocolDbId: int,
-            parentProtocolIds: List[int],
-    ) -> None:
-        protocolGraphRepository = ProtocolGraphRepository()
-        return protocolGraphRepository.updateProtocolParentIds(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-            parentProtocolIds=parentProtocolIds,
-        )
-
-    def _replacePostgresqlDependenciesForProtocol(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            childProtocolDbId: int,
-            parentProtocolDbIds: List[int],
-    ) -> int:
-        protocolGraphRepository = ProtocolGraphRepository()
-        return protocolGraphRepository.replaceDependenciesForProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            childProtocolDbId=childProtocolDbId,
-            parentProtocolDbIds=parentProtocolDbIds,
-        )
-
-    def _replacePostgresqlInputRefsForProtocol(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            protocolDbId: int,
-            refs: List[Dict[str, Any]],
-    ) -> int:
-        protocolGraphRepository = ProtocolGraphRepository()
-        return protocolGraphRepository.replaceInputRefsForProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-            refs=refs,
-        )
 
     def setPointerParam(
             self,
