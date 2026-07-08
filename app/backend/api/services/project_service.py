@@ -11403,20 +11403,10 @@ class ProjectService:
                     detail="Source protocol %s was not found in PostgreSQL" % sourceProtocolId,
                 )
 
-            sourceRow = mapper.db.fetchOne(
-                """
-                SELECT
-                    "protocolClassName",
-                    params
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND id = %s
-                 LIMIT 1
-                """,
-                (
-                    int(projectId),
-                    int(sourceProtocolDbId),
-                ),
+            sourceRow = protocolGraphRepository.getProtocolRuntimeInfoByDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=sourceProtocolDbId,
             )
 
             if not sourceRow:
