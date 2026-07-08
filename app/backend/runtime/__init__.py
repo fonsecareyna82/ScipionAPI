@@ -28,6 +28,7 @@ from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -35,4 +36,5 @@ __all__ = [
     "ProtocolGraphRepository",
     "RuntimeProtocolDeleteService",
     "ProjectRuntimeRepository",
+    "RuntimeProtocolDuplicateService",
 ]
