@@ -8280,7 +8280,14 @@ class ProjectService:
           - The caller must persist the prepared protocol before launching so the
             execution process can reload the restored pointers.
         """
-        protocolId = self._getScipionObjectId(protocol)
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
+            self._getScipionObjectId(protocol),
+        )
 
         if protocolId is None:
             return {
@@ -8291,10 +8298,8 @@ class ProjectService:
                 "errors": [],
             }
 
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId,
         )
 
         if protocolDbId is None:
