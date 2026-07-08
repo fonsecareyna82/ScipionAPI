@@ -795,19 +795,12 @@ class PostgresqlRuntimeMapper(Mapper):
             SELECT o.id
               FROM scipion_objects o
              WHERE o."projectId" = %s
-               AND (
-                    o."scipionObjId" = %s
-                    OR o.id = %s
-               )
-             ORDER BY
-               CASE WHEN o."scipionObjId" = %s THEN 0 ELSE 1 END,
-               o.id DESC
+               AND o."scipionObjId" = %s
+             ORDER BY o.id DESC
              LIMIT 1
             """,
             (
                 self.projectId,
-                int(runtimeObjId),
-                int(runtimeObjId),
                 int(runtimeObjId),
             ),
         )
