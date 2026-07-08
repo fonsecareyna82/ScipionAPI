@@ -8044,16 +8044,11 @@ class ProjectService:
 
             if not projectPath and mapper is not None:
                 try:
-                    row = mapper.db.fetchOne(
-                        """
-                        SELECT name
-                          FROM projects
-                         WHERE id = %s
-                        """,
-                        (int(projectId),),
+                    projectRuntimeRepository = ProjectRuntimeRepository()
+                    projectPath = projectRuntimeRepository.getProjectNameById(
+                        mapper=mapper,
+                        projectId=projectId,
                     )
-                    if row:
-                        projectPath = row.get("name")
                 except Exception:
                     projectPath = None
 
