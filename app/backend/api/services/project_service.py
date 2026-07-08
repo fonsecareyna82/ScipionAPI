@@ -11252,7 +11252,6 @@ class ProjectService:
                     projectId=projectId,
                     sourceProtocolId=sourceScipionProtocolId,
                     duplicatedProtocolId=duplicatedProtocolId,
-                    resolveProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
                 )
 
                 logger.info(
