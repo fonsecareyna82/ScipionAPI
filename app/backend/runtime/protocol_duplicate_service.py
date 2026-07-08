@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import copy
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from pyworkflow.protocol.params import (
     MultiPointerParam,
@@ -104,3 +104,28 @@ class RuntimeProtocolDuplicateService:
 
         except Exception:
             pass
+
+    def buildPostgresqlRuntimeDuplicateResultPayload(
+            self,
+            duplicated: List[Dict[str, Any]],
+            dependenciesCount: int,
+            errors: List[Any],
+            syncReports: List[Dict[str, Any]],
+            sourceToDuplicatedProtocolId: Dict[str, str],
+            sourceDbToDuplicatedDbId: Dict[int, int],
+    ) -> Dict[str, Any]:
+        return {
+            "protocolsCount": len(duplicated or []),
+            "dependenciesCount": int(dependenciesCount or 0),
+            "duplicated": duplicated or [],
+            "errors": errors or [],
+            "postgresqlRuntimeDuplicate": True,
+            "syncReports": syncReports or [],
+            "duplicateRemap": {
+                "protocolIds": sourceToDuplicatedProtocolId or {},
+                "protocolDbIds": {
+                    str(k): str(v)
+                    for k, v in (sourceDbToDuplicatedDbId or {}).items()
+                },
+            },
+        }
