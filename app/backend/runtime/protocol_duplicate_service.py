@@ -177,3 +177,25 @@ class RuntimeProtocolDuplicateService:
             "duplicatedItem": duplicatedItem,
             "duplicatedSummary": duplicatedSummary,
         }
+
+    def registerDuplicatedProtocolSyncReport(
+            self,
+            sourceScipionProtocolId,
+            duplicatedProtocolId,
+            protocolSync: Dict[str, Any],
+            dependencySync: Dict[str, Any],
+            pointerRestore: Dict[str, Any],
+            syncReports: List[Dict[str, Any]],
+            dependenciesCount: int,
+    ) -> int:
+        syncReports.append({
+            "sourceProtocolId": str(sourceScipionProtocolId),
+            "duplicatedProtocolId": str(duplicatedProtocolId),
+            "protocolSync": protocolSync,
+            "dependencySync": dependencySync,
+            "pointerRestore": pointerRestore,
+        })
+
+        return int(dependenciesCount or 0) + int(
+            (dependencySync or {}).get("dependenciesSaved", 0) or 0
+        )

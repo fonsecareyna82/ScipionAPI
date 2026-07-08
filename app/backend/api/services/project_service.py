@@ -11451,17 +11451,15 @@ class ProjectService:
 
                 self.currentProject._storeProtocol(newProtocol)
 
-                dependenciesCount += int(
-                    dependencySync.get("dependenciesSaved", 0) or 0
+                dependenciesCount = runtimeProtocolDuplicateService.registerDuplicatedProtocolSyncReport(
+                    sourceScipionProtocolId=sourceScipionProtocolId,
+                    duplicatedProtocolId=duplicatedProtocolId,
+                    protocolSync=protocolSync,
+                    dependencySync=dependencySync,
+                    pointerRestore=pointerRestore,
+                    syncReports=syncReports,
+                    dependenciesCount=dependenciesCount,
                 )
-
-                syncReports.append({
-                    "sourceProtocolId": str(sourceScipionProtocolId),
-                    "duplicatedProtocolId": str(duplicatedProtocolId),
-                    "protocolSync": protocolSync,
-                    "dependencySync": dependencySync,
-                    "pointerRestore": pointerRestore,
-                })
 
             except HTTPException:
                 raise
