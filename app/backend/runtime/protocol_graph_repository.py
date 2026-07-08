@@ -280,6 +280,47 @@ class ProtocolGraphRepository:
             if row.get("protocolDbId") not in (None, "")
         ]
 
+    def loadInputRefPointerValues(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            inputName: str,
+    ) -> List[str]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                parent."protocolId" AS "parentProtocolId",
+                r."parentOutputName"
+              FROM protocol_input_refs r
+         LEFT JOIN protocols parent
+                ON parent."projectId" = r."projectId"
+               AND parent.id = r."parentProtocolDbId"
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+               AND r."inputName" = %s
+             ORDER BY r."itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                str(inputName),
+            ),
+        )
+
+        pointerValues = []
+
+        for row in rows or []:
+            parentId = row.get("parentProtocolId")
+            outputName = row.get("parentOutputName")
+
+            if parentId in (None, "") or not outputName:
+                continue
+
+            pointerValues.append("%s.%s" % (parentId, outputName))
+
+        return pointerValues
+
     def loadInputRefsForProtocolCopy(
             self,
             mapper,

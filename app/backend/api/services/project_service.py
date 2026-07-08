@@ -9913,37 +9913,13 @@ class ProjectService:
                         )
 
                         if protocolDbId is not None:
-                            rows = mapper.db.fetchAll(
-                                """
-                                SELECT
-                                    parent."protocolId" AS "parentProtocolId",
-                                    r."parentOutputName"
-                                  FROM protocol_input_refs r
-                             LEFT JOIN protocols parent
-                                    ON parent."projectId" = r."projectId"
-                                   AND parent.id = r."parentProtocolDbId"
-                                 WHERE r."projectId" = %s
-                                   AND r."protocolDbId" = %s
-                                   AND r."inputName" = %s
-                                 ORDER BY r."itemIndex"
-                                """,
-                                (
-                                    int(projectId),
-                                    int(protocolDbId),
-                                    str(paramName),
-                                ),
+                            protocolGraphRepository = ProtocolGraphRepository()
+                            valueList = protocolGraphRepository.loadInputRefPointerValues(
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocolDbId=protocolDbId,
+                                inputName=paramName,
                             )
-
-                            valueList = []
-
-                            for row in rows or []:
-                                parentId = row.get("parentProtocolId")
-                                outputName = row.get("parentOutputName")
-
-                                if parentId in (None, "") or not outputName:
-                                    continue
-
-                                valueList.append("%s.%s" % (parentId, outputName))
 
                             if valueList:
                                 paramDict["readOnly"] = True
