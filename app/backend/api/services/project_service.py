@@ -110,6 +110,7 @@ from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteSer
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
+from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -7934,32 +7935,14 @@ class ProjectService:
             outputInfo: Dict[str, Any],
             mapper=None,
     ):
-        """
-        Attach a PostgreSQL-backed output proxy to the parent protocol.
+        runtimeOutputProxyService = RuntimeOutputProxyService()
 
-        This intentionally replaces the legacy sqlite-backed output attribute when
-        PostgreSQL has the output persisted. The goal is that child PointerParams
-        resolve through PostgreSQL instead of the original parent output sqlite.
-        """
-        from app.backend.utils.postgresql_runtime_output_adapter import (
-            PostgresqlRuntimeOutputProxy,
-        )
-
-        db = getattr(mapper, "db", None)
-
-        if db is None:
-            raise ValueError("PostgreSQL mapper/db is required to attach runtime output proxy")
-
-        proxy = PostgresqlRuntimeOutputProxy(
-            db=db,
-            parent=parentProtocol,
+        return runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
+            parentProtocol=parentProtocol,
             outputName=outputName,
             outputInfo=outputInfo,
+            mapper=mapper,
         )
-
-        setattr(parentProtocol, outputName, proxy)
-
-        return proxy
 
     def _repairPostgresqlRuntimeCtfTomoSeriesTiltSeriesRelation(
             self,
