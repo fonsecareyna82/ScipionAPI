@@ -11841,46 +11841,6 @@ class ProjectService:
             errors=errors,
         )
 
-    @staticmethod
-    def _getRuntimeBlockedStatusTexts() -> set:
-        return RuntimeProtocolDeleteService.getRuntimeBlockedStatusTexts()
-
-    def _validatePostgresqlRuntimeProtocolDelete(
-            self,
-            mapper,
-            projectId: int,
-            selectedProtocolDbIds: List[int],
-            protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
-    ) -> Dict[str, Any]:
-        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
-
-        return runtimeProtocolDeleteService.validatePostgresqlRuntimeProtocolDelete(
-            mapper=mapper,
-            projectId=projectId,
-            selectedProtocolDbIds=selectedProtocolDbIds,
-            protocolGraphRepository=protocolGraphRepository,
-        )
-
-    def _deletePostgresqlRuntimeProtocols(
-            self,
-            mapper,
-            projectId: int,
-            protocols: List[Any],
-            protocolDbIds: Optional[List[int]] = None,
-            protocolIds: Optional[List[str]] = None,
-            protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
-    ) -> Dict[str, Any]:
-        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
-
-        return runtimeProtocolDeleteService.deletePostgresqlRuntimeProtocols(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=protocols,
-            protocolDbIds=protocolDbIds,
-            protocolIds=protocolIds,
-            protocolGraphRepository=protocolGraphRepository,
-        )
-
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         try:
             protList = []
