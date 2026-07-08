@@ -7958,6 +7958,7 @@ class ProjectService:
                 "protocolId": None,
                 "protocolDbId": None,
                 "parents": [],
+                "parentProtocolIds": [],
                 "inputRefs": [],
                 "detectedPointerParams": [],
                 "dependencies": 0,
