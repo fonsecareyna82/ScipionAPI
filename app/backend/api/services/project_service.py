@@ -11178,21 +11178,21 @@ class ProjectService:
                 "objectId": None if remappedToDuplicatedParent else row.get("objectId"),
             })
 
-        dependenciesSaved = self._replacePostgresqlDependenciesForProtocol(
+        dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
             mapper=mapper,
             projectId=projectId,
             childProtocolDbId=int(duplicatedProtocolDbId),
             parentProtocolDbIds=parentProtocolDbIds,
         )
 
-        inputRefsSaved = self._replacePostgresqlInputRefsForProtocol(
+        inputRefsSaved = protocolGraphRepository.replaceInputRefsForProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolDbId=int(duplicatedProtocolDbId),
             refs=refs,
         )
 
-        self._updatePostgresqlProtocolParentIds(
+        protocolGraphRepository.updateProtocolParentIds(
             mapper=mapper,
             projectId=projectId,
             protocolDbId=int(duplicatedProtocolDbId),
