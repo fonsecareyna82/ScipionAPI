@@ -1551,6 +1551,8 @@ class ProjectService:
                     exc_info=True,
                 )
 
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
         return {
             "protocols": 1,
             "dependencies": 0,
@@ -1560,8 +1562,9 @@ class ProjectService:
             "stepErrors": [],
             "outputsDeclared": len(outputReport.get("declared") or []),
             "outputs": len(outputReport.get("persisted") or []),
-            "outputsMissing": 0,
-            "outputsByKind": self._countRuntimeOutputKinds(outputReport.get("persisted") or []),
+            "outputsByKind": runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
+                outputReport.get("persisted") or []
+            ),
             "outputMissing": [],
             "outputErrors": outputReport.get("errors") or [],
             "postgresqlRuntimeSync": True,
