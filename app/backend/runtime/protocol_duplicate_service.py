@@ -24,7 +24,8 @@
 # *
 # ******************************************************************************
 import copy
-from typing import Any, Dict, List
+import logging
+from typing import Any, Callable, Dict, List, Optional
 
 from pyworkflow.protocol.params import (
     MultiPointerParam,
@@ -33,6 +34,9 @@ from pyworkflow.protocol.params import (
 )
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.runtime.pointer_resolver import RuntimePointerResolver
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolDuplicateState:
@@ -69,6 +73,29 @@ class RuntimeProtocolDuplicateService:
 
     def createDuplicateState(self) -> RuntimeProtocolDuplicateState:
         return RuntimeProtocolDuplicateState()
+
+    @staticmethod
+    def _getScipionObjectId(obj) -> Optional[int]:
+        for getterName in ("getObjId", "getId"):
+            getter = getattr(obj, getterName, None)
+
+            if not callable(getter):
+                continue
+
+            try:
+                value = getter()
+            except Exception:
+                continue
+
+            if value is None:
+                continue
+
+            try:
+                return int(value)
+            except Exception:
+                continue
+
+        return None
 
     def buildDuplicatedProtocolParams(
             self,
@@ -357,3 +384,142 @@ class RuntimeProtocolDuplicateService:
             "parentProtocolIds": parentProtocolIds,
             "parentProtocolDbIds": parentProtocolDbIds,
         }
+
+    def restorePostgresqlPointerInputsBeforeCopy(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            getParentProtocolCallback: Callable,
+            parentProtocolsById: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Restore PointerParam/MultiPointerParam attributes from protocol_input_refs
+        before storing a duplicated protocol through Scipion's runtime mapper.
+        """
+        protocolId = self._getScipionObjectId(protocol)
+
+        if protocolId is None:
+            return {
+                "protocolId": None,
+                "restored": 0,
+                "skipped": True,
+                "reason": "protocol_without_id",
+            }
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId,
+        )
+
+        if protocolDbId is None:
+            return {
+                "protocolId": str(protocolId),
+                "protocolDbId": None,
+                "restored": 0,
+                "skipped": True,
+                "reason": "protocol_not_found_in_postgresql",
+            }
+
+        protocolGraphRepository = ProtocolGraphRepository()
+        selfInputRefs = protocolGraphRepository.loadSelfInputRefs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+        )
+
+        if selfInputRefs:
+            raise ValueError(
+                "Protocol %s has PostgreSQL runtime self input refs: %s"
+                % (protocolId, selfInputRefs)
+            )
+
+        pointerResolver = RuntimePointerResolver()
+
+        refsByInputName = pointerResolver.loadInputRefsByInputName(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+        )
+
+        restored = []
+        errors = []
+
+        def resolveParentProtocol(parentProtocolId):
+            parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
+                parentProtocolId,
+            )
+
+            parentProtocol = None
+
+            if parentProtocolsById:
+                parentProtocol = (
+                        parentProtocolsById.get(str(parentScipionProtocolId))
+                        or parentProtocolsById.get(parentScipionProtocolId)
+                )
+
+            if parentProtocol is None:
+                parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=parentProtocolId,
+                )
+
+            return parentScipionProtocolId, parentProtocol
+
+        for inputName, inputRefs in refsByInputName.items():
+            try:
+                param = protocol.getParam(inputName)
+            except Exception:
+                param = None
+
+            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+
+            try:
+                restoreReport = pointerResolver.restorePointerAttributeFromInputRefs(
+                    protocol=protocol,
+                    inputName=inputName,
+                    inputRefs=inputRefs,
+                    isMultiPointer=isinstance(param, MultiPointerParam),
+                    resolveParentProtocolCallback=resolveParentProtocol,
+                )
+
+                restored.extend(restoreReport.get("restored") or [])
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to restore PostgreSQL pointer input before protocol copy. "
+                    "projectId=%s protocolId=%s inputName=%s",
+                    projectId,
+                    protocolId,
+                    inputName,
+                )
+
+                errors.append({
+                    "inputName": inputName,
+                    "error": str(e),
+                })
+
+        report = {
+            "protocolId": str(protocolId),
+            "protocolDbId": int(protocolDbId),
+            "restored": len(restored),
+            "items": restored,
+            "errors": errors,
+            "skipped": False,
+        }
+
+        logger.info(
+            "Restored PostgreSQL pointer inputs before protocol copy. "
+            "projectId=%s protocolId=%s report=%s",
+            projectId,
+            protocolId,
+            report,
+        )
+
+        return report
