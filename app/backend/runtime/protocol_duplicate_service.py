@@ -24,13 +24,14 @@
 # *
 # ******************************************************************************
 import copy
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from pyworkflow.protocol.params import (
     MultiPointerParam,
     PointerParam,
     RelationParam,
 )
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 
 
 class RuntimeProtocolDuplicateState:
@@ -201,3 +202,163 @@ class RuntimeProtocolDuplicateService:
         state.dependenciesCount = int(state.dependenciesCount or 0) + int(
             (dependencySync or {}).get("dependenciesSaved", 0) or 0
         )
+
+    def copyPostgresqlInputRefsForDuplicatedProtocol(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocolId,
+            duplicatedProtocolId,
+            sourceToDuplicatedProtocolId: Optional[Dict[str, str]] = None,
+            sourceDbToDuplicatedDbId: Optional[Dict[int, int]] = None,
+            resolveProtocolDbIdCallback: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        if resolveProtocolDbIdCallback is None:
+            raise ValueError("resolveProtocolDbIdCallback is required")
+
+        sourceProtocolDbId = resolveProtocolDbIdCallback(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=sourceProtocolId,
+        )
+
+        duplicatedProtocolDbId = resolveProtocolDbIdCallback(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=duplicatedProtocolId,
+        )
+
+        if sourceProtocolDbId is None:
+            raise ValueError(
+                "Source protocol %s was not found in PostgreSQL"
+                % sourceProtocolId
+            )
+
+        if duplicatedProtocolDbId is None:
+            raise ValueError(
+                "Duplicated protocol %s was not found in PostgreSQL"
+                % duplicatedProtocolId
+            )
+
+        sourceToDuplicatedProtocolId = {
+            str(k): str(v)
+            for k, v in (sourceToDuplicatedProtocolId or {}).items()
+            if k is not None and v is not None
+        }
+
+        sourceDbToDuplicatedDbId = {
+            int(k): int(v)
+            for k, v in (sourceDbToDuplicatedDbId or {}).items()
+            if k is not None and v is not None
+        }
+
+        protocolGraphRepository = ProtocolGraphRepository()
+        rows = protocolGraphRepository.loadInputRefsForProtocolCopy(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=sourceProtocolDbId,
+        )
+
+        refs = []
+        parentProtocolDbIds = []
+        parentProtocolIds = []
+
+        for row in rows or []:
+            originalParentProtocolDbId = row.get("parentProtocolDbId")
+            originalParentProtocolId = row.get("parentProtocolId")
+
+            parentProtocolDbId = originalParentProtocolDbId
+            parentProtocolId = originalParentProtocolId
+            remappedToDuplicatedParent = False
+
+            if originalParentProtocolDbId not in (None, ""):
+                try:
+                    originalParentProtocolDbIdInt = int(originalParentProtocolDbId)
+
+                    if originalParentProtocolDbIdInt in sourceDbToDuplicatedDbId:
+                        parentProtocolDbId = sourceDbToDuplicatedDbId[originalParentProtocolDbIdInt]
+                        remappedToDuplicatedParent = True
+                    else:
+                        parentProtocolDbId = originalParentProtocolDbIdInt
+
+                except Exception:
+                    parentProtocolDbId = originalParentProtocolDbId
+
+            if originalParentProtocolId not in (None, ""):
+                originalParentProtocolIdText = str(originalParentProtocolId).strip()
+
+                if originalParentProtocolIdText in sourceToDuplicatedProtocolId:
+                    parentProtocolId = sourceToDuplicatedProtocolId[originalParentProtocolIdText]
+                    remappedToDuplicatedParent = True
+                else:
+                    parentProtocolId = originalParentProtocolIdText
+
+            if parentProtocolDbId in (None, "") and parentProtocolId not in (None, ""):
+                parentProtocolDbId = resolveProtocolDbIdCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=parentProtocolId,
+                )
+
+            if parentProtocolDbId not in (None, ""):
+                try:
+                    parentProtocolDbId = int(parentProtocolDbId)
+
+                    if parentProtocolDbId not in parentProtocolDbIds:
+                        parentProtocolDbIds.append(parentProtocolDbId)
+                except Exception:
+                    pass
+
+            if parentProtocolId not in (None, ""):
+                try:
+                    cleanParentProtocolId = int(parentProtocolId)
+
+                    if cleanParentProtocolId not in parentProtocolIds:
+                        parentProtocolIds.append(cleanParentProtocolId)
+                except Exception:
+                    pass
+
+            refs.append({
+                "projectId": int(projectId),
+                "protocolDbId": int(duplicatedProtocolDbId),
+                "protocolId": str(duplicatedProtocolId),
+                "inputName": row.get("inputName"),
+                "itemIndex": row.get("itemIndex"),
+                "parentProtocolDbId": parentProtocolDbId,
+                "parentProtocolId": str(parentProtocolId) if parentProtocolId not in (None, "") else None,
+                "parentOutputName": row.get("parentOutputName"),
+                "objectClassName": row.get("objectClassName"),
+                "objectId": None if remappedToDuplicatedParent else row.get("objectId"),
+            })
+
+        dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbId=int(duplicatedProtocolDbId),
+            parentProtocolDbIds=parentProtocolDbIds,
+        )
+
+        inputRefsSaved = protocolGraphRepository.replaceInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(duplicatedProtocolDbId),
+            refs=refs,
+        )
+
+        protocolGraphRepository.updateProtocolParentIds(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(duplicatedProtocolDbId),
+            parentProtocolIds=parentProtocolIds,
+        )
+
+        return {
+            "sourceProtocolId": str(sourceProtocolId),
+            "sourceProtocolDbId": int(sourceProtocolDbId),
+            "duplicatedProtocolId": str(duplicatedProtocolId),
+            "duplicatedProtocolDbId": int(duplicatedProtocolDbId),
+            "inputRefsSaved": inputRefsSaved,
+            "dependenciesSaved": dependenciesSaved,
+            "parentProtocolIds": parentProtocolIds,
+            "parentProtocolDbIds": parentProtocolDbIds,
+        }
