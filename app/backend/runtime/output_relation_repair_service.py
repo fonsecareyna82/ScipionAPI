@@ -310,6 +310,7 @@ class RuntimeOutputRelationRepairService:
                 repairOutputMapperCallback=repairOutputMapperCallback,
                 storeProtocolCallback=storeProtocolCallback,
                 relatedOutputCandidate=relatedOutputCandidate,
+                persistRepairedRelation=False,
             )
 
             report["relationId"] = persistedRelation.get("relationId")
@@ -321,6 +322,53 @@ class RuntimeOutputRelationRepairService:
                 return report
 
         return lastReport
+
+    def persistResolvedRuntimeOutputRelation(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocolDbId: int,
+            sourceOutputName: str,
+            relationRule: Dict[str, Any],
+            relatedParentProtocolDbId,
+            relatedOutputName,
+    ) -> Dict[str, Any]:
+        relationName = str(relationRule.get("name") or "").strip()
+
+        if not relationName:
+            return {
+                "saved": False,
+                "reason": "missing_relation_name",
+            }
+
+        if relatedParentProtocolDbId in (None, "") or not relatedOutputName:
+            return {
+                "saved": False,
+                "reason": "missing_related_output",
+                "relationName": relationName,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "sourceOutputName": sourceOutputName,
+                "targetProtocolDbId": relatedParentProtocolDbId,
+                "targetOutputName": relatedOutputName,
+            }
+
+        metadata = {
+            "source": "runtime_output_relation_repair_service",
+            "repairSource": relationRule.get("source") or "default_relation_rules",
+            "getterName": relationRule.get("getterName"),
+            "setterName": relationRule.get("setterName"),
+        }
+
+        return self.protocolGraphRepository.replaceRuntimeOutputRelation(
+            mapper=mapper,
+            projectId=projectId,
+            sourceProtocolDbId=int(sourceProtocolDbId),
+            sourceOutputName=sourceOutputName,
+            relationName=relationName,
+            targetProtocolDbId=int(relatedParentProtocolDbId),
+            targetOutputName=str(relatedOutputName),
+            metadata=metadata,
+        )
 
     def repairMissingOutputRelations(
             self,
@@ -385,7 +433,7 @@ class RuntimeOutputRelationRepairService:
             lastReport = report
 
             if report.get("checked"):
-                report["relationSource"] = "default_relation_rules"
+                report.setdefault("relationSource", "default_relation_rules")
                 return report
 
         return lastReport
@@ -406,6 +454,7 @@ class RuntimeOutputRelationRepairService:
             repairOutputMapperCallback: Optional[Callable] = None,
             storeProtocolCallback: Optional[Callable] = None,
             relatedOutputCandidate: Optional[Dict[str, Any]] = None,
+            persistRepairedRelation: bool = True,
     ) -> Dict[str, Any]:
         relationName = relationRule.get("name")
         getterName = relationRule.get("getterName")
@@ -583,6 +632,45 @@ class RuntimeOutputRelationRepairService:
 
             report["repaired"] = True
             report["reason"] = "linked_runtime_output_relation"
+
+            if persistRepairedRelation:
+                try:
+                    persistReport = self.persistResolvedRuntimeOutputRelation(
+                        mapper=mapper,
+                        projectId=projectId,
+                        sourceProtocolDbId=parentProtocolDbId,
+                        sourceOutputName=outputName,
+                        relationRule=relationRule,
+                        relatedParentProtocolDbId=relatedParentProtocolDbId,
+                        relatedOutputName=relatedOutputName,
+                    )
+
+                    report["persistedRuntimeOutputRelation"] = persistReport
+
+                    if persistReport.get("saved"):
+                        report["relationSource"] = "default_relation_rules_persisted"
+
+                except Exception as persistError:
+                    report["persistedRuntimeOutputRelation"] = {
+                        "saved": False,
+                        "reason": "persist_failed",
+                        "error": str(persistError),
+                    }
+
+                    logger.debug(
+                        "Could not persist repaired runtime output relation. "
+                        "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                        "outputName=%s relationName=%s relatedParentProtocolDbId=%s "
+                        "relatedOutputName=%s",
+                        projectId,
+                        parentScipionProtocolId,
+                        parentProtocolDbId,
+                        outputName,
+                        relationName,
+                        relatedParentProtocolDbId,
+                        relatedOutputName,
+                        exc_info=True,
+                    )
 
             logger.info(
                 "Repaired PostgreSQL runtime output relation. "
