@@ -8344,20 +8344,11 @@ class ProjectService:
             }
 
             try:
-                parentScipionProtocolId = self._resolveScipionProtocolId(
+                parentScipionProtocolId, parentProtocol = self._getParentProtocolForPointer(
                     mapper=mapper,
                     projectId=projectId,
-                    protocolId=parentProtocolId,
+                    parentId=parentProtocolId,
                 )
-
-                parentProtocol = self._loadProtocolFromRuntimeDb(
-                    protocolId=parentScipionProtocolId,
-                )
-
-                if parentProtocol is None:
-                    parentProtocol = self._getScipionProtocolByRuntimeId(
-                        parentScipionProtocolId,
-                    )
 
                 try:
                     hasRuntimeAttribute = hasattr(parentProtocol, parentOutputName)
