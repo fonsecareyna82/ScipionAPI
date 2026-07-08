@@ -8013,26 +8013,17 @@ class ProjectService:
 
         protocolGraphRepository = ProtocolGraphRepository()
 
-        dependenciesSaved = protocolGraphRepository.replaceDependenciesForProtocol(
+        inputGraphSync = protocolGraphRepository.replaceInputGraphForProtocol(
             mapper=mapper,
             projectId=projectId,
-            childProtocolDbId=int(protocolDbId),
+            protocolDbId=int(protocolDbId),
             parentProtocolDbIds=parentProtocolDbIds,
-        )
-
-        inputRefsSaved = protocolGraphRepository.replaceInputRefsForProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
-            refs=inputRefs,
-        )
-
-        protocolGraphRepository.updateProtocolParentIds(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
             parentProtocolIds=parentProtocolIds,
+            inputRefs=inputRefs,
         )
+
+        dependenciesSaved = inputGraphSync.get("dependencies", 0)
+        inputRefsSaved = inputGraphSync.get("inputRefsSaved", 0)
 
         return {
             "protocolId": str(protocolId),

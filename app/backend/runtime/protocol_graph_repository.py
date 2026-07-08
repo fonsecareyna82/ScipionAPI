@@ -687,6 +687,41 @@ class ProtocolGraphRepository:
             ),
         )
 
+    def replaceInputGraphForProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            parentProtocolDbIds: List[int],
+            parentProtocolIds: List[int],
+            inputRefs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        dependenciesSaved = self.replaceDependenciesForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            childProtocolDbId=int(protocolDbId),
+            parentProtocolDbIds=parentProtocolDbIds,
+        )
+
+        inputRefsSaved = self.replaceInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+            refs=inputRefs,
+        )
+
+        self.updateProtocolParentIds(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+            parentProtocolIds=parentProtocolIds,
+        )
+
+        return {
+            "dependencies": dependenciesSaved,
+            "inputRefsSaved": inputRefsSaved,
+        }
+
     def replaceDependenciesForProtocol(
             self,
             mapper,
