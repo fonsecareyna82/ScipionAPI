@@ -111,7 +111,12 @@ from app.backend.runtime.project_runtime_repository import ProjectRuntimeReposit
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
-from app.backend.runtime import RuntimeProtocolLaunchPrepareService, RuntimeOutputRelationRepairService
+from app.backend.runtime import (
+    RuntimeProtocolLaunchPrepareService,
+    RuntimeOutputRelationRepairService,
+    RuntimeOutputMapperRepairService,
+)
+
 
 from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam, PointerParam,
                                         MultiPointerParam, RelationParam)
@@ -8000,129 +8005,15 @@ class ProjectService:
             outputObj,
             outputInfo: Dict[str, Any],
     ) -> bool:
-        """
-        Repair Scipion Set mapper metadata using PostgreSQL stored properties.
+        runtimeOutputMapperRepairService = RuntimeOutputMapperRepairService()
 
-        Some outputs loaded from run.db can exist as Set objects but without
-        mapper path/prefix initialized. Protocol execution then fails with:
-
-            Set.load: mapper path and prefix not set.
-
-        We do not replace the output object. We only restore the legacy sqlite
-        mapper path from PostgreSQL properties so the Scipion Set can load normally.
-        """
-        if outputObj is None:
-            return False
-
-        properties = (outputInfo or {}).get("properties") or {}
-
-        if not isinstance(properties, dict):
-            return False
-
-        mapperPath = (
-                properties.get("_mapperPath")
-                or properties.get("fileName")
-                or properties.get("legacyMapperPath")
-                or properties.get("legacyFileName")
+        return runtimeOutputMapperRepairService.repairPostgresqlRuntimeSetMapperInfo(
+            mapper=mapper,
+            projectId=projectId,
+            outputObj=outputObj,
+            outputInfo=outputInfo,
+            getCurrentProjectPathCallback=self._getCurrentProjectPath,
         )
-
-        if not mapperPath:
-            return False
-
-        mapperPath = str(mapperPath).split(",")[0].strip()
-
-        if not mapperPath:
-            return False
-
-        if not os.path.isabs(mapperPath):
-            projectPath = None
-
-            try:
-                projectPath = self._getCurrentProjectPath()
-            except Exception:
-                projectPath = None
-
-            if not projectPath and mapper is not None:
-                try:
-                    projectRuntimeRepository = ProjectRuntimeRepository()
-                    projectPath = projectRuntimeRepository.getProjectNameById(
-                        mapper=mapper,
-                        projectId=projectId,
-                    )
-                except Exception:
-                    projectPath = None
-
-            if projectPath:
-                mapperPath = os.path.abspath(os.path.join(str(projectPath), mapperPath))
-
-        if not mapperPath:
-            return False
-
-        # If the object already has a filename, do not force it unless mapper path is missing.
-        currentFileName = None
-
-        try:
-            currentFileName = outputObj.getFileName()
-        except Exception:
-            currentFileName = None
-
-        repaired = False
-
-        if not currentFileName:
-            try:
-                setter = getattr(outputObj, "setFileName", None)
-                if callable(setter):
-                    setter(mapperPath)
-                    repaired = True
-            except Exception:
-                logger.debug(
-                    "Could not set filename on PostgreSQL runtime output object. object=%s mapperPath=%s",
-                    outputObj,
-                    mapperPath,
-                    exc_info=True,
-                )
-
-        # Defensive repair for pyworkflow Set internals.
-        for attrName, attrValue in (
-                ("_mapperPath", mapperPath),
-                ("_mapperPrefix", ""),
-        ):
-            try:
-                attr = getattr(outputObj, attrName, None)
-
-                if hasattr(attr, "set"):
-                    currentValue = None
-
-                    try:
-                        currentValue = attr.get()
-                    except Exception:
-                        currentValue = None
-
-                    if currentValue in (None, ""):
-                        attr.set(attrValue)
-                        repaired = True
-
-                elif attr in (None, ""):
-                    setattr(outputObj, attrName, attrValue)
-                    repaired = True
-
-            except Exception:
-                logger.debug(
-                    "Could not repair %s on PostgreSQL runtime output object. object=%s value=%s",
-                    attrName,
-                    outputObj,
-                    attrValue,
-                    exc_info=True,
-                )
-
-        logger.debug(
-            "PostgreSQL runtime Set mapper repair. object=%s mapperPath=%s repaired=%s",
-            outputObj,
-            mapperPath,
-            repaired,
-        )
-
-        return repaired
 
     def _resolveParentOutputForRuntimePointer(
             self,
