@@ -11884,15 +11884,17 @@ class ProjectService:
             deleteValidationInfo = None
 
             if usingPostgresqlRuntime:
-                protocolIdentityData = runtimeProtocolDeleteService.resolveProtocolDeleteIdentity(
+                deletePreparationInfo = runtimeProtocolDeleteService.preparePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=protList,
+                    protocolGraphRepository=protocolGraphRepository,
                 )
 
-                selectedProtocolDbIds = protocolIdentityData.get("protocolDbIds") or []
-                missingPostgresqlProtocols = protocolIdentityData.get("missingProtocolIds") or []
-                selectedProtocolIds = protocolIdentityData.get("protocolIds") or []
+                selectedProtocolDbIds = deletePreparationInfo.get("selectedProtocolDbIds") or []
+                missingPostgresqlProtocols = deletePreparationInfo.get("missingPostgresqlProtocols") or []
+                selectedProtocolIds = deletePreparationInfo.get("selectedProtocolIds") or []
+                deleteValidationInfo = deletePreparationInfo.get("deleteValidationInfo")
 
                 if missingPostgresqlProtocols:
                     raise HTTPException(
@@ -11907,14 +11909,7 @@ class ProjectService:
                         },
                     )
 
-                deleteValidationInfo = runtimeProtocolDeleteService.validatePostgresqlRuntimeProtocolDelete(
-                    mapper=mapper,
-                    projectId=projectId,
-                    selectedProtocolDbIds=selectedProtocolDbIds,
-                    protocolGraphRepository=protocolGraphRepository,
-                )
-
-                if deleteValidationInfo.get("blocked"):
+                if deleteValidationInfo and deleteValidationInfo.get("blocked"):
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail={
