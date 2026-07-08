@@ -7944,23 +7944,30 @@ class ProjectService:
           - Dependency edges are resolved from raw params, not only from Scipion Pointer objects.
           - The workflow graph loaded from PostgreSQL uses protocol_dependencies.
         """
-        protocolId = self._getScipionObjectId(protocol)
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
+            self._getScipionObjectId(protocol),
+        )
+
         if protocolId is None:
             return {
                 "protocolId": None,
                 "protocolDbId": None,
                 "parents": [],
                 "inputRefs": [],
+                "detectedPointerParams": [],
                 "dependencies": 0,
                 "inputRefsSaved": 0,
                 "skipped": True,
                 "reason": "protocol_without_id",
             }
 
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId,
         )
 
         if protocolDbId is None:
@@ -7968,7 +7975,9 @@ class ProjectService:
                 "protocolId": str(protocolId),
                 "protocolDbId": None,
                 "parents": [],
+                "parentProtocolIds": [],
                 "inputRefs": [],
+                "detectedPointerParams": [],
                 "dependencies": 0,
                 "inputRefsSaved": 0,
                 "skipped": True,
