@@ -11247,12 +11247,11 @@ class ProjectService:
                 )
 
                 dependencySync = runtimeProtocolDuplicateService.copyPostgresqlInputRefsForDuplicatedProtocol(
+                    state=duplicateState,
                     mapper=mapper,
                     projectId=projectId,
                     sourceProtocolId=sourceScipionProtocolId,
                     duplicatedProtocolId=duplicatedProtocolId,
-                    sourceToDuplicatedProtocolId=duplicateState.sourceToDuplicatedProtocolId,
-                    sourceDbToDuplicatedDbId=duplicateState.sourceDbToDuplicatedDbId,
                     resolveProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
                 )
 
