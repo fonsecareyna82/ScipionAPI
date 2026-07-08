@@ -8040,6 +8040,7 @@ class ProjectService:
             "parents": parentProtocolDbIds,
             "parentProtocolIds": parentProtocolIds,
             "inputRefs": inputRefs,
+            "detectedPointerParams": detectedPointerParams,
             "dependencies": dependenciesSaved,
             "inputRefsSaved": inputRefsSaved,
             "skipped": False,
