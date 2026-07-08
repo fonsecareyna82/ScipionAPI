@@ -11930,17 +11930,13 @@ class ProjectService:
             self.currentProject.deleteProtocol(*protList)
 
             if usingPostgresqlRuntime:
-                deleteInfo = runtimeProtocolDeleteService.deletePostgresqlRuntimeProtocols(
+                return runtimeProtocolDeleteService.executePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=protList,
                     protocolDbIds=selectedProtocolDbIds,
                     protocolIds=selectedProtocolIds,
                     protocolGraphRepository=protocolGraphRepository,
-                )
-
-                return runtimeProtocolDeleteService.buildPostgresqlRuntimeDeleteResult(
-                    deleteInfo=deleteInfo,
                     deleteValidationInfo=deleteValidationInfo,
                 )
 

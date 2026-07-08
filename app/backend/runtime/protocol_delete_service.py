@@ -296,3 +296,27 @@ class RuntimeProtocolDeleteService:
             "deleteValidationInfo": deleteValidationInfo,
             "deleteInfo": deleteInfo,
         }
+
+    def executePostgresqlRuntimeProtocolDelete(
+        self,
+        mapper,
+        projectId: int,
+        protocols: List[Any],
+        protocolDbIds: Optional[List[int]] = None,
+        protocolIds: Optional[List[str]] = None,
+        protocolGraphRepository: Optional[ProtocolGraphRepository] = None,
+        deleteValidationInfo: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        deleteInfo = self.deletePostgresqlRuntimeProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            protocolDbIds=protocolDbIds,
+            protocolIds=protocolIds,
+            protocolGraphRepository=protocolGraphRepository,
+        )
+
+        return self.buildPostgresqlRuntimeDeleteResult(
+            deleteInfo=deleteInfo,
+            deleteValidationInfo=deleteValidationInfo,
+        )
