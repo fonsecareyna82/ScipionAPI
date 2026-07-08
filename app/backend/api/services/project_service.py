@@ -11620,6 +11620,7 @@ class ProjectService:
     ) -> Dict[str, Any]:
         reports = []
         errors = []
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         for protocol in protocols or []:
             protocolId = getattr(protocol, "getObjId", lambda: None)()
@@ -11634,11 +11635,12 @@ class ProjectService:
             }
 
             try:
-                restoreReport = self._restorePostgresqlPointerInputsBeforeCopy(
+                restoreReport = runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
                     mapper=mapper,
                     projectId=projectId,
                     protocol=protocol,
                     parentProtocolsById=parentProtocolsById,
+                    getParentProtocolCallback=self._getParentProtocolForPointer,
                 )
 
                 protocolReport["restore"] = restoreReport
