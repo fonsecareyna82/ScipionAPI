@@ -11411,9 +11411,11 @@ class ProjectService:
         # Phase 2: copy refs/dependencies using the full old -> new map.
         # ------------------------------------------------------------------
         for item in duplicatedItems:
-            newProtocol = item["duplicatedProtocol"]
-            sourceScipionProtocolId = item["sourceScipionProtocolId"]
-            duplicatedProtocolId = item["duplicatedProtocolId"]
+            syncContext = runtimeProtocolDuplicateService.buildDuplicatedProtocolSyncContext(item)
+
+            newProtocol = syncContext["duplicatedProtocol"]
+            sourceScipionProtocolId = syncContext["sourceScipionProtocolId"]
+            duplicatedProtocolId = syncContext["duplicatedProtocolId"]
 
             try:
                 protocolSync = self.syncPostgresqlRuntimeProtocol(
