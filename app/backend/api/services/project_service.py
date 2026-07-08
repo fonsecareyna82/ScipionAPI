@@ -8359,14 +8359,12 @@ class ProjectService:
 
                 resolvedParentProtocolDbId = parentProtocolDbId
 
-                if resolvedParentProtocolDbId is None:
-                    resolvedParentProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=parentScipionProtocolId,
+                if resolvedParentProtocolDbId in (None, ""):
+                    resolvedParentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                        parentScipionProtocolId,
                     )
 
-                if resolvedParentProtocolDbId is None:
+                if resolvedParentProtocolDbId in (None, ""):
                     raise ValueError(
                         "Parent protocol %s was not found in PostgreSQL"
                         % str(parentScipionProtocolId)
