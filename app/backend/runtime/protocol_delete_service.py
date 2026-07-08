@@ -94,6 +94,22 @@ class RuntimeProtocolDeleteService:
 
         return blockedProtocols
 
+    def resolveProtocolDeleteIdentity(
+        self,
+        mapper,
+        projectId: int,
+        protocols: List[Any],
+    ) -> Dict[str, Any]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
+
+        return protocolIdentityResolver.resolveProtocolDbIdsFromProtocols(
+            protocols
+        )
+
     def validatePostgresqlRuntimeProtocolDelete(
         self,
         mapper,
