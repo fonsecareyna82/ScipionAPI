@@ -11553,7 +11553,6 @@ class ProjectService:
         sourceIds = []
         duplicated = []
         errors = []
-        copyPrepareReports = []
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
@@ -11577,23 +11576,6 @@ class ProjectService:
                 protocolId=protocolId,
             )
 
-            if usingPostgresqlRuntime:
-                report = self._restorePostgresqlPointerInputsBeforeCopy(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocol=protocol,
-                )
-                copyPrepareReports.append(report)
-
-                if report.get("errors"):
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=(
-                                "Failed to prepare protocol inputs before duplicate: %s"
-                                % report.get("errors")
-                        ),
-                    )
-
             protocolList.append(protocol)
 
         if not protocolList:
@@ -11602,26 +11584,8 @@ class ProjectService:
                 detail="No valid protocols to duplicate",
             )
 
-        detachedOutputsByProtocol = []
-
         try:
-            try:
-                if usingPostgresqlRuntime:
-                    for protocol in protocolList:
-                        detachedOutputsByProtocol.append({
-                            "protocol": protocol,
-                            "outputs": self._detachProtocolOutputsForCopy(protocol),
-                        })
-
-                protListResult = self.currentProject.copyProtocol(protocolList)
-
-            finally:
-                for item in detachedOutputsByProtocol:
-                    self._restoreProtocolOutputsAfterCopy(
-                        protocol=item.get("protocol"),
-                        detachedOutputs=item.get("outputs") or [],
-                    )
-
+            protListResult = self.currentProject.copyProtocol(protocolList)
         except Exception as e:
             protocolIds = [
                 getattr(p, "getObjId", lambda: None)()
@@ -11639,95 +11603,12 @@ class ProjectService:
                 detail=f"Failed to duplicate protocols: {e}",
             )
 
-        if usingPostgresqlRuntime:
-            # Defensive cleanup:
-            # Even if Scipion copyProtocol() somehow propagated output attrs,
-            # the duplicated protocols must not keep produced outputs.
-            for prot in protListResult:
-                self._detachProtocolOutputsForCopy(prot)
-
         for index, prot in enumerate(protListResult):
             protId = str(prot.getObjId())
             duplicated.append({
                 "sourceId": sourceIds[index],
                 "newId": protId,
             })
-
-        if usingPostgresqlRuntime:
-            syncReports = []
-            dependenciesCount = 0
-
-            for index, prot in enumerate(protListResult):
-                duplicatedProtocolId = getattr(prot, "getObjId", lambda: None)()
-
-                try:
-                    protocolSync = self.syncPostgresqlRuntimeProtocol(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=duplicatedProtocolId,
-                        registerOutputs=False,
-                    )
-
-                    sourceProtocolId = sourceIds[index]
-
-                    dependencySync = self._copyPostgresqlInputRefsForDuplicatedProtocol(
-                        mapper=mapper,
-                        projectId=projectId,
-                        sourceProtocolId=sourceProtocolId,
-                        duplicatedProtocolId=duplicatedProtocolId,
-                    )
-
-                    pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=prot,
-                    )
-
-                    if pointerRestore.get("errors"):
-                        raise RuntimeError(
-                            "Failed to restore duplicated protocol pointers: %s"
-                            % pointerRestore.get("errors")
-                        )
-
-                    self.currentProject._storeProtocol(prot)
-
-                    dependenciesCount += int(
-                        dependencySync.get("dependenciesSaved", 0) or 0
-                    )
-
-                    syncReports.append({
-                    "protocolId": str(duplicatedProtocolId),
-                    "protocolSync": protocolSync,
-                    "dependencySync": dependencySync,
-                    "pointerRestore": pointerRestore,
-                    })
-
-                except Exception as e:
-                    logger.exception(
-                        "Failed to sync duplicated PostgreSQL runtime protocol. "
-                        "projectId=%s protocolId=%s",
-                        projectId,
-                        duplicatedProtocolId,
-                    )
-
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=(
-                                "Protocol was duplicated but PostgreSQL runtime sync failed: %s"
-                                % e
-                        ),
-                    )
-
-            return self._buildProtocolMutationResult(
-                "Protocol was duplicated successfully",
-                protocolsCount=len(protListResult),
-                dependenciesCount=dependenciesCount,
-                duplicated=duplicated,
-                errors=errors,
-                copyPrepareReports=copyPrepareReports,
-                postgresqlRuntimeDuplicate=True,
-                syncReports=syncReports,
-            )
 
         try:
             syncResult = self.syncProjectProtocolsAndDependencies(
