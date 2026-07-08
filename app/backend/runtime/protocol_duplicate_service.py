@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import copy
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pyworkflow.protocol.params import (
     MultiPointerParam,
@@ -32,6 +32,7 @@ from pyworkflow.protocol.params import (
     RelationParam,
 )
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
 
 class RuntimeProtocolDuplicateState:
@@ -210,21 +211,18 @@ class RuntimeProtocolDuplicateService:
             projectId: int,
             sourceProtocolId,
             duplicatedProtocolId,
-            resolveProtocolDbIdCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
-        if resolveProtocolDbIdCallback is None:
-            raise ValueError("resolveProtocolDbIdCallback is required")
-
-        sourceProtocolDbId = resolveProtocolDbIdCallback(
+        protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
             projectId=projectId,
-            protocolId=sourceProtocolId,
         )
 
-        duplicatedProtocolDbId = resolveProtocolDbIdCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=duplicatedProtocolId,
+        sourceProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            sourceProtocolId,
+        )
+
+        duplicatedProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            duplicatedProtocolId,
         )
 
         if sourceProtocolDbId is None:
@@ -293,10 +291,8 @@ class RuntimeProtocolDuplicateService:
                     parentProtocolId = originalParentProtocolIdText
 
             if parentProtocolDbId in (None, "") and parentProtocolId not in (None, ""):
-                parentProtocolDbId = resolveProtocolDbIdCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=parentProtocolId,
+                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                    parentProtocolId,
                 )
 
             if parentProtocolDbId not in (None, ""):
