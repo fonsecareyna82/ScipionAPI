@@ -164,6 +164,16 @@ class RuntimeProtocolDuplicateService:
     ) -> bool:
         return bool(duplicatedItems)
 
+    def buildDuplicatedProtocolSyncContext(
+            self,
+            duplicatedItem: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "duplicatedProtocol": duplicatedItem["duplicatedProtocol"],
+            "sourceScipionProtocolId": duplicatedItem["sourceScipionProtocolId"],
+            "duplicatedProtocolId": duplicatedItem["duplicatedProtocolId"],
+        }
+
     def registerDuplicatedProtocolSyncReport(
             self,
             sourceScipionProtocolId,
