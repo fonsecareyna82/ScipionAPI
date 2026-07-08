@@ -280,6 +280,38 @@ class ProtocolGraphRepository:
             if row.get("protocolDbId") not in (None, "")
         ]
 
+    def loadInputRefsForProtocolCopy(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                r."inputName",
+                r."itemIndex",
+                r."parentProtocolDbId",
+                parent."protocolId" AS "parentProtocolId",
+                r."parentOutputName",
+                r."objectClassName",
+                r."objectId"
+              FROM protocol_input_refs r
+         LEFT JOIN protocols parent
+                ON parent."projectId" = r."projectId"
+               AND parent.id = r."parentProtocolDbId"
+             WHERE r."projectId" = %s
+               AND r."protocolDbId" = %s
+             ORDER BY r."inputName", r."itemIndex"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        return self._rowsToDicts(rows)
+
     def loadParentRefsForChildProtocol(
             self,
             mapper,
