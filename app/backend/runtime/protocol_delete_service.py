@@ -278,3 +278,21 @@ class RuntimeProtocolDeleteService:
                 "count": 0,
             },
         }
+
+    @staticmethod
+    def buildPostgresqlRuntimeDeleteResult(
+        deleteInfo: Dict[str, Any],
+        deleteValidationInfo: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "status": 0,
+            "message": "Protocol deleted successfully",
+            "protocolsCount": len(deleteInfo.get("deletedProtocolDbIds", [])),
+            "dependenciesCount": sum(
+                int(item.get("dependenciesSaved", 0) or 0)
+                for item in deleteInfo.get("parentsRefresh", {}).get("refreshed", [])
+            ),
+            "postgresqlRuntimeDelete": True,
+            "deleteValidationInfo": deleteValidationInfo,
+            "deleteInfo": deleteInfo,
+        }
