@@ -11140,10 +11140,11 @@ class ProjectService:
                     dependencySync,
                 )
 
-                pointerRestore = self._restorePostgresqlPointerInputsBeforeCopy(
+                pointerRestore = runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
                     mapper=mapper,
                     projectId=projectId,
                     protocol=newProtocol,
+                    getParentProtocolCallback=self._getParentProtocolForPointer,
                 )
 
                 if pointerRestore.get("errors"):
