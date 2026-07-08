@@ -12074,10 +12074,13 @@ class ProjectService:
         Do not use currentProject._getSubworkflow() in PostgreSQL runtime mode:
         the PostgreSQL graph is the source of truth here.
         """
-        rootProtocolDbId = self._resolvePostgresqlProtocolDbId(
+        protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
             projectId=projectId,
-            protocolId=protocolId,
+            db=mapper.db,
+        )
+        rootProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId
         )
 
         if rootProtocolDbId is None:
