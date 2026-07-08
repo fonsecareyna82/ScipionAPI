@@ -280,6 +280,31 @@ class ProtocolGraphRepository:
             if row.get("protocolDbId") not in (None, "")
         ]
 
+    def loadInputRefPointerValue(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            inputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        values = self.loadInputRefPointerValues(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            inputName=inputName,
+        )
+
+        if not values:
+            return None
+
+        parentId, outputName = values[0].split(".", 1)
+
+        return {
+            "parentId": parentId,
+            "outputName": outputName,
+            "value": values[0],
+        }
+
     def loadInputRefPointerValues(
             self,
             mapper,

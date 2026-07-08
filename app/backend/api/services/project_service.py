@@ -9983,43 +9983,27 @@ class ProjectService:
                             protocolId=protocolId,
                         )
 
-                        if protocolDbId is not None:
-                            row = mapper.db.fetchOne(
-                                """
-                                SELECT
-                                    parent."protocolId" AS "parentProtocolId",
-                                    r."parentOutputName"
-                                  FROM protocol_input_refs r
-                             LEFT JOIN protocols parent
-                                    ON parent."projectId" = r."projectId"
-                                   AND parent.id = r."parentProtocolDbId"
-                                 WHERE r."projectId" = %s
-                                   AND r."protocolDbId" = %s
-                                   AND r."inputName" = %s
-                                 ORDER BY r."itemIndex"
-                                 LIMIT 1
-                                """,
-                                (
-                                    int(projectId),
-                                    int(protocolDbId),
-                                    str(paramName),
-                                ),
-                            )
+                    if protocolDbId is not None:
+                        protocolGraphRepository = ProtocolGraphRepository()
+                        pointerValueInfo = protocolGraphRepository.loadInputRefPointerValue(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolDbId=protocolDbId,
+                            inputName=paramName,
+                        )
 
-                            if row and row.get("parentProtocolId") not in (None, "") and row.get("parentOutputName"):
-                                parentId = str(row.get("parentProtocolId"))
-                                outputName = str(row.get("parentOutputName"))
+                        if pointerValueInfo:
+                            parentId = pointerValueInfo.get("parentId")
+                            paramValue = pointerValueInfo.get("value")
 
-                                paramValue = "%s.%s" % (parentId, outputName)
+                            try:
+                                paramDict["parentId"] = int(parentId)
+                            except Exception:
+                                paramDict["parentId"] = parentId
 
-                                try:
-                                    paramDict["parentId"] = int(parentId)
-                                except Exception:
-                                    paramDict["parentId"] = parentId
+                            paramDict["readOnly"] = True
 
-                                paramDict["readOnly"] = True
-
-                                return paramDict, paramValue
+                            return paramDict, paramValue
                     try:
                         targetObj = protVar.get() if protVar is not None else None
                     except Exception:
