@@ -45,6 +45,39 @@ class RuntimePointerResolver:
 
     emptyPointerTexts = ("", "none", "null", "undefined")
 
+    @staticmethod
+    def _getScipionObjectId(obj) -> Optional[int]:
+        if obj is None:
+            return None
+
+        for methodName in ("getObjId", "getId"):
+            method = getattr(obj, methodName, None)
+
+            if method is None:
+                continue
+
+            try:
+                value = method()
+            except Exception:
+                continue
+
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except Exception:
+                    return None
+
+        for attrName in ("objId", "_objId", "id"):
+            value = getattr(obj, attrName, None)
+
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except Exception:
+                    return None
+
+        return None
+
     def splitPointerValue(self, value):
         valueText = str(value or "").strip()
 
@@ -273,8 +306,7 @@ class RuntimePointerResolver:
             self,
             mapper,
             projectId: int,
-            protocolDbId,
-            protocolId,
+            protocol,
             inputName: str,
             rawValue: Any,
     ) -> List[str]:
@@ -293,6 +325,21 @@ class RuntimePointerResolver:
 
         if not pointerValues:
             return []
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
+            self._getScipionObjectId(protocol),
+        )
+
+        protocolDbId = None
+        if protocolId is not None:
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+                protocolId,
+            )
 
         completeValues = []
         missingParentOutputNames = []

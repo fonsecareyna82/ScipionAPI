@@ -7706,40 +7706,6 @@ class ProjectService:
         pointerResolver = RuntimePointerResolver()
         return pointerResolver.splitPointerValue(value)
 
-    def _completeRuntimePointerValuesFromStoredInputRefs(
-            self,
-            mapper,
-            projectId: int,
-            protocol,
-            inputName: str,
-            rawValue: Any,
-    ) -> List[str]:
-        """
-        Complete pointer values that arrive from the frontend without parent id.
-
-        Keep this wrapper while ProjectService still owns applyParamsToProtocol.
-        The actual pointer completion logic lives in RuntimePointerResolver.
-        """
-        pointerResolver = RuntimePointerResolver()
-        protocolId = self._getScipionObjectId(protocol)
-
-        protocolDbId = None
-        if protocolId is not None:
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-        return pointerResolver.completePointerValuesFromInputRefs(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-            protocolId=protocolId,
-            inputName=inputName,
-            rawValue=rawValue,
-        )
-
     def applyParamsToProtocol(
             self,
             mapper,
@@ -7761,7 +7727,7 @@ class ProjectService:
                 if isinstance(param, MultiPointerParam):
                     newInputs = PointerList()
 
-                    pointerValues = self._completeRuntimePointerValuesFromStoredInputRefs(
+                    pointerValues = pointerResolver.completePointerValuesFromInputRefs(
                         mapper=mapper,
                         projectId=projectId,
                         protocol=protocol,
@@ -7827,7 +7793,7 @@ class ProjectService:
                     protocol.setAttributeValue(key, newInputs)
 
                 elif isinstance(param, PointerParam):
-                    pointerValues = self._completeRuntimePointerValuesFromStoredInputRefs(
+                    pointerValues = pointerResolver.completePointerValuesFromInputRefs(
                         mapper=mapper,
                         projectId=projectId,
                         protocol=protocol,
