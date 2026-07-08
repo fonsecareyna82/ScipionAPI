@@ -7947,25 +7947,6 @@ class ProjectService:
             params=params,
         )
 
-    def _normalizeRuntimePointerValuesFromProtocolAttribute(self, attr: Any) -> List[str]:
-        pointerResolver = RuntimePointerResolver()
-        return pointerResolver.normalizePointerValuesFromProtocolAttribute(attr)
-
-    def _mergeRuntimePointerParamsWithProtocolState(
-            self,
-            protocol,
-            params: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        pointerResolver = RuntimePointerResolver()
-        return pointerResolver.mergePointerParamsWithProtocolState(
-            protocol=protocol,
-            params=params,
-        )
-
-    def _normalizeRuntimePointerParamValues(self, rawValue: Any) -> List[str]:
-        pointerResolver = RuntimePointerResolver()
-        return pointerResolver.normalizePointerParamValues(rawValue)
-
     def _getPostgresqlRuntimeOutputInfo(
             self,
             mapper,
