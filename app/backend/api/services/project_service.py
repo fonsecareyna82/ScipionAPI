@@ -9969,6 +9969,7 @@ class ProjectService:
 
                     parentId = None
                     paramValue = None
+                    protocolDbId = None
                     if (
                             mapper is not None
                             and projectId is not None
