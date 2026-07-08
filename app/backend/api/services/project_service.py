@@ -12130,10 +12130,13 @@ class ProjectService:
         if protocolId in (None, ""):
             return
 
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
+        protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
             projectId=projectId,
-            protocolId=protocolId,
+            db=mapper.db,
+        )
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId
         )
 
         if protocolDbId is None:
