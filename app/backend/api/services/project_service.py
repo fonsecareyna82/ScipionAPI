@@ -11142,28 +11142,11 @@ class ProjectService:
             if k is not None and v is not None
         }
 
-        rows = mapper.db.fetchAll(
-            """
-            SELECT
-                r."inputName",
-                r."itemIndex",
-                r."parentProtocolDbId",
-                parent."protocolId" AS "parentProtocolId",
-                r."parentOutputName",
-                r."objectClassName",
-                r."objectId"
-              FROM protocol_input_refs r
-         LEFT JOIN protocols parent
-                ON parent."projectId" = r."projectId"
-               AND parent.id = r."parentProtocolDbId"
-             WHERE r."projectId" = %s
-               AND r."protocolDbId" = %s
-             ORDER BY r."inputName", r."itemIndex"
-            """,
-            (
-                int(projectId),
-                int(sourceProtocolDbId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+        rows = protocolGraphRepository.loadInputRefsForProtocolCopy(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=sourceProtocolDbId,
         )
 
         refs = []
@@ -11377,6 +11360,8 @@ class ProjectService:
         # Phase 1: resolve all source protocols and create all duplicated
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
+        protocolGraphRepository = ProtocolGraphRepository()
+
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
 
@@ -11402,7 +11387,6 @@ class ProjectService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Source protocol %s was not found in PostgreSQL" % sourceProtocolId,
                 )
-            protocolGraphRepository = ProtocolGraphRepository()
             sourceRow = protocolGraphRepository.getProtocolRuntimeInfoByDbId(
                 mapper=mapper,
                 projectId=projectId,
