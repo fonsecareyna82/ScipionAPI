@@ -614,12 +614,7 @@ class RuntimeOutputRelationRepairService:
         except Exception:
             sourceOutputInfo = {}
 
-        if (
-                outputObj is None
-                or self.isPostgresqlProxy(outputObj)
-                or not hasattr(outputObj, setterName)
-                or not hasattr(outputObj, getterName)
-        ):
+        if outputObj is None or self.isPostgresqlProxy(outputObj):
             try:
                 parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
                     mapper=mapper,
@@ -632,7 +627,6 @@ class RuntimeOutputRelationRepairService:
                 report["error"] = str(e)
                 return report
 
-        if outputObj is None or self.isPostgresqlProxy(outputObj):
             fallbackOutputObj = self._loadRuntimeOutputFromFallback(
                 mapper=mapper,
                 outputInfo=sourceOutputInfo,
