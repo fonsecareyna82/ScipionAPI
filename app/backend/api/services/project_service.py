@@ -118,6 +118,7 @@ from app.backend.runtime import (
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
     RuntimeProtocolLoaderService,
+    RuntimeProjectGraphSyncService,
 )
 
 
@@ -1402,199 +1403,22 @@ class ProjectService:
                 detail="No current project loaded",
             )
 
-        runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
-        nodesDict = getattr(runs, "_nodesDict", {}) or {}
+        runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
 
-        protocolDbIdByScipionId: Dict[str, int] = {}
-        currentProtocolIds: TypingSet[str] = set()
-        protocolsByScipionId: Dict[str, Any] = {}
-
-        outputSyncResults: List[Dict[str, Any]] = []
-        outputSyncErrors: List[Dict[str, Any]] = []
-        outputSyncDeclared: List[Dict[str, Any]] = []
-        outputSyncMissing: List[Dict[str, Any]] = []
-
-        stepsSyncCount = 0
-        stepsSyncProtocolsCount = 0
-        stepsSyncErrors: List[Dict[str, Any]] = []
-
-        # 1) Save all protocol nodes that are currently present in the real Scipion graph
-        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-        for nodeId, nodeObj in nodesDict.items():
-            nodeIdText = str(nodeId)
-            if nodeIdText == "PROJECT":
-                continue
-
-            protocol = getattr(nodeObj, "run", None)
-            if protocol is None:
-                protocol = self._tryGetScipionProtocolByRuntimeId(nodeId)
-
-            if protocol is None:
-                continue
-
-            protocolContext = self._buildProtocolContext(projectId, protocol, mapper)
-            protocolDbId = mapper.saveProtocol(protocolContext)
-
-            try:
-                protocolSteps = runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(
-                    protocol,
-                )
-                protocolScipionId = self._getScipionObjectId(protocol)
-
-                if protocolSteps and protocolScipionId is not None:
-                    mapper.replaceProtocolSteps(
-                        projectId=projectId,
-                        protocolDbId=int(protocolDbId),
-                        protocolId=int(protocolScipionId),
-                        steps=protocolSteps,
-                    )
-
-                    stepsSyncCount += len(protocolSteps)
-                    stepsSyncProtocolsCount += 1
-            except Exception as exc:
-                stepsSyncErrors.append({
-                    "protocolId": nodeIdText,
-                    "error": str(exc),
-                })
-                logger.exception(
-                    "Failed to sync protocol steps. projectId=%s protocolId=%s",
-                    projectId,
-                    nodeIdText,
-                )
-
-            if self._shouldRegisterProtocolOutputs(protocol):
-                try:
-                    outputReport = self.registerOutput(
-                        projectId=projectId,
-                        protocol=protocol,
-                        mapper=mapper,
-                        returnReport=True,
-                    )
-
-                    outputSyncResults.extend(outputReport.get("persisted") or [])
-                    declaredOutputs = outputReport.get("declared") or []
-                    persistedOutputs = outputReport.get("persisted") or []
-                    skippedOutputs = outputReport.get("skipped") or []
-                    erroredOutputs = outputReport.get("errors") or []
-
-                    for declaredOutput in declaredOutputs:
-                        outputSyncDeclared.append({
-                            "protocolId": nodeIdText,
-                            "outputName": declaredOutput.get("outputName"),
-                            "outputClassName": declaredOutput.get("outputClassName"),
-                        })
-
-                    outputSyncMissing.extend(
-                        runtimeProtocolOutputPersistenceService.buildMissingOutputSyncItems(
-                            protocolId=nodeIdText,
-                            declaredOutputs=declaredOutputs,
-                            persistedOutputs=persistedOutputs,
-                            skippedOutputs=skippedOutputs,
-                            outputErrors=erroredOutputs,
-                        )
-                    )
-
-                    for skippedOutput in outputReport.get("skipped") or []:
-                        outputSyncErrors.append({
-                            "protocolId": nodeIdText,
-                            "outputName": skippedOutput.get("outputName"),
-                            "outputClassName": skippedOutput.get("outputClassName"),
-                            "reason": skippedOutput.get("reason"),
-                        })
-
-                    for outputError in outputReport.get("errors") or []:
-                        outputSyncErrors.append({
-                            "protocolId": nodeIdText,
-                            "outputName": outputError.get("outputName"),
-                            "outputClassName": outputError.get("outputClassName"),
-                            "error": outputError.get("error"),
-                        })
-                except Exception as exc:
-                    outputSyncErrors.append({
-                        "protocolId": nodeIdText,
-                        "error": str(exc),
-                    })
-                    logger.exception(
-                        "Failed to sync protocol outputs. projectId=%s protocolId=%s",
-                        projectId,
-                        nodeIdText,
-                    )
-
-            currentProtocolIds.add(nodeIdText)
-            protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
-            protocolsByScipionId[nodeIdText] = protocol
-
-        # 2) Do not purge PostgreSQL protocol rows while PostgreSQL runtime mapper
-        # is active/migrating.
-        #
-        # PostgreSQL can now contain protocols that do not exist in project.sqlite.
-        # If we purge rows based only on the legacy Scipion/SQLite graph, loading or
-        # refreshing a project can delete valid PostgreSQL-only protocols.
-        purgedProtocols = 0
-
-        if not self._shouldPreservePostgresqlOnlyProtocols():
-            purgedProtocols = mapper.deleteProjectProtocolsNotInProtocolIds(
-                projectId,
-                sorted(currentProtocolIds),
-            )
-
-        # 3) Build edges parent -> child using DB ids
-        edges: List[Tuple[int, int]] = []
-
-        for nodeId, nodeObj in nodesDict.items():
-            childDbId = protocolDbIdByScipionId.get(str(nodeId))
-            if not childDbId:
-                continue
-
-            for parent in getattr(nodeObj, "_parents", []) or []:
-                parentNodeId = str(parent.getName())
-                if parentNodeId == "PROJECT":
-                    continue
-
-                parentDbId = protocolDbIdByScipionId.get(parentNodeId)
-                if not parentDbId:
-                    continue
-
-                edges.append((parentDbId, childDbId))
-
-        savedEdges = mapper.replaceProjectProtocolDependencies(projectId, edges)
-
-        inputRefs: List[Dict[str, Any]] = []
-
-        for protocolIdText, protocol in protocolsByScipionId.items():
-            inputRefs.extend(
-                self._buildProtocolInputRefsForPostgresql(
-                    projectId=projectId,
-                    protocol=protocol,
-                    protocolDbIdByScipionId=protocolDbIdByScipionId,
-                )
-            )
-
-        savedInputRefs = 0
-        replaceInputRefs = getattr(mapper, "replaceProjectProtocolInputRefs", None)
-        if callable(replaceInputRefs):
-            savedInputRefs = replaceInputRefs(projectId, inputRefs)
-
-        outputResultsByKind = runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
-            outputSyncResults,
+        return runtimeProjectGraphSyncService.syncProjectProtocolsAndDependencies(
+            mapper=mapper,
+            projectId=projectId,
+            currentProject=self.currentProject,
+            buildProtocolContextCallback=self._buildProtocolContext,
+            tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            shouldRegisterProtocolOutputsCallback=self._shouldRegisterProtocolOutputs,
+            registerOutputCallback=self.registerOutput,
+            buildProtocolInputRefsCallback=self._buildProtocolInputRefsForPostgresql,
+            shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
+            refresh=refresh,
+            checkPid=checkPid,
         )
-
-        return {
-            "protocols": len(protocolDbIdByScipionId),
-            "dependencies": int(savedEdges),
-            "inputRefs": int(savedInputRefs),
-            "steps": int(stepsSyncCount),
-            "stepsProtocols": int(stepsSyncProtocolsCount),
-            "stepErrors": stepsSyncErrors,
-            "outputsDeclared": len(outputSyncDeclared),
-            "outputs": len(outputSyncResults),
-            "outputsMissing": len(outputSyncMissing),
-            "outputsByKind": outputResultsByKind,
-            "outputMissing": outputSyncMissing,
-            "outputErrors": outputSyncErrors,
-            "purgedProtocols": int(purgedProtocols or 0),
-        }
 
     def syncProjectGraphAfterMutation(
             self,
