@@ -595,15 +595,6 @@ class RuntimeOutputRelationRepairService:
 
         report["checked"] = True
 
-        try:
-            currentRelatedOutput = getattr(outputObj, getterName)()
-        except Exception:
-            currentRelatedOutput = None
-
-        if currentRelatedOutput is not None:
-            report["reason"] = "already_has_runtime_relation"
-            return report
-
         if relatedOutputCandidate is not None:
             candidates = [relatedOutputCandidate]
         else:
@@ -615,6 +606,83 @@ class RuntimeOutputRelationRepairService:
                 preferredParentProtocolDbId=parentProtocolDbId,
                 relationRule=relationRule,
             )
+
+        try:
+            currentRelatedOutput = getattr(outputObj, getterName)()
+        except Exception:
+            currentRelatedOutput = None
+
+        if currentRelatedOutput is not None:
+            report["reason"] = "already_has_runtime_relation"
+            report["runtimeRelationAlreadyPresent"] = True
+
+            if candidates:
+                candidate = candidates[0]
+
+                relatedParentProtocolId = candidate.get("parentProtocolId")
+                relatedParentProtocolDbId = candidate.get("parentProtocolDbId")
+                relatedOutputName = candidate.get("outputName")
+
+                report["relatedOutputName"] = relatedOutputName
+                report["relatedParentProtocolId"] = (
+                    str(relatedParentProtocolId)
+                    if relatedParentProtocolId not in (None, "")
+                    else None
+                )
+                report["relatedParentProtocolDbId"] = (
+                    int(relatedParentProtocolDbId)
+                    if relatedParentProtocolDbId not in (None, "")
+                    else None
+                )
+
+                if persistRepairedRelation:
+                    try:
+                        persistReport = self.persistResolvedRuntimeOutputRelation(
+                            mapper=mapper,
+                            projectId=projectId,
+                            sourceProtocolDbId=parentProtocolDbId,
+                            sourceOutputName=outputName,
+                            relationRule=relationRule,
+                            relatedParentProtocolDbId=relatedParentProtocolDbId,
+                            relatedOutputName=relatedOutputName,
+                        )
+
+                        report["persistedRuntimeOutputRelation"] = persistReport
+
+                        if persistReport.get("saved"):
+                            report["relationSource"] = "%s_persisted" % (
+                                    relationRule.get("source") or "runtime_relation"
+                            )
+
+                    except Exception as persistError:
+                        report["persistedRuntimeOutputRelation"] = {
+                            "saved": False,
+                            "reason": "persist_failed",
+                            "error": str(persistError),
+                        }
+
+                        logger.debug(
+                            "Could not persist already-present runtime output relation. "
+                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                            "outputName=%s relationName=%s relatedOutputName=%s",
+                            projectId,
+                            parentScipionProtocolId,
+                            parentProtocolDbId,
+                            outputName,
+                            relationName,
+                            relatedOutputName,
+                            exc_info=True,
+                        )
+            else:
+                report["persistedRuntimeOutputRelation"] = {
+                    "saved": False,
+                    "reason": "related_output_input_not_found",
+                    "relationName": relationName,
+                    "sourceProtocolDbId": parentProtocolDbId,
+                    "sourceOutputName": outputName,
+                }
+
+            return report
 
         if not candidates:
             report["reason"] = "related_output_input_not_found"
