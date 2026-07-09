@@ -117,6 +117,7 @@ from app.backend.runtime import (
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
+    RuntimeProtocolLoaderService,
 )
 
 
@@ -1353,95 +1354,20 @@ class ProjectService:
         )
 
     def _loadProtocolFromRuntimeDb(self, protocolId: int):
-        """
-        Load the real runtime protocol from logs/run.db.
+        runtimeProtocolLoaderService = RuntimeProtocolLoaderService()
 
-        This is the source of truth after launch, because the external Scipion
-        runner updates that database while the protocol is executing.
-        """
-        if self.currentProject is None:
-            return None
-
-        try:
-            protocol = self._getScipionProtocolByRuntimeId(protocolId)
-        except Exception:
-            protocol = None
-
-        if protocol is None:
-            return None
-
-        try:
-            runDbPath = protocol.getDbPath()
-        except Exception:
-            runDbPath = None
-
-        if not runDbPath:
-            return protocol
-
-        if not os.path.isabs(str(runDbPath)):
-            workingDir = None
-            try:
-                workingDir = protocol.getWorkingDir()
-            except Exception:
-                workingDir = None
-
-            if workingDir:
-                runDbPath = os.path.abspath(os.path.join(str(workingDir), "logs", os.path.basename(str(runDbPath))))
-            else:
-                projectPath = self._getCurrentProjectPath()
-                runDbPath = os.path.abspath(os.path.join(str(projectPath), str(runDbPath)))
-
-        if not os.path.exists(str(runDbPath)):
-            logger.debug(
-                "Runtime db does not exist yet. protocolId=%s runDbPath=%s",
-                protocolId,
-                runDbPath,
-            )
-            return protocol
-
-        projectPath = self._getCurrentProjectPath()
-        if not projectPath:
-            return protocol
-
-        try:
-            runtimeProtocol = getProtocolFromDb(
-                projectPath,
-                str(runDbPath),
-                int(protocolId),
-                chdir=False,
-            )
-
-            if runtimeProtocol is not None:
-                return runtimeProtocol
-
-        except Exception:
-            logger.debug(
-                "Could not load protocol from runtime db. protocolId=%s runDbPath=%s",
-                protocolId,
-                runDbPath,
-                exc_info=True,
-            )
-
-        return protocol
+        return runtimeProtocolLoaderService.loadProtocolFromRuntimeDb(
+            protocolId=protocolId,
+            currentProject=self.currentProject,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
 
     def _getCurrentProjectPath(self) -> Optional[str]:
-        project = getattr(self, "currentProject", None)
-        if project is None:
-            return None
+        runtimeProtocolLoaderService = RuntimeProtocolLoaderService()
 
-        for attrName in ("path", "_path"):
-            value = getattr(project, attrName, None)
-            if value:
-                return str(value)
-
-        try:
-            value = project.getPath()
-            if value:
-                return str(value)
-        except Exception:
-            pass
-
-        return None
+        return runtimeProtocolLoaderService.resolveCurrentProjectPath(
+            project=getattr(self, "currentProject", None),
+        )
 
     def _isRuntimeProtocolTerminal(self, protocol) -> bool:
         for methodName in ("isFinished", "isFailed", "isAborted"):

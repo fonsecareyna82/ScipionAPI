@@ -38,6 +38,7 @@ from app.backend.runtime.runtime_artifact_report_service import RuntimeArtifactR
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
 from app.backend.runtime.protocol_step_persistence_service import RuntimeProtocolStepPersistenceService
 from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+from app.backend.runtime.protocol_loader_service import RuntimeProtocolLoaderService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -54,5 +55,6 @@ __all__ = [
     "RuntimeArtifactReportService",
     "RuntimeProtocolOutputPersistenceService",
     "RuntimeProtocolStepPersistenceService",
-    "RuntimeProtocolStatusSyncService"
+    "RuntimeProtocolStatusSyncService",
+    "RuntimeProtocolLoaderService",
 ]
