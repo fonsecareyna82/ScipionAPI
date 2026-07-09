@@ -659,10 +659,6 @@ class RuntimeOutputRelationRepairService:
 
             return report
 
-        if not candidates:
-            report["reason"] = "related_output_input_not_found"
-            return report
-
         candidate = candidates[0]
 
         relatedParentProtocolId = candidate.get("parentProtocolId")
