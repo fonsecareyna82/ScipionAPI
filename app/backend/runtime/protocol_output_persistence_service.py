@@ -1057,6 +1057,117 @@ class RuntimeProtocolOutputPersistenceService:
 
         return result
 
+    def loadPersistedOutputSummariesByProtocolId(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        def toOptionalInt(value: Any) -> Optional[int]:
+            if value is None or value == "":
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+             WHERE s."projectId" = %s
+             ORDER BY p."protocolId", s."outputName"
+            """,
+            (projectId,),
+        )
+
+        for row in setRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("outputName") or "")
+            if not protocolId or not outputName:
+                continue
+
+            properties = row.get("properties") or {}
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "flat_set",
+                "setId": row.get("id"),
+                "rootObjectId": row.get("objectId"),
+                "className": row.get("setClassName"),
+                "itemClassName": row.get("itemClassName"),
+                "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
+                "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
+                "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
+                "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                o.id,
+                o."scipionObjId",
+                o.name,
+                o.path,
+                o."className",
+                o.value,
+                o.label,
+                o.comment,
+                o.metadata,
+                o."createdAt",
+                o."updatedAt"
+              FROM scipion_objects o
+              JOIN protocols p
+                ON p.id = o."protocolDbId"
+             WHERE o."projectId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+             ORDER BY p."protocolId", o.path
+            """,
+            (projectId,),
+        )
+
+        for row in treeRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("path") or row.get("name") or "")
+            if not protocolId or not outputName:
+                continue
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "tree",
+                "rootObjectId": row.get("id"),
+                "scipionObjId": row.get("scipionObjId"),
+                "className": row.get("className"),
+                "value": row.get("value"),
+                "label": row.get("label"),
+                "comment": row.get("comment"),
+                "metadata": row.get("metadata") or {},
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        return result
+
     def resolveProtocolDbIdForOutputPersistence(
             self,
             mapper,
