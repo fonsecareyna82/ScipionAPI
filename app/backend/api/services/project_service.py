@@ -1310,7 +1310,6 @@ class ProjectService:
             buildProtocolContextCallback=self._buildProtocolContext,
             tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
             getScipionObjectIdCallback=self._getScipionObjectId,
-            shouldRegisterProtocolOutputsCallback=self._shouldRegisterProtocolOutputs,
             registerOutputCallback=self.registerOutput,
             shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
             refresh=refresh,

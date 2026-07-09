@@ -50,7 +50,6 @@ class RuntimeProjectGraphSyncService:
             buildProtocolContextCallback: Callable,
             tryGetScipionProtocolByRuntimeIdCallback: Callable,
             getScipionObjectIdCallback: Callable,
-            shouldRegisterProtocolOutputsCallback: Callable,
             registerOutputCallback: Callable,
             shouldPreservePostgresqlOnlyProtocolsCallback: Callable,
             refresh: bool = False,
@@ -132,7 +131,9 @@ class RuntimeProjectGraphSyncService:
                     nodeIdText,
                 )
 
-            if shouldRegisterProtocolOutputsCallback(protocol):
+            if runtimeProtocolOutputPersistenceService.shouldRegisterProtocolOutputs(
+                    protocol=protocol,
+            ):
                 try:
                     outputReport = registerOutputCallback(
                         projectId=projectId,
