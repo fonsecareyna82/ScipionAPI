@@ -116,6 +116,7 @@ from app.backend.runtime import (
     RuntimeArtifactReportService,
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
+    RuntimeProtocolStatusSyncService,
 )
 
 
@@ -1132,29 +1133,6 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
-    def _mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):
-        storedText = str(storedStatus or "").strip().lower()
-        runtimeText = str(runtimeStatus or "").strip().lower()
-
-        if not runtimeText:
-            return storedStatus or STATUS_NEW
-
-        # Do not downgrade a protocol that was already launched/running/scheduled
-        # just because an early runtime read still reports "new".
-        if runtimeText == "new" and storedText in {
-            "launched",
-            "running",
-            "scheduled",
-        }:
-            return storedStatus
-
-        # Do not overwrite terminal states with non-terminal stale reads.
-        if storedText in {"finished", "failed", "aborted", "interactive"}:
-            if runtimeText not in {"finished", "failed", "aborted", "interactive"}:
-                return storedStatus
-
-        return runtimeStatus
-
     def syncPostgresqlRuntimeProtocolStatus(
             self,
             mapper,
@@ -1169,26 +1147,15 @@ class ProjectService:
 
         protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
-        statusValue = self._safeCall(protocol, "getStatus", None)
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
 
-        if str(statusValue or "").strip().lower() in ("", "new"):
-            existing = mapper.getProjectProtocolByProtocolId(
-                projectId=projectId,
-                protocolId=scipionProtocolId,
-            )
-            existingStatus = existing.get("status") if existing else None
-
-            if str(existingStatus or "").strip().lower() in ("launched", "running", "scheduled"):
-                statusValue = existingStatus
-
-        mapper.saveProtocol(
-            self._buildProtocolContext(projectId, protocol, mapper)
+        return runtimeProtocolStatusSyncService.syncProtocolStatus(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=scipionProtocolId,
+            protocol=protocol,
+            buildProtocolContextCallback=self._buildProtocolContext,
         )
-
-        return {
-            "protocolId": str(scipionProtocolId),
-            "status": statusValue,
-        }
 
     def syncPostgresqlRuntimeProtocolStatusFromRunDb(
             self,
@@ -1204,68 +1171,16 @@ class ProjectService:
 
         protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
-        projectPath = self.currentProject.getPath()
-        runDbPath = protocol.getDbPath()
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
 
-        if not os.path.isabs(str(runDbPath)):
-            workingDir = protocol.getWorkingDir()
-
-            if not os.path.isabs(str(workingDir)):
-                workingDir = os.path.join(projectPath, str(workingDir))
-
-            runDbPath = os.path.join(str(workingDir), "logs", "run.db")
-
-        runDbPath = os.path.abspath(str(runDbPath))
-
-        runtimeProtocol = getProtocolFromDb(
-            projectPath,
-            runDbPath,
-            int(scipionProtocolId),
-            chdir=False,
-        )
-
-        runtimeStatus = runtimeProtocol.getStatus()
-
-        row = mapper.getProjectProtocolByProtocolId(
+        return runtimeProtocolStatusSyncService.syncProtocolStatusFromRunDb(
+            mapper=mapper,
             projectId=projectId,
             protocolId=scipionProtocolId,
+            protocol=protocol,
+            getCurrentProjectPathCallback=self._getCurrentProjectPath,
+            syncRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
         )
-
-        if not row:
-            raise RuntimeError(
-                f"PostgreSQL protocol row not found. projectId={projectId} protocolId={scipionProtocolId}"
-            )
-
-        outputSync = None
-
-        try:
-            outputSync = self.syncPostgresqlRuntimeProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=scipionProtocolId,
-                registerOutputs=True,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to sync PostgreSQL runtime protocol outputs from run.db. "
-                "Falling back to status-only update. projectId=%s protocolId=%s status=%s",
-                projectId,
-                scipionProtocolId,
-                runtimeStatus,
-            )
-
-            mapper.updateProtocol({
-                "id": row["id"],
-                "status": runtimeStatus,
-            })
-
-        return {
-            "projectId": projectId,
-            "protocolId": str(scipionProtocolId),
-            "runDbPath": runDbPath,
-            "status": runtimeStatus,
-            "outputSync": outputSync,
-        }
 
     def syncPostgresqlRuntimeProtocol(
             self,
@@ -1304,7 +1219,9 @@ class ProjectService:
         storedStatus = storedRow.get("status") if storedRow else None
         runtimeStatus = protocolContext.get("info", {}).get("status")
 
-        protocolContext["info"]["status"] = self._mergeRuntimeProtocolStatus(
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
+
+        protocolContext["info"]["status"] = runtimeProtocolStatusSyncService.mergeRuntimeProtocolStatus(
             storedStatus=storedStatus,
             runtimeStatus=runtimeStatus,
         )

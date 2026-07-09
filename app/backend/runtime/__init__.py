@@ -37,6 +37,7 @@ from app.backend.runtime.output_mapper_repair_service import RuntimeOutputMapper
 from app.backend.runtime.runtime_artifact_report_service import RuntimeArtifactReportService
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
 from app.backend.runtime.protocol_step_persistence_service import RuntimeProtocolStepPersistenceService
+from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -53,4 +54,5 @@ __all__ = [
     "RuntimeArtifactReportService",
     "RuntimeProtocolOutputPersistenceService",
     "RuntimeProtocolStepPersistenceService",
+    "RuntimeProtocolStatusSyncService"
 ]
