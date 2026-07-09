@@ -73,6 +73,14 @@ class RuntimeProtocolLaunchPrepareService:
 
         return None
 
+    @staticmethod
+    def _isPostgresqlProxy(obj) -> bool:
+        try:
+            checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
+            return callable(checker) and bool(checker())
+        except Exception:
+            return False
+
     def preparePointerOutputsForLaunch(
             self,
             mapper,
@@ -92,8 +100,7 @@ class RuntimeProtocolLaunchPrepareService:
 
         Important:
           - PostgreSQL is treated as the source of truth for parent outputs.
-          - A PostgreSQL-backed proxy is attached when the parent output is persisted,
-            replacing any stale runtime output attribute.
+          - A real Scipion output is restored from the SQLite fallback when available.
           - The caller must persist the prepared protocol before launching so the
             execution process can reload the restored pointers.
         """
@@ -209,24 +216,30 @@ class RuntimeProtocolLaunchPrepareService:
                     except Exception:
                         runtimeOutputObj = None
 
-                    if runtimeOutputObj is None:
-                        runtimeOutputObj = self._loadRuntimeOutputFromFallback(
+                    runtimeOutputIsProxy = self._isPostgresqlProxy(runtimeOutputObj)
+
+                    if runtimeOutputObj is None or runtimeOutputIsProxy:
+                        fallbackOutputObj = self._loadRuntimeOutputFromFallback(
                             mapper=mapper,
                             outputInfo=outputInfo,
                         )
 
-                        if runtimeOutputObj is not None:
+                        if fallbackOutputObj is not None:
+                            runtimeOutputObj = fallbackOutputObj
                             setattr(parentProtocol, parentOutputName, runtimeOutputObj)
+
                             itemReport["loadedRuntimeOutputFromFallback"] = True
+                            itemReport["replacedProxyWithFallback"] = bool(runtimeOutputIsProxy)
                             itemReport["attachedProxy"] = False
                         else:
                             itemReport["loadedRuntimeOutputFromFallback"] = False
+                            itemReport["replacedProxyWithFallback"] = bool(runtimeOutputIsProxy)
                             itemReport["attachedProxy"] = False
 
                             raise ValueError(
                                 "Parent output %s.%s exists in PostgreSQL but could not be "
                                 "loaded as a real Scipion object from the SQLite fallback. "
-                                "Refusing to attach PostgreSQL proxy for executable protocol input."
+                                "Refusing to use PostgreSQL proxy for executable protocol input."
                                 % (str(parentScipionProtocolId), parentOutputName)
                             )
 

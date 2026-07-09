@@ -602,8 +602,21 @@ class RuntimeOutputRelationRepairService:
             report["reason"] = "invalid_relation_rule"
             return report
 
+        sourceOutputInfo = {}
+
+        try:
+            sourceOutputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(parentProtocolDbId),
+                outputName=outputName,
+            )
+        except Exception:
+            sourceOutputInfo = {}
+
         if (
                 outputObj is None
+                or self.isPostgresqlProxy(outputObj)
                 or not hasattr(outputObj, setterName)
                 or not hasattr(outputObj, getterName)
         ):
@@ -619,27 +632,30 @@ class RuntimeOutputRelationRepairService:
                 report["error"] = str(e)
                 return report
 
-        if outputObj is None:
-            report["reason"] = "missing_output_object"
-            return report
+        if outputObj is None or self.isPostgresqlProxy(outputObj):
+            fallbackOutputObj = self._loadRuntimeOutputFromFallback(
+                mapper=mapper,
+                outputInfo=sourceOutputInfo,
+            )
+
+            if fallbackOutputObj is not None:
+                outputObj = fallbackOutputObj
+                setattr(parentProtocol, outputName, outputObj)
+                report["sourceOutputLoadedFromFallback"] = True
+            else:
+                report["reason"] = "source_runtime_output_missing"
+                report["error"] = (
+                    "Source output %s.%s exists in PostgreSQL but could not be "
+                    "loaded as a real Scipion object from the SQLite fallback."
+                    % (str(parentScipionProtocolId), outputName)
+                )
+                return report
 
         if not hasattr(outputObj, setterName) or not hasattr(outputObj, getterName):
             report["reason"] = "relation_not_supported"
             return report
 
         report["checked"] = True
-
-        sourceOutputInfo = {}
-
-        try:
-            sourceOutputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
-                mapper=mapper,
-                projectId=projectId,
-                parentProtocolDbId=int(parentProtocolDbId),
-                outputName=outputName,
-            )
-        except Exception:
-            sourceOutputInfo = {}
 
         if repairOutputMapperCallback is not None and sourceOutputInfo.get("exists"):
             try:
@@ -745,13 +761,14 @@ class RuntimeOutputRelationRepairService:
                 report["error"] = str(e)
                 return report
 
-        if relatedOutputObj is None:
-            relatedOutputObj = self._loadRuntimeOutputFromFallback(
+        if relatedOutputObj is None or self.isPostgresqlProxy(relatedOutputObj):
+            fallbackRelatedOutputObj = self._loadRuntimeOutputFromFallback(
                 mapper=mapper,
                 outputInfo=relatedOutputInfo,
             )
 
-            if relatedOutputObj is not None:
+            if fallbackRelatedOutputObj is not None:
+                relatedOutputObj = fallbackRelatedOutputObj
                 setattr(relatedParentProtocol, relatedOutputName, relatedOutputObj)
                 report["relatedOutputLoadedFromFallback"] = True
             else:
