@@ -453,11 +453,15 @@ class ProtocolGraphRepository:
                 'set' AS kind,
                 s.id AS "setId",
                 s."objectId"::text AS "objectId",
+                o."scipionObjId"::text AS "runtimeObjectId",
                 s."outputName" AS "outputName",
                 s."setClassName" AS "className",
                 s."itemClassName" AS "itemClassName",
                 s.properties AS properties
               FROM scipion_sets s
+         LEFT JOIN scipion_objects o
+                ON o."projectId" = s."projectId"
+               AND o.id = s."objectId"
              WHERE s."projectId" = %s
                AND s."protocolDbId" = %s
                AND s."outputName" = %s
@@ -468,6 +472,7 @@ class ProtocolGraphRepository:
                 'object' AS kind,
                 NULL AS "setId",
                 o."scipionObjId"::text AS "objectId",
+                o."scipionObjId"::text AS "runtimeObjectId",
                 o.name AS "outputName",
                 o."className" AS "className",
                 NULL AS "itemClassName",
@@ -497,6 +502,7 @@ class ProtocolGraphRepository:
                 "kind": None,
                 "setId": None,
                 "objectId": None,
+                "runtimeObjectId": None,
                 "outputName": outputName,
                 "className": None,
                 "itemClassName": None,

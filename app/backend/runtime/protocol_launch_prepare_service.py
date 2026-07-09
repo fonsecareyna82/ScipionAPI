@@ -32,13 +32,46 @@ from pyworkflow.protocol.params import MultiPointerParam
 
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
-from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolLaunchPrepareService:
     """Prepare PostgreSQL runtime protocol pointers before launch."""
+
+    @staticmethod
+    def _loadRuntimeOutputFromFallback(mapper, outputInfo: Dict[str, Any]):
+        runtimeObjectId = (outputInfo or {}).get("runtimeObjectId")
+
+        if runtimeObjectId in (None, ""):
+            return None
+
+        try:
+            runtimeObjectId = int(runtimeObjectId)
+        except Exception:
+            return None
+
+        for fallbackMapper in (
+                getattr(mapper, "writeFallbackMapper", None),
+                getattr(mapper, "readFallbackMapper", None),
+        ):
+            if fallbackMapper is None:
+                continue
+
+            selectById = getattr(fallbackMapper, "selectById", None)
+
+            if not callable(selectById):
+                continue
+
+            try:
+                outputObj = selectById(runtimeObjectId)
+            except Exception:
+                outputObj = None
+
+            if outputObj is not None:
+                return outputObj
+
+        return None
 
     def preparePointerOutputsForLaunch(
             self,
@@ -105,7 +138,6 @@ class RuntimeProtocolLaunchPrepareService:
             protocolDbId=int(protocolDbId),
         )
 
-        runtimeOutputProxyService = RuntimeOutputProxyService()
         preparedItems = []
         errors = []
 
@@ -178,13 +210,25 @@ class RuntimeProtocolLaunchPrepareService:
                         runtimeOutputObj = None
 
                     if runtimeOutputObj is None:
-                        runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
-                            parentProtocol=parentProtocol,
-                            outputName=parentOutputName,
-                            outputInfo=outputInfo,
+                        runtimeOutputObj = self._loadRuntimeOutputFromFallback(
                             mapper=mapper,
+                            outputInfo=outputInfo,
                         )
-                        itemReport["attachedProxy"] = True
+
+                        if runtimeOutputObj is not None:
+                            setattr(parentProtocol, parentOutputName, runtimeOutputObj)
+                            itemReport["loadedRuntimeOutputFromFallback"] = True
+                            itemReport["attachedProxy"] = False
+                        else:
+                            itemReport["loadedRuntimeOutputFromFallback"] = False
+                            itemReport["attachedProxy"] = False
+
+                            raise ValueError(
+                                "Parent output %s.%s exists in PostgreSQL but could not be "
+                                "loaded as a real Scipion object from the SQLite fallback. "
+                                "Refusing to attach PostgreSQL proxy for executable protocol input."
+                                % (str(parentScipionProtocolId), parentOutputName)
+                            )
 
                     else:
                         itemReport["attachedProxy"] = False
