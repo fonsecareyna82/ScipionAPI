@@ -23,11 +23,14 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 import logging
 import os
+import re
 import shutil
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow.object import (
     Object as ScipionObject,
     Pointer,
@@ -218,6 +221,839 @@ class RuntimeProtocolOutputPersistenceService:
                 "outputClassName": declaredOutput.get("outputClassName"),
                 "reason": "not_persisted",
             })
+
+        return result
+
+    def _firstPersistedValue(
+            self,
+            sources: List[Optional[Dict[str, Any]]],
+            keys: List[str],
+    ) -> Any:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+
+            for key in keys:
+                if key in source:
+                    value = source.get(key)
+                    if value not in (None, "", []):
+                        return value
+
+            lowerSource = {
+                str(k).lower(): v
+                for k, v in source.items()
+            }
+
+            for key in keys:
+                value = lowerSource.get(str(key).lower())
+                if value not in (None, "", []):
+                    return value
+
+        return None
+
+    def _toPersistedOutputInt(self, value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            pass
+
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return None
+
+    def _toPersistedOutputFloat(self, value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+
+        try:
+            return float(value)
+        except Exception:
+            pass
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+
+        try:
+            return float(match.group(0))
+        except Exception:
+            return None
+
+    def _normalizePersistedOutputDims(self, value: Any) -> List[int]:
+        if value in (None, ""):
+            return []
+
+        rawValues: List[Any] = []
+
+        if isinstance(value, dict):
+            for key in ("dims", "dim", "dimensions", "value"):
+                candidate = value.get(key)
+                if candidate not in (None, "", []):
+                    return self._normalizePersistedOutputDims(candidate)
+
+            for keys in (
+                    ("x", "y", "z"),
+                    ("width", "height", "depth"),
+                    ("xDim", "yDim", "zDim"),
+                    ("_xDim", "_yDim", "_zDim"),
+            ):
+                rawValues = [value.get(k) for k in keys if value.get(k) not in (None, "")]
+                if rawValues:
+                    break
+
+        elif isinstance(value, (list, tuple)):
+            rawValues = list(value)
+
+        else:
+            text = str(value).strip()
+            if not text:
+                return []
+
+            # Handles "140x140", "140,140", "140 140", "[140, 140]".
+            text = text.strip("[]()")
+            rawValues = [
+                part
+                for part in re.split(r"[xX,;:\s]+", text)
+                if part
+            ]
+
+        dims: List[int] = []
+        for raw in rawValues[:3]:
+            dim = self._toPersistedOutputInt(raw)
+            if dim is not None and dim > 0:
+                dims.append(dim)
+
+        return dims
+
+    def _normalizePersistedOutputClassText(
+            self,
+            *values: Any,
+    ) -> str:
+        return (
+            " ".join(str(value or "") for value in values)
+            .replace("_", "")
+            .replace("-", "")
+            .replace(".", "")
+            .replace(" ", "")
+            .lower()
+        )
+
+    def _resolvePersistedOutputDims(
+            self,
+            persistedOutput: Dict[str, Any],
+            properties: Optional[Dict[str, Any]] = None,
+    ) -> List[int]:
+        properties = properties or {}
+        sources = [properties, persistedOutput]
+
+        classText = self._normalizePersistedOutputClassText(
+            persistedOutput.get("className"),
+            persistedOutput.get("itemClassName"),
+            properties.get("className"),
+            properties.get("baseClassName"),
+        )
+
+        firstDim = self._normalizePersistedOutputDims(
+            self._firstPersistedValue(
+                sources,
+                [
+                    "_firstDim",
+                    "firstDim",
+                    "first_dim",
+                ],
+            )
+        )
+
+        anglesCount = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                [
+                    "_anglesCount",
+                    "anglesCount",
+                    "angles_count",
+                    "tiltAngles",
+                    "tiltAnglesCount",
+                    "tilt_angles_count",
+                ],
+            )
+        )
+
+        # Scipion displays SetOfTiltSeries as:
+        #   nAngles x xDim x yDim
+        # not as xDim x yDim x zDim.
+        if "setoftiltseries" in classText and firstDim:
+            if anglesCount is None:
+                anglesCount = self._toPersistedOutputInt(
+                    self._firstPersistedValue(
+                        sources,
+                        [
+                            "itemsCount",
+                            "itemsTableCount",
+                            "rootTableItemsCount",
+                            "size",
+                            "count",
+                            "_size",
+                        ],
+                    )
+                )
+
+            if anglesCount is not None and anglesCount > 0 and len(firstDim) >= 2:
+                return [anglesCount, firstDim[0], firstDim[1]]
+
+            return firstDim[:3]
+
+        dimValue = self._firstPersistedValue(
+            sources,
+            [
+                "dimensions",
+                "dimension",
+                "dims",
+                "dim",
+                "_dim",
+                "_firstDim",
+                "firstDim",
+                "first_dim",
+                "boxSize",
+                "box_size",
+                "_boxSize",
+                "imageSize",
+                "image_size",
+                "xDim",
+                "yDim",
+                "zDim",
+                "_xDim",
+                "_yDim",
+                "_zDim",
+                "width",
+                "height",
+                "depth",
+            ],
+        )
+
+        dims = self._normalizePersistedOutputDims(dimValue)
+        if dims:
+            return dims
+
+        xDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["xDim", "_xDim", "xdim", "_xdim", "width", "_width"],
+            )
+        )
+        yDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["yDim", "_yDim", "ydim", "_ydim", "height", "_height"],
+            )
+        )
+        zDim = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                sources,
+                ["zDim", "_zDim", "zdim", "_zdim", "depth", "_depth"],
+            )
+        )
+
+        dims = [d for d in (xDim, yDim, zDim) if d is not None and d > 0]
+        if dims:
+            return dims
+
+        # Useful for Coordinate3D-like outputs where tomograms are stored as linked metadata.
+        linkedTomograms = self._firstPersistedValue(
+            sources,
+            ["linkedTomograms", "linked_tomograms", "tomograms"],
+        )
+
+        if isinstance(linkedTomograms, list):
+            for item in linkedTomograms:
+                if not isinstance(item, dict):
+                    continue
+
+                dims = self._normalizePersistedOutputDims(
+                    self._firstPersistedValue(
+                        [item],
+                        [
+                            "dimensions",
+                            "dims",
+                            "dim",
+                            "_firstDim",
+                            "firstDim",
+                            "xDim",
+                            "yDim",
+                            "zDim",
+                            "width",
+                            "height",
+                            "depth",
+                        ],
+                    )
+                )
+
+                if dims:
+                    return dims
+
+        return []
+
+    def _formatPersistedOutputDims(self, dims: List[int]) -> str:
+        if not dims:
+            return ""
+
+        if len(dims) == 1:
+            return f"{dims[0]}x{dims[0]}"
+
+        if len(dims) >= 3 and dims[2] > 1:
+            return f"{dims[0]}x{dims[1]}x{dims[2]}"
+
+        return f"{dims[0]}x{dims[1]}"
+
+    def _toPersistedOutputBool(self, value: Any) -> Optional[bool]:
+        if value is None or value == "":
+            return None
+
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, (int, float)):
+            return bool(value)
+
+        text = str(value).strip().lower()
+        if text in ("true", "1", "yes", "y"):
+            return True
+        if text in ("false", "0", "no", "n"):
+            return False
+
+        return None
+
+    def _buildPersistedTomoDisplayFlags(
+            self,
+            persistedOutput: Dict[str, Any],
+            properties: Dict[str, Any],
+    ) -> List[str]:
+        sources = [properties or {}, persistedOutput or {}]
+
+        classText = self._normalizePersistedOutputClassText(
+            persistedOutput.get("className"),
+            persistedOutput.get("itemClassName"),
+            properties.get("className"),
+            properties.get("baseClassName"),
+        )
+
+        isTomoLike = (
+                "tiltseries" in classText
+                or "tomogram" in classText
+                or "ctftomo" in classText
+        )
+
+        if not isTomoLike:
+            return []
+
+        def firstBool(*names):
+            value = self._firstPersistedValue(sources, list(names))
+            return self._toPersistedOutputBool(value)
+
+        flags: List[str] = []
+
+        isHeterogeneousSet = firstBool(
+            "isHeterogeneousSet",
+            "heterogeneous",
+            "_isHeterogeneousSet",
+        )
+        if isHeterogeneousSet:
+            flags.append("+het")
+
+        hasAlignment = firstBool(
+            "hasAlignment",
+            "_hasAlignment",
+            "alignment",
+            "aligned",
+        )
+        if hasAlignment:
+            flags.append("+ali")
+
+        interpolated = firstBool(
+            "interpolated",
+            "_interpolated",
+            "isInterpolated",
+        )
+        if interpolated:
+            flags.append("! interp")
+
+        ctfCorrected = firstBool(
+            "ctfCorrected",
+            "_ctfCorrected",
+            "ctf",
+            "ctfCorrectedFlag",
+        )
+        if ctfCorrected:
+            flags.append("+ctf")
+
+        hasOddEven = firstBool(
+            "hasOddEven",
+            "_hasOddEven",
+            "oddEven",
+            "hasOddEvenAssociated",
+        )
+        if hasOddEven:
+            flags.append("+oe")
+
+        return flags
+
+    def _formatPersistedOutputClassName(
+            self,
+            className: Any,
+            itemClassName: Any = None,
+            outputName: Any = None,
+    ) -> str:
+        classText = str(className or "").strip()
+        itemClassText = str(itemClassName or "").strip()
+        outputText = str(outputName or "").strip()
+
+        if classText:
+            # Keep this one as Scipion normally shows it this way.
+            if classText.startswith("SetOfClasses"):
+                return classText
+
+            # SetOfParticles -> Particles, SetOfMovies -> Movies, etc.
+            if classText.startswith("SetOf") and len(classText) > len("SetOf"):
+                return classText[len("SetOf"):]
+
+            return classText
+
+        if itemClassText:
+            return itemClassText
+
+        return outputText or "Output"
+
+    def _buildPersistedOutputInfo(
+            self,
+            outputName: str,
+            persistedOutput: Dict[str, Any],
+            properties: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        properties = properties or {}
+
+        displayClass = self._formatPersistedOutputClassName(
+            persistedOutput.get("className") or properties.get("className"),
+            persistedOutput.get("itemClassName"),
+            outputName,
+        )
+
+        itemsCount = self._toPersistedOutputInt(
+            self._firstPersistedValue(
+                [persistedOutput, properties],
+                [
+                    "itemsCount",
+                    "itemsTableCount",
+                    "rootTableItemsCount",
+                    "size",
+                    "count",
+                    "_size",
+                ],
+            )
+        )
+
+        dims = self._resolvePersistedOutputDims(
+            persistedOutput=persistedOutput,
+            properties=properties,
+        )
+
+        samplingRate = self._toPersistedOutputFloat(
+            self._firstPersistedValue(
+                [properties, persistedOutput],
+                [
+                    "samplingRate",
+                    "_samplingRate",
+                    "sampling_rate",
+                    "sampling",
+                    "_sampling",
+                    "pixelSize",
+                    "pixel_size",
+                    "voxelSize",
+                    "voxel_size",
+                ],
+            )
+        )
+
+        details: List[str] = []
+
+        if itemsCount is not None:
+            details.append(f"{itemsCount} {'item' if itemsCount == 1 else 'items'}")
+
+        dimsText = self._formatPersistedOutputDims(dims)
+        if dimsText:
+            details.append(dimsText)
+
+        details.extend(
+            self._buildPersistedTomoDisplayFlags(
+                persistedOutput=persistedOutput,
+                properties=properties,
+            )
+        )
+
+        if samplingRate is not None and samplingRate > 0:
+            details.append(f"{samplingRate:.2f} Å/px")
+
+        if details:
+            return f"{displayClass} ({', '.join(details)})"
+
+        return displayClass
+
+    def loadPersistedOutputsByProtocolId(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        def toOptionalInt(value: Any) -> Optional[int]:
+            if value is None or value == "":
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p.id AS "protocolDbId",
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                root_object.id AS "rootObjectDbId",
+                root_object."projectId" AS "rootObjectProjectId",
+                root_object."protocolDbId" AS "rootObjectProtocolDbId",
+                root_object."parentObjectId" AS "rootObjectParentObjectId",
+                root_object.name AS "rootObjectName",
+                root_object.path AS "rootObjectPath",
+                root_object."className" AS "rootObjectClassName",
+                COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
+                items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
+                items_stats."itemsIdSignature" AS "itemsIdSignature",
+                items_stats."itemsValueSignature" AS "itemsValueSignature",
+                COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
+                columns_stats."setColumnsSignature" AS "setColumnsSignature",
+                COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
+                root_table_stats."rootTableId" AS "rootTableId",
+                COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
+                root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
+                root_table_stats."rootTableItemsIdSignature" AS "rootTableItemsIdSignature",
+                root_table_stats."rootTableItemsValueSignature" AS "rootTableItemsValueSignature",
+                COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
+                root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
+                COALESCE(properties_payload_stats."propertiesPayloadCount", 0) AS "propertiesPayloadCount",
+                properties_payload_stats."propertiesPayloadSignature" AS "propertiesPayloadSignature",
+                COALESCE(set_properties_stats."setPropertiesCount", 0) AS "setPropertiesCount",
+                set_properties_stats."setPropertiesSignature" AS "setPropertiesSignature",
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+              LEFT JOIN scipion_objects root_object
+                ON root_object.id = s."objectId"
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "itemsTableCount",
+                      MAX("scipionItemId")::int AS "maxItemIdFromItems",
+                      md5(
+                          string_agg(
+                              "scipionItemId"::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', "scipionItemId",
+                                  'enabled', enabled,
+                                  'label', label,
+                                  'comment', comment,
+                                  'creation', creation,
+                                  'values', "values"
+                              )::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsValueSignature"
+                    FROM scipion_set_items
+                   GROUP BY "setId"
+              ) items_stats
+                ON items_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', "labelProperty",
+                              'columnName', "columnName",
+                              'className', "className",
+                              'valueType', "valueType",
+                              'position', position,
+                              'indexed', indexed
+                          )
+                          ORDER BY position ASC, "labelProperty" ASC
+                      ) AS "setColumnsSignature"
+                    FROM scipion_set_columns
+                   GROUP BY "setId"
+              ) columns_stats
+                ON columns_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(DISTINCT t.id)::int AS "rootTablesCount",
+                      MIN(t.id)::int AS "rootTableId",
+                      COUNT(ti.id)::int AS "rootTableItemsCount",
+                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
+                      md5(
+                          string_agg(
+                              ti."scipionItemId"::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', ti."scipionItemId",
+                                  'enabled', ti.enabled,
+                                  'label', ti.label,
+                                  'comment', ti.comment,
+                                  'creation', ti.creation,
+                                  'values', ti."values"
+                              )::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsValueSignature"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_items ti
+                      ON ti."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_stats
+                ON root_table_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(tc.id)::int AS "rootTableColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', tc."labelProperty",
+                              'columnName', tc."columnName",
+                              'className', tc."className",
+                              'valueType', tc."valueType",
+                              'position', tc.position,
+                              'indexed', tc.indexed
+                          )
+                          ORDER BY tc.position ASC, tc."labelProperty" ASC
+                      ) FILTER (WHERE tc.id IS NOT NULL) AS "rootTableColumnsSignature"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_columns tc
+                      ON tc."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_columns_stats
+                ON root_table_columns_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      s2.id AS "setId",
+                      COUNT(*)::int AS "propertiesPayloadCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', stable_keys.key,
+                              'value', s2.properties ->> stable_keys.key
+                          )
+                          ORDER BY stable_keys.key ASC
+                      ) AS "propertiesPayloadSignature"
+                    FROM scipion_sets s2
+                    CROSS JOIN (
+                        VALUES
+                            ('columnsCount'),
+                            ('itemsCount'),
+                            ('nestedTablesVersion')
+                    ) AS stable_keys(key)
+                   WHERE s2.properties ? stable_keys.key
+                   GROUP BY s2.id
+              ) properties_payload_stats
+                ON properties_payload_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setPropertiesCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', key,
+                              'value', value
+                          )
+                          ORDER BY key ASC
+                      ) AS "setPropertiesSignature"
+                    FROM scipion_set_properties
+                   WHERE key IN (
+                       'columnsCount',
+                       'itemsCount',
+                       'nestedTablesVersion'
+                   )
+                   GROUP BY "setId"
+              ) set_properties_stats
+                ON set_properties_stats."setId" = s.id
+             WHERE s."projectId" = %s
+             ORDER BY p."protocolId", s."outputName"
+            """,
+            (projectId,),
+        )
+
+        for row in setRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("outputName") or "")
+            if not protocolId or not outputName:
+                continue
+
+            properties = row.get("properties") or {}
+
+            persistedOutputInfo = self._buildPersistedOutputInfo(
+                outputName=outputName,
+                persistedOutput={
+                    "className": row.get("setClassName"),
+                    "itemClassName": row.get("itemClassName"),
+                    "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                    "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
+                    "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
+                },
+                properties=properties if isinstance(properties, dict) else {},
+            )
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": "flat_set",
+                "setId": row.get("id"),
+                "protocolDbId": toOptionalInt(row.get("protocolDbId")),
+                "rootObjectId": row.get("objectId"),
+                "rootObjectDbId": toOptionalInt(row.get("rootObjectDbId")),
+                "rootObjectProjectId": toOptionalInt(row.get("rootObjectProjectId")),
+                "rootObjectProtocolDbId": toOptionalInt(row.get("rootObjectProtocolDbId")),
+                "rootObjectParentObjectId": toOptionalInt(row.get("rootObjectParentObjectId")),
+                "rootObjectName": row.get("rootObjectName"),
+                "rootObjectPath": row.get("rootObjectPath"),
+                "rootObjectClassName": row.get("rootObjectClassName"),
+                "className": row.get("setClassName"),
+                "itemClassName": row.get("itemClassName"),
+                "info": persistedOutputInfo,
+                "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
+                "itemsTableCount": toOptionalInt(row.get("itemsTableCount")),
+                "maxItemIdFromItems": toOptionalInt(row.get("maxItemIdFromItems")),
+                "itemsIdSignature": row.get("itemsIdSignature"),
+                "itemsValueSignature": row.get("itemsValueSignature"),
+                "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
+                "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
+                "setColumnsCount": toOptionalInt(row.get("setColumnsCount")),
+                "setColumnsSignature": row.get("setColumnsSignature") or [],
+                "rootTablesCount": toOptionalInt(row.get("rootTablesCount")),
+                "rootTableId": toOptionalInt(row.get("rootTableId")),
+                "rootTableItemsCount": toOptionalInt(row.get("rootTableItemsCount")),
+                "rootTableMaxItemId": toOptionalInt(row.get("rootTableMaxItemId")),
+                "rootTableItemsIdSignature": row.get("rootTableItemsIdSignature"),
+                "rootTableItemsValueSignature": row.get("rootTableItemsValueSignature"),
+                "rootTableColumnsCount": toOptionalInt(row.get("rootTableColumnsCount")),
+                "rootTableColumnsSignature": row.get("rootTableColumnsSignature") or [],
+                "propertiesPayloadCount": toOptionalInt(row.get("propertiesPayloadCount")),
+                "propertiesPayloadSignature": row.get("propertiesPayloadSignature") or [],
+                "setPropertiesCount": toOptionalInt(row.get("setPropertiesCount")),
+                "setPropertiesSignature": row.get("setPropertiesSignature") or [],
+                "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
+                "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
+                "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                o.id,
+                o."scipionObjId",
+                o.name,
+                o.path,
+                o."className",
+                o.value,
+                o.label,
+                o.comment,
+                o.metadata,
+                o."createdAt",
+                o."updatedAt"
+              FROM scipion_objects o
+              JOIN protocols p
+                ON p.id = o."protocolDbId"
+             WHERE o."projectId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+             ORDER BY p."protocolId", o.path
+            """,
+            (projectId,),
+        )
+
+        for row in treeRows:
+            protocolId = str(row.get("protocolId"))
+            outputName = str(row.get("path") or row.get("name") or "")
+            if not protocolId or not outputName:
+                continue
+
+            metadata = row.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            className = row.get("className")
+            displayText = (
+                    metadata.get("displayText")
+                    or row.get("value")
+                    or row.get("label")
+                    or className
+                    or outputName
+            )
+
+            result.setdefault(protocolId, {})[outputName] = {
+                "mapperKind": metadata.get("mapperKind") or "tree",
+                "rootObjectId": row.get("id"),
+                "rootObjectDbId": toOptionalInt(row.get("id")),
+                "scipionObjId": row.get("scipionObjId"),
+                "rootObjectName": row.get("name"),
+                "rootObjectPath": row.get("path"),
+                "rootObjectClassName": className,
+                "className": className,
+                "info": str(displayText or ""),
+                "value": row.get("value"),
+                "label": row.get("label"),
+                "comment": row.get("comment"),
+                "metadata": metadata,
+                "createdAt": row.get("createdAt"),
+                "updatedAt": row.get("updatedAt"),
+            }
 
         return result
 

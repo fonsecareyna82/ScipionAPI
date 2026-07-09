@@ -35,6 +35,8 @@ from pyworkflow.object import PointerList
 from pyworkflow.protocol.params import PointerParam, MultiPointerParam, RelationParam
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
+
 
 if TYPE_CHECKING:
     from app.backend.api.services.project_service import ProjectService
@@ -650,9 +652,10 @@ class ProjectConsistencyService:
                 postgresqlDependencies.add((parentProtocolId, childProtocolId))
 
         try:
-            persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
-                mapper,
-                projectId,
+            runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+            persistedOutputsByProtocolId = runtimeProtocolOutputPersistenceService.loadPersistedOutputsByProtocolId(
+                mapper=mapper,
+                projectId=projectId,
             )
         except Exception as e:
             logger.exception(
