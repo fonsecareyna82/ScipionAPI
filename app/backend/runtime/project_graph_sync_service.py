@@ -1,0 +1,273 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import logging
+from typing import Any, Callable, Dict, List, Set as TypingSet, Tuple
+
+from app.backend.runtime.protocol_output_persistence_service import (
+    RuntimeProtocolOutputPersistenceService,
+)
+from app.backend.runtime.protocol_step_persistence_service import (
+    RuntimeProtocolStepPersistenceService,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class RuntimeProjectGraphSyncService:
+    """Synchronize the Scipion project graph into PostgreSQL runtime tables."""
+
+    def syncProjectProtocolsAndDependencies(
+            self,
+            mapper,
+            projectId: int,
+            currentProject,
+            buildProtocolContextCallback: Callable,
+            tryGetScipionProtocolByRuntimeIdCallback: Callable,
+            getScipionObjectIdCallback: Callable,
+            shouldRegisterProtocolOutputsCallback: Callable,
+            registerOutputCallback: Callable,
+            buildProtocolInputRefsCallback: Callable,
+            shouldPreservePostgresqlOnlyProtocolsCallback: Callable,
+            refresh: bool = False,
+            checkPid: bool = False,
+    ) -> Dict[str, Any]:
+        if currentProject is None:
+            raise RuntimeError("No current project loaded")
+
+        runs = currentProject.getRunsGraph(
+            refresh=refresh,
+            checkPids=checkPid,
+        )
+        nodesDict = getattr(runs, "_nodesDict", {}) or {}
+
+        protocolDbIdByScipionId: Dict[str, int] = {}
+        currentProtocolIds: TypingSet[str] = set()
+        protocolsByScipionId: Dict[str, Any] = {}
+
+        outputSyncResults: List[Dict[str, Any]] = []
+        outputSyncErrors: List[Dict[str, Any]] = []
+        outputSyncDeclared: List[Dict[str, Any]] = []
+        outputSyncMissing: List[Dict[str, Any]] = []
+
+        stepsSyncCount = 0
+        stepsSyncProtocolsCount = 0
+        stepsSyncErrors: List[Dict[str, Any]] = []
+
+        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        # 1) Save all protocol nodes that are currently present in the real Scipion graph.
+        for nodeId, nodeObj in nodesDict.items():
+            nodeIdText = str(nodeId)
+
+            if nodeIdText == "PROJECT":
+                continue
+
+            protocol = getattr(nodeObj, "run", None)
+
+            if protocol is None:
+                protocol = tryGetScipionProtocolByRuntimeIdCallback(nodeId)
+
+            if protocol is None:
+                continue
+
+            protocolContext = buildProtocolContextCallback(
+                projectId,
+                protocol,
+                mapper,
+            )
+            protocolDbId = mapper.saveProtocol(protocolContext)
+
+            try:
+                protocolSteps = runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(
+                    protocol,
+                )
+                protocolScipionId = getScipionObjectIdCallback(protocol)
+
+                if protocolSteps and protocolScipionId is not None:
+                    mapper.replaceProtocolSteps(
+                        projectId=projectId,
+                        protocolDbId=int(protocolDbId),
+                        protocolId=int(protocolScipionId),
+                        steps=protocolSteps,
+                    )
+
+                    stepsSyncCount += len(protocolSteps)
+                    stepsSyncProtocolsCount += 1
+
+            except Exception as exc:
+                stepsSyncErrors.append({
+                    "protocolId": nodeIdText,
+                    "error": str(exc),
+                })
+                logger.exception(
+                    "Failed to sync protocol steps. projectId=%s protocolId=%s",
+                    projectId,
+                    nodeIdText,
+                )
+
+            if shouldRegisterProtocolOutputsCallback(protocol):
+                try:
+                    outputReport = registerOutputCallback(
+                        projectId=projectId,
+                        protocol=protocol,
+                        mapper=mapper,
+                        returnReport=True,
+                    )
+
+                    outputSyncResults.extend(outputReport.get("persisted") or [])
+
+                    declaredOutputs = outputReport.get("declared") or []
+                    persistedOutputs = outputReport.get("persisted") or []
+                    skippedOutputs = outputReport.get("skipped") or []
+                    erroredOutputs = outputReport.get("errors") or []
+
+                    for declaredOutput in declaredOutputs:
+                        outputSyncDeclared.append({
+                            "protocolId": nodeIdText,
+                            "outputName": declaredOutput.get("outputName"),
+                            "outputClassName": declaredOutput.get("outputClassName"),
+                        })
+
+                    outputSyncMissing.extend(
+                        runtimeProtocolOutputPersistenceService.buildMissingOutputSyncItems(
+                            protocolId=nodeIdText,
+                            declaredOutputs=declaredOutputs,
+                            persistedOutputs=persistedOutputs,
+                            skippedOutputs=skippedOutputs,
+                            outputErrors=erroredOutputs,
+                        )
+                    )
+
+                    for skippedOutput in skippedOutputs:
+                        outputSyncErrors.append({
+                            "protocolId": nodeIdText,
+                            "outputName": skippedOutput.get("outputName"),
+                            "outputClassName": skippedOutput.get("outputClassName"),
+                            "reason": skippedOutput.get("reason"),
+                        })
+
+                    for outputError in erroredOutputs:
+                        outputSyncErrors.append({
+                            "protocolId": nodeIdText,
+                            "outputName": outputError.get("outputName"),
+                            "outputClassName": outputError.get("outputClassName"),
+                            "error": outputError.get("error"),
+                        })
+
+                except Exception as exc:
+                    outputSyncErrors.append({
+                        "protocolId": nodeIdText,
+                        "error": str(exc),
+                    })
+                    logger.exception(
+                        "Failed to sync protocol outputs. projectId=%s protocolId=%s",
+                        projectId,
+                        nodeIdText,
+                    )
+
+            currentProtocolIds.add(nodeIdText)
+            protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
+            protocolsByScipionId[nodeIdText] = protocol
+
+        # 2) Do not purge PostgreSQL protocol rows while PostgreSQL runtime mapper
+        # is active/migrating.
+        #
+        # PostgreSQL can now contain protocols that do not exist in project.sqlite.
+        # If we purge rows based only on the legacy Scipion/SQLite graph, loading or
+        # refreshing a project can delete valid PostgreSQL-only protocols.
+        purgedProtocols = 0
+
+        if not shouldPreservePostgresqlOnlyProtocolsCallback():
+            purgedProtocols = mapper.deleteProjectProtocolsNotInProtocolIds(
+                projectId,
+                sorted(currentProtocolIds),
+            )
+
+        # 3) Build edges parent -> child using DB ids.
+        edges: List[Tuple[int, int]] = []
+
+        for nodeId, nodeObj in nodesDict.items():
+            childDbId = protocolDbIdByScipionId.get(str(nodeId))
+
+            if not childDbId:
+                continue
+
+            for parent in getattr(nodeObj, "_parents", []) or []:
+                parentNodeId = str(parent.getName())
+
+                if parentNodeId == "PROJECT":
+                    continue
+
+                parentDbId = protocolDbIdByScipionId.get(parentNodeId)
+
+                if not parentDbId:
+                    continue
+
+                edges.append((parentDbId, childDbId))
+
+        savedEdges = mapper.replaceProjectProtocolDependencies(
+            projectId,
+            edges,
+        )
+
+        # 4) Build exact protocol input refs.
+        inputRefs: List[Dict[str, Any]] = []
+
+        for protocolIdText, protocol in protocolsByScipionId.items():
+            inputRefs.extend(
+                buildProtocolInputRefsCallback(
+                    projectId=projectId,
+                    protocol=protocol,
+                    protocolDbIdByScipionId=protocolDbIdByScipionId,
+                )
+            )
+
+        savedInputRefs = 0
+        replaceInputRefs = getattr(mapper, "replaceProjectProtocolInputRefs", None)
+
+        if callable(replaceInputRefs):
+            savedInputRefs = replaceInputRefs(projectId, inputRefs)
+
+        outputResultsByKind = runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
+            outputSyncResults,
+        )
+
+        return {
+            "protocols": len(protocolDbIdByScipionId),
+            "dependencies": int(savedEdges),
+            "inputRefs": int(savedInputRefs),
+            "steps": int(stepsSyncCount),
+            "stepsProtocols": int(stepsSyncProtocolsCount),
+            "stepErrors": stepsSyncErrors,
+            "outputsDeclared": len(outputSyncDeclared),
+            "outputs": len(outputSyncResults),
+            "outputsMissing": len(outputSyncMissing),
+            "outputsByKind": outputResultsByKind,
+            "outputMissing": outputSyncMissing,
+            "outputErrors": outputSyncErrors,
+            "purgedProtocols": int(purgedProtocols or 0),
+        }

@@ -39,6 +39,7 @@ from app.backend.runtime.protocol_output_persistence_service import RuntimeProto
 from app.backend.runtime.protocol_step_persistence_service import RuntimeProtocolStepPersistenceService
 from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
 from app.backend.runtime.protocol_loader_service import RuntimeProtocolLoaderService
+from app.backend.runtime.project_graph_sync_service import RuntimeProjectGraphSyncService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -57,4 +58,5 @@ __all__ = [
     "RuntimeProtocolStepPersistenceService",
     "RuntimeProtocolStatusSyncService",
     "RuntimeProtocolLoaderService",
+    "RuntimeProjectGraphSyncService"
 ]
