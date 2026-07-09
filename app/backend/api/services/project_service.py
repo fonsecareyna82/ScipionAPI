@@ -1389,13 +1389,6 @@ class ProjectService:
             "interactive",
         }
 
-    def _countRuntimeOutputKinds(self, outputs: List[Dict[str, Any]]) -> Dict[str, int]:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
-        return runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
-            outputs=outputs,
-        )
-
     def syncProjectProtocolsAndDependencies(
             self,
             mapper: PostgresqlFlatMapper,
