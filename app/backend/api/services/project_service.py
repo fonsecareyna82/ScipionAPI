@@ -1890,97 +1890,14 @@ class ProjectService:
             mapper,
             projectId: int,
     ) -> dict:
-        """
-        Refresh only active PostgreSQL runtime protocol statuses from logs/run.db.
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
 
-        This is intentionally status-only:
-          - no outputs
-          - no object persistence
-          - no full graph sync
-        """
-        rows = mapper.db.fetchAll(
-            """
-            SELECT "protocolId", status
-              FROM protocols
-             WHERE "projectId" = %s
-               AND LOWER(COALESCE(status, '')) IN ('launched', 'running', 'scheduled')
-             ORDER BY "protocolId"
-            """,
-            (projectId,),
+        return runtimeProtocolStatusSyncService.syncActivePostgresqlRuntimeProtocolStatuses(
+            mapper=mapper,
+            projectId=projectId,
+            syncRuntimeProtocolStatusFromRunDbCallback=self.syncPostgresqlRuntimeProtocolStatusFromRunDb,
+            syncRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
         )
-
-        report = {
-            "checked": len(rows or []),
-            "updated": [],
-            "unchanged": [],
-            "errors": [],
-        }
-
-        for row in rows or []:
-            protocolId = row.get("protocolId")
-            previousStatus = row.get("status")
-
-            try:
-                result = self.syncPostgresqlRuntimeProtocolStatusFromRunDb(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-
-                newStatus = result.get("status")
-
-                item = {
-                    "protocolId": str(protocolId),
-                    "previousStatus": previousStatus,
-                    "status": newStatus,
-                }
-
-                normalizedNewStatus = str(newStatus or "").strip().lower()
-
-                if normalizedNewStatus in ("finished", "interactive"):
-                    try:
-                        runtimeSync = self.syncPostgresqlRuntimeProtocol(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolId,
-                            registerOutputs=True,
-                        )
-
-                        item["runtimeSync"] = runtimeSync
-                        item["outputsRegistered"] = runtimeSync.get("outputs", 0)
-                        item["outputsDeclared"] = runtimeSync.get("outputsDeclared", 0)
-                        item["outputErrors"] = runtimeSync.get("outputErrors", [])
-
-                    except Exception as e:
-                        logger.exception(
-                            "Failed to sync PostgreSQL runtime outputs after terminal status. "
-                            "projectId=%s protocolId=%s status=%s",
-                            projectId,
-                            protocolId,
-                            newStatus,
-                        )
-
-                        item["outputsRegistered"] = 0
-                        item["outputSyncError"] = str(e)
-
-                if str(previousStatus or "").strip().lower() != str(newStatus or "").strip().lower():
-                    report["updated"].append(item)
-                else:
-                    report["unchanged"].append(item)
-
-            except Exception as e:
-                logger.debug(
-                    "Could not refresh PostgreSQL runtime protocol status. projectId=%s protocolId=%s",
-                    projectId,
-                    protocolId,
-                    exc_info=True,
-                )
-                report["errors"].append({
-                    "protocolId": str(protocolId),
-                    "error": str(e),
-                })
-
-        return report
 
     def getProjectById(
             self,
