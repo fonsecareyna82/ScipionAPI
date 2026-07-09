@@ -45,6 +45,43 @@ class ProtocolGraphRepository:
             for row in rows or []
         ]
 
+    @staticmethod
+    def _extractRuntimeScipionObjId(outputRow: Dict[str, Any]):
+        if not outputRow:
+            return None
+
+        value = outputRow.get("runtimeObjectId")
+
+        if value not in (None, ""):
+            try:
+                return int(value)
+            except Exception:
+                pass
+
+        properties = outputRow.get("properties") or {}
+
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        if not isinstance(properties, dict):
+            return None
+
+        for key in ("scipionObjId", "_objId", "objId"):
+            value = properties.get(key)
+
+            if value in (None, ""):
+                continue
+
+            try:
+                return int(value)
+            except Exception:
+                continue
+
+        return None
+
     def getPersistedSetOutputRow(
             self,
             mapper,
@@ -60,6 +97,7 @@ class ProtocolGraphRepository:
                 s."protocolDbId",
                 p."protocolId",
                 s."objectId",
+                o."scipionObjId" AS "runtimeObjectId",
                 s."outputName",
                 s."setClassName" AS "className",
                 s."itemClassName",
@@ -68,6 +106,9 @@ class ProtocolGraphRepository:
               JOIN protocols p
                 ON p."projectId" = s."projectId"
                AND p.id = s."protocolDbId"
+         LEFT JOIN scipion_objects o
+                ON o."projectId" = s."projectId"
+               AND o.id = s."objectId"
              WHERE s."projectId" = %s
                AND s."protocolDbId" = %s
                AND s."outputName" = %s
@@ -127,6 +168,9 @@ class ProtocolGraphRepository:
                 "targetOutputName": targetOutputName,
             }
 
+        sourceRuntimeObjectId = self._extractRuntimeScipionObjId(sourceOutput)
+        targetRuntimeObjectId = self._extractRuntimeScipionObjId(targetOutput)
+
         metadata = dict(metadata or {})
         metadata.update({
             "sourceProtocolDbId": int(sourceProtocolDbId),
@@ -158,6 +202,49 @@ class ProtocolGraphRepository:
                 commit=False,
             )
 
+            if sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None:
+                mapper.db.execute(
+                    """
+                    DELETE FROM scipion_relations
+                     WHERE "projectId" = %s
+                       AND "parentObjId" = %s
+                       AND name = %s
+                       AND COALESCE("parentExtended", '') = %s
+                    """,
+                    (
+                        int(projectId),
+                        int(sourceRuntimeObjectId),
+                        relationName,
+                        sourceOutputName,
+                    ),
+                    commit=False,
+                )
+
+                mapper.db.execute(
+                    """
+                    INSERT INTO scipion_relations (
+                        "projectId",
+                        name,
+                        "creatorObjId",
+                        "parentObjId",
+                        "childObjId",
+                        "parentExtended",
+                        "childExtended"
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(projectId),
+                        relationName,
+                        int(sourceRuntimeObjectId),
+                        int(sourceRuntimeObjectId),
+                        int(targetRuntimeObjectId),
+                        sourceOutputName,
+                        targetOutputName,
+                    ),
+                    commit=False,
+                )
+
             mapper.db.execute(
                 """
                 INSERT INTO scipion_object_relations (
@@ -185,15 +272,47 @@ class ProtocolGraphRepository:
                 commit=False,
             )
 
+            fallbackRelationSaved = False
+            fallbackRelationError = None
+
+            if sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None:
+                fallbackMapper = getattr(mapper, "writeFallbackMapper", None)
+                insertRelationData = getattr(fallbackMapper, "insertRelationData", None)
+
+                if callable(insertRelationData):
+                    try:
+                        insertRelationData(
+                            relationName,
+                            int(sourceRuntimeObjectId),
+                            int(sourceRuntimeObjectId),
+                            int(targetRuntimeObjectId),
+                            sourceOutputName,
+                            targetOutputName,
+                        )
+
+                        commit = getattr(fallbackMapper, "commit", None)
+                        if callable(commit):
+                            commit()
+
+                        fallbackRelationSaved = True
+
+                    except Exception as e:
+                        fallbackRelationError = str(e)
+
         return {
             "saved": True,
             "relationName": relationName,
             "sourceProtocolDbId": int(sourceProtocolDbId),
             "sourceOutputName": sourceOutputName,
             "sourceObjectId": int(sourceOutput["objectId"]),
+            "sourceRuntimeObjectId": sourceRuntimeObjectId,
             "targetProtocolDbId": int(targetProtocolDbId),
             "targetOutputName": targetOutputName,
             "targetObjectId": int(targetOutput["objectId"]),
+            "targetRuntimeObjectId": targetRuntimeObjectId,
+            "legacyRelationSaved": sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None,
+            "fallbackRelationSaved": fallbackRelationSaved,
+            "fallbackRelationError": fallbackRelationError,
         }
 
     def loadRuntimeOutputRelations(
