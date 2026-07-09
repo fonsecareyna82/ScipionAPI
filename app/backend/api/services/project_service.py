@@ -1419,6 +1419,8 @@ class ProjectService:
         stepsSyncErrors: List[Dict[str, Any]] = []
 
         # 1) Save all protocol nodes that are currently present in the real Scipion graph
+        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
         for nodeId, nodeObj in nodesDict.items():
             nodeIdText = str(nodeId)
             if nodeIdText == "PROJECT":
@@ -1435,7 +1437,9 @@ class ProjectService:
             protocolDbId = mapper.saveProtocol(protocolContext)
 
             try:
-                protocolSteps = self._buildProtocolStepsForPostgresql(protocol)
+                protocolSteps = runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(
+                    protocol,
+                )
                 protocolScipionId = self._getScipionObjectId(protocol)
 
                 if protocolSteps and protocolScipionId is not None:
@@ -1482,7 +1486,7 @@ class ProjectService:
                         })
 
                     outputSyncMissing.extend(
-                        self._buildMissingOutputSyncItems(
+                        runtimeProtocolOutputPersistenceService.buildMissingOutputSyncItems(
                             protocolId=nodeIdText,
                             declaredOutputs=declaredOutputs,
                             persistedOutputs=persistedOutputs,
@@ -1572,10 +1576,9 @@ class ProjectService:
         if callable(replaceInputRefs):
             savedInputRefs = replaceInputRefs(projectId, inputRefs)
 
-        outputResultsByKind: Dict[str, int] = {}
-        for item in outputSyncResults:
-            mapperKind = str(item.get("mapperKind") or "unknown")
-            outputResultsByKind[mapperKind] = outputResultsByKind.get(mapperKind, 0) + 1
+        outputResultsByKind = runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
+            outputSyncResults,
+        )
 
         return {
             "protocols": len(protocolDbIdByScipionId),
