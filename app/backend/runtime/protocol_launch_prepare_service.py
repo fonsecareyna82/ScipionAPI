@@ -212,10 +212,22 @@ class RuntimeProtocolLaunchPrepareService:
 
                     if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
                         pointer = Pointer(parentProtocol, extended=parentOutputName)
-                        setattr(protocol, inputName, pointer)
                     else:
                         pointer.set(parentProtocol)
                         pointer.setExtended(parentOutputName)
+
+                    setattr(protocol, inputName, pointer)
+
+                    pointerValue = "%s.%s" % (
+                        str(parentScipionProtocolId),
+                        str(parentOutputName),
+                    )
+
+                    try:
+                        param.default.set(pointerValue)
+                        itemReport["paramDefaultUpdated"] = pointerValue
+                    except Exception as defaultError:
+                        itemReport["paramDefaultUpdateError"] = str(defaultError)
 
                     itemReport["pointerReset"] = True
 
