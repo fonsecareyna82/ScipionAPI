@@ -23,7 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-
+import re
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -111,6 +111,90 @@ class RuntimeOutputRelationRepairService:
             return None, None
 
         return f"get{baseName}", f"set{baseName}"
+
+    @staticmethod
+    def buildRelationNameFromAccessorSuffix(accessorSuffix: str) -> str:
+        accessorSuffix = str(accessorSuffix or "").strip()
+        if not accessorSuffix:
+            return ""
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", accessorSuffix).lower()
+
+    def buildRelationRulesFromInputCandidates(
+            self,
+            mapper,
+            projectId: int,
+            outputObj,
+            inputRefRows: List[Dict[str, Any]],
+            currentInputName: str,
+    ) -> List[Dict[str, Any]]:
+        if outputObj is None:
+            return []
+
+        relationRules = []
+        seen = set()
+
+        for ref in inputRefRows or []:
+            candidateInputName = str(ref.get("inputName") or "").strip()
+            candidateParentProtocolDbId = ref.get("parentProtocolDbId")
+            candidateOutputName = str(ref.get("parentOutputName") or "").strip()
+
+            if not candidateInputName or candidateInputName == currentInputName:
+                continue
+
+            if candidateParentProtocolDbId in (None, "") or not candidateOutputName:
+                continue
+
+            try:
+                candidateOutputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbId=int(candidateParentProtocolDbId),
+                    outputName=candidateOutputName,
+                )
+            except Exception:
+                continue
+
+            if not candidateOutputInfo.get("exists"):
+                continue
+
+            for className in (
+                    candidateOutputInfo.get("className"),
+                    candidateOutputInfo.get("itemClassName"),
+            ):
+                className = str(className or "").strip()
+
+                if not className:
+                    continue
+
+                getterName = "get%s" % className
+                setterName = "set%s" % className
+
+                if not hasattr(outputObj, getterName):
+                    continue
+
+                if not hasattr(outputObj, setterName):
+                    continue
+
+                relationName = self.buildRelationNameFromAccessorSuffix(className)
+                if not relationName:
+                    continue
+
+                key = (relationName, getterName, setterName)
+                if key in seen:
+                    continue
+
+                seen.add(key)
+
+                relationRules.append({
+                    "name": relationName,
+                    "getterName": getterName,
+                    "setterName": setterName,
+                    "targetClassNames": [className],
+                    "targetItemClassNames": [],
+                    "source": "input_candidates",
+                })
+
+        return relationRules
 
     def buildRelationRuleFromPersistedRelation(
             self,
@@ -411,7 +495,16 @@ class RuntimeOutputRelationRepairService:
             "outputName": outputName,
         }
 
-        relationRules = relationRules or self.defaultRelationRules
+        inferredRelationRules = self.buildRelationRulesFromInputCandidates(
+            mapper=mapper,
+            projectId=projectId,
+            outputObj=outputObj,
+            inputRefRows=inputRefRows,
+            currentInputName=currentInputName,
+        )
+
+        if relationRules is None:
+            relationRules = inferredRelationRules or self.defaultRelationRules
 
         for relationRule in relationRules or []:
             report = self.repairMissingOutputRelation(
@@ -477,7 +570,6 @@ class RuntimeOutputRelationRepairService:
 
         if (
                 outputObj is None
-                or self.isPostgresqlProxy(outputObj)
                 or not hasattr(outputObj, setterName)
                 or not hasattr(outputObj, getterName)
         ):
@@ -566,7 +658,7 @@ class RuntimeOutputRelationRepairService:
         except Exception:
             relatedOutputObj = None
 
-        if relatedOutputObj is None or self.isPostgresqlProxy(relatedOutputObj):
+        if relatedOutputObj is None:
             try:
                 _relatedScipionProtocolId, freshRelatedParentProtocol = getParentProtocolCallback(
                     mapper=mapper,

@@ -23,7 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-
+import re
 import logging
 from typing import Any, Callable, Dict, Optional
 
@@ -193,14 +193,28 @@ class RuntimeProtocolLaunchPrepareService:
                         if relationRepairReport.get("checked"):
                             itemReport["runtimeOutputRelationRepair"] = relationRepairReport
 
-                    runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
-                        parentProtocol=parentProtocol,
-                        outputName=parentOutputName,
-                        outputInfo=outputInfo,
-                        mapper=mapper,
-                    )
+                    try:
+                        runtimeOutputObj = getattr(parentProtocol, parentOutputName, None)
+                    except Exception:
+                        runtimeOutputObj = None
 
-                    itemReport["attachedProxy"] = True
+                    if runtimeOutputObj is None:
+                        runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
+                            parentProtocol=parentProtocol,
+                            outputName=parentOutputName,
+                            outputInfo=outputInfo,
+                            mapper=mapper,
+                        )
+                        itemReport["attachedProxy"] = True
+
+                        try:
+                            runtimeOutputObj = getattr(parentProtocol, parentOutputName, None)
+                        except Exception:
+                            runtimeOutputObj = None
+                    else:
+                        itemReport["attachedProxy"] = False
+                        itemReport["keptRuntimeAttribute"] = True
+
                     itemReport["outputInfo"] = {
                         "kind": outputInfo.get("kind"),
                         "setId": outputInfo.get("setId"),
@@ -209,6 +223,22 @@ class RuntimeProtocolLaunchPrepareService:
                         "itemClassName": outputInfo.get("itemClassName"),
                         "itemsCount": outputInfo.get("itemsCount"),
                     }
+
+                    if repairOutputRelationsCallback is not None:
+                        relationRepairReport = repairOutputRelationsCallback(
+                            mapper=mapper,
+                            projectId=projectId,
+                            parentProtocol=parentProtocol,
+                            parentProtocolDbId=int(resolvedParentProtocolDbId),
+                            parentScipionProtocolId=parentScipionProtocolId,
+                            outputName=parentOutputName,
+                            outputObj=runtimeOutputObj,
+                            inputRefRows=rows,
+                            currentInputName=inputName,
+                        )
+
+                        if relationRepairReport.get("checked"):
+                            itemReport["runtimeOutputRelationRepair"] = relationRepairReport
 
                 param = protocol.getParam(inputName)
 

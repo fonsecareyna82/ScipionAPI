@@ -264,6 +264,7 @@ class PostgresqlRuntimeOutputProxy:
         self._info = dict(outputInfo or {})
         self._properties = self._info.get("properties") or {}
         self._itemsCache = None
+        self._relatedOutputs = {}
 
     def getObjId(self):
         value = self._info.get("objectId")
@@ -464,6 +465,25 @@ class PostgresqlRuntimeOutputProxy:
             result.append(number)
 
         return tuple(result)
+
+    def __getattr__(self, name: str):
+        if name.startswith("set") and len(name) > 3:
+            relationName = name[3:4].lower() + name[4:]
+
+            def setter(value):
+                self._relatedOutputs[relationName] = value
+
+            return setter
+
+        if name.startswith("get") and len(name) > 3:
+            relationName = name[3:4].lower() + name[4:]
+
+            def getter(*_args, **_kwargs):
+                return self._relatedOutputs.get(relationName)
+
+            return getter
+
+        raise AttributeError(name)
 
     def __bool__(self):
         return True
