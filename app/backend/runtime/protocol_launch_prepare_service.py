@@ -177,11 +177,6 @@ class RuntimeProtocolLaunchPrepareService:
                     except Exception:
                         runtimeOutputObj = None
 
-                    try:
-                        runtimeOutputObj = getattr(parentProtocol, parentOutputName, None)
-                    except Exception:
-                        runtimeOutputObj = None
-
                     if runtimeOutputObj is None:
                         runtimeOutputProxyService.attachPostgresqlRuntimeOutputProxy(
                             parentProtocol=parentProtocol,
@@ -191,10 +186,6 @@ class RuntimeProtocolLaunchPrepareService:
                         )
                         itemReport["attachedProxy"] = True
 
-                        try:
-                            runtimeOutputObj = getattr(parentProtocol, parentOutputName, None)
-                        except Exception:
-                            runtimeOutputObj = None
                     else:
                         itemReport["attachedProxy"] = False
                         itemReport["keptRuntimeAttribute"] = True
