@@ -665,6 +665,7 @@ class RuntimeOutputRelationRepairService:
                     projectId=projectId,
                     parentId=relatedParentProtocolId,
                 )
+                relatedParentProtocol = freshRelatedParentProtocol
                 relatedOutputObj = getattr(freshRelatedParentProtocol, relatedOutputName, None)
             except Exception as e:
                 report["reason"] = "related_output_object_not_loaded"
@@ -672,8 +673,22 @@ class RuntimeOutputRelationRepairService:
                 return report
 
         if relatedOutputObj is None:
-            report["reason"] = "related_runtime_output_missing"
-            return report
+            try:
+                from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
+
+                relatedOutputObj = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                    parentProtocol=relatedParentProtocol,
+                    outputName=relatedOutputName,
+                    outputInfo=relatedOutputInfo,
+                    mapper=mapper,
+                )
+
+                report["relatedOutputProxyAttached"] = True
+
+            except Exception as e:
+                report["reason"] = "related_runtime_output_missing"
+                report["error"] = str(e)
+                return report
 
         if repairOutputMapperCallback is not None:
             try:
