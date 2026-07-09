@@ -177,22 +177,6 @@ class RuntimeProtocolLaunchPrepareService:
                     except Exception:
                         runtimeOutputObj = None
 
-                    if repairOutputRelationsCallback is not None:
-                        relationRepairReport = repairOutputRelationsCallback(
-                            mapper=mapper,
-                            projectId=projectId,
-                            parentProtocol=parentProtocol,
-                            parentProtocolDbId=int(resolvedParentProtocolDbId),
-                            parentScipionProtocolId=parentScipionProtocolId,
-                            outputName=parentOutputName,
-                            outputObj=runtimeOutputObj,
-                            inputRefRows=rows,
-                            currentInputName=inputName,
-                        )
-
-                        if relationRepairReport.get("checked"):
-                            itemReport["runtimeOutputRelationRepair"] = relationRepairReport
-
                     try:
                         runtimeOutputObj = getattr(parentProtocol, parentOutputName, None)
                     except Exception:
@@ -224,22 +208,6 @@ class RuntimeProtocolLaunchPrepareService:
                         "itemsCount": outputInfo.get("itemsCount"),
                     }
 
-                    if repairOutputRelationsCallback is not None:
-                        relationRepairReport = repairOutputRelationsCallback(
-                            mapper=mapper,
-                            projectId=projectId,
-                            parentProtocol=parentProtocol,
-                            parentProtocolDbId=int(resolvedParentProtocolDbId),
-                            parentScipionProtocolId=parentScipionProtocolId,
-                            outputName=parentOutputName,
-                            outputObj=runtimeOutputObj,
-                            inputRefRows=rows,
-                            currentInputName=inputName,
-                        )
-
-                        if relationRepairReport.get("checked"):
-                            itemReport["runtimeOutputRelationRepair"] = relationRepairReport
-
                 param = protocol.getParam(inputName)
 
                 if isinstance(param, MultiPointerParam):
@@ -259,6 +227,39 @@ class RuntimeProtocolLaunchPrepareService:
                         pointer.setExtended(parentOutputName)
 
                     itemReport["pointerReset"] = True
+
+                    resolvedInputObj = None
+
+                    try:
+                        resolvedInputObj = pointer.get()
+                    except Exception as resolveError:
+                        itemReport["resolvedInputError"] = str(resolveError)
+
+                    if resolvedInputObj is not None:
+                        try:
+                            itemReport["resolvedInputClassName"] = (
+                                resolvedInputObj.getClassName()
+                                if hasattr(resolvedInputObj, "getClassName")
+                                else resolvedInputObj.__class__.__name__
+                            )
+                        except Exception:
+                            itemReport["resolvedInputClassName"] = resolvedInputObj.__class__.__name__
+
+                    if resolvedInputObj is not None and repairOutputRelationsCallback is not None:
+                        relationRepairReport = repairOutputRelationsCallback(
+                            mapper=mapper,
+                            projectId=projectId,
+                            parentProtocol=parentProtocol,
+                            parentProtocolDbId=int(resolvedParentProtocolDbId),
+                            parentScipionProtocolId=parentScipionProtocolId,
+                            outputName=parentOutputName,
+                            outputObj=resolvedInputObj,
+                            inputRefRows=rows,
+                            currentInputName=inputName,
+                        )
+
+                        if relationRepairReport.get("checked"):
+                            itemReport["runtimeOutputRelationRepair"] = relationRepairReport
 
                 preparedItems.append(itemReport)
 
