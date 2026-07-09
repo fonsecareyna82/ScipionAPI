@@ -53,6 +53,40 @@ class RuntimeOutputRelationRepairService:
         self.protocolGraphRepository = ProtocolGraphRepository()
 
     @staticmethod
+    def _loadRuntimeOutputFromFallback(mapper, outputInfo: Dict[str, Any]):
+        runtimeObjectId = (outputInfo or {}).get("runtimeObjectId")
+
+        if runtimeObjectId in (None, ""):
+            return None
+
+        try:
+            runtimeObjectId = int(runtimeObjectId)
+        except Exception:
+            return None
+
+        for fallbackMapper in (
+                getattr(mapper, "writeFallbackMapper", None),
+                getattr(mapper, "readFallbackMapper", None),
+        ):
+            if fallbackMapper is None:
+                continue
+
+            selectById = getattr(fallbackMapper, "selectById", None)
+
+            if not callable(selectById):
+                continue
+
+            try:
+                outputObj = selectById(runtimeObjectId)
+            except Exception:
+                outputObj = None
+
+            if outputObj is not None:
+                return outputObj
+
+        return None
+
+    @staticmethod
     def isPostgresqlProxy(obj) -> bool:
         try:
             checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
@@ -712,21 +746,21 @@ class RuntimeOutputRelationRepairService:
                 return report
 
         if relatedOutputObj is None:
-            try:
-                from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
+            relatedOutputObj = self._loadRuntimeOutputFromFallback(
+                mapper=mapper,
+                outputInfo=relatedOutputInfo,
+            )
 
-                relatedOutputObj = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
-                    parentProtocol=relatedParentProtocol,
-                    outputName=relatedOutputName,
-                    outputInfo=relatedOutputInfo,
-                    mapper=mapper,
-                )
-
-                report["relatedOutputProxyAttached"] = True
-
-            except Exception as e:
+            if relatedOutputObj is not None:
+                setattr(relatedParentProtocol, relatedOutputName, relatedOutputObj)
+                report["relatedOutputLoadedFromFallback"] = True
+            else:
                 report["reason"] = "related_runtime_output_missing"
-                report["error"] = str(e)
+                report["error"] = (
+                        "Related output %s.%s exists in PostgreSQL but could not be "
+                        "loaded as a real Scipion object from the SQLite fallback."
+                        % (str(relatedParentProtocolId), relatedOutputName)
+                )
                 return report
 
         if repairOutputMapperCallback is not None:
