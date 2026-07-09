@@ -204,3 +204,102 @@ class RuntimeProtocolStatusSyncService:
             "status": runtimeStatus,
             "outputSync": outputSync,
         }
+
+    def syncActivePostgresqlRuntimeProtocolStatuses(
+            self,
+            mapper,
+            projectId: int,
+            syncRuntimeProtocolStatusFromRunDbCallback: Callable,
+            syncRuntimeProtocolCallback: Callable,
+    ) -> dict:
+        """
+        Refresh only active PostgreSQL runtime protocol statuses from logs/run.db.
+
+        This is intentionally status-first:
+          - active protocols are read from PostgreSQL
+          - runtime status is resolved from run.db
+          - terminal protocols may trigger a full runtime sync to register outputs
+        """
+        rows = mapper.db.fetchAll(
+            """
+            SELECT "protocolId", status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND LOWER(COALESCE(status, '')) IN ('launched', 'running', 'scheduled')
+             ORDER BY "protocolId"
+            """,
+            (projectId,),
+        )
+
+        report = {
+            "checked": len(rows or []),
+            "updated": [],
+            "unchanged": [],
+            "errors": [],
+        }
+
+        for row in rows or []:
+            protocolId = row.get("protocolId")
+            previousStatus = row.get("status")
+
+            try:
+                result = syncRuntimeProtocolStatusFromRunDbCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+
+                newStatus = result.get("status")
+
+                item = {
+                    "protocolId": str(protocolId),
+                    "previousStatus": previousStatus,
+                    "status": newStatus,
+                }
+
+                normalizedNewStatus = str(newStatus or "").strip().lower()
+
+                if normalizedNewStatus in ("finished", "interactive"):
+                    try:
+                        runtimeSync = syncRuntimeProtocolCallback(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                            registerOutputs=True,
+                        )
+
+                        item["runtimeSync"] = runtimeSync
+                        item["outputsRegistered"] = runtimeSync.get("outputs", 0)
+                        item["outputsDeclared"] = runtimeSync.get("outputsDeclared", 0)
+                        item["outputErrors"] = runtimeSync.get("outputErrors", [])
+
+                    except Exception as e:
+                        logger.exception(
+                            "Failed to sync PostgreSQL runtime outputs after terminal status. "
+                            "projectId=%s protocolId=%s status=%s",
+                            projectId,
+                            protocolId,
+                            newStatus,
+                        )
+
+                        item["outputsRegistered"] = 0
+                        item["outputSyncError"] = str(e)
+
+                if str(previousStatus or "").strip().lower() != str(newStatus or "").strip().lower():
+                    report["updated"].append(item)
+                else:
+                    report["unchanged"].append(item)
+
+            except Exception as e:
+                logger.debug(
+                    "Could not refresh PostgreSQL runtime protocol status. projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                    exc_info=True,
+                )
+                report["errors"].append({
+                    "protocolId": str(protocolId),
+                    "error": str(e),
+                })
+
+        return report
