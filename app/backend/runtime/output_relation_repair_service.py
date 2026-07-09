@@ -428,7 +428,7 @@ class RuntimeOutputRelationRepairService:
                 repairOutputMapperCallback=repairOutputMapperCallback,
                 storeProtocolCallback=storeProtocolCallback,
                 relatedOutputCandidate=relatedOutputCandidate,
-                persistRepairedRelation=False,
+                persistRepairedRelation=True,
             )
 
             report["relationId"] = persistedRelation.get("relationId")
