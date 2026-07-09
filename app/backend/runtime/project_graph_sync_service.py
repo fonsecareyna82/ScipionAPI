@@ -32,6 +32,9 @@ from app.backend.runtime.protocol_output_persistence_service import (
 from app.backend.runtime.protocol_step_persistence_service import (
     RuntimeProtocolStepPersistenceService,
 )
+from app.backend.runtime.protocol_input_ref_builder_service import (
+    RuntimeProtocolInputRefBuilderService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +52,6 @@ class RuntimeProjectGraphSyncService:
             getScipionObjectIdCallback: Callable,
             shouldRegisterProtocolOutputsCallback: Callable,
             registerOutputCallback: Callable,
-            buildProtocolInputRefsCallback: Callable,
             shouldPreservePostgresqlOnlyProtocolsCallback: Callable,
             refresh: bool = False,
             checkPid: bool = False,
@@ -78,6 +80,7 @@ class RuntimeProjectGraphSyncService:
 
         runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
         runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+        runtimeProtocolInputRefBuilderService = RuntimeProtocolInputRefBuilderService()
 
         # 1) Save all protocol nodes that are currently present in the real Scipion graph.
         for nodeId, nodeObj in nodesDict.items():
@@ -239,7 +242,7 @@ class RuntimeProjectGraphSyncService:
 
         for protocolIdText, protocol in protocolsByScipionId.items():
             inputRefs.extend(
-                buildProtocolInputRefsCallback(
+                runtimeProtocolInputRefBuilderService.buildProtocolInputRefsForPostgresql(
                     projectId=projectId,
                     protocol=protocol,
                     protocolDbIdByScipionId=protocolDbIdByScipionId,
