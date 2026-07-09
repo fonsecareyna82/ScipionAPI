@@ -696,28 +696,35 @@ class RuntimeOutputRelationRepairService:
         try:
             getattr(outputObj, setterName)(relatedOutputObj)
 
-            try:
-                outputObj.write(properties=True)
-                report["relationPropertiesWritten"] = True
-            except TypeError:
-                outputObj.write()
-                report["relationPropertiesWritten"] = True
-            except Exception as writeError:
-                report["relationPropertiesWritten"] = False
-                report["relationPropertiesWriteError"] = str(writeError)
+            writeMethod = getattr(outputObj, "write", None)
 
-                logger.exception(
-                    "Failed to persist runtime output relation properties. "
-                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                    "outputName=%s relationName=%s relatedOutputName=%s",
-                    projectId,
-                    parentScipionProtocolId,
-                    parentProtocolDbId,
-                    outputName,
-                    relationName,
-                    relatedOutputName,
-                )
-                raise
+            if callable(writeMethod):
+                try:
+                    writeMethod(properties=True)
+                    report["relationPropertiesWritten"] = True
+                except TypeError:
+                    writeMethod()
+                    report["relationPropertiesWritten"] = True
+                except Exception as writeError:
+                    report["relationPropertiesWritten"] = False
+                    report["relationPropertiesWriteError"] = str(writeError)
+
+                    logger.debug(
+                        "Could not write runtime output relation properties. "
+                        "The canonical PostgreSQL relation will still be persisted. "
+                        "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                        "outputName=%s relationName=%s relatedOutputName=%s",
+                        projectId,
+                        parentScipionProtocolId,
+                        parentProtocolDbId,
+                        outputName,
+                        relationName,
+                        relatedOutputName,
+                        exc_info=True,
+                    )
+            else:
+                report["relationPropertiesWritten"] = False
+                report["relationPropertiesWriteSkipped"] = "output_has_no_write_method"
 
             if storeProtocolCallback is not None:
                 storeProtocolCallback(parentProtocol)
@@ -740,7 +747,9 @@ class RuntimeOutputRelationRepairService:
                     report["persistedRuntimeOutputRelation"] = persistReport
 
                     if persistReport.get("saved"):
-                        report["relationSource"] = "default_relation_rules_persisted"
+                        report["relationSource"] = "%s_persisted" % (
+                                relationRule.get("source") or "default_relation_rules"
+                        )
 
                 except Exception as persistError:
                     report["persistedRuntimeOutputRelation"] = {
