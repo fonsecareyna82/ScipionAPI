@@ -595,6 +595,44 @@ class RuntimeOutputRelationRepairService:
 
         report["checked"] = True
 
+        sourceOutputInfo = {}
+
+        try:
+            sourceOutputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(parentProtocolDbId),
+                outputName=outputName,
+            )
+        except Exception:
+            sourceOutputInfo = {}
+
+        if repairOutputMapperCallback is not None and sourceOutputInfo.get("exists"):
+            try:
+                report["sourceOutputMapperRepaired"] = bool(
+                    repairOutputMapperCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        outputObj=outputObj,
+                        outputInfo=sourceOutputInfo,
+                    )
+                )
+            except Exception as mapperRepairError:
+                report["sourceOutputMapperRepaired"] = False
+                report["sourceOutputMapperRepairError"] = str(mapperRepairError)
+
+                logger.debug(
+                    "Could not repair source output mapper before writing runtime relation. "
+                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                    "outputName=%s relationName=%s",
+                    projectId,
+                    parentScipionProtocolId,
+                    parentProtocolDbId,
+                    outputName,
+                    relationName,
+                    exc_info=True,
+                )
+
         if relatedOutputCandidate is not None:
             candidates = [relatedOutputCandidate]
         else:
@@ -612,75 +650,12 @@ class RuntimeOutputRelationRepairService:
         except Exception:
             currentRelatedOutput = None
 
-        if currentRelatedOutput is not None:
-            report["reason"] = "already_has_runtime_relation"
-            report["runtimeRelationAlreadyPresent"] = True
-
-            if candidates:
-                candidate = candidates[0]
-
-                relatedParentProtocolId = candidate.get("parentProtocolId")
-                relatedParentProtocolDbId = candidate.get("parentProtocolDbId")
-                relatedOutputName = candidate.get("outputName")
-
-                report["relatedOutputName"] = relatedOutputName
-                report["relatedParentProtocolId"] = (
-                    str(relatedParentProtocolId)
-                    if relatedParentProtocolId not in (None, "")
-                    else None
-                )
-                report["relatedParentProtocolDbId"] = (
-                    int(relatedParentProtocolDbId)
-                    if relatedParentProtocolDbId not in (None, "")
-                    else None
-                )
-
-                if persistRepairedRelation:
-                    try:
-                        persistReport = self.persistResolvedRuntimeOutputRelation(
-                            mapper=mapper,
-                            projectId=projectId,
-                            sourceProtocolDbId=parentProtocolDbId,
-                            sourceOutputName=outputName,
-                            relationRule=relationRule,
-                            relatedParentProtocolDbId=relatedParentProtocolDbId,
-                            relatedOutputName=relatedOutputName,
-                        )
-
-                        report["persistedRuntimeOutputRelation"] = persistReport
-
-                        if persistReport.get("saved"):
-                            report["relationSource"] = "%s_persisted" % (
-                                    relationRule.get("source") or "runtime_relation"
-                            )
-
-                    except Exception as persistError:
-                        report["persistedRuntimeOutputRelation"] = {
-                            "saved": False,
-                            "reason": "persist_failed",
-                            "error": str(persistError),
-                        }
-
-                        logger.debug(
-                            "Could not persist already-present runtime output relation. "
-                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                            "outputName=%s relationName=%s relatedOutputName=%s",
-                            projectId,
-                            parentScipionProtocolId,
-                            parentProtocolDbId,
-                            outputName,
-                            relationName,
-                            relatedOutputName,
-                            exc_info=True,
-                        )
+        if not candidates:
+            if currentRelatedOutput is not None:
+                report["reason"] = "already_has_runtime_relation"
+                report["runtimeRelationAlreadyPresent"] = True
             else:
-                report["persistedRuntimeOutputRelation"] = {
-                    "saved": False,
-                    "reason": "related_output_input_not_found",
-                    "relationName": relationName,
-                    "sourceProtocolDbId": parentProtocolDbId,
-                    "sourceOutputName": outputName,
-                }
+                report["reason"] = "related_output_input_not_found"
 
             return report
 
