@@ -5321,7 +5321,7 @@ class ProjectService:
             currentInputName=currentInputName,
             getParentProtocolCallback=self._getParentProtocolForPointer,
             repairOutputMapperCallback=self._repairPostgresqlRuntimeSetMapperInfo,
-            storeProtocolCallback=self.currentProject._storeProtocol,
+            storeProtocolCallback=None,
         )
 
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
