@@ -825,8 +825,14 @@ class RuntimeOutputRelationRepairService:
                 report["relationPropertiesWritten"] = False
                 report["relationPropertiesWriteSkipped"] = "output_has_no_write_method"
 
-            if storeProtocolCallback is not None:
-                storeProtocolCallback(parentProtocol)
+            # Do not store the parent protocol while preparing a child launch.
+            # In PostgreSQL runtime mode the loaded parentProtocol may be a partial
+            # runtime/proxy reconstruction. Storing it into the SQLite fallback can
+            # overwrite the completed producer outputs and remove outputs that are
+            # not currently materialized on the object.
+            report["parentProtocolStoreSkipped"] = (
+                "avoid_overwriting_producer_outputs_during_child_launch"
+            )
 
             report["repaired"] = True
             report["reason"] = "linked_runtime_output_relation"
