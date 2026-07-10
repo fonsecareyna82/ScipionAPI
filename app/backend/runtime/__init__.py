@@ -43,6 +43,7 @@ from app.backend.runtime.project_graph_sync_service import RuntimeProjectGraphSy
 from app.backend.runtime.protocol_input_ref_builder_service import RuntimeProtocolInputRefBuilderService
 from app.backend.runtime.protocol_launch_service import RuntimeProtocolLaunchService
 from app.backend.runtime.protocol_save_service import RuntimeProtocolSaveService
+from app.backend.runtime.protocol_step_status_service import RuntimeProtocolStepStatusService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -65,4 +66,5 @@ __all__ = [
     "RuntimeProtocolInputRefBuilderService",
     "RuntimeProtocolLaunchService",
     "RuntimeProtocolSaveService",
+    "RuntimeProtocolStepStatusService",
 ]

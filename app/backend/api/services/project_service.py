@@ -121,6 +121,7 @@ from app.backend.runtime import (
     RuntimeProjectGraphSyncService,
     RuntimeProtocolLaunchService,
     RuntimeProtocolSaveService,
+    RuntimeProtocolStepStatusService,
 )
 
 
@@ -5333,21 +5334,16 @@ class ProjectService:
         )
 
     def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
-        scipionProtocolId = self._resolveScipionProtocolId(
+        runtimeProtocolStepStatusService = RuntimeProtocolStepStatusService()
+
+        return runtimeProtocolStepStatusService.listProtocolSteps(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
+            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
         )
-
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
-            self.syncPostgresqlRuntimeProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                registerOutputs=False,
-            )
-
-        return mapper.listProtocolSteps(projectId, scipionProtocolId)
 
     def updateProtocolStepStatusService(
             self,
@@ -5357,97 +5353,17 @@ class ProjectService:
             stepIndex: int,
             stepStatus: str,
     ):
-        statusMap = {
-            "new": STATUS_NEW,
-            "finished": STATUS_FINISHED,
-        }
+        runtimeProtocolStepStatusService = RuntimeProtocolStepStatusService()
 
-        normalizedStatus = str(stepStatus or "").strip().lower()
-        if normalizedStatus not in statusMap:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Invalid step status. Allowed values: new, finished",
-            )
-
-        targetStatus = statusMap[normalizedStatus]
-
-        scipionProtocolId = self._resolveScipionProtocolId(
+        return runtimeProtocolStepStatusService.updateProtocolStepStatus(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-        )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        try:
-            steps = protocol.loadSteps() or []
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to load protocol steps: {e}",
-            )
-
-        targetStep = None
-        for fallbackIndex, step in enumerate(steps, start=1):
-            rawIndex = getattr(step, "_index", None) or fallbackIndex
-            try:
-                if int(rawIndex) == int(stepIndex):
-                    targetStep = step
-                    break
-            except Exception:
-                continue
-
-        if targetStep is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Step not found: {stepIndex}",
-            )
-
-        stepObjId = None
-        try:
-            stepObjId = targetStep.getObjId()
-        except Exception:
-            stepObjId = None
-
-        if stepObjId is None:
-            stepObjId = getattr(targetStep, "_objId", None)
-            try:
-                if hasattr(stepObjId, "get"):
-                    stepObjId = stepObjId.get()
-            except Exception:
-                pass
-
-        if stepObjId is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not resolve object id for step {stepIndex}",
-            )
-
-        try:
-            protocol._updateSteps(
-                lambda step: step.setStatus(targetStatus),
-                where="id='%s'" % stepObjId,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update Scipion step status: {e}",
-            )
-
-        row = mapper.updateProtocolStepStatus(
-            projectId=projectId,
-            protocolId=scipionProtocolId,
             stepIndex=stepIndex,
-            stepStatus=targetStatus,
+            stepStatus=stepStatus,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
-
-        if not row:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol step not found in PostgreSQL: {stepIndex}",
-            )
-
-        return row
 
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
