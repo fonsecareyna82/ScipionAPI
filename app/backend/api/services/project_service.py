@@ -1186,6 +1186,50 @@ class ProjectService:
                     }],
                 }
 
+        sqliteOutputMirrorReport = {
+            "attempted": False,
+            "stored": False,
+            "hasRuntimeMapper": False,
+            "hasWriteFallbackMapper": False,
+            "error": None,
+        }
+
+        if shouldRegisterOutputs:
+            try:
+                runtimeMapper = None
+
+                try:
+                    runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
+                except Exception:
+                    runtimeMapper = None
+
+                writeFallbackMapper = getattr(runtimeMapper, "writeFallbackMapper", None)
+
+                sqliteOutputMirrorReport["attempted"] = True
+                sqliteOutputMirrorReport["hasRuntimeMapper"] = runtimeMapper is not None
+                sqliteOutputMirrorReport["hasWriteFallbackMapper"] = writeFallbackMapper is not None
+
+                if writeFallbackMapper is None:
+                    sqliteOutputMirrorReport["error"] = "write_fallback_mapper_missing"
+                else:
+                    # Critical mirror:
+                    # the worker and old Scipion UI still depend on project.sqlite.
+                    # At this point the protocol loaded from runtime DB already has
+                    # the final output attributes.
+                    self.currentProject._storeProtocol(protocol)
+                    sqliteOutputMirrorReport["stored"] = True
+
+            except Exception as sqliteMirrorError:
+                logger.exception(
+                    "Failed to mirror PostgreSQL runtime protocol outputs to SQLite fallback. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                )
+
+                sqliteOutputMirrorReport["stored"] = False
+                sqliteOutputMirrorReport["error"] = str(sqliteMirrorError)
+
         artifactReport = None
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -1231,6 +1275,7 @@ class ProjectService:
             "protocolId": str(scipionProtocolId),
             "protocolStatus": self._safeCall(protocol, "getStatus", None),
             "outputsRegistered": bool(outputReport.get("persisted")),
+            "sqliteOutputMirror": sqliteOutputMirrorReport,
         }
 
     def _buildPostgresqlRuntimeArtifactReport(
