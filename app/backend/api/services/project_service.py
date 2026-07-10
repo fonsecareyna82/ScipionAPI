@@ -122,6 +122,7 @@ from app.backend.runtime import (
     RuntimeProtocolLaunchService,
     RuntimeProtocolSaveService,
     RuntimeProtocolStepStatusService,
+    RuntimeProtocolLogService,
 )
 
 
@@ -6208,79 +6209,21 @@ class ProjectService:
             mapper=None,
             currentUser: Optional[dict] = None,
     ):
-        """
-        Return available log channels for a protocol, including paths and basic file stats.
-        """
-        pgLogs = self._resolvePostgresqlProtocolLogPaths(
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.listProtocolLogChannels(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-        )
-        if pgLogs is not None:
-            return self._buildProtocolLogChannelsPayload(
-                projectId=projectId,
-                protocolId=pgLogs["protocolId"],
-                logPaths=pgLogs["paths"],
-            )
-
-        self._ensureRuntimeProjectForLogs(
-            mapper=mapper,
-            projectId=projectId,
+            currentProject=getattr(self, "currentProject", None),
             currentUser=currentUser,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=(
+                self._resolvePostgresqlProjectPathForFilesystem
+            ),
+            getProjectByIdCallback=self.getProjectById,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
-
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        # Resolve log paths from Scipion protocol object
-        stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
-        stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
-        schedulePath = protocol.getScheduleLog() if hasattr(protocol, "getScheduleLog") else None
-
-        def buildChannel(channelId: str, label: str, order, filePath: Optional[str]) -> Dict[str, Any]:
-            # Build a stable channel descriptor
-            exists = bool(filePath) and os.path.exists(filePath)
-            sizeBytes = 0
-            mtimeUtc = None
-
-            if exists:
-                try:
-                    sizeBytes = int(os.path.getsize(filePath))
-                except Exception:
-                    sizeBytes = 0
-                try:
-                    ts = os.path.getmtime(filePath)
-                    mtimeUtc = datetime.utcfromtimestamp(ts).isoformat() + "Z"
-                except Exception:
-                    mtimeUtc = None
-
-            return {
-                "id": channelId,
-                "label": label,
-                "order": order,
-                # "path": filePath or "",
-                # "exists": exists,
-                # "sizeBytes": sizeBytes,
-                # "mtimeUtc": mtimeUtc,
-            }
-
-        channels = [
-            buildChannel("stdout", "Output", 1, stdoutPath),
-            buildChannel("stderr", "Errors", 2, stderrPath),
-            buildChannel("schedule", "Schedule", 3, schedulePath),
-        ]
-
-        # Keep a consistent list but allow UI to filter by exists==True
-        return {
-            "projectId": projectId,
-            "protocolId": int(scipionProtocolId),
-            "channels": channels,
-        }
 
     def pollProtocolLogsService(
             self,
@@ -6292,194 +6235,24 @@ class ProjectService:
             mapper=None,
             currentUser: Optional[dict] = None,
     ):
-        """
-        Incrementally read protocol logs from the given offsets, applying maxBytes and maxLines limits.
-        """
-        pgLogs = self._resolvePostgresqlProtocolLogPaths(
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.pollProtocolLogs(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-        )
-        if pgLogs is not None:
-            return self._pollProtocolLogPaths(
-                projectId=projectId,
-                protocolId=pgLogs["protocolId"],
-                logPaths=pgLogs["paths"],
-                offsets=offsets,
-                maxBytes=maxBytes,
-                maxLines=maxLines,
-            )
-
-        self._ensureRuntimeProjectForLogs(
-            mapper=mapper,
-            projectId=projectId,
+            offsets=offsets,
+            maxBytes=maxBytes,
+            maxLines=maxLines,
+            currentProject=getattr(self, "currentProject", None),
             currentUser=currentUser,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=(
+                self._resolvePostgresqlProjectPathForFilesystem
+            ),
+            getProjectByIdCallback=self.getProjectById,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
-
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        stdoutPath = protocol.getStdoutLog() if hasattr(protocol, "getStdoutLog") else None
-        stderrPath = protocol.getStderrLog() if hasattr(protocol, "getStderrLog") else None
-        schedulePath = protocol.getScheduleLog() if hasattr(protocol, "getScheduleLog") else None
-
-        # Normalize incoming offsets keys to canonical channels
-        def normalizeOffsets(rawOffsets: Dict[str, int]) -> Dict[str, int]:
-            if not isinstance(rawOffsets, dict):
-                return {"stdout": 0, "stderr": 0, "schedule": 0}
-
-            keyMap = {
-                "stdout": "stdout",
-                "stdoutLog": "stdout",
-                "out": "stdout",
-                "stderr": "stderr",
-                "stderrLog": "stderr",
-                "err": "stderr",
-                "schedule": "schedule",
-                "scheduleLog": "schedule",
-            }
-
-            normalized = {"stdout": 0, "stderr": 0, "schedule": 0}
-            for k, v in rawOffsets.items():
-                canonical = keyMap.get(str(k), None)
-                if canonical is None:
-                    continue
-                try:
-                    normalized[canonical] = max(0, int(v))
-                except Exception:
-                    normalized[canonical] = 0
-            return normalized
-
-        normalizedOffsets = normalizeOffsets(offsets or {})
-
-        def readChunk(filePath: Optional[str], startOffset: int) -> Dict[str, Any]:
-            # Read a chunk with byte and line caps, keeping offset consistent (no partial lines)
-            if not filePath:
-                return {
-                    # "exists": False,
-                    # "path": "",
-                    "content": "",
-                    "offset": int(startOffset or 0),
-                    # "resetOffset": False,
-                    # "truncated": False,
-                    # "bytesRead": 0,
-                    # "linesRead": 0,
-                    # "sizeBytes": 0,
-                }
-
-            if not os.path.exists(filePath):
-                return {
-                    # "exists": False,
-                    # "path": filePath,
-                    "content": "",
-                    "offset": int(startOffset or 0),
-                    # "resetOffset": False,
-                    # "truncated": False,
-                    # "bytesRead": 0,
-                    # "linesRead": 0,
-                    # "sizeBytes": 0,
-                }
-
-            try:
-                sizeBytes = int(os.path.getsize(filePath))
-            except Exception:
-                sizeBytes = 0
-
-            resetOffset = False
-            safeOffset = int(startOffset or 0)
-            if safeOffset < 0:
-                safeOffset = 0
-
-            # resetOffsetIfTruncated: if file was rotated/truncated, restart from 0
-            if safeOffset > sizeBytes:
-                safeOffset = 0
-                resetOffset = True
-
-            bytesCap = None if maxBytes is None else max(1, int(maxBytes))
-            linesCap = None if maxLines is None else max(1, int(maxLines))
-
-            contentParts: List[str] = []
-            bytesRead = 0
-            linesRead = 0
-
-            try:
-                with open(filePath, "rb") as f:
-                    f.seek(safeOffset)
-
-                    while True:
-                        if linesCap is not None and linesRead >= linesCap:
-                            break
-                        if bytesCap is not None and bytesRead >= bytesCap:
-                            break
-
-                        posBefore = f.tell()
-                        lineBytes = f.readline()
-                        if not lineBytes:
-                            break
-
-                        # enforceByteCapWithoutPartialLine: do not return partial lines
-                        if bytesCap is not None and (bytesRead + len(lineBytes)) > bytesCap:
-                            f.seek(posBefore)
-                            break
-
-                        contentParts.append(lineBytes.decode("utf-8", errors="ignore"))
-                        bytesRead += len(lineBytes)
-                        linesRead += 1
-
-                    newOffset = f.tell()
-
-            except Exception as e:
-                # ioReadError: surface error but keep a stable response shape
-                return {
-                    # "exists": True,
-                    # "path": filePath,
-                    "content": "",
-                    "offset": safeOffset,
-                    # "resetOffset": resetOffset,
-                    # "truncated": False,
-                    # "bytesRead": 0,
-                    # "linesRead": 0,
-                    # "sizeBytes": sizeBytes,
-                    "error": str(e),
-                }
-
-            # truncatedMeansMoreDataAvailable: caller can poll again with returned offset
-            truncated = False
-            try:
-                truncated = newOffset < int(os.path.getsize(filePath))
-            except Exception:
-                truncated = False
-
-            return {
-                # "exists": True,
-                # "path": filePath,
-                "content": "".join(contentParts),
-                "offset": int(newOffset),
-                # "resetOffset": resetOffset,
-                # "truncated": bool(truncated),
-                # "bytesRead": int(bytesRead),
-                # "linesRead": int(linesRead),
-                # "sizeBytes": int(sizeBytes),
-            }
-
-        stdoutRes = readChunk(stdoutPath, normalizedOffsets.get("stdout", 0))
-        stderrRes = readChunk(stderrPath, normalizedOffsets.get("stderr", 0))
-        scheduleRes = readChunk(schedulePath, normalizedOffsets.get("schedule", 0))
-
-        return {
-            "projectId": projectId,
-            "protocolId": int(scipionProtocolId),
-            "channels": {
-                "stdout": stdoutRes,
-                "stderr": stderrRes,
-                "schedule": scheduleRes,
-            },
-        }
 
     def getProtocolLogs(
             self,
@@ -6490,70 +6263,18 @@ class ProjectService:
             scheduleOffset: int = 0,
             mapper=None,
     ):
-        scipionProtocolId = self._resolveScipionProtocolId(
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.getProtocolLogs(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            offset=offset,
+            errOffset=errOffset,
+            scheduleOffset=scheduleOffset,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-        logPath = protocol.getStdoutLog()
-        errLogPath = protocol.getStderrLog()
-        scheduleLogPath = protocol.getScheduleLog()
-
-        def normalizeOffset(value, filePath):
-            safeOffset = max(0, int(value or 0))
-
-            if filePath and os.path.exists(filePath):
-                try:
-                    fileSize = os.path.getsize(filePath)
-                    if safeOffset > fileSize:
-                        return 0
-                except Exception:
-                    pass
-
-            return safeOffset
-
-        offset = normalizeOffset(offset, logPath)
-        errOffset = normalizeOffset(errOffset, errLogPath)
-        scheduleOffset = normalizeOffset(scheduleOffset, scheduleLogPath)
-
-        stdoutContent, stderrContent, scheduleContent = "", "", ""
-        newOffsetOut, newOffsetErr, newOffsetSchedule = offset, errOffset, scheduleOffset
-
-        # Handle stdout log
-        if logPath and os.path.exists(logPath):
-            with open(logPath, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(offset)
-                stdoutContent = f.read()
-                newOffsetOut = f.tell()
-
-        # Handle stderr log
-        if errLogPath and os.path.exists(errLogPath):
-            with open(errLogPath, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(errOffset)
-                stderrContent = f.read()
-                newOffsetErr = f.tell()
-
-        if scheduleLogPath and os.path.exists(scheduleLogPath):
-            with open(scheduleLogPath, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(scheduleOffset)
-                scheduleContent = f.read()
-                newOffsetSchedule = f.tell()
-
-        if not stdoutContent and not stderrContent and not scheduleContent and not (
-                logPath and os.path.exists(logPath)
-        ) and not (errLogPath and os.path.exists(errLogPath)) and not (scheduleLogPath and os.path.exists(scheduleLogPath)):
-            raise HTTPException(status_code=404, detail="No logs found")
-
-        return {
-            "stdoutLog": stdoutContent,
-            "stderrLog": stderrContent,
-            "stdoutOffset": newOffsetOut,
-            "stderrOffset": newOffsetErr,
-            "scheduleLog": scheduleContent,
-            "scheduleOffset": newOffsetSchedule,
-        }
 
     @staticmethod
     def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
