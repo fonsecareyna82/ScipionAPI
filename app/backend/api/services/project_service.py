@@ -5410,34 +5410,16 @@ class ProjectService:
                     outputInfo=outputInfo,
                 )
 
-                if repairedMapper:
-                    try:
-                        # Important:
-                        # The execution process may reload the parent protocol/output from
-                        # the runtime DB, so an in-memory repair is not enough.
-                        self.currentProject._storeProtocol(parentProtocol)
-                        persistedMapperRepair = True
-
-                        logger.info(
-                            "Persisted repaired PostgreSQL runtime Set mapper metadata. "
-                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
-                            projectId,
-                            parentScipionProtocolId,
-                            parentProtocolDbId,
-                            outputName,
-                            outputObj,
-                        )
-
-                    except Exception:
-                        logger.exception(
-                            "Could not persist repaired PostgreSQL runtime Set mapper metadata. "
-                            "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
-                            projectId,
-                            parentScipionProtocolId,
-                            parentProtocolDbId,
-                            outputName,
-                            outputObj,
-                        )
+            logger.info(
+                "Repaired PostgreSQL runtime Set mapper metadata in memory only. "
+                "Skipping parent protocol store to avoid overwriting SQLite fallback. "
+                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
+                projectId,
+                parentScipionProtocolId,
+                parentProtocolDbId,
+                outputName,
+                outputObj,
+            )
 
             logger.debug(
                 "Resolved runtime output from PostgreSQL. "
