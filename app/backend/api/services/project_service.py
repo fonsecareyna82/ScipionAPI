@@ -120,6 +120,7 @@ from app.backend.runtime import (
     RuntimeProtocolLoaderService,
     RuntimeProjectGraphSyncService,
     RuntimeProtocolLaunchService,
+    RuntimeProtocolSaveService,
 )
 
 
@@ -5081,169 +5082,16 @@ class ProjectService:
             protocol,
             params,
     ):
-        """Apply pointer parameters to protocol."""
-        errorList = []
-        pointerResolver = RuntimePointerResolver()
+        runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
-        for key, value in params.items():
-            param = protocol.getParam(key)
-            if param is None:
-                continue
-
-            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-
-                if isinstance(param, MultiPointerParam):
-                    newInputs = PointerList()
-
-                    pointerValues = pointerResolver.completePointerValuesFromInputRefs(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocol,
-                        inputName=key,
-                        rawValue=value,
-                    )
-
-                    pointerValues = pointerResolver.filterEmptyPointerValues(pointerValues)
-
-                    if not pointerValues:
-                        logger.info(
-                            "Skipping empty multipointer param without clearing existing value. "
-                            "projectId=%s protocolId=%s inputName=%s value=%s",
-                            projectId,
-                            getattr(protocol, "getObjId", lambda: None)(),
-                            key,
-                            value,
-                        )
-                        continue
-
-                    for v in pointerValues:
-                        resolvedPointerTarget = pointerResolver.resolvePointerTarget(
-                            mapper=mapper,
-                            projectId=projectId,
-                            pointerValue=v,
-                            paramLabel=param.label.get(),
-                            getParentProtocolCallback=self._getParentProtocolForPointer,
-                            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
-                        )
-
-                        if not resolvedPointerTarget.get("ok"):
-                            errorList.append(resolvedPointerTarget.get("error"))
-                            continue
-
-                        parentScipionProtocolId = resolvedPointerTarget.get("parentScipionProtocolId")
-                        parentProtocol = resolvedPointerTarget.get("parentProtocol")
-                        outputName = resolvedPointerTarget.get("outputName")
-                        resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
-
-                        newInputs.append(
-                            Pointer(parentProtocol, extended=outputName)
-                        )
-
-                        logger.debug(
-                            "MultiPointer param %s set from parent %s output %s source=%s hasRuntimeAttribute=%s",
-                            key,
-                            parentScipionProtocolId,
-                            outputName,
-                            resolvedOutput.get("source"),
-                            resolvedOutput.get("hasRuntimeAttribute"),
-                        )
-
-                        logger.info(
-                            "[INFO] MultiPointer param %s set from parent %s output %s",
-                            key,
-                            parentScipionProtocolId,
-                            outputName,
-                        )
-
-                    if newInputs.isEmpty() and not param.allowsNull.get():
-                        errorList.append('**' + param.label.get() + '** it must not be empty.')
-
-                    protocol.setAttributeValue(key, newInputs)
-
-                elif isinstance(param, PointerParam):
-                    pointerValues = pointerResolver.completePointerValuesFromInputRefs(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocol,
-                        inputName=key,
-                        rawValue=value,
-                    )
-                    pointerValues = pointerResolver.filterEmptyPointerValues(pointerValues)
-                    # Important:
-                    # If the frontend sends an empty pointer for an existing protocol,
-                    # do NOT clear the current protocol attribute. This is common when launching
-                    # duplicated protocols: the real pointer is already restored/copied from
-                    # protocol_input_refs.
-                    if not pointerValues:
-                        logger.info(
-                            "Skipping empty pointer param without clearing existing value. "
-                            "projectId=%s protocolId=%s inputName=%s value=%s",
-                            projectId,
-                            getattr(protocol, "getObjId", lambda: None)(),
-                            key,
-                            value,
-                        )
-
-                        continue
-
-                    pointerValue = pointerValues[0]
-
-                    resolvedPointerTarget = pointerResolver.resolvePointerTarget(
-                        mapper=mapper,
-                        projectId=projectId,
-                        pointerValue=pointerValue,
-                        paramLabel=param.label.get(),
-                        getParentProtocolCallback=self._getParentProtocolForPointer,
-                        resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
-                    )
-
-                    if not resolvedPointerTarget.get("ok"):
-                        errorList.append(resolvedPointerTarget.get("error"))
-                        continue
-
-                    parentScipionProtocolId = resolvedPointerTarget.get("parentScipionProtocolId")
-                    parentProtocol = resolvedPointerTarget.get("parentProtocol")
-                    outputName = resolvedPointerTarget.get("outputName")
-                    resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
-
-                    val = f"{parentScipionProtocolId}.{outputName}"
-                    pointer = getattr(protocol, key, None)
-
-                    if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
-                        pointer = Pointer(parentProtocol, extended=outputName)
-                        setattr(protocol, key, pointer)
-                    else:
-                        pointer.set(parentProtocol)
-                        pointer.setExtended(outputName)
-
-                    # Keep the form/default textual representation if available,
-                    # but do not call param.set(val), because that stores the input as string.
-                    try:
-                        param.default.set(val)
-                    except Exception:
-                        pass
-
-                    logger.debug(
-                        "Pointer param %s set. childProtocol=%s parentProtocol=%s output=%s "
-                        "source=%s hasRuntimeAttribute=%s pointer=%s pointerObj=%s extended=%s targetObjId=%s target=%s",
-                        key,
-                        getattr(protocol, "getObjId", lambda: None)(),
-                        parentScipionProtocolId,
-                        outputName,
-                        resolvedOutput.get("source"),
-                        resolvedOutput.get("hasRuntimeAttribute"),
-                        pointer,
-                        getattr(pointer, "getObjValue", lambda: None)() if pointer is not None else None,
-                        getattr(pointer, "getExtended", lambda: None)() if pointer is not None else None,
-                        getattr(
-                            getattr(pointer, "getObjValue", lambda: None)(),
-                            "getObjId",
-                            lambda: None,
-                        )() if pointer is not None else None,
-                        getattr(pointer, "get", lambda: None)() if pointer is not None else None,
-                    )
-
-        return errorList
+        return runtimeProtocolSaveService.applyPointerParamsToProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params or {},
+            resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
+            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+        )
 
     def _restorePostgresqlPointerInputsBeforeCopy(
             self,
@@ -5461,166 +5309,28 @@ class ProjectService:
         }
 
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
-        errorList = []
+        runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
-        if not protocolId:
-            protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
-            if protClass is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Protocol class not found: {protocolClassName}",
-                )
-            protocol = self.currentProject.newProtocol(protClass)
-        else:
-            protocol = self._getScipionProtocolForRuntime(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-        protectedParams = ['_objComment', '_useQueue', '_prerequisites', 'gpuList', 'numberOfThreads']
-        for paramName in protectedParams:
-            protVar = getattr(protocol, paramName, None)
-            if protVar is None or paramName not in params:
-                continue
-
-            value = params[paramName]
-            try:
-                protVar.set(value)
-            except Exception:
-                setattr(protocol, paramName, value)
-
-        for key, value in params.items():
-            param = protocol.getParam(key)
-            if param is None:
-                logger.warning("[WARN] Param not found: %s", key)
-                continue
-
-            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
-                continue
-
-            try:
-                castedValue = self.castParamValue(param, value)
-                errors = param.validate(castedValue) if hasattr(param, "validate") else []
-                if errors:
-                    errorList += ['**' + param.label.get() + '** ' + error for error in errors]
-
-                param.set(castedValue)
-                protocol.setAttributeValue(key, castedValue)
-
-                if key == "runName":
-                    protocol.runName.set(castedValue)
-                    # protocol.setObjLabel(castedValue)
-
-                logger.info("[INFO] Set param %s = %s", key, castedValue)
-            except Exception as e:
-                cleaned = re.sub(r'[^A-Za-z0-9\s+\-*/=<>!&|^%()\[\]{}_,.;:]', '', str(e))
-                errorList.append('**' + param.label.get() + '** ' + cleaned)
-
-        errorList += self.applyParamsToProtocol(
+        return runtimeProtocolSaveService.saveProtocol(
             mapper=mapper,
             projectId=projectId,
-            protocol=protocol,
+            protocolId=protocolId,
+            protocolClassName=protocolClassName,
             params=params,
+            setToSave=setToSave,
+            currentProject=self.currentProject,
+            castParamValueCallback=self.castParamValue,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
+            resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
+            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+            syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
+                self.syncPostgresqlRuntimeProtocolInputsAndDependencies
+            ),
+            syncProjectProtocolsAndDependenciesCallback=(
+                self.syncProjectProtocolsAndDependencies
+            ),
         )
-
-        if errorList and self._currentProjectUsesPostgresqlRuntimeMapper():
-            logger.warning(
-                "Skipping protocol persistence because parameter application produced errors. "
-                "projectId=%s protocolId=%s protocolClassName=%s errors=%s",
-                projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
-                protocolClassName,
-                errorList,
-            )
-            return protocol, errorList
-
-        # Persist protocol in Scipion always.
-        # The setToSave flag only controls whether we also sync the graph to PostgreSQL now.
-        try:
-            isNewProtocol = not protocolId
-
-            if isNewProtocol:
-                # Important in PostgreSQL runtime mode:
-                # A new protocol can already have an objId assigned by the runtime mapper,
-                # but that does not mean it exists as a root object in Scipion's legacy SQLite.
-                # _setupProtocol is the correct path for new protocols.
-                self.currentProject._setupProtocol(protocol)
-            else:
-                self.currentProject._storeProtocol(protocol)
-
-        except Exception as e:
-            logger.exception(
-                "Failed to persist protocol in Scipion. projectId=%s protocolId=%s protocolClassName=%s",
-                projectId,
-                protocolId,
-                protocolClassName,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to persist protocol in Scipion: {e}",
-            )
-
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
-            try:
-                dependencySync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocol=protocol,
-                    params=params,
-                )
-
-                logger.info(
-                    "Synced PostgreSQL runtime protocol inputs/dependencies after save. "
-                    "projectId=%s protocolId=%s sync=%s",
-                    projectId,
-                    getattr(protocol, "getObjId", lambda: protocolId)(),
-                    dependencySync,
-                )
-
-
-            except Exception as e:
-                logger.exception(
-                    "Failed to sync PostgreSQL runtime protocol inputs/dependencies after save. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    getattr(protocol, "getObjId", lambda: protocolId)(),
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to sync PostgreSQL runtime protocol dependencies after save: {e}",
-                )
-
-        if setToSave and not self._currentProjectUsesPostgresqlRuntimeMapper():
-            try:
-                self.syncProjectProtocolsAndDependencies(
-                    mapper,
-                    projectId,
-                    refresh=True,
-                    checkPid=True,
-                )
-            except Exception as e:
-                logger.exception(
-                    "Failed to sync protocol graph after save. projectId=%s protocolId=%s protocolClassName=%s",
-                    projectId,
-                    getattr(protocol, "getObjId", lambda: protocolId)(),
-                    protocolClassName,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Protocol was saved in Scipion but graph sync to PostgreSQL failed: {e}",
-                )
-
-        elif setToSave:
-            logger.info(
-                "Skipping legacy graph sync after PostgreSQL runtime save. "
-                "projectId=%s protocolId=%s protocolClassName=%s",
-                projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
-                protocolClassName,
-            )
-
-        return protocol, errorList
 
     def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
         scipionProtocolId = self._resolveScipionProtocolId(

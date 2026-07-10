@@ -42,6 +42,7 @@ from app.backend.runtime.protocol_loader_service import RuntimeProtocolLoaderSer
 from app.backend.runtime.project_graph_sync_service import RuntimeProjectGraphSyncService
 from app.backend.runtime.protocol_input_ref_builder_service import RuntimeProtocolInputRefBuilderService
 from app.backend.runtime.protocol_launch_service import RuntimeProtocolLaunchService
+from app.backend.runtime.protocol_save_service import RuntimeProtocolSaveService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -63,4 +64,5 @@ __all__ = [
     "RuntimeProjectGraphSyncService",
     "RuntimeProtocolInputRefBuilderService",
     "RuntimeProtocolLaunchService",
+    "RuntimeProtocolSaveService",
 ]
