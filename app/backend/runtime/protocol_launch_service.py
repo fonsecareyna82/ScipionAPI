@@ -78,6 +78,7 @@ class RuntimeProtocolLaunchService:
         }
 
         executeMode = modeAliases.get(executeMode, executeMode)
+        params = params or {}
 
         allowedModes = {"launch", "restart", "schedule", "stop"}
         if executeMode not in allowedModes:
