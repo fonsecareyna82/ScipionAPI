@@ -5992,83 +5992,23 @@ class ProjectService:
         return self._buildProtocolMutationResult("Protocol renamed successfully")
 
     def _detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
-        """
-        Temporarily detach output attributes before calling Scipion copyProtocol().
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
-        A duplicated protocol must copy only configuration/inputs, not produced outputs.
-        If outputs remain attached, Scipion may try to persist/copy sets such as
-        295.Tomograms and fail with errors like:
-
-            Object 295.Tomograms has no sampling rate!!!
-        """
-        detached = []
-
-        try:
-            outputAttrs = list(protocol.iterOutputAttributes())
-        except Exception:
-            outputAttrs = []
-
-        for outputName, outputObj in outputAttrs:
-            if not outputName:
-                continue
-
-            hadAttribute = hasattr(protocol, outputName)
-
-            detached.append({
-                "name": outputName,
-                "object": outputObj,
-                "hadAttribute": hadAttribute,
-            })
-
-            if hadAttribute:
-                try:
-                    delattr(protocol, outputName)
-                except Exception:
-                    try:
-                        setattr(protocol, outputName, None)
-                    except Exception:
-                        logger.debug(
-                            "Could not detach protocol output before copy. "
-                            "protocol=%s output=%s",
-                            getattr(protocol, "getObjId", lambda: None)(),
-                            outputName,
-                            exc_info=True,
-                        )
-
-        logger.info(
-            "Detached protocol outputs before duplicate. protocolId=%s outputs=%s",
-            getattr(protocol, "getObjId", lambda: None)(),
-            [item["name"] for item in detached],
+        return runtimeProtocolDuplicateService.detachProtocolOutputsForCopy(
+            protocol=protocol,
         )
-
-        return detached
 
     def _restoreProtocolOutputsAfterCopy(
             self,
             protocol,
             detachedOutputs: List[Dict[str, Any]],
     ) -> None:
-        """
-        Restore outputs detached by _detachProtocolOutputsForCopy.
-        This only restores the in-memory source protocol object.
-        """
-        for item in detachedOutputs or []:
-            outputName = item.get("name")
-            outputObj = item.get("object")
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
-            if not outputName:
-                continue
-
-            try:
-                setattr(protocol, outputName, outputObj)
-            except Exception:
-                logger.debug(
-                    "Could not restore protocol output after copy. "
-                    "protocol=%s output=%s",
-                    getattr(protocol, "getObjId", lambda: None)(),
-                    outputName,
-                    exc_info=True,
-                )
+        runtimeProtocolDuplicateService.restoreProtocolOutputsAfterCopy(
+            protocol=protocol,
+            detachedOutputs=detachedOutputs,
+        )
 
     def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
