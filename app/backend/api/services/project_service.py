@@ -114,6 +114,7 @@ from app.backend.runtime import (
     RuntimeProtocolLaunchPrepareService,
     RuntimeProtocolRestartService,
     RuntimeProtocolContinueService,
+    RuntimeProtocolResetService,
 )
 
 
@@ -6362,126 +6363,33 @@ class ProjectService:
             )
         )
 
-    def resetProtocolFrom(self, mapper, projectId: int, protocolId):
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
-
-        protocol = self._getScipionProtocolForRuntime(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        try:
-            if usingPostgresqlRuntime:
-                workflowProtocolList = self._getPostgresqlRuntimeSubworkflow(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-                _activeProtocolList = {}
-            else:
-                workflowProtocolList, _activeProtocolList = self.currentProject._getSubworkflow(protocol)
-
-        except Exception as e:
-            logger.exception(
-                "Failed to resolve subworkflow for reset-from. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to resolve protocol subworkflow: {e}",
-            )
-
-        workflowProtocols = self._workflowProtocolMapToProtocols(workflowProtocolList)
-
-        pointerRestoreInfo = None
-
-        if usingPostgresqlRuntime:
-            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=workflowProtocols,
-                prepareOutputsForLaunch=True,
-                allowMissingParentOutputs=True,
-            )
-
-            if pointerRestoreInfo.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Failed to restore PostgreSQL runtime pointers before reset-from: %s"
-                            % pointerRestoreInfo.get("errors")
-                    ),
-                )
-
-        cleanupInfo = self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=workflowProtocols,
-        )
-
-        refCleanupInfo = None
-
-        if usingPostgresqlRuntime:
-            refCleanupInfo = self._clearPostgresqlInputRefObjectIdsForParentProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=workflowProtocols,
-            )
-
-        logger.info(
-            "Deleted persisted protocol outputs before reset-from. "
-            "projectId=%s protocolId=%s cleanup=%s refCleanup=%s",
-            projectId,
+    def resetProtocolFrom(
+            self,
+            mapper,
+            projectId: int,
             protocolId,
-            cleanupInfo,
-            refCleanupInfo,
+    ):
+        runtimeProtocolResetService = (
+            RuntimeProtocolResetService()
         )
 
-        try:
-            resetErrors = self.currentProject.resetWorkFlow(workflowProtocolList) or []
-        except Exception as e:
-            logger.exception(
-                "Failed to reset workflow subtree. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to reset protocol subtree: {e}",
-            )
-
-        if resetErrors:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=[str(e) for e in resetErrors],
-            )
-
-        postgresqlSync = None
-
-        if usingPostgresqlRuntime:
-            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
+        return (
+            runtimeProtocolResetService.resetProtocolSubworkflow(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=workflowProtocols,
-                registerOutputs=False,
+                protocolId=protocolId,
+                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+                currentProject=self.currentProject,
+                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
+                restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
+                clearPostgresqlInputRefObjectIdsForResetProtocolsCallback=self._clearPostgresqlInputRefObjectIdsForParentProtocols,
+                syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult
             )
-
-        return self._buildProtocolMutationResult(
-            "Protocol subtree reset successfully",
-            protocolsCount=(
-                int(postgresqlSync.get("protocolsCount", 0) or 0)
-                if postgresqlSync else len(workflowProtocolList or [])
-            ),
-            dependenciesCount=0,
-            postgresqlPointerRestore=pointerRestoreInfo,
-            postgresqlCleanup=cleanupInfo,
-            postgresqlInputRefCleanup=refCleanupInfo,
-            postgresqlRuntimeReset=True,
-            postgresqlRuntimeSync=postgresqlSync,
         )
-
 
     def stopProtocol(self, mapper, projectId: int, protocolIds):
         resolvedProtocols = []
