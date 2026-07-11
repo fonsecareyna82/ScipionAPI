@@ -6541,11 +6541,10 @@ class ProjectService:
 
                 protocolRuntimeId = getattr(protocol, "getObjId", lambda: None)()
 
-                if usingPostgresqlRuntime and protocolStatus == STATUS_SCHEDULED:
-                    # Tu lógica actual de cancelar scheduled sin native stop.
-                    ...
-                    scheduledStopped.append(str(protocolRuntimeId))
-                    continue
+                isScheduledProtocol = (
+                        usingPostgresqlRuntime
+                        and protocolStatus == STATUS_SCHEDULED
+                )
 
                 protocolToStop = protocol
 
@@ -6599,7 +6598,10 @@ class ProjectService:
                             ),
                         )
 
-                nativeStopped.append(str(protocolRuntimeId))
+                if isScheduledProtocol:
+                    scheduledStopped.append(str(protocolRuntimeId))
+                else:
+                    nativeStopped.append(str(protocolRuntimeId))
 
             postgresqlSync = None
 
