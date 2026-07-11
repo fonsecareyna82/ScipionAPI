@@ -5991,25 +5991,6 @@ class ProjectService:
 
         return self._buildProtocolMutationResult("Protocol renamed successfully")
 
-    def _detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-
-        return runtimeProtocolDuplicateService.detachProtocolOutputsForCopy(
-            protocol=protocol,
-        )
-
-    def _restoreProtocolOutputsAfterCopy(
-            self,
-            protocol,
-            detachedOutputs: List[Dict[str, Any]],
-    ) -> None:
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-
-        runtimeProtocolDuplicateService.restoreProtocolOutputsAfterCopy(
-            protocol=protocol,
-            detachedOutputs=detachedOutputs,
-        )
-
     def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
@@ -6028,10 +6009,7 @@ class ProjectService:
         )
 
     def duplicateProtocol(self, mapper, projectId, protocols):
-        protocolList = []
-        sourceIds = []
-        duplicated = []
-        errors = []
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
 
@@ -6042,89 +6020,16 @@ class ProjectService:
                 protocols=protocols,
             )
 
-        for item in protocols or []:
-            protocolId = getattr(item, "id", None)
-            if protocolId is None:
-                continue
-
-            sourceIds.append(protocolId)
-
-            protocol = self._getScipionProtocolForRuntime(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            protocolList.append(protocol)
-
-        if not protocolList:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No valid protocols to duplicate",
-            )
-
-        try:
-            protListResult = self.currentProject.copyProtocol(protocolList)
-        except Exception as e:
-            protocolIds = [
-                getattr(p, "getObjId", lambda: None)()
-                for p in protocolList
-            ]
-
-            logger.exception(
-                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
-                projectId,
-                protocolIds,
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to duplicate protocols: {e}",
-            )
-
-        for index, prot in enumerate(protListResult):
-            protId = str(prot.getObjId())
-            duplicated.append({
-                "sourceId": sourceIds[index],
-                "newId": protId,
-            })
-
-        try:
-            syncResult = self.syncProjectProtocolsAndDependencies(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
-            )
-
-        except HTTPException:
-            raise
-
-        except Exception as e:
-            errors.append(
-                "Failed to sync protocol graph after duplication. projectId=%s"
-                % projectId
-            )
-
-            logger.exception(
-                "Failed to sync protocol graph after duplication. projectId=%s",
-                projectId,
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                        "Protocols were duplicated in Scipion but graph sync "
-                        "to PostgreSQL failed: %s" % e
-                ),
-            )
-
-        return self._buildProtocolMutationResult(
-            "Protocol was duplicated successfully",
-            protocolsCount=int(syncResult.get("protocols", 0)),
-            dependenciesCount=int(syncResult.get("dependencies", 0)),
-            duplicated=duplicated,
-            errors=errors,
+        return runtimeProtocolDuplicateService.duplicateLegacyProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            copyProtocolsCallback=self.currentProject.copyProtocol,
+            syncProjectProtocolsAndDependenciesCallback=(
+                self.syncProjectProtocolsAndDependencies
+            ),
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
