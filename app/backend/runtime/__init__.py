@@ -45,6 +45,7 @@ from app.backend.runtime.protocol_launch_service import RuntimeProtocolLaunchSer
 from app.backend.runtime.protocol_save_service import RuntimeProtocolSaveService
 from app.backend.runtime.protocol_step_status_service import RuntimeProtocolStepStatusService
 from app.backend.runtime.protocol_log_service import RuntimeProtocolLogService
+from app.backend.runtime.protocol_restart_service import RuntimeProtocolRestartService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -69,4 +70,5 @@ __all__ = [
     "RuntimeProtocolSaveService",
     "RuntimeProtocolStepStatusService",
     "RuntimeProtocolLogService",
+    "RuntimeProtocolRestartService",
 ]
