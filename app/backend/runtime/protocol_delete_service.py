@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 from typing import Any, Dict, List, Optional
+from fastapi import HTTPException, status
 
 from pyworkflow.protocol import (
     STATUS_LAUNCHED,
@@ -320,3 +321,139 @@ class RuntimeProtocolDeleteService:
             deleteInfo=deleteInfo,
             deleteValidationInfo=deleteValidationInfo,
         )
+
+    def deleteProtocols(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocols,
+            usingPostgresqlRuntime: bool,
+            getScipionProtocolForRuntimeCallback,
+            currentProjectDeleteProtocolCallback,
+            mapperDeleteProtocolCallback,
+            syncProjectProtocolsAndDependenciesCallback,
+    ):
+        try:
+            protList = []
+
+            for protocolId in protocols or []:
+                protocol = getScipionProtocolForRuntimeCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+
+                protList.append(protocol)
+
+            if not protList:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="No valid protocols to delete",
+                )
+
+            protocolGraphRepository = (
+                ProtocolGraphRepository()
+                if usingPostgresqlRuntime
+                else None
+            )
+
+            blockedProtocols = self.buildBlockedProtocolReports(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protList,
+                protocolGraphRepository=protocolGraphRepository,
+            )
+
+            if blockedProtocols:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": (
+                            "Running, launched or scheduled protocols cannot be deleted. "
+                            "Stop them first and delete them afterwards."
+                        ),
+                        "blockedProtocols": blockedProtocols,
+                    },
+                )
+
+            deleteValidationInfo = None
+            selectedProtocolDbIds = []
+            selectedProtocolIds = []
+
+            if usingPostgresqlRuntime:
+                deletePreparationInfo = self.preparePostgresqlRuntimeProtocolDelete(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protList,
+                    protocolGraphRepository=protocolGraphRepository,
+                )
+
+                selectedProtocolDbIds = deletePreparationInfo.get("selectedProtocolDbIds") or []
+                missingPostgresqlProtocols = deletePreparationInfo.get("missingPostgresqlProtocols") or []
+                selectedProtocolIds = deletePreparationInfo.get("selectedProtocolIds") or []
+                deleteValidationInfo = deletePreparationInfo.get("deleteValidationInfo")
+
+                if missingPostgresqlProtocols:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "message": (
+                                "Some selected protocols exist in the execution runtime but "
+                                "were not found in PostgreSQL. Delete was aborted to avoid "
+                                "leaving the runtime graph inconsistent."
+                            ),
+                            "protocolIds": missingPostgresqlProtocols,
+                        },
+                    )
+
+                if deleteValidationInfo and deleteValidationInfo.get("blocked"):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "message": (
+                                "The selected protocols cannot be deleted because there are "
+                                "downstream protocols outside the selection that are active "
+                                "or already have outputs. Select the full affected subworkflow "
+                                "or stop/reset the downstream protocols first."
+                            ),
+                            "blockedDescendants": (
+                                    deleteValidationInfo.get("externalDescendants") or []
+                            ),
+                        },
+                    )
+
+            currentProjectDeleteProtocolCallback(*protList)
+
+            if usingPostgresqlRuntime:
+                return self.executePostgresqlRuntimeProtocolDelete(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protList,
+                    protocolDbIds=selectedProtocolDbIds,
+                    protocolIds=selectedProtocolIds,
+                    protocolGraphRepository=protocolGraphRepository,
+                    deleteValidationInfo=deleteValidationInfo,
+                )
+
+            mapperDeleteProtocolCallback(projectId, protList)
+
+            syncInfo = syncProjectProtocolsAndDependenciesCallback(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+
+            return {
+                "status": 0,
+                "message": "Protocol deleted successfully",
+                "protocolsCount": syncInfo.get("protocols"),
+                "dependenciesCount": syncInfo.get("dependencies"),
+            }
+
+        except HTTPException:
+            raise
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))

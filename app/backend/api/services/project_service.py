@@ -6033,124 +6033,20 @@ class ProjectService:
         )
 
     def deleteProtocol(self, mapper, projectId, protocols: Any):
-        try:
-            protList = []
-            usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
 
-            for protocolId in protocols or []:
-                protocol = self._getScipionProtocolForRuntime(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-                protList.append(protocol)
-
-            if not protList:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="No valid protocols to delete",
-                )
-
-            runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
-            protocolGraphRepository = ProtocolGraphRepository() if usingPostgresqlRuntime else None
-            blockedProtocols = runtimeProtocolDeleteService.buildBlockedProtocolReports(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=protList,
-                protocolGraphRepository=protocolGraphRepository,
-            )
-
-            if blockedProtocols:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "message": (
-                            "Running, launched or scheduled protocols cannot be deleted. "
-                            "Stop them first and delete them afterwards."
-                        ),
-                        "blockedProtocols": blockedProtocols,
-                    },
-                )
-
-            deleteValidationInfo = None
-
-            if usingPostgresqlRuntime:
-                deletePreparationInfo = runtimeProtocolDeleteService.preparePostgresqlRuntimeProtocolDelete(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protList,
-                    protocolGraphRepository=protocolGraphRepository,
-                )
-
-                selectedProtocolDbIds = deletePreparationInfo.get("selectedProtocolDbIds") or []
-                missingPostgresqlProtocols = deletePreparationInfo.get("missingPostgresqlProtocols") or []
-                selectedProtocolIds = deletePreparationInfo.get("selectedProtocolIds") or []
-                deleteValidationInfo = deletePreparationInfo.get("deleteValidationInfo")
-
-                if missingPostgresqlProtocols:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "message": (
-                                "Some selected protocols exist in the execution runtime but "
-                                "were not found in PostgreSQL. Delete was aborted to avoid "
-                                "leaving the runtime graph inconsistent."
-                            ),
-                            "protocolIds": missingPostgresqlProtocols,
-                        },
-                    )
-
-                if deleteValidationInfo and deleteValidationInfo.get("blocked"):
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "message": (
-                                "The selected protocols cannot be deleted because there are "
-                                "downstream protocols outside the selection that are active "
-                                "or already have outputs. Select the full affected subworkflow "
-                                "or stop/reset the downstream protocols first."
-                            ),
-                            "blockedDescendants": (
-                                    deleteValidationInfo.get("externalDescendants") or []
-                            ),
-                        },
-                    )
-            else:
-                deleteValidationInfo = None
-
-            self.currentProject.deleteProtocol(*protList)
-
-            if usingPostgresqlRuntime:
-                return runtimeProtocolDeleteService.executePostgresqlRuntimeProtocolDelete(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protList,
-                    protocolDbIds=selectedProtocolDbIds,
-                    protocolIds=selectedProtocolIds,
-                    protocolGraphRepository=protocolGraphRepository,
-                    deleteValidationInfo=deleteValidationInfo,
-                )
-
-            mapper.deleteProtocol(projectId, protList)
-
-            syncInfo = self.syncProjectProtocolsAndDependencies(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
-            )
-
-            return {
-                "status": 0,
-                "message": "Protocol deleted successfully",
-                "protocolsCount": syncInfo.get("protocols"),
-                "dependenciesCount": syncInfo.get("dependencies"),
-            }
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        return runtimeProtocolDeleteService.deleteProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            currentProjectDeleteProtocolCallback=self.currentProject.deleteProtocol,
+            mapperDeleteProtocolCallback=mapper.deleteProtocol,
+            syncProjectProtocolsAndDependenciesCallback=(
+                self.syncProjectProtocolsAndDependencies
+            ),
+        )
 
     def _syncPostgresqlRuntimeProtocolsAfterMutation(
             self,
