@@ -23,9 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import re
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 
 from pyworkflow.object import Pointer
 from pyworkflow.protocol.params import MultiPointerParam
@@ -39,48 +38,6 @@ logger = logging.getLogger(__name__)
 class RuntimeProtocolLaunchPrepareService:
     """Prepare PostgreSQL runtime protocol pointers before launch."""
 
-    @staticmethod
-    def _loadRuntimeOutputFromFallback(mapper, outputInfo: Dict[str, Any]):
-        runtimeObjectId = (outputInfo or {}).get("runtimeObjectId")
-
-        if runtimeObjectId in (None, ""):
-            return None
-
-        try:
-            runtimeObjectId = int(runtimeObjectId)
-        except Exception:
-            return None
-
-        for fallbackMapper in (
-                getattr(mapper, "writeFallbackMapper", None),
-                getattr(mapper, "readFallbackMapper", None),
-        ):
-            if fallbackMapper is None:
-                continue
-
-            selectById = getattr(fallbackMapper, "selectById", None)
-
-            if not callable(selectById):
-                continue
-
-            try:
-                outputObj = selectById(runtimeObjectId)
-            except Exception:
-                outputObj = None
-
-            if outputObj is not None:
-                return outputObj
-
-        return None
-
-    @staticmethod
-    def _isPostgresqlProxy(obj) -> bool:
-        try:
-            checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
-            return callable(checker) and bool(checker())
-        except Exception:
-            return False
-
     def preparePointerOutputsForLaunch(
             self,
             mapper,
@@ -88,7 +45,6 @@ class RuntimeProtocolLaunchPrepareService:
             protocol,
             getProtocolIdCallback: Callable,
             getParentProtocolCallback: Callable,
-            repairOutputRelationsCallback: Optional[Callable] = None,
             allowMissingParentOutputs: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -103,9 +59,6 @@ class RuntimeProtocolLaunchPrepareService:
         - Parent protocols and outputs are never persisted.
 
         Only Pointer attributes belonging to the child protocol are updated.
-
-        ``repairOutputRelationsCallback`` is temporarily retained for backward
-        compatibility, but is intentionally not invoked.
         """
         protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
