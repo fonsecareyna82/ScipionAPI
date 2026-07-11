@@ -48,7 +48,7 @@ class RuntimeProtocolResetService:
             workflowProtocolMapToProtocolsCallback: Callable,
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
-            clearPostgresqlInputRefObjectIdsForResetProtocolsCallback: Callable,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ) -> Dict[str, Any]:
@@ -145,7 +145,7 @@ class RuntimeProtocolResetService:
             # that point to outputs owned by protocols being reset.
             # It does not modify or persist the protocol/output objects themselves.
             refCleanupInfo = (
-                clearPostgresqlInputRefObjectIdsForResetProtocolsCallback(
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=workflowProtocols,

@@ -6078,13 +6078,23 @@ class ProjectService:
             "reports": reports,
         }
 
-    def _clearPostgresqlInputRefObjectIdsForParentProtocols(
+    def _clearPostgresqlChildInputRefObjectIdsForOutputProtocols(
             self,
             mapper,
             projectId: int,
             protocols,
     ) -> Dict[str, Any]:
-        parentDbIds = []
+        """
+        Clear cached output object IDs from child protocol input-reference rows.
+
+        The supplied protocols are output owners whose outputs are being reset
+        or restarted. This method only updates protocol_input_refs rows that
+        point to those outputs.
+
+        It never modifies or persists the supplied protocol objects or any of
+        their outputs.
+        """
+        outputProtocolDbIds = []
 
         protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
@@ -6092,13 +6102,20 @@ class ProjectService:
         )
 
         for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: protocol,
+            )()
 
             if protocolId in (None, ""):
                 continue
 
-            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-                protocolId,
+            protocolDbId = (
+                protocolIdentityResolver
+                .resolvePostgresqlProtocolDbId(
+                    protocolId,
+                )
             )
 
             if protocolDbId is None:
@@ -6106,15 +6123,18 @@ class ProjectService:
 
             protocolDbId = int(protocolDbId)
 
-            if protocolDbId not in parentDbIds:
-                parentDbIds.append(protocolDbId)
+            if protocolDbId not in outputProtocolDbIds:
+                outputProtocolDbIds.append(protocolDbId)
 
         protocolGraphRepository = ProtocolGraphRepository()
 
-        return protocolGraphRepository.clearInputRefObjectIdsForParentProtocolDbIds(
-            mapper=mapper,
-            projectId=projectId,
-            parentProtocolDbIds=parentDbIds,
+        return (
+            protocolGraphRepository
+            .clearInputRefObjectIdsForParentProtocolDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbIds=outputProtocolDbIds,
+            )
         )
 
     def _getPostgresqlRuntimeSubworkflow(
@@ -6330,7 +6350,7 @@ class ProjectService:
             workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
             restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-            clearPostgresqlInputRefObjectIdsForParentProtocolsCallback=self._clearPostgresqlInputRefObjectIdsForParentProtocols,
+            clearPostgresqlInputRefObjectIdsForParentProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
@@ -6385,7 +6405,7 @@ class ProjectService:
                 workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
                 restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlInputRefObjectIdsForResetProtocolsCallback=self._clearPostgresqlInputRefObjectIdsForParentProtocols,
+                clearPostgresqlInputRefObjectIdsForResetProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
                 syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
                 buildProtocolMutationResultCallback=self._buildProtocolMutationResult
             )

@@ -48,7 +48,7 @@ class RuntimeProtocolRestartService:
             workflowProtocolMapToProtocolsCallback: Callable,
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
-            clearPostgresqlInputRefObjectIdsForParentProtocolsCallback: Callable,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ) -> Dict[str, Any]:
@@ -139,7 +139,7 @@ class RuntimeProtocolRestartService:
 
         if usingPostgresqlRuntime:
             refCleanupInfo = (
-                clearPostgresqlInputRefObjectIdsForParentProtocolsCallback(
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=workflowProtocols,
