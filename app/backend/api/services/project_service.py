@@ -115,7 +115,8 @@ from app.backend.runtime import (
     RuntimeProtocolRestartService,
     RuntimeProtocolContinueService,
     RuntimeProtocolResetService,
-    RuntimeProtocolStopService
+    RuntimeProtocolStopService,
+    RuntimeProtocolRenameService,
 )
 
 
@@ -5943,34 +5944,20 @@ class ProjectService:
             newName,
             newComment,
     ):
-        protocol = self._getScipionProtocolForRuntime(
+        runtimeProtocolRenameService = (
+            RuntimeProtocolRenameService()
+        )
+
+        return runtimeProtocolRenameService.renameProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            newName=newName,
+            newComment=newComment,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            storeProtocolCallback=self.currentProject._storeProtocol,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found: {protocolId}",
-            )
-
-        try:
-            protocol.runName.set(newName)
-            protocol._objComment = newComment
-            # protocol.setObjLabel(newName)
-            self.currentProject._storeProtocol(protocol)
-        except Exception as e:
-            logger.exception(
-                "Failed to rename protocol. protocolId=%s newName=%s",
-                protocolId,
-                newName,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to rename protocol: {e}",
-            )
-
-        return self._buildProtocolMutationResult("Protocol renamed successfully")
 
     def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
