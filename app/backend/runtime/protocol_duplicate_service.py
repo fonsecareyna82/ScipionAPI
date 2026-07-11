@@ -73,6 +73,86 @@ class RuntimeProtocolDuplicateService:
     def createDuplicateState(self) -> RuntimeProtocolDuplicateState:
         return RuntimeProtocolDuplicateState()
 
+    def detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
+        """
+        Temporarily detach output attributes before calling Scipion copyProtocol().
+
+        A duplicated protocol must copy only configuration/inputs, not produced outputs.
+        If outputs remain attached, Scipion may try to persist/copy sets such as
+        295.Tomograms and fail with errors like:
+
+            Object 295.Tomograms has no sampling rate!!!
+        """
+        detached = []
+
+        try:
+            outputAttrs = list(protocol.iterOutputAttributes())
+        except Exception:
+            outputAttrs = []
+
+        for outputName, outputObj in outputAttrs:
+            if not outputName:
+                continue
+
+            hadAttribute = hasattr(protocol, outputName)
+
+            detached.append({
+                "name": outputName,
+                "object": outputObj,
+                "hadAttribute": hadAttribute,
+            })
+
+            if hadAttribute:
+                try:
+                    delattr(protocol, outputName)
+                except Exception:
+                    try:
+                        setattr(protocol, outputName, None)
+                    except Exception:
+                        logger.debug(
+                            "Could not detach protocol output before copy. "
+                            "protocol=%s output=%s",
+                            getattr(protocol, "getObjId", lambda: None)(),
+                            outputName,
+                            exc_info=True,
+                        )
+
+        logger.info(
+            "Detached protocol outputs before duplicate. protocolId=%s outputs=%s",
+            getattr(protocol, "getObjId", lambda: None)(),
+            [item["name"] for item in detached],
+        )
+
+        return detached
+
+    def restoreProtocolOutputsAfterCopy(
+            self,
+            protocol,
+            detachedOutputs: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Restore outputs detached by detachProtocolOutputsForCopy.
+
+        This only restores the in-memory source protocol object.
+        """
+        for item in detachedOutputs or []:
+            outputName = item.get("name")
+            outputObj = item.get("object")
+
+            if not outputName:
+                continue
+
+            try:
+                setattr(protocol, outputName, outputObj)
+            except Exception:
+                logger.debug(
+                    "Could not restore protocol output after copy. "
+                    "protocol=%s output=%s",
+                    getattr(protocol, "getObjId", lambda: None)(),
+                    outputName,
+                    exc_info=True,
+                )
+
     @staticmethod
     def _getScipionObjectId(obj) -> Optional[int]:
         for getterName in ("getObjId", "getId"):
