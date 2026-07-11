@@ -5210,10 +5210,16 @@ class ProjectService:
             attachProxy: bool = False,
     ) -> Dict[str, Any]:
         """
-        Resolve a parent output for a child PointerParam/MultiPointerParam.
+        Resolve whether a parent output exists for a child runtime pointer.
 
-        PostgreSQL is the source of truth for output existence.
-        The Scipion runtime attribute is kept only as compatibility.
+        Parent protocols and their outputs are strictly read-only here:
+        - Do not attach outputs to the parent protocol.
+        - Do not repair the parent output mapper.
+        - Do not replace PostgreSQL proxies.
+        - Do not persist the parent protocol or its outputs.
+
+        PostgreSQL is the source of truth for output existence. The runtime
+        attribute is inspected only as compatibility information.
         """
         outputInfo = self._getPostgresqlRuntimeOutputInfo(
             mapper=mapper,
@@ -5222,64 +5228,30 @@ class ProjectService:
             outputName=outputName,
         )
 
-        hasRuntimeAttribute = False
-
         try:
             hasRuntimeAttribute = hasattr(parentProtocol, outputName)
         except Exception:
             hasRuntimeAttribute = False
 
         if outputInfo.get("exists"):
-            outputObj = None
-
-            try:
-                outputObj = getattr(parentProtocol, outputName, None)
-            except Exception:
-                outputObj = None
-
-            repairedMapper = False
-
-            persistedMapperRepair = False
-
-            if outputObj is not None:
-                repairedMapper = self._repairPostgresqlRuntimeSetMapperInfo(
-                    mapper=mapper,
-                    projectId=projectId,
-                    outputObj=outputObj,
-                    outputInfo=outputInfo,
-                )
-
-            logger.info(
-                "Repaired PostgreSQL runtime Set mapper metadata in memory only. "
-                "Skipping parent protocol store to avoid overwriting SQLite fallback. "
-                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s outputName=%s outputObj=%s",
-                projectId,
-                parentScipionProtocolId,
-                parentProtocolDbId,
-                outputName,
-                outputObj,
-            )
-
             logger.debug(
-                "Resolved runtime output from PostgreSQL. "
+                "Resolved parent output from PostgreSQL without modifying the parent. "
                 "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                "outputName=%s hasRuntimeAttribute=%s repairedMapper=%s outputObj=%s outputInfo=%s",
+                "outputName=%s hasRuntimeAttribute=%s",
                 projectId,
                 parentScipionProtocolId,
                 parentProtocolDbId,
                 outputName,
                 hasRuntimeAttribute,
-                repairedMapper,
-                outputObj,
-                outputInfo,
             )
 
             return {
                 "exists": True,
                 "source": "postgresql",
                 "hasRuntimeAttribute": hasRuntimeAttribute,
-                "repairedMapper": repairedMapper,
-                "persistedMapperRepair": persistedMapperRepair,
+                "repairedMapper": False,
+                "persistedMapperRepair": False,
+                "parentProtocolReadOnly": True,
                 "outputInfo": outputInfo,
             }
 
@@ -5288,6 +5260,9 @@ class ProjectService:
                 "exists": True,
                 "source": "scipion_runtime",
                 "hasRuntimeAttribute": True,
+                "repairedMapper": False,
+                "persistedMapperRepair": False,
+                "parentProtocolReadOnly": True,
                 "outputInfo": outputInfo,
             }
 
@@ -5295,6 +5270,9 @@ class ProjectService:
             "exists": False,
             "source": None,
             "hasRuntimeAttribute": False,
+            "repairedMapper": False,
+            "persistedMapperRepair": False,
+            "parentProtocolReadOnly": True,
             "outputInfo": outputInfo,
         }
 
