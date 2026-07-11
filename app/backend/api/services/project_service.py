@@ -6350,7 +6350,7 @@ class ProjectService:
             workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
             restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-            clearPostgresqlInputRefObjectIdsForParentProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
@@ -6405,7 +6405,7 @@ class ProjectService:
                 workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
                 restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlInputRefObjectIdsForResetProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
                 syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
                 buildProtocolMutationResultCallback=self._buildProtocolMutationResult
             )
