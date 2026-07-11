@@ -36,7 +36,6 @@ import sys
 import threading
 import textwrap
 import shutil
-import signal
 
 import numpy as np
 
@@ -54,6 +53,8 @@ from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
     findProtocolWizardsWeb,
 )
+from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
+
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
@@ -5387,221 +5388,23 @@ class ProjectService:
             projectId=None,
             protocol=None,
     ):
-        """
-        Serialize a protocol parameter into a dict, handling scalar, pointer, and multipointer types.
-        """
-        try:
-            paramDict = {}
-            paramValue = ''
+        protocolFormSerializer =  ProtocolFormSerializer()
 
-            from pyworkflow.protocol import MultiPointerParam, PointerParam, RelationParam
-
-            # relationParam: keep current behavior (empty dict)
-            if isinstance(param, RelationParam):
-                return {}, None
-
-            paramDict["name"] = paramName
-            wizardItems = wizards.get(paramName, []) if wizards else []
-            paramDict["hasWizard"] = bool(wizardItems)
-            paramDict["wizards"] = wizardItems
-            paramDict["wizard"] = wizardItems[0] if wizardItems else None
-
-            # publicAttributes
-            for name, value in param.getAttributes():
-                paramDict[name] = value.get()
-
-            # protectedAttributes
-            for name, value in vars(param).items():
-                if name == 'choices' or name == 'gpuList':
-                    paramDict[name] = serializeToJson(value)
-
-            paramClass = param.__class__.__name__
-            if paramClass == 'LabelParam':
-                paramClass = 'Label'
-
-            # if paramClass == 'PathParam':
-            #     paramDict["pointerClass"] = "StarFile"
-            paramDict["paramClass"] = paramClass
-
-            if protVar is not None:
-                if isinstance(param, MultiPointerParam):
-                    valueList = []
-
-                    if (
-                            mapper is not None
-                            and projectId is not None
-                            and protocol is not None
-                            and self._currentProjectUsesPostgresqlRuntimeMapper()
-                    ):
-                        protocolId = self._getScipionObjectId(protocol)
-
-                        protocolDbId = self._resolvePostgresqlProtocolDbId(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolId,
-                        )
-
-                        if protocolDbId is not None:
-                            protocolGraphRepository = ProtocolGraphRepository()
-                            valueList = protocolGraphRepository.loadInputRefPointerValues(
-                                mapper=mapper,
-                                projectId=projectId,
-                                protocolDbId=protocolDbId,
-                                inputName=paramName,
-                            )
-
-                            if valueList:
-                                paramDict["readOnly"] = True
-                                return paramDict, valueList
-
-                    for pointer in protVar:
-                        value = None
-
-                        try:
-                            targetObj = pointer.get()
-                        except Exception:
-                            targetObj = None
-
-                        try:
-                            objValue = pointer.getObjValue()
-                        except Exception:
-                            objValue = None
-
-                        try:
-                            extended = pointer.getExtended()
-                        except Exception:
-                            extended = None
-
-                        if isinstance(targetObj, str):
-                            value = targetObj
-
-                        elif targetObj is not None:
-                            try:
-                                parentId = objValue.getObjId() if objValue is not None else None
-                            except Exception:
-                                parentId = None
-
-                            if parentId is None:
-                                try:
-                                    parentId = targetObj.getObjParentId()
-                                except Exception:
-                                    parentId = None
-
-                            value = "%s.%s" % (parentId, extended) if parentId is not None and extended else None
-
-                        valueList.append(value)
-
-                    paramValue = valueList
-                    paramDict["readOnly"] = True
-
-                elif isinstance(param, PointerParam):
-
-                    parentId = None
-                    paramValue = None
-                    protocolDbId = None
-                    if (
-                            mapper is not None
-                            and projectId is not None
-                            and protocol is not None
-                            and self._currentProjectUsesPostgresqlRuntimeMapper()
-                    ):
-                        protocolId = self._getScipionObjectId(protocol)
-
-                        protocolDbId = self._resolvePostgresqlProtocolDbId(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolId,
-                        )
-
-                    if protocolDbId is not None:
-                        protocolGraphRepository = ProtocolGraphRepository()
-                        pointerValueInfo = protocolGraphRepository.loadInputRefPointerValue(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolDbId=protocolDbId,
-                            inputName=paramName,
-                        )
-
-                        if pointerValueInfo:
-                            parentId = pointerValueInfo.get("parentId")
-                            paramValue = pointerValueInfo.get("value")
-
-                            try:
-                                paramDict["parentId"] = int(parentId)
-                            except Exception:
-                                paramDict["parentId"] = parentId
-
-                            paramDict["readOnly"] = True
-
-                            return paramDict, paramValue
-                    try:
-                        targetObj = protVar.get() if protVar is not None else None
-                    except Exception:
-                        targetObj = None
-                    try:
-                        objValue = protVar.getObjValue() if protVar is not None else None
-                    except Exception:
-                        objValue = None
-                    try:
-                        extended = protVar.getExtended() if protVar is not None else None
-                    except Exception:
-                        extended = None
-
-                    if isinstance(targetObj, str):
-                        # PostgreSQL runtime pointer can arrive as a raw value:
-                        #   "1.outputTSMovies"
-                        parentIdText, outputName = self._splitPointerValue(targetObj)
-                        if parentIdText:
-                            try:
-                                parentId = int(parentIdText)
-                            except Exception:
-                                parentId = parentIdText
-
-                        if outputName and not extended:
-                            extended = outputName
-
-                        paramValue = targetObj
-
-
-                    elif targetObj is not None:
-                        # Normal Scipion pointer:
-                        # protVar.get() returns the pointed output object,
-                        # but the editable parent id must be the parent protocol id.
-                        # Do NOT use targetObj.getObjParentId() here; that can be an internal
-                        # object id such as 726, not the protocol id shown in the graph.
-                        try:
-                            parentId = objValue.getObjId() if objValue is not None else None
-                        except Exception:
-                            parentId = None
-                        if parentId is None:
-                            try:
-                                parentId = targetObj.getObjParentId()
-                            except Exception:
-                                parentId = None
-                        paramValue = "%s.%s" % (parentId, extended) if parentId is not None and extended else ""
-
-                    elif objValue is not None:
-                        # Pointer object exists but target output is not resolved.
-                        try:
-                            parentId = objValue.getObjId()
-                        except Exception:
-                            parentId = None
-                        paramValue = "%s.%s" % (parentId, extended) if parentId is not None and extended else ""
-                    else:
-                        paramValue = None
-
-                    if parentId is not None:
-                        paramDict["parentId"] = parentId
-
-                    paramDict["readOnly"] = True
-                else:
-                    paramValue = protVar.get() if protVar.get() is not None else None
-
-            return paramDict, paramValue
-
-        except Exception as ex:
-            logger.error("ERROR with param: " + paramName)
-            raise ex
+        return protocolFormSerializer.serializeParam(
+            param=param,
+            paramName=paramName,
+            wizards=wizards,
+            viewerDict=viewerDict,
+            visualize=visualize,
+            protVar=protVar,
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+            splitPointerValueCallback=self._splitPointerValue,
+        )
 
     def _runJsonSubprocess(self, code: str, operationName: str) -> Dict[str, Any]:
         startMarker = "__SCIPION_JSON_START__"
