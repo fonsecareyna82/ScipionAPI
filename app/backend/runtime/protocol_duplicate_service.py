@@ -354,6 +354,110 @@ class RuntimeProtocolDuplicateService:
             **resultPayload,
         )
 
+    def duplicateLegacyProtocols(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocols,
+            getScipionProtocolForRuntimeCallback: Callable,
+            copyProtocolsCallback: Callable,
+            syncProjectProtocolsAndDependenciesCallback: Callable,
+            buildProtocolMutationResultCallback: Callable,
+    ):
+        protocolList = []
+        sourceIds = []
+        duplicated = []
+        errors = []
+
+        for item in protocols or []:
+            protocolId = getattr(item, "id", None)
+
+            if protocolId is None:
+                continue
+
+            sourceIds.append(protocolId)
+
+            protocol = getScipionProtocolForRuntimeCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            protocolList.append(protocol)
+
+        if not protocolList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to duplicate",
+            )
+
+        try:
+            protListResult = copyProtocolsCallback(protocolList)
+
+        except Exception as e:
+            protocolIds = [
+                getattr(protocol, "getObjId", lambda: None)()
+                for protocol in protocolList
+            ]
+
+            logger.exception(
+                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
+                projectId,
+                protocolIds,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to duplicate protocols: {e}",
+            )
+
+        for index, protocol in enumerate(protListResult):
+            protocolId = str(protocol.getObjId())
+
+            duplicated.append({
+                "sourceId": sourceIds[index],
+                "newId": protocolId,
+            })
+
+        try:
+            syncResult = syncProjectProtocolsAndDependenciesCallback(
+                mapper,
+                projectId,
+                refresh=True,
+                checkPid=True,
+            )
+
+        except HTTPException:
+            raise
+
+        except Exception as e:
+            errors.append(
+                "Failed to sync protocol graph after duplication. projectId=%s"
+                % projectId
+            )
+
+            logger.exception(
+                "Failed to sync protocol graph after duplication. projectId=%s",
+                projectId,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                        "Protocols were duplicated in Scipion but graph sync "
+                        "to PostgreSQL failed: %s" % e
+                ),
+            )
+
+        return buildProtocolMutationResultCallback(
+            "Protocol was duplicated successfully",
+            protocolsCount=int(syncResult.get("protocols", 0)),
+            dependenciesCount=int(syncResult.get("dependencies", 0)),
+            duplicated=duplicated,
+            errors=errors,
+        )
+
     @staticmethod
     def _getScipionObjectId(obj) -> Optional[int]:
         for getterName in ("getObjId", "getId"):
