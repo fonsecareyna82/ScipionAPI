@@ -112,7 +112,8 @@ from app.backend.runtime import (
     RuntimeProtocolStepStatusService,
     RuntimeProtocolLogService,
     RuntimeProtocolLaunchPrepareService,
-    RuntimeProtocolRestartService
+    RuntimeProtocolRestartService,
+    RuntimeProtocolContinueService,
 )
 
 
@@ -6333,138 +6334,32 @@ class ProjectService:
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
-    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
-
-        protocol = self._getScipionProtocolForRuntime(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+    def continueProtocolAll(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            currentUser,
+    ):
+        runtimeProtocolContinueService = (
+            RuntimeProtocolContinueService()
         )
 
-        try:
-            if usingPostgresqlRuntime:
-                workflowProtocolList = self._getPostgresqlRuntimeSubworkflow(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-                activeProtocolList = {}
-            else:
-                workflowProtocolList, activeProtocolList = self.currentProject._getSubworkflow(protocol)
-
-        except Exception as e:
-            logger.exception(
-                "Failed to resolve subworkflow for continue-all. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to resolve protocol subworkflow: {e}",
-            )
-
-        continuedProtList = activeProtocolList or workflowProtocolList
-        protocolsToResume = self._workflowProtocolMapToProtocols(continuedProtList)
-
-        if not protocolsToResume:
-            return self._buildProtocolMutationResult("No protocols to continue")
-
-        pointerRestoreInfo = None
-
-        if usingPostgresqlRuntime:
-            parentProtocolsById = {}
-
-            for cachedProtocol in self._workflowProtocolMapToProtocols(workflowProtocolList):
-                cachedProtocolId = getattr(cachedProtocol, "getObjId", lambda: None)()
-
-                if cachedProtocolId is None:
-                    continue
-
-                parentProtocolsById[str(cachedProtocolId)] = cachedProtocol
-
-                try:
-                    parentProtocolsById[int(cachedProtocolId)] = cachedProtocol
-                except Exception:
-                    pass
-
-            pointerRestoreInfo = self._restorePostgresqlRuntimePointersForProtocols(
+        return (
+            runtimeProtocolContinueService
+            .continueProtocolSubworkflow(
                 mapper=mapper,
                 projectId=projectId,
-                protocols=protocolsToResume,
-                prepareOutputsForLaunch=False,
-                allowMissingParentOutputs=True,
-                parentProtocolsById=parentProtocolsById,
+                protocolId=protocolId,
+                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+                currentProject=self.currentProject,
+                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
+                restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
+                syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             )
-
-            if pointerRestoreInfo.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Failed to restore PostgreSQL runtime pointers before continue-all: %s"
-                            % pointerRestoreInfo.get("errors")
-                    ),
-                )
-
-            runtimeMapper = None
-
-            try:
-                runtimeMapper = self.currentProject.getPostgresqlRuntimeMapper()
-            except Exception:
-                runtimeMapper = None
-
-            for protocolToPrepare in protocolsToResume:
-                protocolRuntimeId = getattr(protocolToPrepare, "getObjId", lambda: None)()
-
-                if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=(
-                                "Protocol %s exists in PostgreSQL but not in the SQLite execution DB."
-                                % protocolRuntimeId
-                        ),
-                    )
-        errorList = []
-
-        try:
-            self.currentProject._continueWorkflow(errorList, continuedProtList)
-        except Exception as e:
-            logger.exception(
-                "Failed to continue workflow subtree. projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to continue protocol subtree: {e}",
-            )
-
-        if errorList:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=[str(e) for e in errorList],
-            )
-
-        postgresqlSync = None
-
-        if usingPostgresqlRuntime:
-            postgresqlSync = self._syncPostgresqlRuntimeProtocolsAfterMutation(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=protocolsToResume,
-                registerOutputs=False,
-            )
-
-        return self._buildProtocolMutationResult(
-            "Protocol subtree continued successfully",
-            protocolsCount=(
-                int(postgresqlSync.get("protocolsCount", 0) or 0)
-                if postgresqlSync else len(protocolsToResume or [])
-            ),
-            dependenciesCount=0,
-            postgresqlPointerRestore=pointerRestoreInfo,
-            postgresqlRuntimeContinue=True,
-            postgresqlRuntimeSync=postgresqlSync,
         )
 
     def resetProtocolFrom(self, mapper, projectId: int, protocolId):
