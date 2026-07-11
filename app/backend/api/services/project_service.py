@@ -6012,187 +6012,19 @@ class ProjectService:
 
     def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-        duplicateState = runtimeProtocolDuplicateService.createDuplicateState()
 
-        # ------------------------------------------------------------------
-        # Phase 1: resolve all source protocols and create all duplicated
-        # protocol rows, without copying refs yet.
-        # ------------------------------------------------------------------
-        protocolGraphRepository = ProtocolGraphRepository()
-
-        for item in protocols or []:
-            sourceProtocolId = getattr(item, "id", None)
-
-            if sourceProtocolId is None:
-                continue
-
-            sourceProtocol = self._getScipionProtocolForRuntime(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=sourceProtocolId,
-            )
-
-            sourceScipionProtocolId = self._getScipionObjectId(sourceProtocol)
-
-            sourceProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=sourceScipionProtocolId,
-            )
-
-            if sourceProtocolDbId is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Source protocol %s was not found in PostgreSQL" % sourceProtocolId,
-                )
-            sourceRow = protocolGraphRepository.getProtocolRuntimeInfoByDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolDbId=sourceProtocolDbId,
-            )
-
-            if not sourceRow:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Source protocol row was not found: %s" % sourceProtocolId,
-                )
-
-            protocolClassName = sourceRow.get("protocolClassName")
-            sourceParams = sourceRow.get("params") or {}
-
-            params = runtimeProtocolDuplicateService.buildDuplicatedProtocolParams(
-                sourceProtocol=sourceProtocol,
-                sourceParams=sourceParams,
-            )
-
-            newProtocol, saveErrors = self.saveProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=None,
-                protocolClassName=protocolClassName,
-                params=params,
-                setToSave=False,
-            )
-
-            if saveErrors:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=saveErrors,
-                )
-
-            duplicatedProtocolId = self._getScipionObjectId(newProtocol)
-
-            duplicatedProtocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=duplicatedProtocolId,
-            )
-
-            if duplicatedProtocolDbId is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Duplicated protocol %s was not found in PostgreSQL" % duplicatedProtocolId,
-                )
-
-            runtimeProtocolDuplicateService.registerDuplicatedProtocol(
-                state=duplicateState,
-                sourceScipionProtocolId=sourceScipionProtocolId,
-                sourceProtocolDbId=sourceProtocolDbId,
-                duplicatedProtocol=newProtocol,
-                duplicatedProtocolId=duplicatedProtocolId,
-                duplicatedProtocolDbId=duplicatedProtocolDbId,
-            )
-
-        if not runtimeProtocolDuplicateService.hasDuplicatedProtocols(duplicateState):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No valid protocols to duplicate",
-            )
-
-        # ------------------------------------------------------------------
-        # Phase 2: copy refs/dependencies using the full old -> new map.
-        # ------------------------------------------------------------------
-        for item in duplicateState.duplicatedItems:
-            syncContext = runtimeProtocolDuplicateService.buildDuplicatedProtocolSyncContext(item)
-
-            newProtocol = syncContext["duplicatedProtocol"]
-            sourceScipionProtocolId = syncContext["sourceScipionProtocolId"]
-            duplicatedProtocolId = syncContext["duplicatedProtocolId"]
-
-            try:
-                protocolSync = self.syncPostgresqlRuntimeProtocol(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=duplicatedProtocolId,
-                    registerOutputs=False,
-                )
-
-                dependencySync = runtimeProtocolDuplicateService.copyPostgresqlInputRefsForDuplicatedProtocol(
-                    state=duplicateState,
-                    mapper=mapper,
-                    projectId=projectId,
-                    sourceProtocolId=sourceScipionProtocolId,
-                    duplicatedProtocolId=duplicatedProtocolId,
-                )
-
-                logger.info(
-                    "Copied PostgreSQL input refs for duplicated protocol. projectId=%s report=%s",
-                    projectId,
-                    dependencySync,
-                )
-
-                pointerRestore = runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocol=newProtocol,
-                    getParentProtocolCallback=self._getParentProtocolForPointer,
-                )
-
-                if pointerRestore.get("errors"):
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to restore duplicated protocol pointers: %s"
-                               % pointerRestore.get("errors"),
-                    )
-
-                self.currentProject._storeProtocol(newProtocol)
-
-                runtimeProtocolDuplicateService.registerDuplicatedProtocolSyncReport(
-                    state=duplicateState,
-                    sourceScipionProtocolId=sourceScipionProtocolId,
-                    duplicatedProtocolId=duplicatedProtocolId,
-                    protocolSync=protocolSync,
-                    dependencySync=dependencySync,
-                    pointerRestore=pointerRestore,
-                )
-
-            except HTTPException:
-                raise
-
-            except Exception as e:
-                logger.exception(
-                    "Failed to sync duplicated PostgreSQL runtime protocol. "
-                    "projectId=%s sourceProtocolId=%s duplicatedProtocolId=%s",
-                    projectId,
-                    sourceScipionProtocolId,
-                    duplicatedProtocolId,
-                )
-
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Protocol was duplicated but PostgreSQL runtime sync failed: %s"
-                            % e
-                    ),
-                )
-
-        resultPayload = runtimeProtocolDuplicateService.buildPostgresqlRuntimeDuplicateResultPayload(
-            state=duplicateState,
-        )
-
-        return self._buildProtocolMutationResult(
-            "Protocol was duplicated successfully",
-            **resultPayload,
+        return runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+            saveProtocolCallback=self.saveProtocol,
+            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            getParentProtocolForPointerCallback=self._getParentProtocolForPointer,
+            storeProtocolCallback=self.currentProject._storeProtocol,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def duplicateProtocol(self, mapper, projectId, protocols):
