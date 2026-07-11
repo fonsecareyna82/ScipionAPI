@@ -49,6 +49,7 @@ from app.backend.runtime.protocol_restart_service import RuntimeProtocolRestartS
 from app.backend.runtime.protocol_continue_service import RuntimeProtocolContinueService
 from app.backend.runtime.protocol_reset_service import RuntimeProtocolResetService
 from app.backend.runtime.protocol_stop_service import RuntimeProtocolStopService
+from app.backend.runtime.protocol_rename_service import RuntimeProtocolRenameService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -77,4 +78,5 @@ __all__ = [
     "RuntimeProtocolContinueService",
     "RuntimeProtocolResetService",
     "RuntimeProtocolStopService",
+    "RuntimeProtocolRenameService",
 ]
