@@ -27,6 +27,8 @@ import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from fastapi import HTTPException, status
+
 from pyworkflow.protocol.params import (
     MultiPointerParam,
     PointerParam,
