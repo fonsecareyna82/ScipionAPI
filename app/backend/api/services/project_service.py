@@ -5179,7 +5179,6 @@ class ProjectService:
             allowMissingParentOutputs=allowMissingParentOutputs,
             getProtocolIdCallback=self._getScipionObjectId,
             getParentProtocolCallback=self._getParentProtocolForPointer,
-            repairOutputRelationsCallback=self._repairPostgresqlRuntimeOutputRelations,
         )
 
     def _repairPostgresqlRuntimeSetMapperInfo(
