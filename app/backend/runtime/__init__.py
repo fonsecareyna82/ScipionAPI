@@ -76,5 +76,5 @@ __all__ = [
     "RuntimeProtocolRestartService",
     "RuntimeProtocolContinueService",
     "RuntimeProtocolResetService",
-    "RuntimeProtocolStopService"
+    "RuntimeProtocolStopService",
 ]
