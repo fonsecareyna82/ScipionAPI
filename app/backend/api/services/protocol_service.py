@@ -28,6 +28,7 @@ import threading
 from typing import Any, Callable, Dict
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
 
 _newProtocolLock = threading.Lock()
 _newProtocolCache: Dict[str, Dict[str, Any]] = {}
@@ -56,7 +57,6 @@ class ProtocolService:
             currentProject,
             projectId: int,
             protocolClassName: str,
-            runJsonSubprocessCallback: Callable,
             buildProtocolContextCallback: Callable,
     ) -> Dict[str, Any]:
         """
@@ -102,9 +102,7 @@ class ProtocolService:
             context = self._buildNewProtocolContextInSubprocess(
                 currentProject=currentProject,
                 projectId=projectId,
-                protocolClassName=protocolClassName,
-                runJsonSubprocessCallback=runJsonSubprocessCallback,
-            )
+                protocolClassName=protocolClassName,)
 
         with _newProtocolLock:
             _newProtocolCache[cacheKey] = context
@@ -117,7 +115,6 @@ class ProtocolService:
             currentProject,
             projectId: int,
             protocolClassName: str,
-            runJsonSubprocessCallback: Callable,
     ) -> Dict[str, Any]:
         """
         Build a new protocol context in a clean process when the current
@@ -188,7 +185,9 @@ class ProtocolService:
         )
     """
 
-        return runJsonSubprocessCallback(
+        jsonSubprocessRunner = JsonSubprocessRunner()
+
+        return jsonSubprocessRunner.run(
             code=code,
             operationName="Build new protocol context",
             extraEnv={

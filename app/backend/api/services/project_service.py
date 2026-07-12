@@ -31,9 +31,7 @@ import re
 from uuid import uuid4
 import copy
 import json
-import sys
 import threading
-import textwrap
 import shutil
 
 import numpy as np
@@ -50,7 +48,6 @@ from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
-    findProtocolWizardsWeb,
 )
 from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 from app.backend.api.services.protocol_context_service import ProtocolContextService
@@ -64,7 +61,6 @@ from pwem.protocols import ProtUserSubSet
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
 from pwem.viewers.mdviewer.star_dao import StarFile
-from pyworkflow.object import  CsvList
 from pyworkflow.protocol import (
     STATUS_LAUNCHED,
     STATUS_RUNNING,
@@ -123,17 +119,10 @@ from app.backend.runtime import (
     RuntimeProtocolRenameService,
 )
 
-
-from pyworkflow.protocol.params import (IntParam, FloatParam, BooleanParam, StringParam, EnumParam)
-import pyworkflow.utils as pwutils
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
-
-from app.utils.scipion_helper import serializeToJson
-
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
-
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
@@ -4409,7 +4398,6 @@ class ProjectService:
             currentProject=self.currentProject,
             projectId=projectId,
             protocolClassName=protocolClassName,
-            runJsonSubprocessCallback=self._runJsonSubprocess,
             buildProtocolContextCallback=self._buildProtocolContext,
         )
 
@@ -4786,106 +4774,6 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    def _runJsonSubprocess(
-            self,
-            code: str,
-            operationName: str,
-            extraEnv: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        startMarker = "__SCIPION_JSON_START__"
-        endMarker = "__SCIPION_JSON_END__"
-
-        code = textwrap.dedent(code).strip()
-
-        wrappedCode = "\n".join(
-            [
-                "import json",
-                "import sys",
-                "",
-                code,
-                "",
-                "try:",
-                "    _scipionPayload",
-                "except NameError:",
-                '    raise RuntimeError("Subprocess code did not define _scipionPayload")',
-                "",
-                f'sys.stdout.write("{startMarker}\\n")',
-                "sys.stdout.write(json.dumps(_scipionPayload))",
-                f'sys.stdout.write("\\n{endMarker}\\n")',
-                "sys.stdout.flush()",
-            ]
-        )
-
-        projectRoot = Path(__file__).resolve().parents[4]
-
-        env = os.environ.copy()
-
-        existingPythonPath = env.get(
-            "PYTHONPATH",
-            "",
-        )
-
-        env["PYTHONPATH"] = (
-                str(projectRoot)
-                + (
-                    os.pathsep + existingPythonPath
-                    if existingPythonPath
-                    else ""
-                )
-        )
-
-        for key, value in (extraEnv or {}).items():
-            if value is not None:
-                env[str(key)] = str(value)
-
-        res = subprocess.run(
-            [sys.executable, "-c", wrappedCode],
-            cwd=str(projectRoot),
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-        stdout = (res.stdout or "").strip()
-        stderr = (res.stderr or "").strip()
-
-        if res.returncode != 0:
-            raise RuntimeError(
-                f"{operationName} failed in subprocess.\n"
-                f"Return code: {res.returncode}\n"
-                f"STDOUT:\n{stdout}\n\n"
-                f"STDERR:\n{stderr}"
-            )
-
-        startIndex = stdout.find(startMarker)
-        endIndex = stdout.find(endMarker)
-
-        if startIndex == -1 or endIndex == -1:
-            raise RuntimeError(
-                f"{operationName} did not return a valid JSON payload block.\n"
-                f"STDOUT:\n{stdout}\n\n"
-                f"STDERR:\n{stderr}"
-            )
-
-        payload = stdout[startIndex + len(startMarker):endIndex].strip()
-
-        if not payload:
-            raise RuntimeError(
-                f"{operationName} returned an empty JSON payload.\n"
-                f"STDOUT:\n{stdout}\n\n"
-                f"STDERR:\n{stderr}"
-            )
-
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError as ex:
-            raise RuntimeError(
-                f"{operationName} returned invalid JSON.\n"
-                f"Payload:\n{payload}\n\n"
-                f"STDOUT:\n{stdout}\n\n"
-                f"STDERR:\n{stderr}"
-            ) from ex
-
     def getProtocols(
             self,
             mapper: PostgresqlFlatMapper,
@@ -4896,7 +4784,6 @@ class ProjectService:
 
         return protocolCatalogService.getProtocols(
             currentProject=self.currentProject,
-            runJsonSubprocessCallback=self._runJsonSubprocess,
         )
 
     def _resolvePostgresqlProjectPathForFilesystem(
