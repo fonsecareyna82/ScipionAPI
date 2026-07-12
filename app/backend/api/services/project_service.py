@@ -1926,6 +1926,7 @@ class ProjectService:
             loadWorkflowFromPostgresql: bool = False,
             usePostgresqlRuntimeProject: bool = False,
             usePostgresqlRuntimeWriteFallback: bool = False,
+            syncRuntimeStatuses: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -1988,9 +1989,7 @@ class ProjectService:
                 return False
 
         if loadWorkflowFromPostgresql and not validateConsistency:
-            if usingPostgresqlRuntimeProject:
-                # We still need to load the real Scipion project first because
-                # runtime status comes from Runs/.../logs/run.db, not from PostgreSQL.
+            if usingPostgresqlRuntimeProject and syncRuntimeStatuses:
                 self.loadProject(
                     dbProj,
                     mapper,
@@ -2008,7 +2007,6 @@ class ProjectService:
 
                 syncRuntimeStatusesIfNeeded()
 
-            # Now load the workflow payload from PostgreSQL after the runtime status refresh.
             project = self.loadProjectFromPostgresql(
                 dbProj=dbProj,
                 mapper=mapper,
@@ -2895,6 +2893,14 @@ class ProjectService:
             protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
             allowRuntimeFallback=False,
         )
+
+        projectLabel = os.path.basename(
+            str(dbProj.get("name") or "")
+        ) or "PROJECT"
+
+        projectRoot = graphData.get("PROJECT")
+        if isinstance(projectRoot, dict):
+            projectRoot["label"] = projectLabel
 
         return {
             "id": dbProj['id'],
