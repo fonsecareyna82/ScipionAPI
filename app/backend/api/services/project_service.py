@@ -1703,6 +1703,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             dbProj: Dict[str, Any],
             currentUser: dict,
+            includeDiskUsage: bool = True,
     ) -> Dict[str, Any]:
         projectId = int(dbProj["id"])
         storedProjectPath = dbProj.get("name")
@@ -1726,6 +1727,12 @@ class ProjectService:
             protocolsCount,
         )
 
+        diskUsage = (
+            self._getProjectDiskUsageFromFilesystem(storedProjectPath)
+            if includeDiskUsage
+            else "0.00 GB"
+        )
+
         return {
             "id": projectId,
             "name": displayName,
@@ -1733,7 +1740,7 @@ class ProjectService:
             "createdAt": dbProj.get("createdAt"),
             "status": dbProj.get("status", "active"),
             "protocolsCount": protocolsCount,
-            "diskUsage": self._getProjectDiskUsageFromFilesystem(storedProjectPath),
+            "diskUsage": diskUsage,
             "isOwner": bool(isOwner),
             "isShared": bool(isShared),
             "permission": permission,
@@ -1750,6 +1757,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             currentUser: dict,
+            includeDiskUsage: bool = False,
     ) -> Optional[dict]:
         """
         Return project metadata from PostgreSQL without loading Scipion runtime.
@@ -1770,6 +1778,7 @@ class ProjectService:
             mapper=mapper,
             dbProj=dbProj,
             currentUser=currentUser,
+            includeDiskUsage=includeDiskUsage,
         )
 
     def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
@@ -1792,6 +1801,7 @@ class ProjectService:
                     mapper=mapper,
                     dbProj=dbProj,
                     currentUser=currentUser,
+                    includeDiskUsage=True,
                 )
             )
 

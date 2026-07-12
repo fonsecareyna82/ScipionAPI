@@ -196,6 +196,32 @@ def getProject(
 
     return project
 
+@router.get(
+    "/{projectId}/summary",
+    response_model=ProjectOut,
+    status_code=status.HTTP_200_OK,
+)
+def getProjectSummary(
+        projectId: int,
+        includeDiskUsage: bool = Query(False),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        includeDiskUsage=includeDiskUsage,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    return project
 
 @router.get(
     "/{projectId}/effective-settings",
