@@ -1087,6 +1087,7 @@ class ProjectService:
             projectId: int,
             protocolId,
             registerOutputs: bool = True,
+            returnProtocolContext: bool = False,
     ) -> Dict[str, Any]:
         """
         Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
@@ -1256,7 +1257,7 @@ class ProjectService:
 
         runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
 
-        return {
+        syncResult = {
             "protocols": 1,
             "dependencies": 0,
             "inputRefs": 0,
@@ -1276,6 +1277,11 @@ class ProjectService:
             "outputsRegistered": bool(outputReport.get("persisted")),
             "sqliteOutputMirror": sqliteOutputMirrorReport,
         }
+
+        if returnProtocolContext:
+            syncResult["protocolContext"] = protocolContext
+
+        return syncResult
 
     def _buildPostgresqlRuntimeArtifactReport(
             self,
@@ -4521,17 +4527,26 @@ class ProjectService:
             protocolId: int,
     ) -> dict:
         """
-        Returns the parameters of an existing protocol given its ID.
+        Return the parameters and web context of an existing protocol.
+
+        PostgreSQL-runtime protocols reuse the context built from the real
+        run.db protocol, preserving runtime outputs and avoiding a second
+        protocol reconstruction.
         """
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
+        usingPostgresqlRuntime = (
+            self._currentProjectUsesPostgresqlRuntimeMapper()
+        )
 
         if usingPostgresqlRuntime:
-            self.syncPostgresqlRuntimeProtocol(
+            syncResult = self.syncPostgresqlRuntimeProtocol(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
                 registerOutputs=False,
+                returnProtocolContext=True,
             )
+
+            return syncResult["protocolContext"]
 
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
@@ -4540,15 +4555,15 @@ class ProjectService:
         )
 
         protocol.getPlugin()
+        self.currentProject._fixProtParamsConfiguration(
+            protocol
+        )
 
-        # Do not call Scipion's _fixProtParamsConfiguration for PostgreSQL-runtime
-        # reconstructed protocols. It assumes pointer.get() returns a Scipion object,
-        # but PostgreSQL can restore saved pointers as raw strings like:
-        #   "1.outputTSMovies"
-        if not usingPostgresqlRuntime:
-            self.currentProject._fixProtParamsConfiguration(protocol)
-
-        return self._buildProtocolContext(projectId, protocol, mapper)
+        return self._buildProtocolContext(
+            projectId,
+            protocol,
+            mapper,
+        )
 
     def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
         """ Returns the suggestions from the Scipion website for the next protocols to the protocol passed
