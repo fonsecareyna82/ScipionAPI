@@ -28,21 +28,12 @@ from typing import Any, Callable, Dict, List, Tuple
 
 import pyworkflow
 import pyworkflow.utils as pwutils
-from pyworkflow.object import CsvList
 from pyworkflow.protocol import (
     Group,
     Line,
     MultiPointerParam,
     PointerParam,
     RelationParam,
-)
-
-from pyworkflow.protocol.params import (
-    BooleanParam,
-    EnumParam,
-    FloatParam,
-    IntParam,
-    StringParam,
 )
 
 from app.backend.runtime.protocol_graph_repository import (
@@ -888,64 +879,3 @@ class ProtocolFormSerializer:
             outputs.append(outputData)
 
         return outputs
-
-    @staticmethod
-    def castParamValue(param, rawValue):
-        """Cast a raw form value to its Scipion parameter type."""
-        if isinstance(param, EnumParam):
-            if isinstance(rawValue, int):
-                return rawValue
-
-            try:
-                return param.choices.index(
-                    str(rawValue)
-                )
-
-            except ValueError:
-                for index, choice in enumerate(
-                        param.choices
-                ):
-                    if (
-                            str(choice).lower()
-                            == str(rawValue).lower()
-                    ):
-                        return index
-
-                return 0
-
-        elif isinstance(param, IntParam):
-            return (
-                int(rawValue)
-                if rawValue not in (None, "")
-                else None
-            )
-
-        elif isinstance(param, FloatParam):
-            return (
-                float(rawValue)
-                if rawValue not in (None, "")
-                else None
-            )
-
-        elif isinstance(param, BooleanParam):
-            return str(rawValue).lower() in (
-                "true",
-                "1",
-                "yes",
-                "y",
-            )
-
-        elif isinstance(
-                param,
-                (StringParam, EnumParam),
-        ):
-            return (
-                str(rawValue)
-                if rawValue is not None
-                else None
-            )
-
-        elif isinstance(param, CsvList):
-            return [rawValue]
-
-        return rawValue
