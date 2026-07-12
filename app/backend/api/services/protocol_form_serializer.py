@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Callable
+from typing import Any, Callable, Dict, List
 
 from pyworkflow.object import CsvList
 from pyworkflow.protocol import (
@@ -401,6 +401,151 @@ class ProtocolFormSerializer:
                 "ERROR with param: " + paramName
             )
             raise
+
+    def serializeProtocolInputs(
+            self,
+            *,
+            protocol,
+            splitPointerValueCallback: Callable,
+    ) -> List[Dict[str, Any]]:
+        """
+        Serialize the protocol input attributes for the web context.
+
+        This operation only reads pointer information. It does not modify
+        protocols, parent protocols, outputs or persisted input references.
+        """
+        inputs = []
+
+        for key, attr in protocol.iterInputAttributes():
+            inputData = {
+                "inputName": key,
+                "paramClass": "PointerParam",
+                "pointerClass": "",
+                "info": "",
+                "value": "",
+                "parentId": None,
+            }
+
+            targetObj = None
+            objValue = None
+            extended = None
+
+            try:
+                targetObj = attr.get() if attr else None
+            except Exception:
+                targetObj = None
+
+            try:
+                objValue = attr.getObjValue() if attr else None
+            except Exception:
+                objValue = None
+
+            try:
+                extended = attr.getExtended() if attr else None
+            except Exception:
+                extended = None
+
+            # PostgreSQL runtime can restore a pointer as a raw value:
+            #   "1.outputTiltSeriesM"
+            if isinstance(targetObj, str):
+                rawValue = targetObj.strip()
+                parentId, outputName = splitPointerValueCallback(rawValue)
+
+                inputData["info"] = rawValue
+                inputData["value"] = rawValue
+
+                if parentId:
+                    try:
+                        inputData["parentId"] = int(parentId)
+                    except Exception:
+                        inputData["parentId"] = parentId
+
+                if outputName and not extended:
+                    extended = outputName
+
+            elif targetObj is not None:
+                getClassName = getattr(
+                    targetObj,
+                    "getClassName",
+                    None,
+                )
+
+                if callable(getClassName):
+                    try:
+                        inputData["pointerClass"] = (
+                            getClassName() or ""
+                        )
+                    except Exception:
+                        inputData["pointerClass"] = ""
+
+                try:
+                    inputData["info"] = str(targetObj)
+                except Exception:
+                    inputData["info"] = ""
+
+            if objValue is not None:
+                getObjId = getattr(
+                    objValue,
+                    "getObjId",
+                    None,
+                )
+
+                if callable(getObjId):
+                    try:
+                        parentObjId = getObjId()
+
+                        if parentObjId is not None:
+                            inputData["parentId"] = (
+                                parentObjId
+                            )
+
+                    except Exception:
+                        pass
+
+            if not inputData["value"]:
+                if (
+                        inputData["parentId"] is not None
+                        and extended
+                ):
+                    inputData["value"] = "%s.%s" % (
+                        str(inputData["parentId"]),
+                        str(extended),
+                    )
+
+                elif isinstance(targetObj, str):
+                    inputData["value"] = targetObj
+
+            inputs.append(inputData)
+
+        return inputs
+
+    def serializeProtocolOutputs(
+            self,
+            *,
+            protocol,
+            protocolName: str,
+    ) -> List[Dict[str, Any]]:
+        """Serialize the protocol output attributes for the web context."""
+        outputs = []
+
+        for key, attr in protocol.iterOutputAttributes():
+            outputData = {
+                "outputName": key,
+                "paramClass": "PointerParam",
+                "pointerClass": attr.__class__.__name__,
+                "info": "",
+                "value": f"{protocolName}.{key}",
+                "parentId": protocol.getObjId(),
+            }
+
+            try:
+                outputData["info"] = str(attr)
+            except Exception:
+                outputData["info"] = ""
+
+            outputs.append(outputData)
+
+        return outputs
 
     @staticmethod
     def castParamValue(param, rawValue):
