@@ -28,7 +28,6 @@ import collections
 import io
 import logging
 import re
-from urllib.request import urlopen
 from uuid import uuid4
 import copy
 import json
@@ -57,6 +56,7 @@ from app.backend.api.services.protocol_form_serializer import ProtocolFormSerial
 from app.backend.api.services.protocol_context_service import ProtocolContextService
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
+from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
 
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
@@ -4432,70 +4432,21 @@ class ProjectService:
             buildProtocolContextCallback=self._buildProtocolContext,
         )
 
-    def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
-        """ Returns the suggestions from the Scipion website for the next protocols to the protocol passed
-        """
-        protocol = self._getScipionProtocolForRuntime(
+    def getNextProtocolSuggestions(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ):
+        protocolSuggestionsService = ProtocolSuggestionsService()
+
+        return protocolSuggestionsService.getNextProtocolSuggestions(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
         )
-        protName = protocol.getClassName()
-        try:
-            url = Config.SCIPION_STATS_SUGGESTION % protName  # protocol.getClassName()
-            suggestions = json.loads(urlopen(url).read().decode('utf-8'))
-            protList = []
-            for suggestion in suggestions:
-                # Fields comming from the site:
-                # https://scipion.i2pc.es/report_protocols/api/v2/nextprotocol/suggestion/None/
-                # 'next_protocol__name', 'count', 'next_protocol__friendlyName', 'next_protocol__package', 'next_protocol__description'
-                nextProtName, count, name, package, descr = suggestion
-                streamstate = "unknown"
-                if package is None and name is not None:
-                    package = "scipion-em-%s" % name.split('-')[0].strip()
-
-                installed = "Missing. Available in %s plugin." % package
-                protClass = Config.getDomain().getProtocols().get(nextProtName, None)
-
-                # Get accurate values from existing installations
-                if protClass is not None:
-                    name = protClass.getClassLabel().lower()
-                    descr = protClass.getHelpText() + '\n\n'
-                    references = self.currentProject.newProtocol(protClass).citations()
-                    if references != ['No references provided']:
-                        for reference in references:
-                            descr += reference + '\n'
-                    streamstate = "streamified" if protClass.worksInStreaming() else "static"
-                    if protClass.isInstalled():
-                        installed = "installed"
-
-                line = {count: {'protocolName': name,
-                        'protocolClass': nextProtName,
-                        'help': descr,
-                        'installed': installed}}
-
-                # line = (nextProtName, name,
-                #         installed,
-                #         descr,
-                #         streamstate,
-                #         "",
-                #         "",
-                #         "",
-                #         count)
-
-                protList.append(line)
-
-            def extractValuesSortedByMaxKeyDesc(items: Sequence[Dict[Any, Dict]], *, castKey=int) -> List[Dict]:
-                # Sort the list by the maximum key inside each dict (desc), then return values ordered by that key
-                sortedItems = sorted(items, key=lambda d: max(castKey(k) for k in d.keys()), reverse=True)
-                return [d[max(d.keys(), key=lambda k: castKey(k))] for d in sortedItems]
-
-            sortedList = extractValuesSortedByMaxKeyDesc(protList)
-
-            return sortedList
-        except Exception as e:
-            logger.error("Suggestions system not available", exc_info=e)
-            return []
 
     def castParamValue(self, param, rawValue):
         return ProtocolFormSerializer.castParamValue(param, rawValue)
