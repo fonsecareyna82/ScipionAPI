@@ -24,14 +24,19 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Tuple
 
+import pyworkflow
+import pyworkflow.utils as pwutils
 from pyworkflow.object import CsvList
 from pyworkflow.protocol import (
+    Group,
+    Line,
     MultiPointerParam,
     PointerParam,
     RelationParam,
 )
+
 from pyworkflow.protocol.params import (
     BooleanParam,
     EnumParam,
@@ -401,6 +406,343 @@ class ProtocolFormSerializer:
                 "ERROR with param: " + paramName
             )
             raise
+
+    def serializeProtocolSections(
+            self,
+            *,
+            protocol,
+            wizards,
+            mapper,
+            projectId,
+            headerParams: List[str],
+            runName,
+            usingPostgresqlRuntime: bool,
+            getScipionObjectIdCallback: Callable,
+            resolvePostgresqlProtocolDbIdCallback: Callable,
+            splitPointerValueCallback: Callable,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Serialize the protocol form sections and their current values."""
+        paramsData = []
+        paramsValue = {}
+
+        def serializeFormParam(param, paramName, protVar):
+            return self.serializeParam(
+                param=param,
+                paramName=paramName,
+                wizards=wizards,
+                viewerDict=None,
+                visualize=0,
+                protVar=protVar,
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                usingPostgresqlRuntime=usingPostgresqlRuntime,
+                getScipionObjectIdCallback=getScipionObjectIdCallback,
+                resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
+                splitPointerValueCallback=splitPointerValueCallback,
+            )
+
+        for section in protocol._definition.iterSections():
+            sectionLabel = section.getLabel()
+
+            if sectionLabel == "Parallelization":
+                continue
+
+            sectionData = {
+                "label": sectionLabel,
+                "params": [],
+            }
+
+            if sectionLabel != "General":
+                for paramName, param in section.iterParams():
+                    if paramName in headerParams:
+                        continue
+
+                    protVar = getattr(
+                        protocol,
+                        paramName,
+                        None,
+                    )
+
+                    if protVar is None:
+                        if isinstance(param, Group):
+                            group, _ = serializeFormParam(
+                                param,
+                                paramName,
+                                protVar,
+                            )
+
+                            if group is not None:
+                                group["collapsed"] = False
+                                group["params"] = []
+
+                                for paramGroupName, paramGroup in param.iterParams():
+                                    protVar = getattr(
+                                        protocol,
+                                        paramGroupName,
+                                        None,
+                                    )
+
+                                    if isinstance(paramGroup, Line):
+                                        for paramLineName, paramLine in paramGroup.iterParams():
+                                            protVar = getattr(
+                                                protocol,
+                                                paramLineName,
+                                                None,
+                                            )
+
+                                            if protVar:
+                                                paramChild, paramValue = serializeFormParam(
+                                                    paramLine,
+                                                    paramLineName,
+                                                    protVar,
+                                                )
+
+                                                if paramChild:
+                                                    group["params"].append(
+                                                        paramChild
+                                                    )
+                                                    paramsValue[paramLineName] = (
+                                                        paramValue
+                                                    )
+
+                                    elif protVar:
+                                        paramChild, paramValue = serializeFormParam(
+                                            paramGroup,
+                                            paramGroupName,
+                                            protVar,
+                                        )
+
+                                        if paramChild:
+                                            group["params"].append(
+                                                paramChild
+                                            )
+                                            paramsValue[paramGroupName] = (
+                                                paramValue
+                                            )
+
+                                if group:
+                                    sectionData["params"].append(
+                                        group
+                                    )
+
+                        elif isinstance(param, Line):
+                            line, _ = serializeFormParam(
+                                param,
+                                paramName,
+                                protVar,
+                            )
+
+                            if line is not None:
+                                line["params"] = []
+
+                                for paramLineName, paramLine in param.iterParams():
+                                    protVar = getattr(
+                                        protocol,
+                                        paramLineName,
+                                        None,
+                                    )
+
+                                    if protVar:
+                                        paramChild, paramValue = serializeFormParam(
+                                            paramLine,
+                                            paramLineName,
+                                            protVar,
+                                        )
+
+                                        if paramChild:
+                                            line["params"].append(
+                                                paramChild
+                                            )
+                                            paramsValue[paramLineName] = (
+                                                paramValue
+                                            )
+
+                                if line:
+                                    sectionData["params"].append(
+                                        line
+                                    )
+
+                    else:
+                        paramProcessed, paramValue = serializeFormParam(
+                            param,
+                            paramName,
+                            protVar,
+                        )
+
+                        if paramProcessed:
+                            sectionData["params"].append(
+                                paramProcessed
+                            )
+                            paramsValue[paramName] = paramValue
+
+            if sectionLabel == "General":
+                for paramName in headerParams:
+                    paramProcessed = {
+                        "name": paramName,
+                    }
+                    paramValue = getattr(
+                        protocol,
+                        paramName,
+                        None,
+                    )
+
+                    if paramName == "_objComment":
+                        paramProcessed.setdefault(
+                            paramName,
+                            {},
+                        )
+                        paramProcessed["label"] = "Comment"
+                        paramProcessed["expertLevel"] = 0
+                        paramProcessed["condition"] = None
+                        paramProcessed["_isImportant"] = True
+                        paramProcessed["help"] = "Protocol comments"
+                        paramProcessed["paramClass"] = "StringParam"
+                        paramProcessed["default"] = ""
+                        paramProcessed["readOnly"] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+
+                        sectionData["params"].append(
+                            paramProcessed
+                        )
+                        paramsValue[paramName] = paramValue
+
+                    elif paramName == "_useQueue":
+                        paramProcessed["label"] = "Use a queue engine?"
+                        paramProcessed["expertLevel"] = 0
+                        paramProcessed["condition"] = None
+                        paramProcessed["_isImportant"] = True
+                        paramProcessed["help"] = (
+                            pwutils.Message.HELP_USEQUEUE
+                            % (
+                                pyworkflow.Config.SCIPION_HOSTS,
+                                pyworkflow.DOCSITEURLS.HOST_CONFIG,
+                            )
+                        )
+                        paramProcessed["paramClass"] = "BooleanParam"
+                        paramProcessed["default"] = False
+                        paramProcessed["readOnly"] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+
+                        sectionData["params"].append(
+                            paramProcessed
+                        )
+                        paramsValue[paramName] = paramValue.get()
+
+                    elif paramName == "_prerequisites":
+                        paramProcessed.setdefault(
+                            paramName,
+                            {},
+                        )
+                        paramProcessed["label"] = "Wait for"
+                        paramProcessed["expertLevel"] = 0
+                        paramProcessed["condition"] = None
+                        paramProcessed["_isImportant"] = True
+                        paramProcessed["help"] = (
+                            pwutils.Message.HELP_WAIT_FOR
+                            % pyworkflow.DOCSITEURLS.WAIT_FOR
+                        )
+                        paramProcessed["paramClass"] = "StringParam"
+                        paramProcessed["default"] = []
+                        paramProcessed["readOnly"] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+
+                        sectionData["params"].append(
+                            paramProcessed
+                        )
+                        paramsValue[paramName] = paramValue
+
+                    elif paramName == "expertLevel":
+                        paramProcessed["label"] = "Expert Level"
+                        paramProcessed["display"] = 0
+                        paramProcessed["choices"] = [
+                            "Normal",
+                            "Advanced",
+                        ]
+                        paramProcessed["condition"] = None
+                        paramProcessed["_isImportant"] = True
+                        paramProcessed["paramClass"] = "EnumParam"
+                        paramProcessed["default"] = 0
+                        paramProcessed["readOnly"] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+
+                        sectionData["params"].append(
+                            paramProcessed
+                        )
+                        paramsValue[paramName] = 0
+
+                    elif paramName == "runMode":
+                        paramProcessed["label"] = "Run Mode"
+                        paramProcessed["display"] = 0
+                        paramProcessed["choices"] = [
+                            "Continue",
+                            "Restart",
+                        ]
+                        paramProcessed["condition"] = None
+                        paramProcessed["_isImportant"] = True
+                        paramProcessed["paramClass"] = "EnumParam"
+                        paramProcessed["default"] = 0
+                        paramProcessed["readOnly"] = False
+                        paramProcessed["hasWizard"] = False
+                        paramProcessed["wizards"] = []
+                        paramProcessed["wizard"] = None
+
+                        sectionData["params"].append(
+                            paramProcessed
+                        )
+                        paramsValue[paramName] = 0
+
+                    else:
+                        param = protocol.getParam(
+                            paramName
+                        )
+
+                        if param is not None:
+                            if paramName == "gpuList":
+                                param.label.set("GPU IDs")
+                                param.condition.set(None)
+
+                            paramProcessed, paramValue = serializeFormParam(
+                                param,
+                                paramName,
+                                None,
+                            )
+
+                            if paramProcessed:
+                                if paramName == "runName":
+                                    paramProcessed["default"] = ""
+                                    paramValue = runName
+
+                                elif paramName == "numberOfThreads":
+                                    paramValue = (
+                                        protocol.getScipionThreads()
+                                    )
+
+                                elif paramName == "gpuList":
+                                    paramValue = (
+                                        protocol.gpuList.get()
+                                    )
+
+                                elif paramName == "numberOfMpi":
+                                    paramValue = protocol.getMPIs()
+
+                                sectionData["params"].append(
+                                    paramProcessed
+                                )
+
+                            paramsValue[paramName] = paramValue
+
+            paramsData.append(sectionData)
+
+        return paramsData, paramsValue
 
     def serializeProtocolInputs(
             self,
