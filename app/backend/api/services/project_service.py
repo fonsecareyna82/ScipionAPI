@@ -4686,7 +4686,6 @@ class ProjectService:
             params=params,
             setToSave=setToSave,
             currentProject=self.currentProject,
-            castParamValueCallback=self.castParamValue,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
             usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
