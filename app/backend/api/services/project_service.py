@@ -508,14 +508,33 @@ class ProjectService:
             projectData: ProjectCreate,
             currentUser,
     ) -> dict:
-        # Sanitize incoming name for filesystem usage
-        originalName = projectData.name
-        sanitizedName = self.sanitizeProjectName(originalName)
+        sanitizedName = self.sanitizeProjectName(projectData.name)
+        description = projectData.description or ""
+        statusValue = projectData.status or "active"
 
-        projectData.name = sanitizedName
+        projectPath = self._normalizeProjectPath(
+            self.manager.getProjectPath(sanitizedName)
+        )
 
-        existingProjects = mapper.listProjects(ownerId=currentUser["id"])
-        if any(p["name"] == sanitizedName for p in existingProjects):
+        existingProjects = mapper.listProjects(
+            ownerId=currentUser["id"]
+        ) or []
+
+        existingNames = {
+            self._getProjectDisplayNameFromPostgresqlPath(
+                project.get("name")
+            )
+            for project in existingProjects
+            if project.get("name")
+        }
+
+        existingPaths = {
+            self._normalizeProjectPath(project.get("name"))
+            for project in existingProjects
+            if project.get("name")
+        }
+
+        if sanitizedName in existingNames or projectPath in existingPaths:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -524,8 +543,7 @@ class ProjectService:
                 ),
             )
 
-        scipionPath = self.manager.getProjectPath(sanitizedName)
-        if os.path.exists(scipionPath):
+        if os.path.lexists(projectPath):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -534,32 +552,91 @@ class ProjectService:
                 ),
             )
 
-        proj = self.manager.createProject(sanitizedName)
-        proj.setComment(projectData.description or "")
+        project = None
+        dbProjectId = None
+        createAttempted = False
 
-        dbProjectId = mapper.insertProject(
-            ownerId=currentUser["id"],
-            name=scipionPath,
-            description=projectData.description,
-            status=projectData.status,
-        )
+        try:
+            createAttempted = True
+            project = self.manager.createProject(sanitizedName)
+            project.setComment(description)
 
-        return {
-            "id": dbProjectId,
-            "name": sanitizedName,
-            "description": projectData.description,
-            "createdAt": datetime.utcnow(),
-            "status": projectData.status,
-            "protocolsCount": 0,
-            "diskUsage": f"{0.0} GB",
-            "isOwner": True,
-            "isShared": False,
-            "permission": "full",
-            "projectOwnerId": currentUser["id"],
-            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProjectId),
-            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProjectId),
-            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProjectId),
-        }
+            dbProjectId = mapper.insertProject(
+                ownerId=currentUser["id"],
+                name=projectPath,
+                description=description,
+                status=statusValue,
+            )
+
+            dbProject = mapper.getProject(
+                projectId=dbProjectId,
+                userId=currentUser["id"],
+            )
+
+            if not dbProject:
+                raise RuntimeError(
+                    "Project was inserted but could not be read from PostgreSQL"
+                )
+
+            return self._buildProjectOutFromPostgresqlRow(
+                mapper=mapper,
+                dbProj=dbProject,
+                currentUser=currentUser,
+                includeDiskUsage=False,
+            )
+
+        except Exception as error:
+            rollbackErrors = []
+
+            if dbProjectId is not None:
+                try:
+                    mapper.deleteProject(
+                        dbProjectId,
+                        currentUser["id"],
+                    )
+                except Exception as rollbackError:
+                    rollbackErrors.append(
+                        "PostgreSQL rollback failed: %s"
+                        % rollbackError
+                    )
+
+            if project is not None:
+                try:
+                    project.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close project mapper during creation rollback. path=%s",
+                        projectPath,
+                        exc_info=True,
+                    )
+
+            if createAttempted:
+                try:
+                    self._removeCreatedProjectPath(
+                        projectPath
+                    )
+                except Exception as rollbackError:
+                    rollbackErrors.append(
+                        "Filesystem rollback failed: %s"
+                        % rollbackError
+                    )
+
+            logger.exception(
+                "Failed to create project. name=%s path=%s rollbackErrors=%s",
+                sanitizedName,
+                projectPath,
+                rollbackErrors,
+            )
+
+            detail = "Failed to create project: %s" % error
+
+            if rollbackErrors:
+                detail += ". " + "; ".join(rollbackErrors)
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=detail,
+            )
 
     def _normalizeProjectPath(self, projectPath: str) -> str:
         """
@@ -603,6 +680,35 @@ class ProjectService:
         """
         normalizedPath = self._normalizeProjectPath(projectPath)
         return os.path.islink(normalizedPath)
+
+    def _removeCreatedProjectPath(
+            self,
+            projectPath: str,
+    ) -> None:
+        normalizedPath = self._normalizeProjectPath(projectPath)
+
+        if not self._isManagedProjectPath(normalizedPath):
+            raise RuntimeError(
+                "Refusing to remove project path outside the managed projects root: %s"
+                % normalizedPath
+            )
+
+        if not os.path.lexists(normalizedPath):
+            return
+
+        try:
+            os.chdir(self.manager.PROJECTS)
+        except Exception:
+            logger.warning(
+                "Could not restore managed projects working directory before cleanup. path=%s",
+                normalizedPath,
+                exc_info=True,
+            )
+
+        if os.path.islink(normalizedPath) or not os.path.isdir(normalizedPath):
+            os.unlink(normalizedPath)
+        else:
+            shutil.rmtree(normalizedPath)
 
     def _validateImportableScipionProject(self, sourcePath: Path) -> Dict[str, Any]:
         """
