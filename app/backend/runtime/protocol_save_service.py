@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from fastapi import HTTPException, status
 
-from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
+from app.utils.protocol_param import castProtocolParamValue
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol.params import PointerParam, MultiPointerParam, RelationParam
 
@@ -219,7 +219,7 @@ class RuntimeProtocolSaveService:
                 continue
 
             try:
-                castedValue = ProtocolFormSerializer.castParamValue(param, value)
+                castedValue = castProtocolParamValue(param, value)
                 errors = param.validate(castedValue) if hasattr(param, "validate") else []
 
                 if errors:
