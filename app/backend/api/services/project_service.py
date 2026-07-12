@@ -49,7 +49,6 @@ from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
 )
-from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 from app.backend.api.services.protocol_context_service import ProtocolContextService
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
@@ -4435,9 +4434,6 @@ class ProjectService:
             currentProject=self.currentProject,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
         )
-
-    def castParamValue(self, param, rawValue):
-        return ProtocolFormSerializer.castParamValue(param, rawValue)
 
     def _getParentProtocolForPointer(
             self,

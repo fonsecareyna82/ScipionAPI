@@ -102,7 +102,7 @@ class ProtocolService:
             context = self._buildNewProtocolContextInSubprocess(
                 currentProject=currentProject,
                 projectId=projectId,
-                protocolClassName=protocolClassName,)
+                protocolClassName=protocolClassName)
 
         with _newProtocolLock:
             _newProtocolCache[cacheKey] = context
