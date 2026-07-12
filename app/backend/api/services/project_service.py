@@ -4948,25 +4948,6 @@ class ProjectService:
             runJsonSubprocessCallback=self._runJsonSubprocess,
         )
 
-    def getProtocolName(self, node):
-        text = node.get('text')
-        if text:
-            value = node.get('value') if node.get('value') is not None else text
-            protClassName = value.split('.')[-1]
-            prot = self._getProtocolClassForTreeLabel(protClassName)
-
-            if node.get('tag') == 'protocol' and text == 'default':
-                if prot is None:
-                    logger.warning("Protocol className '%s' not found!!!. \n"
-                                   "Fix your config/protocols.conf configuration."
-                                   % protClassName)
-                    return
-
-                text = prot.getClassLabel()
-                return text
-
-        return 'default'
-
     def _resolvePostgresqlProjectPathForFilesystem(
             self,
             mapper,
@@ -12944,4 +12925,5 @@ class ProjectService:
             currentUser=currentUser,
             payload=payload,
         )
+
 
