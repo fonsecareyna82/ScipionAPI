@@ -5017,29 +5017,7 @@ class ProjectService:
             return []
 
     def castParamValue(self, param, rawValue):
-        """Cast rawValue to the correct type depending on param type."""
-        if isinstance(param, EnumParam):
-            if isinstance(rawValue, int):
-                return rawValue
-            try:
-                return param.choices.index(str(rawValue))
-            except ValueError:
-                for index, choice in enumerate(param.choices):
-                    if str(choice).lower() == str(rawValue).lower():
-                        return index
-                return 0
-        elif isinstance(param, IntParam):
-            return int(rawValue) if rawValue not in (None, "") else None
-        elif isinstance(param, FloatParam):
-            return float(rawValue) if rawValue not in (None, "") else None
-        elif isinstance(param, BooleanParam):
-            return str(rawValue).lower() in ("true", "1", "yes", "y")
-        elif isinstance(param, (StringParam, EnumParam)):
-            return str(rawValue) if rawValue is not None else None
-        elif isinstance(param, CsvList):
-            return [rawValue]
-        else:
-            return rawValue
+        return ProtocolFormSerializer.castParamValue(param, rawValue)
 
     def _getParentProtocolForPointer(
             self,
@@ -5388,7 +5366,7 @@ class ProjectService:
             projectId=None,
             protocol=None,
     ):
-        protocolFormSerializer =  ProtocolFormSerializer()
+        protocolFormSerializer = ProtocolFormSerializer()
 
         return protocolFormSerializer.serializeParam(
             param=param,
