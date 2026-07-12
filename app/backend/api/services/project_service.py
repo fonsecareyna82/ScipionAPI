@@ -54,6 +54,7 @@ from app.backend.api.services.protocol_wizard_service import (
     findProtocolWizardsWeb,
 )
 from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
+from app.backend.api.services.protocol_context_service import ProtocolContextService
 
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
@@ -4400,131 +4401,29 @@ class ProjectService:
 
         return None
 
-    def _buildProtocolContext(self, projectId, protocol, mapper=None) -> dict:
-        """
-        Build the common context dictionary for a protocol,
-        including inputs, outputs, definition, status, color, logos, etc.
-        """
-        headerParams = [
-            "runName",
-            "_objComment",
-            "_useQueue",
-            "_prerequisites",
-            "gpuList",
-            "numberOfThreads",
-            "numberOfMpi",
-        ]
-        package = protocol.getClassPackage()
-        hasExpert = protocol.hasExpert()
-        if hasExpert:
-            headerParams.append('expertLevel')
+    def _buildProtocolContext(
+            self,
+            projectId,
+            protocol,
+            mapper=None,
+    ) -> dict:
+        protocolContextService = ProtocolContextService()
 
-        logoPath = ''
-        path = getattr(package, '_logo', '')
-        if path != '':
-            logoPath = self.getResourceLogo(path)
-
-        protName = str(protocol)
-
-        if protocol.runName.get() is None:
-            runName = protocol.getRunName()
-        else:
-            runName = protocol.runName.get()
-        status = protocol.getStatus()
-        protocolClassName = protocol.getClassName()
-        hosts = self.currentProject.getHostNames()
-
-        context = {}
-        info = {
-            "protocolId": protocol.getObjId(),
-            "label": protName,
-            "runName": runName,
-            "status": status,
-            "expertLevel": hasExpert,
-            "packageLogo": logoPath,
-            "color": self.getProtocolColor(status),
-            "hosts": hosts,
-            "projectId": projectId,
-            "protocolClassName": protocolClassName,
-            "thumbnailUrl": self.buildProtocolThumbnailUrl(projectId,
-                                                           int(protocol.getObjId())) if protocol.hasObjId() else None,
-            "thumbnailRebuildUrl": self.buildProtocolThumbnailRebuildUrl(projectId,
-                                                                         int(protocol.getObjId())) if protocol.hasObjId() else None,
-        }
-
-        references = protocol.citations()
-        protHelp = protocol.getHelpText() + '\n\n'
-        if references != ['No references provided']:
-            for reference in references:
-                protHelp += reference + '\n'
-
-        form = {
-            "references": references,
-            "help": protHelp,
-        }
-
-        # Detect available wizards and viewers
-        wizards = findProtocolWizardsWeb(self.currentProject, protocol)
-        viewers = self.findViewersWeb(protocol)
-
-        protocolFormSerializer = ProtocolFormSerializer()
-
-        info["inputs"] = protocolFormSerializer.serializeProtocolInputs(
-            protocol=protocol,
-            splitPointerValueCallback=self._splitPointerValue,
-        )
-
-        info["outputs"] = protocolFormSerializer.serializeProtocolOutputs(
-            protocol=protocol,
-            protocolName=protName,
-        )
-
-        paramsData, paramsValue = protocolFormSerializer.serializeProtocolSections(
-            protocol=protocol,
-            wizards=wizards,
-            mapper=mapper,
+        return protocolContextService.buildContext(
+            project=self.currentProject,
             projectId=projectId,
-            headerParams=headerParams,
-            runName=runName,
+            protocol=protocol,
+            mapper=mapper,
+            getResourceLogoCallback=self.getResourceLogo,
+            getProtocolColorCallback=self.getProtocolColor,
+            buildProtocolThumbnailUrlCallback=self.buildProtocolThumbnailUrl,
+            buildProtocolThumbnailRebuildUrlCallback=self.buildProtocolThumbnailRebuildUrl,
+            findViewersWebCallback=self.findViewersWeb,
             usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             getScipionObjectIdCallback=self._getScipionObjectId,
             resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             splitPointerValueCallback=self._splitPointerValue,
         )
-
-        info['executeMode'] = {
-            'launch': {
-                'label': 'Launch',
-                'help': 'Start the protocol from its current configuration'
-            },
-            'restart': {
-                'label': 'Restart',
-                'help': 'Restart the protocol execution from scratch (keeps current params).'
-            },
-        }
-
-        emptyInput, openSetPointer, emptyPointers = protocol.getInputStatus()
-        if openSetPointer or emptyPointers:
-            info['executeMode'] = {
-                'schedule': {
-                    'label': 'Schedule',
-                    'help': 'Schedule the protocol from its current configuration'
-                }
-            }
-
-        if protocol.getStatus() in [STATUS_LAUNCHED, STATUS_RUNNING, STATUS_SCHEDULED]:
-            info['executeMode'] = {
-                'stop': {
-                    'label': 'Stop',
-                    'help': 'Stop the protocol'
-                }
-            }
-
-        form["sections"] = paramsData
-        context['info'] = info
-        context['form'] = form
-        context['values'] = paramsValue
-        return context
 
     def _buildNewProtocolContextInSubprocess(self, projectId: int, protocolClassName: str) -> Dict[str, Any]:
         # buildNewProtocolContextInSubprocess
