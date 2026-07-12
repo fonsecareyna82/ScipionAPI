@@ -28,6 +28,8 @@ import re
 from typing import Any, Callable, Dict, List, Tuple
 
 from fastapi import HTTPException, status
+
+from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol.params import PointerParam, MultiPointerParam, RelationParam
 
@@ -62,7 +64,6 @@ class RuntimeProtocolSaveService:
             params: Dict[str, Any],
             setToSave: bool,
             currentProject,
-            castParamValueCallback: Callable,
             getScipionProtocolForRuntimeCallback: Callable,
             usesPostgresqlRuntimeCallback: Callable[[], bool],
             resolvePointerParentProtocolCallback: Callable,
@@ -91,7 +92,6 @@ class RuntimeProtocolSaveService:
             self._applyScalarParams(
                 protocol=protocol,
                 params=params,
-                castParamValueCallback=castParamValueCallback,
             )
         )
 
@@ -205,7 +205,6 @@ class RuntimeProtocolSaveService:
             *,
             protocol,
             params: Dict[str, Any],
-            castParamValueCallback: Callable,
     ) -> List[str]:
         errorList: List[str] = []
 
@@ -220,7 +219,7 @@ class RuntimeProtocolSaveService:
                 continue
 
             try:
-                castedValue = castParamValueCallback(param, value)
+                castedValue = ProtocolFormSerializer.castParamValue(param, value)
                 errors = param.validate(castedValue) if hasattr(param, "validate") else []
 
                 if errors:
