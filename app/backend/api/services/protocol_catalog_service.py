@@ -26,11 +26,12 @@
 import copy
 import logging
 import threading
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
 from pyworkflow.config import Config
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,6 @@ class ProtocolCatalogService:
             self,
             *,
             currentProject,
-            runJsonSubprocessCallback: Callable,
     ) -> dict:
         _invalidateProtocolsTreeCacheIfNeeded()
 
@@ -77,9 +77,7 @@ class ProtocolCatalogService:
                 )
                 return protocolsTree
 
-        protocolsTree = self._buildProtocolsTreeInSubprocess(
-            runJsonSubprocessCallback=runJsonSubprocessCallback,
-        )
+        protocolsTree = self._buildProtocolsTreeInSubprocess()
 
         with _protocolsTreeLock:
             _protocolsTreeCache[cacheKey] = protocolsTree
@@ -95,8 +93,6 @@ class ProtocolCatalogService:
 
     def _buildProtocolsTreeInSubprocess(
             self,
-            *,
-            runJsonSubprocessCallback: Callable,
     ) -> Dict[str, Any]:
         code = """
     import contextlib
@@ -124,7 +120,9 @@ class ProtocolCatalogService:
         _scipionPayload = serializeToJson(tree)
     """
 
-        return runJsonSubprocessCallback(
+        jsonSubprocessRunner = JsonSubprocessRunner()
+
+        return jsonSubprocessRunner.run(
             code=code,
             operationName="Build protocols tree",
         )
