@@ -55,6 +55,7 @@ from app.backend.api.services.protocol_wizard_service import (
 )
 from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 from app.backend.api.services.protocol_context_service import ProtocolContextService
+from app.backend.api.services.protocol_service import ProtocolService
 
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
@@ -4526,43 +4527,17 @@ class ProjectService:
             projectId: int,
             protocolId: int,
     ) -> dict:
-        """
-        Return the parameters and web context of an existing protocol.
+        protocolService = ProtocolService()
 
-        PostgreSQL-runtime protocols reuse the context built from the real
-        run.db protocol, preserving runtime outputs and avoiding a second
-        protocol reconstruction.
-        """
-        usingPostgresqlRuntime = (
-            self._currentProjectUsesPostgresqlRuntimeMapper()
-        )
-
-        if usingPostgresqlRuntime:
-            syncResult = self.syncPostgresqlRuntimeProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                registerOutputs=False,
-                returnProtocolContext=True,
-            )
-
-            return syncResult["protocolContext"]
-
-        protocol = self._getScipionProtocolForRuntime(
+        return protocolService.getProtocolParams(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-        )
-
-        protocol.getPlugin()
-        self.currentProject._fixProtParamsConfiguration(
-            protocol
-        )
-
-        return self._buildProtocolContext(
-            projectId,
-            protocol,
-            mapper,
+            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            fixProtocolParamsConfigurationCallback=self.currentProject._fixProtParamsConfiguration,
+            buildProtocolContextCallback=self._buildProtocolContext,
         )
 
     def getNextProtocolSuggestions(self, mapper, projectId, protocolId):
