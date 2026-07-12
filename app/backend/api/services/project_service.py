@@ -4943,36 +4943,6 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    def PreprocessParamForm(
-            self,
-            param,
-            paramName,
-            wizards,
-            viewerDict,
-            visualize,
-            protVar,
-            mapper=None,
-            projectId=None,
-            protocol=None,
-    ):
-        protocolFormSerializer = ProtocolFormSerializer()
-
-        return protocolFormSerializer.serializeParam(
-            param=param,
-            paramName=paramName,
-            wizards=wizards,
-            viewerDict=viewerDict,
-            visualize=visualize,
-            protVar=protVar,
-            mapper=mapper,
-            projectId=projectId,
-            protocol=protocol,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-            getScipionObjectIdCallback=self._getScipionObjectId,
-            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
-            splitPointerValueCallback=self._splitPointerValue,
-        )
-
     def _runJsonSubprocess(self, code: str, operationName: str) -> Dict[str, Any]:
         startMarker = "__SCIPION_JSON_START__"
         endMarker = "__SCIPION_JSON_END__"
