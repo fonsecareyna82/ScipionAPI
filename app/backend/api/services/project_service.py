@@ -56,6 +56,7 @@ from app.backend.api.services.protocol_wizard_service import (
 from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 from app.backend.api.services.protocol_context_service import ProtocolContextService
 from app.backend.api.services.protocol_service import ProtocolService
+from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
 
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
@@ -130,14 +131,9 @@ from app.backend.utils.file_handlers import FileHandlers
 
 from app.utils.scipion_helper import serializeToJson
 
-from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
 
-# protocolsTreeCacheByRevision
-_protocolsTreeLock = threading.Lock()
-_protocolsTreeCache: Dict[int, Dict[str, Any]] = {}
-_lastProtocolsTreeRevision = -1
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
@@ -155,18 +151,6 @@ _thumbnailProjectLock = threading.Lock()
 _tiltSeriesPreviewCacheLock = threading.Lock()
 _tiltSeriesPreviewCache = collections.OrderedDict()
 _TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
-
-def _invalidateProtocolsTreeCacheIfNeeded() -> int:
-    # invalidateProtocolsTreeCacheIfNeeded
-    global _lastProtocolsTreeRevision
-    rev = int(getPluginsRevision() or 0)
-
-    with _protocolsTreeLock:
-        if rev != _lastProtocolsTreeRevision:
-            _protocolsTreeCache.clear()
-            _lastProtocolsTreeRevision = rev
-
-    return rev
 
 
 class ProjectService:
@@ -4951,116 +4935,18 @@ class ProjectService:
                 f"STDERR:\n{stderr}"
             ) from ex
 
-    def _buildProtocolsTreeInSubprocess(self) -> Dict[str, Any]:
-        code = """
-    import contextlib
-    import os
-    import sys
+    def getProtocols(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser,
+    ) -> dict:
+        protocolCatalogService = ProtocolCatalogService()
 
-    with contextlib.redirect_stdout(sys.stderr):
-        from pyworkflow import Config
-        from pyworkflow.gui.project.viewprotocols_extra import ProtocolTreeConfig
-        from app.utils.scipion_helper import serializeToJson
-
-        Config.setDomain("pwem")
-        domain = Config.getDomain()
-
-        protConf = os.path.join(Config.SCIPION_LOCAL_CONFIG, Config.SCIPION_PROTOCOLS)
-        tree = ProtocolTreeConfig.load(domain, protConf)
-        _scipionPayload = serializeToJson(tree)
-    """
-
-        return self._runJsonSubprocess(
-            code=code,
-            operationName="Build protocols tree",
+        return protocolCatalogService.getProtocols(
+            currentProject=self.currentProject,
+            runJsonSubprocessCallback=self._runJsonSubprocess,
         )
-
-    def getProtocols(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser) -> Optional[dict]:
-        # getProtocols
-        _invalidateProtocolsTreeCacheIfNeeded()
-
-        cacheKey = "protocolsTree"
-        with _protocolsTreeLock:
-            cached = _protocolsTreeCache.get(cacheKey)
-            if cached is not None:
-                tree = copy.deepcopy(cached)
-                self.walkAndReplaceProtocols(tree, self.getProtocolName)
-                return tree
-
-        # computeFreshTreeOncePerRevision
-        protocolsTree = self._buildProtocolsTreeInSubprocess()
-
-        with _protocolsTreeLock:
-            _protocolsTreeCache[cacheKey] = protocolsTree
-
-        tree = copy.deepcopy(protocolsTree)
-        self.walkAndReplaceProtocols(tree, self.getProtocolName)
-        return tree
-
-    def replaceDefaultProtocolText(self, node: dict, resolverFn):
-        # Determine type and extract text, tag, and children
-        if isinstance(node, dict):
-            text = node.get("text")
-            tag = node.get("tag")
-            children = node.get("childs", [])
-        else:
-            text = getattr(node, "text", None)
-            tag = getattr(node, "tag", None)
-            children = getattr(node, "childs", [])
-
-        # Replace text if conditions are met
-        if text == "default" and tag == "protocol":
-            newText = resolverFn(node)
-            if newText:
-                if isinstance(node, dict):
-                    node["text"] = newText
-                else:
-                    setattr(node, "text", newText)
-
-        # Recursively process children
-        for child in children:
-            self.replaceDefaultProtocolText(child, resolverFn)
-
-    def walkAndReplaceProtocols(self, data: dict, resolverFn):
-        """
-        Walk through the entire JSON/tree structure and replace 'default' texts for protocol nodes.
-
-        Parameters:
-        - data: the root of the tree (can be a dictionary or a list of nodes)
-        - resolverFn: a function to determine the new text for 'default' protocol nodes
-        """
-        if isinstance(data, dict):
-            # Iterate over key/value pairs in a dictionary
-            for key, value in data.items():
-                if isinstance(value, dict):
-                    self.replaceDefaultProtocolText(value, resolverFn)
-                elif isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            self.replaceDefaultProtocolText(item, resolverFn)
-        elif isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    self.replaceDefaultProtocolText(item, resolverFn)
-
-    def _getProtocolClassForTreeLabel(self, protClassName: str):
-        try:
-            if self.currentProject is not None:
-                domain = self.currentProject.getDomain()
-                protocolClass = domain.getProtocols().get(protClassName, None)
-                if protocolClass is not None:
-                    return protocolClass
-        except Exception:
-            pass
-
-        try:
-            return Config.getDomain().getProtocols().get(protClassName, None)
-        except Exception:
-            logger.warning(
-                "Protocol className '%s' not found while resolving protocol tree label.",
-                protClassName,
-            )
-            return None
 
     def getProtocolName(self, node):
         text = node.get('text')
