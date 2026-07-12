@@ -36,6 +36,7 @@ from fastapi import HTTPException, status
 from pyworkflow.protocol.params import MultiPointerParam, PointerParam, RelationParam
 
 from app.backend.api.services.wizard_handlers import executeWizardHandler
+from app.backend.api.services.protocol_form_serializer import ProtocolFormSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,7 @@ class ProtocolWizardService:
                 continue
 
             try:
-                castedValue = self.projectService.castParamValue(param, value)
+                castedValue = ProtocolFormSerializer.castParamValue(param, value)
                 errors = param.validate(castedValue) if hasattr(param, "validate") else []
                 if errors:
                     errorList += ["**" + param.label.get() + "** " + error for error in errors]
