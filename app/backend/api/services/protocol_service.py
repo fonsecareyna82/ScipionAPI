@@ -23,11 +23,180 @@
 # * e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import copy
+import threading
 from typing import Any, Callable, Dict
+
+from app.backend.api.services.plugins_revision import getPluginsRevision
+
+_newProtocolLock = threading.Lock()
+_newProtocolCache: Dict[str, Dict[str, Any]] = {}
+_lastNewProtocolRevision = -1
+
+
+def _invalidateNewProtocolCacheIfNeeded() -> int:
+    global _lastNewProtocolRevision
+
+    revision = int(getPluginsRevision() or 0)
+
+    with _newProtocolLock:
+        if revision != _lastNewProtocolRevision:
+            _newProtocolCache.clear()
+            _lastNewProtocolRevision = revision
+
+    return revision
 
 
 class ProtocolService:
     """Orchestrate protocol retrieval and context operations."""
+
+    def getNewProtocolParams(
+            self,
+            *,
+            currentProject,
+            projectId: int,
+            protocolClassName: str,
+            runJsonSubprocessCallback: Callable,
+            buildProtocolContextCallback: Callable,
+    ) -> Dict[str, Any]:
+        """
+        Return the web context for a new protocol instance.
+
+        The context is cached until the installed plugins revision changes.
+        """
+        _invalidateNewProtocolCacheIfNeeded()
+
+        cacheKey = "%s:%s" % (
+            str(projectId),
+            str(protocolClassName),
+        )
+
+        with _newProtocolLock:
+            cached = _newProtocolCache.get(cacheKey)
+
+            if cached is not None:
+                return copy.deepcopy(cached)
+
+        protocolClass = (
+            currentProject
+            .getDomain()
+            .getProtocols()
+            .get(protocolClassName)
+        )
+
+        if protocolClass:
+            protocol = currentProject.newProtocol(
+                protocolClass
+            )
+
+            currentProject._fixProtParamsConfiguration(
+                protocol
+            )
+
+            context = buildProtocolContextCallback(
+                projectId,
+                protocol,
+            )
+
+        else:
+            context = self._buildNewProtocolContextInSubprocess(
+                currentProject=currentProject,
+                projectId=projectId,
+                protocolClassName=protocolClassName,
+                runJsonSubprocessCallback=runJsonSubprocessCallback,
+            )
+
+        with _newProtocolLock:
+            _newProtocolCache[cacheKey] = context
+
+        return copy.deepcopy(context)
+
+    def _buildNewProtocolContextInSubprocess(
+            self,
+            *,
+            currentProject,
+            projectId: int,
+            protocolClassName: str,
+            runJsonSubprocessCallback: Callable,
+    ) -> Dict[str, Any]:
+        """
+        Build a new protocol context in a clean process when the current
+        process domain does not yet contain the requested protocol class.
+        """
+        projectPath = None
+
+        for attrName in ("path", "_path"):
+            value = getattr(
+                currentProject,
+                attrName,
+                None,
+            )
+
+            if value:
+                projectPath = value
+                break
+
+        if not projectPath:
+            getPath = getattr(
+                currentProject,
+                "getPath",
+                None,
+            )
+
+            if callable(getPath):
+                projectPath = getPath()
+
+        if not projectPath:
+            raise RuntimeError(
+                "Cannot resolve currentProject path "
+                "for subprocess protocol build"
+            )
+
+        code = """
+    import contextlib
+    import os
+    import sys
+
+    with contextlib.redirect_stdout(sys.stderr):
+        from pyworkflow.project import Manager
+        from app.backend.api.services.project_service import ProjectService
+
+        projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
+        projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
+        protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
+
+        manager = Manager()
+        project = manager.loadProject(projectPath)
+
+        domain = project.getDomain()
+        protocolClass = domain.getProtocols().get(protocolClassName)
+
+        if protocolClass is None:
+            raise RuntimeError(
+                f"Protocol class not found: {protocolClassName}"
+            )
+
+        protocol = project.newProtocol(protocolClass)
+        project._fixProtParamsConfiguration(protocol)
+
+        projectService = ProjectService()
+        projectService.currentProject = project
+
+        _scipionPayload = projectService._buildProtocolContext(
+            projectId,
+            protocol,
+        )
+    """
+
+        return runJsonSubprocessCallback(
+            code=code,
+            operationName="Build new protocol context",
+            extraEnv={
+                "SCIPIONWEB_PROJECT_PATH": projectPath,
+                "SCIPIONWEB_PROJECT_ID": projectId,
+                "SCIPIONWEB_PROTOCOL_CLASS": protocolClassName,
+            },
+        )
 
     def getProtocolParams(
             self,

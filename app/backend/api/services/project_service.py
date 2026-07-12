@@ -143,11 +143,6 @@ _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
 
-# newProtocolContextCacheRevisionDriven
-_newProtocolLock = threading.Lock()
-_newProtocolCache: Dict[str, Dict[str, Any]] = {}
-_lastNewProtocolRevision = -1
-
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
 
@@ -170,19 +165,6 @@ def _invalidateProtocolsTreeCacheIfNeeded() -> int:
         if rev != _lastProtocolsTreeRevision:
             _protocolsTreeCache.clear()
             _lastProtocolsTreeRevision = rev
-
-    return rev
-
-
-def _invalidateNewProtocolCacheIfNeeded() -> int:
-    # invalidateNewProtocolCacheIfNeeded
-    global _lastNewProtocolRevision
-    rev = int(getPluginsRevision() or 0)
-
-    with _newProtocolLock:
-        if rev != _lastNewProtocolRevision:
-            _newProtocolCache.clear()
-            _lastNewProtocolRevision = rev
 
     return rev
 
@@ -4432,94 +4414,20 @@ class ProjectService:
             splitPointerValueCallback=self._splitPointerValue,
         )
 
-    def _buildNewProtocolContextInSubprocess(self, projectId: int, protocolClassName: str) -> Dict[str, Any]:
-        # buildNewProtocolContextInSubprocess
-        projectPath = None
-        for attr in ("path", "_path"):
-            if hasattr(self.currentProject, attr):
-                projectPath = getattr(self.currentProject, attr)
-                break
-        if not projectPath and hasattr(self.currentProject, "getPath"):
-            projectPath = self.currentProject.getPath()
+    def getNewProtocolParams(
+            self,
+            projectId,
+            protocolClassName: str,
+    ) -> dict:
+        protocolService = ProtocolService()
 
-        if not projectPath:
-            raise RuntimeError("Cannot resolve currentProject path for subprocess protocol build")
-
-        code = """
-    import contextlib
-    import os
-    import sys
-
-    with contextlib.redirect_stdout(sys.stderr):
-        from pyworkflow.project import Manager
-        from app.backend.api.services.project_service import ProjectService
-
-        projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
-        projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
-        protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
-
-        mgr = Manager()
-        project = mgr.loadProject(projectPath)
-
-        domain = project.getDomain()
-        protClass = domain.getProtocols().get(protocolClassName)
-        if protClass is None:
-            raise RuntimeError(f"Protocol class not found: {protocolClassName}")
-
-        protocol = project.newProtocol(protClass)
-        project._fixProtParamsConfiguration(protocol)
-
-        svc = ProjectService()
-        svc.currentProject = project
-
-        _scipionPayload = svc._buildProtocolContext(projectId, protocol)
-    """
-
-        projectRoot = Path(__file__).resolve().parents[4]
-        env = os.environ.copy()
-
-        env["SCIPIONWEB_PROJECT_PATH"] = str(projectPath)
-        env["SCIPIONWEB_PROJECT_ID"] = str(int(projectId))
-        env["SCIPIONWEB_PROTOCOL_CLASS"] = str(protocolClassName)
-
-        existingPythonPath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existingPythonPath if existingPythonPath else "")
-
-        return self._runJsonSubprocess(
-            code=code,
-            operationName="Build new protocol context",
+        return protocolService.getNewProtocolParams(
+            currentProject=self.currentProject,
+            projectId=projectId,
+            protocolClassName=protocolClassName,
+            runJsonSubprocessCallback=self._runJsonSubprocess,
+            buildProtocolContextCallback=self._buildProtocolContext,
         )
-
-    def getNewProtocolParams(self, projectId, protocolClassName: str) -> dict:
-        # getNewProtocolParams
-        _invalidateNewProtocolCacheIfNeeded()
-
-        key = "%s:%s" % (str(projectId), str(protocolClassName))
-
-        with _newProtocolLock:
-            cached = _newProtocolCache.get(key)
-            if cached is not None:
-                return copy.deepcopy(cached)
-
-        # tryInProcessFirst
-        protClass = self.currentProject.getDomain().getProtocols().get(protocolClassName)
-        if protClass:
-            protocol = self.currentProject.newProtocol(protClass)
-            self.currentProject._fixProtParamsConfiguration(protocol)
-            ctx = self._buildProtocolContext(projectId, protocol)
-
-            with _newProtocolLock:
-                _newProtocolCache[key] = ctx
-
-            return copy.deepcopy(ctx)
-
-        # fallbackSubprocessWhenDomainIsStale
-        ctx = self._buildNewProtocolContextInSubprocess(int(projectId), str(protocolClassName))
-
-        with _newProtocolLock:
-            _newProtocolCache[key] = ctx
-
-        return copy.deepcopy(ctx)
 
     def getProtocolParams(
             self,
@@ -4943,7 +4851,12 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    def _runJsonSubprocess(self, code: str, operationName: str) -> Dict[str, Any]:
+    def _runJsonSubprocess(
+            self,
+            code: str,
+            operationName: str,
+            extraEnv: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         startMarker = "__SCIPION_JSON_START__"
         endMarker = "__SCIPION_JSON_END__"
 
@@ -4971,8 +4884,24 @@ class ProjectService:
         projectRoot = Path(__file__).resolve().parents[4]
 
         env = os.environ.copy()
-        existingPythonPath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(projectRoot) + (os.pathsep + existingPythonPath if existingPythonPath else "")
+
+        existingPythonPath = env.get(
+            "PYTHONPATH",
+            "",
+        )
+
+        env["PYTHONPATH"] = (
+                str(projectRoot)
+                + (
+                    os.pathsep + existingPythonPath
+                    if existingPythonPath
+                    else ""
+                )
+        )
+
+        for key, value in (extraEnv or {}).items():
+            if value is not None:
+                env[str(key)] = str(value)
 
         res = subprocess.run(
             [sys.executable, "-c", wrappedCode],
