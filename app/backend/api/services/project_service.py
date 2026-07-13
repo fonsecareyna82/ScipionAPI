@@ -143,7 +143,11 @@ _TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
 
 class ProjectService:
     def __init__(self):
+        self.projectsPath = self._resolveProjectsPath()
+
         self.manager = Manager()
+        self.manager.PROJECTS = str(self.projectsPath)
+
         # Keep objectManager attribute for backward compatibility,
         # but new HTTP endpoints use a fresh ObjectManager per request.
         self.objectManager = None
@@ -151,6 +155,50 @@ class ProjectService:
         # Real per-instance state
         self.currentProject: Optional[ScipionProject] = None
         self.tomoList: Dict[Any, Any] = {}
+
+    @staticmethod
+    def _resolveProjectsPath() -> Path:
+        rawProjectsPath = str(
+            os.environ.get("PROJECTS_PATH") or ""
+        ).strip()
+
+        if not rawProjectsPath:
+            raise RuntimeError(
+                "PROJECTS_PATH is not configured. "
+                "Run 'scipionapi install' or define it in the environment."
+            )
+
+        projectsPath = Path(
+            rawProjectsPath
+        ).expanduser().resolve()
+
+        try:
+            projectsPath.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not create PROJECTS_PATH '%s': %s"
+                % (projectsPath, error)
+            ) from error
+
+        if not projectsPath.is_dir():
+            raise RuntimeError(
+                "PROJECTS_PATH is not a directory: %s"
+                % projectsPath
+            )
+
+        if not os.access(
+                projectsPath,
+                os.W_OK | os.X_OK,
+        ):
+            raise RuntimeError(
+                "PROJECTS_PATH is not writable: %s"
+                % projectsPath
+            )
+
+        return projectsPath
 
     # ------------------------------------------------------------------
     # Per-request project / tomogram context
