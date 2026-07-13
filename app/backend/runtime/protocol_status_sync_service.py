@@ -383,7 +383,7 @@ class RuntimeProtocolStatusSyncService:
                             'aborted',
                             'interactive'
                         )
-                        AND COALESCE(params, '{}'::jsonb) -> %s IS NULL
+                        AND (params::jsonb -> %s) IS NULL
                     )
                )
              ORDER BY "protocolId"
