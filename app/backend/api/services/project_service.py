@@ -2608,6 +2608,13 @@ class ProjectService:
             if not isinstance(params, dict):
                 params = {}
 
+            runtimeMetadata = params.get(
+                RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY
+            ) or {}
+
+            if not isinstance(runtimeMetadata, dict):
+                runtimeMetadata = {}
+
             def getParamValue(*names):
                 for name in names:
                     if name not in params:
@@ -2661,9 +2668,21 @@ class ProjectService:
             outputs = []
             seenOutputNames = set()
 
-            cpuTime = ''
+            cpuTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                runtimeMetadata.get("cpuTimeSeconds")
+            )
+
+            elapsedTimeSeconds = runtimeMetadata.get(
+                "elapsedTimeSeconds"
+            )
+
+            if elapsedTimeSeconds in (None, ""):
+                elapsedTimeSeconds = stepSummary.get(
+                    "elapsedSeconds"
+                )
+
             elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(
-                stepSummary.get("elapsedSeconds")
+                elapsedTimeSeconds
             )
             isinteractive = bool(stepSummary.get("isInteractive"))
             numberOfSteps = self._toPersistedOutputInt(
@@ -2719,14 +2738,31 @@ class ProjectService:
                     pass
 
                 try:
-                    cpuTime = str(protocol.cpuTime)
-                except Exception:
-                    cpuTime = ""
+                    liveRuntimeMetadata = (
+                        RuntimeProtocolStatusSyncService()
+                        .buildRuntimeMetadata(protocol)
+                    )
 
-                try:
-                    elapsedTime = str(protocol.getElapsedTime().total_seconds()).split(".")[0]
+                    liveCpuTime = liveRuntimeMetadata.get(
+                        "cpuTimeSeconds"
+                    )
+
+                    if liveCpuTime is not None:
+                        cpuTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                            liveCpuTime
+                        )
+
+                    liveElapsedTime = liveRuntimeMetadata.get(
+                        "elapsedTimeSeconds"
+                    )
+
+                    if liveElapsedTime is not None:
+                        elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                            liveElapsedTime
+                        )
+
                 except Exception:
-                    elapsedTime = ""
+                    pass
 
                 try:
                     isinteractive = bool(protocol.isInteractive())

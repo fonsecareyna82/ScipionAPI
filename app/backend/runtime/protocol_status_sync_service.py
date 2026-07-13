@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 import logging
 import os
 from typing import Any, Callable, Dict, Optional
@@ -35,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 class RuntimeProtocolStatusSyncService:
     """Synchronize PostgreSQL runtime protocol status from Scipion runtime state."""
+    RUNTIME_METADATA_KEY = "_scipionWebRuntime"
+
+    ACTIVE_STATUS_TEXTS = {
+        "launched",
+        "running",
+        "scheduled",
+    }
 
     @staticmethod
     def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
@@ -45,6 +53,102 @@ class RuntimeProtocolStatusSyncService:
             return method()
         except Exception:
             return default
+
+    @staticmethod
+    def scalarValue(value: Any) -> Any:
+        if value is None:
+            return None
+
+        getter = getattr(value, "get", None)
+
+        if callable(getter):
+            try:
+                return getter()
+            except TypeError:
+                try:
+                    return getter(None)
+                except Exception:
+                    return None
+            except Exception:
+                return None
+
+        return value
+
+    def toSeconds(self, value: Any) -> Optional[float]:
+        value = self.scalarValue(value)
+
+        if value is None:
+            return None
+
+        totalSeconds = getattr(
+            value,
+            "total_seconds",
+            None,
+        )
+
+        if callable(totalSeconds):
+            try:
+                value = totalSeconds()
+            except Exception:
+                return None
+
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def buildRuntimeMetadata(
+            self,
+            protocol,
+    ) -> Dict[str, Any]:
+        cpuTimeValue = getattr(
+            protocol,
+            "_cpuTime",
+            None,
+        )
+
+        if cpuTimeValue is None:
+            cpuTimeValue = getattr(
+                protocol,
+                "cpuTime",
+                None,
+            )
+
+        return {
+            "cpuTimeSeconds": self.toSeconds(
+                cpuTimeValue
+            ),
+            "elapsedTimeSeconds": self.toSeconds(
+                self.safeCall(
+                    protocol,
+                    "getElapsedTime",
+                    None,
+                )
+            ),
+        }
+
+    def mergeRuntimeMetadata(
+            self,
+            rawParams,
+            protocol,
+    ) -> Dict[str, Any]:
+        params = rawParams or {}
+
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = {}
+
+        if not isinstance(params, dict):
+            params = {}
+
+        params = dict(params)
+        params[self.RUNTIME_METADATA_KEY] = (
+            self.buildRuntimeMetadata(protocol)
+        )
+
+        return params
 
     def mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):
         storedText = str(storedStatus or "").strip().lower()
@@ -163,6 +267,9 @@ class RuntimeProtocolStatusSyncService:
         )
 
         runtimeStatus = runtimeProtocol.getStatus()
+        runtimeMetadata = self.buildRuntimeMetadata(
+            runtimeProtocol
+        )
 
         row = mapper.getProjectProtocolByProtocolId(
             projectId=projectId,
@@ -171,8 +278,17 @@ class RuntimeProtocolStatusSyncService:
 
         if not row:
             raise RuntimeError(
-                f"PostgreSQL protocol row not found. projectId={projectId} protocolId={protocolId}"
+                f"PostgreSQL protocol row not found. "
+                f"projectId={projectId} protocolId={protocolId}"
             )
+
+        previousStatus = str(
+            row.get("status") or ""
+        ).strip().lower()
+
+        registerOutputs = (
+                previousStatus in self.ACTIVE_STATUS_TEXTS
+        )
 
         outputSync = None
 
@@ -181,29 +297,54 @@ class RuntimeProtocolStatusSyncService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                registerOutputs=True,
+                registerOutputs=registerOutputs,
             )
+
         except Exception:
             logger.exception(
-                "Failed to sync PostgreSQL runtime protocol outputs from run.db. "
-                "Falling back to status-only update. projectId=%s protocolId=%s status=%s",
+                "Failed to sync PostgreSQL runtime protocol from run.db. "
+                "Falling back to status and timing update. "
+                "projectId=%s protocolId=%s status=%s",
                 projectId,
                 protocolId,
                 runtimeStatus,
             )
 
+            params = self.mergeRuntimeMetadata(
+                row.get("params"),
+                runtimeProtocol,
+            )
+
             mapper.updateProtocol({
                 "id": row["id"],
                 "status": runtimeStatus,
+                "params": json.dumps(
+                    params,
+                    ensure_ascii=False,
+                ),
             })
+
+        persistedRow = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        persistedStatus = (
+            persistedRow.get("status")
+            if persistedRow
+            else runtimeStatus
+        )
 
         return {
             "projectId": projectId,
             "protocolId": str(protocolId),
             "runDbPath": runDbPath,
-            "status": runtimeStatus,
+            "status": persistedStatus,
+            "runtimeMetadata": runtimeMetadata,
             "outputSync": outputSync,
         }
+
+
 
     def syncActivePostgresqlRuntimeProtocolStatuses(
             self,
@@ -225,10 +366,20 @@ class RuntimeProtocolStatusSyncService:
             SELECT "protocolId", status
               FROM protocols
              WHERE "projectId" = %s
-               AND LOWER(COALESCE(status, '')) IN ('launched', 'running', 'scheduled')
+               AND (
+                    LOWER(COALESCE(status, '')) IN (
+                        'launched',
+                        'running',
+                        'scheduled'
+                    )
+                    OR COALESCE(params, '{}'::jsonb) -> %s IS NULL
+               )
              ORDER BY "protocolId"
             """,
-            (projectId,),
+            (
+                projectId,
+                self.RUNTIME_METADATA_KEY,
+            ),
         )
 
         report = {
@@ -257,33 +408,26 @@ class RuntimeProtocolStatusSyncService:
                     "status": newStatus,
                 }
 
-                normalizedNewStatus = str(newStatus or "").strip().lower()
+                item["runtimeMetadata"] = result.get(
+                    "runtimeMetadata"
+                )
 
-                if normalizedNewStatus in ("finished", "interactive"):
-                    try:
-                        runtimeSync = syncRuntimeProtocolCallback(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolId,
-                            registerOutputs=True,
-                        )
+                runtimeSync = result.get("outputSync")
 
-                        item["runtimeSync"] = runtimeSync
-                        item["outputsRegistered"] = runtimeSync.get("outputs", 0)
-                        item["outputsDeclared"] = runtimeSync.get("outputsDeclared", 0)
-                        item["outputErrors"] = runtimeSync.get("outputErrors", [])
-
-                    except Exception as e:
-                        logger.exception(
-                            "Failed to sync PostgreSQL runtime outputs after terminal status. "
-                            "projectId=%s protocolId=%s status=%s",
-                            projectId,
-                            protocolId,
-                            newStatus,
-                        )
-
-                        item["outputsRegistered"] = 0
-                        item["outputSyncError"] = str(e)
+                if isinstance(runtimeSync, dict):
+                    item["runtimeSync"] = runtimeSync
+                    item["outputsRegistered"] = runtimeSync.get(
+                        "outputs",
+                        0,
+                    )
+                    item["outputsDeclared"] = runtimeSync.get(
+                        "outputsDeclared",
+                        0,
+                    )
+                    item["outputErrors"] = runtimeSync.get(
+                        "outputErrors",
+                        [],
+                    )
 
                 if str(previousStatus or "").strip().lower() != str(newStatus or "").strip().lower():
                     report["updated"].append(item)
