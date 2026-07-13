@@ -196,6 +196,104 @@ class PostgresqlProject(ScipionProject):
     # ---------------------------------------------------
     #               PROTOCOLS
     # --------------------------------------------------
+    def stopProtocol(self, protocol):
+        """
+        Stop a PostgreSQL-runtime protocol through the SQLite compatibility
+        mapper.
+
+        Scipion's native Project.stopProtocol() refreshes the protocol from
+        logs/run.db before stopping it. During that refresh, Project._updateProtocol()
+        temporarily assigns Project.mapper to the protocol.
+
+        Using PostgresqlRuntimeMapper there makes Protocol.copy() persist a
+        partially updated runtime object through both PostgreSQL and SQLite,
+        which can produce circular object references.
+
+        Temporarily using the project SQLite mapper preserves Scipion's native
+        stop behaviour:
+
+          - refresh PID and job ids from logs/run.db;
+          - stop local or queue execution;
+          - persist the aborted status to run.db;
+          - mirror the final protocol into project.sqlite.
+
+        PostgreSQL is synchronized afterwards by RuntimeProtocolStopService.
+        """
+        if not self.usingPostgresqlRuntimeMapper():
+            return super().stopProtocol(protocol)
+
+        runtimeMapper = self.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "Cannot stop PostgreSQL runtime protocol: "
+                "runtime mapper is not available"
+            )
+
+        writeFallbackMapper = getattr(
+            runtimeMapper,
+            "writeFallbackMapper",
+            None,
+        )
+
+        if writeFallbackMapper is None:
+            raise RuntimeError(
+                "Cannot stop PostgreSQL runtime protocol: "
+                "SQLite write fallback mapper is not available"
+            )
+
+        protocolId = getattr(
+            protocol,
+            "getObjId",
+            lambda: None,
+        )()
+
+        if protocolId in (None, ""):
+            raise RuntimeError(
+                "Cannot stop PostgreSQL runtime protocol without protocol id"
+            )
+
+        sqliteProtocol = writeFallbackMapper.selectById(
+            int(protocolId)
+        )
+
+        if sqliteProtocol is None:
+            raise RuntimeError(
+                "Protocol %s was not found in the SQLite compatibility database"
+                % protocolId
+            )
+
+        originalMapper = self.mapper
+
+        try:
+            logger.info(
+                "Stopping PostgreSQL runtime protocol through SQLite "
+                "compatibility mapper. projectId=%s protocolId=%s",
+                self.postgresqlProjectId,
+                protocolId,
+            )
+
+            # Project._updateProtocol() uses self.mapper directly.
+            # It must temporarily see the classic project.sqlite mapper.
+            self.mapper = writeFallbackMapper
+
+            sqliteProtocol.setMapper(
+                writeFallbackMapper
+            )
+            sqliteProtocol.setProject(
+                self
+            )
+
+            return ScipionProject.stopProtocol(
+                self,
+                sqliteProtocol,
+            )
+
+        finally:
+            # Restore PostgreSQL as the authoritative project mapper even if
+            # Scipion's native stop operation raises an exception.
+            self.mapper = originalMapper
+
     def _storeProtocol(self, protocol):
         """
         Store protocol through the PostgreSQL runtime mapper and make sure the
