@@ -95,6 +95,7 @@ class RuntimeProjectImportService:
 
         except Exception as error:
             rollbackErrors = []
+            canRemoveTarget = dbProjectId is None
 
             if dbProjectId is not None:
                 try:
@@ -103,23 +104,40 @@ class RuntimeProjectImportService:
                         ownerId,
                     )
 
-                    if not deleted:
-                        rollbackErrors.append(
-                            "PostgreSQL rollback did not delete project %s"
-                            % dbProjectId
+                    if deleted:
+                        canRemoveTarget = True
+                    else:
+                        remainingProject = mapper.getProject(
+                            projectId=int(dbProjectId),
+                            userId=ownerId,
                         )
+
+                        if remainingProject:
+                            rollbackErrors.append(
+                                "PostgreSQL rollback did not delete project %s"
+                                % dbProjectId
+                            )
+                        else:
+                            canRemoveTarget = True
+
                 except Exception as rollbackError:
                     rollbackErrors.append(
                         "PostgreSQL rollback failed: %s"
                         % rollbackError
                     )
 
-            try:
-                self._removeTargetPath(targetPath)
-            except Exception as rollbackError:
+            if canRemoveTarget:
+                try:
+                    self._removeTargetPath(targetPath)
+                except Exception as rollbackError:
+                    rollbackErrors.append(
+                        "Filesystem rollback failed: %s"
+                        % rollbackError
+                    )
+            else:
                 rollbackErrors.append(
-                    "Filesystem rollback failed: %s"
-                    % rollbackError
+                    "Filesystem rollback was skipped because "
+                    "the PostgreSQL project row still exists"
                 )
 
             detail = "Project import failed: %s" % error
