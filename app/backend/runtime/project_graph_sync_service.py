@@ -264,6 +264,22 @@ class RuntimeProjectGraphSyncService:
             outputSyncResults,
         )
 
+        storedObjectsCount = 0
+        setItemsCount = 0
+
+        for outputResult in outputSyncResults:
+            mapperKind = str(outputResult.get("mapperKind") or "")
+
+            if mapperKind == "flat_set":
+                storedObjectsCount += 1
+                setItemsCount += int(
+                    outputResult.get("itemsCount") or 0
+                )
+            else:
+                storedObjectsCount += int(
+                    outputResult.get("storedObjectsCount") or 1
+                )
+
         relationReport = {
             "relationsDeclared": 0,
             "relations": 0,
@@ -333,6 +349,9 @@ class RuntimeProjectGraphSyncService:
             "outputs": len(outputSyncResults),
             "outputsMissing": len(outputSyncMissing),
             "outputsByKind": outputResultsByKind,
+            "objects": int(storedObjectsCount),
+            "sets": int(outputResultsByKind.get("flat_set", 0)),
+            "setItems": int(setItemsCount),
             "outputMissing": outputSyncMissing,
             "outputErrors": outputSyncErrors,
             "purgedProtocols": int(purgedProtocols or 0),
