@@ -37,6 +37,9 @@ from app.backend.api.services.protocol_form_serializer import (
 from app.backend.api.services.protocol_wizard_service import (
     findProtocolWizardsWeb,
 )
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 class ProtocolContextService:
@@ -191,6 +194,21 @@ class ProtocolContextService:
                 resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
                 splitPointerValueCallback=splitPointerValueCallback,
             )
+        )
+
+        try:
+            paramsValue = dict(paramsValue or {})
+        except Exception:
+            paramsValue = {}
+
+        runtimeStatusSyncService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        paramsValue[
+            runtimeStatusSyncService.RUNTIME_METADATA_KEY
+        ] = runtimeStatusSyncService.buildRuntimeMetadata(
+            protocol
         )
 
         info["executeMode"] = {

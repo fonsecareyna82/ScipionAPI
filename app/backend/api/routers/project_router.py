@@ -173,7 +173,7 @@ def getProject(
     projectId: int,
     validateConsistency: bool = Query(False),
     usePostgresqlRuntimeProject: bool = Query(True),
-    syncRuntimeStatuses: bool = Query(False),
+    syncRuntimeStatuses: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),

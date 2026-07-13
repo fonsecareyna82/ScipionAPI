@@ -38,6 +38,9 @@ from pyworkflow.config import Config
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1004,6 +1007,7 @@ class PostgresqlRuntimeMapper(Mapper):
         protocolId = self._requireObjId(protocol)
 
         values = {}
+
         try:
             values = protocol.getDefinitionDict()
         except Exception:
@@ -1012,6 +1016,17 @@ class PostgresqlRuntimeMapper(Mapper):
                 protocol,
                 exc_info=True,
             )
+
+        try:
+            values = dict(values or {})
+        except Exception:
+            values = {}
+
+        runtimeStatusSyncService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        values[runtimeStatusSyncService.RUNTIME_METADATA_KEY] = runtimeStatusSyncService.buildRuntimeMetadata(protocol)
 
         return {
             "info": {
