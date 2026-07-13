@@ -1520,11 +1520,13 @@ class ProjectService:
             projectPath: str,
             ownerId: int,
     ) -> Dict[str, Any]:
-        project = self.loadProjectForThumbnails({
-            "name": projectPath,
-        })
+        project = None
 
         try:
+            project = self.loadProjectForThumbnails({
+                "name": projectPath,
+            })
+
             migrationReport = self.syncProjectProtocolsAndDependencies(
                 mapper=mapper,
                 projectId=projectId,
@@ -1566,16 +1568,32 @@ class ProjectService:
             migrationReport["postgresqlLoadAudit"] = postgresqlLoadAudit
 
             return migrationReport
+
         finally:
-            try:
-                project.closeMapper()
-            except Exception:
-                logger.debug(
-                    "Could not close imported project mapper. projectId=%s path=%s",
-                    projectId,
-                    projectPath,
-                    exc_info=True,
-                )
+            projectToClose = project or getattr(
+                self,
+                "currentProject",
+                None,
+            )
+
+            if projectToClose is not None:
+                try:
+                    closeMapper = getattr(
+                        projectToClose,
+                        "closeMapper",
+                        None,
+                    )
+
+                    if callable(closeMapper):
+                        closeMapper()
+
+                except Exception:
+                    logger.debug(
+                        "Could not close imported project mapper. projectId=%s path=%s",
+                        projectId,
+                        projectPath,
+                        exc_info=True,
+                    )
 
             self.clearCurrentProject()
 
