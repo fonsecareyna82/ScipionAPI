@@ -54,6 +54,7 @@ class RuntimeProjectGraphSyncService:
             shouldPreservePostgresqlOnlyProtocolsCallback: Callable,
             refresh: bool = False,
             checkPid: bool = False,
+            strict: bool = False,
     ) -> Dict[str, Any]:
         if currentProject is None:
             raise RuntimeError("No current project loaded")
@@ -260,7 +261,33 @@ class RuntimeProjectGraphSyncService:
             outputSyncResults,
         )
 
-        return {
+        fatalErrors = []
+
+        fatalErrors.extend([
+            {
+                "kind": "step",
+                **item,
+            }
+            for item in stepsSyncErrors
+        ])
+
+        fatalErrors.extend([
+            {
+                "kind": "output",
+                **item,
+            }
+            for item in outputSyncMissing
+        ])
+
+        fatalErrors.extend([
+            {
+                "kind": "output",
+                **item,
+            }
+            for item in outputSyncErrors
+        ])
+
+        report = {
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
             "inputRefs": int(savedInputRefs),
@@ -274,4 +301,21 @@ class RuntimeProjectGraphSyncService:
             "outputMissing": outputSyncMissing,
             "outputErrors": outputSyncErrors,
             "purgedProtocols": int(purgedProtocols or 0),
+            "fatalErrors": fatalErrors,
+            "complete": not fatalErrors,
         }
+
+        if strict and fatalErrors:
+            raise RuntimeError(
+                "Project graph migration to PostgreSQL was incomplete. "
+                "stepErrors=%s outputErrors=%s outputsMissing=%s "
+                "fatalErrors=%s"
+                % (
+                    len(stepsSyncErrors),
+                    len(outputSyncErrors),
+                    len(outputSyncMissing),
+                    fatalErrors[:20],
+                )
+            )
+
+        return report
