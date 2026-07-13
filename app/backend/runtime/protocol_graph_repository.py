@@ -1488,6 +1488,7 @@ class ProtocolGraphRepository:
             mapper,
             projectId: int,
             runtimeObjectId: int,
+            extended=None,
     ) -> Optional[Dict[str, Any]]:
         row = mapper.db.fetchOne(
             """
@@ -1523,6 +1524,52 @@ class ProtocolGraphRepository:
             ),
         )
 
+        if not row and extended not in (None, ""):
+            outputName = str(extended).split(".", 1)[0]
+
+            row = mapper.db.fetchOne(
+                """
+                SELECT
+                    o.id AS "objectId",
+                    o."projectId",
+                    o."protocolDbId",
+                    p."protocolId",
+                    o."scipionObjId" AS "runtimeObjectId",
+                    o."parentObjectId",
+                    o.name,
+                    o.path,
+                    o."className",
+                    s.id AS "setId",
+                    s."outputName"
+                  FROM protocols p
+                  JOIN scipion_objects o
+                    ON o."projectId" = p."projectId"
+                   AND o."protocolDbId" = p.id
+                   AND o."parentObjectId" IS NULL
+             LEFT JOIN scipion_sets s
+                    ON s."projectId" = o."projectId"
+                   AND s."objectId" = o.id
+                 WHERE p."projectId" = %s
+                   AND p."protocolId"::text = %s
+                   AND (
+                        s."outputName" = %s
+                        OR o.path = %s
+                        OR o.name = %s
+                   )
+                 ORDER BY
+                    CASE WHEN s.id IS NOT NULL THEN 0 ELSE 1 END,
+                    o.id
+                 LIMIT 1
+                """,
+                (
+                    int(projectId),
+                    str(runtimeObjectId),
+                    outputName,
+                    outputName,
+                    outputName,
+                ),
+            )
+
         if not row:
             return None
 
@@ -1551,6 +1598,7 @@ class ProtocolGraphRepository:
             mapper=mapper,
             projectId=projectId,
             runtimeObjectId=parentRuntimeObjectId,
+            extended=parentExtended,
         )
 
         if not parentObject:
@@ -1563,6 +1611,7 @@ class ProtocolGraphRepository:
             mapper=mapper,
             projectId=projectId,
             runtimeObjectId=childRuntimeObjectId,
+            extended=childExtended,
         )
 
         if not childObject:
