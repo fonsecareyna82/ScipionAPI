@@ -517,15 +517,27 @@ async def launchProtocol(
     Launch, restart, schedule, or stop a protocol in a given project.
     """
     try:
-        project = service.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False if usePostgresqlRuntimeProject else True,
-            checkPid=False,
-            usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
-            usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
-        )
+        if usePostgresqlRuntimeProject:
+            project = (
+                service
+                .loadPostgresqlRuntimeProjectForMutation(
+                    mapper=mapper,
+                    projectId=projectId,
+                    currentUser=currentUser,
+                    enableWriteFallback=True,
+                )
+            )
+
+        else:
+            project = service.getProjectById(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                refresh=True,
+                checkPid=False,
+                usePostgresqlRuntimeProject=False,
+                usePostgresqlRuntimeWriteFallback=False,
+            )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

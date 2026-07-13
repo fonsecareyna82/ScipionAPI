@@ -422,18 +422,19 @@ class RuntimeProtocolLaunchService:
                 currentProject.launchProtocol(protocol)
 
                 if usingPostgresqlRuntime:
-                    launchedProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
+                    launchedProtocolId = getattr(
+                        protocol,
+                        "getObjId",
+                        lambda: protocolId,
+                    )()
 
-                    try:
-                        protocol.setStatus(STATUS_LAUNCHED)
-                    except Exception:
-                        statusAttr = getattr(protocol, "status", None)
-                        setter = getattr(statusAttr, "set", None)
-                        if callable(setter):
-                            setter(STATUS_LAUNCHED)
-
-                    currentProject._storeProtocol(protocol)
-
+                    # Scipion's native Project.launchProtocol() has already:
+                    #   - marked the protocol as launched;
+                    #   - stored it through PostgresqlRuntimeMapper;
+                    #   - mirrored it to project.sqlite;
+                    #   - committed the mapper.
+                    #
+                    # Do not perform a second full protocol store here.
                     runtimeStatusSyncService = (
                         RuntimeProtocolStatusSyncService()
                     )
