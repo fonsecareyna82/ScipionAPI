@@ -120,6 +120,9 @@ from app.backend.runtime import (
 from app.backend.runtime.project_import_service import (
     RuntimeProjectImportService,
 )
+from app.backend.runtime.project_import_audit_service import (
+    RuntimeProjectImportAuditService,
+)
 
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
@@ -1521,7 +1524,7 @@ class ProjectService:
         })
 
         try:
-            return self.syncProjectProtocolsAndDependencies(
+            migrationReport = self.syncProjectProtocolsAndDependencies(
                 mapper=mapper,
                 projectId=projectId,
                 refresh=False,
@@ -1529,6 +1532,16 @@ class ProjectService:
                 strict=True,
                 syncRelations=True,
             )
+
+            auditReport = RuntimeProjectImportAuditService().auditProject(
+                mapper=mapper,
+                projectId=projectId,
+                migrationReport=migrationReport,
+            )
+
+            migrationReport["audit"] = auditReport
+
+            return migrationReport
         finally:
             try:
                 project.closeMapper()
