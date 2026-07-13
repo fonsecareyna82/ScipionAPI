@@ -348,11 +348,13 @@ class RuntimeProjectGraphSyncService:
             raise RuntimeError(
                 "Project graph migration to PostgreSQL was incomplete. "
                 "stepErrors=%s outputErrors=%s outputsMissing=%s "
-                "fatalErrors=%s"
+                "relationErrors=%s relationsMissing=%s fatalErrors=%s"
                 % (
                     len(stepsSyncErrors),
                     len(outputSyncErrors),
                     len(outputSyncMissing),
+                    len(relationReport["relationErrors"]),
+                    len(relationReport["relationMissing"]),
                     fatalErrors[:20],
                 )
             )
