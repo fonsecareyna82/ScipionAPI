@@ -338,13 +338,19 @@ class RuntimeProtocolStatusSyncService:
             )
         )
 
-        needsFinalSync = (
-                runtimeStatusText
+        transitionedToTerminal = (
+                previousStatusText
+                in self.ACTIVE_STATUS_TEXTS
+                and runtimeStatusText
                 in self.TERMINAL_STATUS_TEXTS
-                and (
-                        previousStatusText
-                        in self.ACTIVE_STATUS_TEXTS
-                        or finalSyncPending
+        )
+
+        needsFinalSync = (
+                transitionedToTerminal
+                or (
+                        runtimeStatusText
+                        in self.TERMINAL_STATUS_TEXTS
+                        and finalSyncPending
                 )
         )
 
