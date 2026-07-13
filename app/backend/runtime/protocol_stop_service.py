@@ -368,7 +368,6 @@ class RuntimeProtocolStopService:
                     )
 
             postgresqlSync = None
-            elapsedTimingReports = []
 
             if usingPostgresqlRuntime:
                 postgresqlSync = (
