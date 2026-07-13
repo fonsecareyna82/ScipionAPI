@@ -2215,6 +2215,14 @@ class ProjectService:
                 return False
 
             except Exception as e:
+                try:
+                    mapper.db.conn.rollback()
+                except Exception:
+                    logger.exception(
+                        "Failed to rollback PostgreSQL connection after runtime "
+                        "status synchronization error. projectId=%s",
+                        projectId,
+                    )
                 logger.exception(
                     "Failed to refresh PostgreSQL runtime protocol statuses while loading project. "
                     "projectId=%s",
