@@ -886,7 +886,26 @@ class ProjectService:
             )
 
         try:
-            protocol = self.currentProject.getProtocol(int(protocolId))
+            runtimeMapper = getattr(
+                self.currentProject,
+                "mapper",
+                None,
+            )
+            selectRuntimeProtocol = getattr(
+                runtimeMapper,
+                "selectRuntimeProtocolById",
+                None,
+            )
+
+            if callable(selectRuntimeProtocol):
+                protocol = selectRuntimeProtocol(
+                    int(protocolId)
+                )
+            else:
+                protocol = self.currentProject.getProtocol(
+                    int(protocolId)
+                )
+
         except HTTPException:
             raise
         except Exception as e:
@@ -2214,7 +2233,15 @@ class ProjectService:
                 return False
 
         if loadWorkflowFromPostgresql and not validateConsistency:
-            if usingPostgresqlRuntimeProject and syncRuntimeStatuses:
+            needsRuntimeProject = (
+                    usingPostgresqlRuntimeProject
+                    and (
+                            syncRuntimeStatuses
+                            or usePostgresqlRuntimeWriteFallback
+                    )
+            )
+
+            if needsRuntimeProject:
                 self.loadProject(
                     dbProj,
                     mapper,
@@ -2230,7 +2257,8 @@ class ProjectService:
                     enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
 
-                syncRuntimeStatusesIfNeeded()
+                if syncRuntimeStatuses:
+                    syncRuntimeStatusesIfNeeded()
 
             project = self.loadProjectFromPostgresql(
                 dbProj=dbProj,
