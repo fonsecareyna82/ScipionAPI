@@ -1482,3 +1482,168 @@ class ProtocolGraphRepository:
             return int(float(value))
         except Exception:
             return None
+
+    def getPersistedOutputObjectByRuntimeId(
+            self,
+            mapper,
+            projectId: int,
+            runtimeObjectId: int,
+    ) -> Optional[Dict[str, Any]]:
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                o.id AS "objectId",
+                o."projectId",
+                o."protocolDbId",
+                p."protocolId",
+                o."scipionObjId" AS "runtimeObjectId",
+                o."parentObjectId",
+                o.name,
+                o.path,
+                o."className",
+                s.id AS "setId",
+                s."outputName"
+              FROM scipion_objects o
+              JOIN protocols p
+                ON p."projectId" = o."projectId"
+               AND p.id = o."protocolDbId"
+         LEFT JOIN scipion_sets s
+                ON s."projectId" = o."projectId"
+               AND s."objectId" = o.id
+             WHERE o."projectId" = %s
+               AND o."scipionObjId" = %s
+             ORDER BY
+                CASE WHEN o."parentObjectId" IS NULL THEN 0 ELSE 1 END,
+                o.id
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        if not row:
+            return None
+
+        result = dict(row)
+
+        if not result.get("outputName"):
+            path = str(result.get("path") or result.get("name") or "")
+            result["outputName"] = path.split(".", 1)[0]
+
+        return result
+
+    def insertImportedOutputRelation(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+            relationName: str,
+            parentRuntimeObjectId: int,
+            childRuntimeObjectId: int,
+            parentExtended=None,
+            childExtended=None,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        parentObject = self.getPersistedOutputObjectByRuntimeId(
+            mapper=mapper,
+            projectId=projectId,
+            runtimeObjectId=parentRuntimeObjectId,
+        )
+
+        if not parentObject:
+            return {
+                "saved": False,
+                "reason": "parent_output_not_found",
+            }
+
+        childObject = self.getPersistedOutputObjectByRuntimeId(
+            mapper=mapper,
+            projectId=projectId,
+            runtimeObjectId=childRuntimeObjectId,
+        )
+
+        if not childObject:
+            return {
+                "saved": False,
+                "reason": "child_output_not_found",
+            }
+
+        relationMetadata = dict(metadata or {})
+        relationMetadata.update({
+            "creatorProtocolDbId": int(creatorProtocolDbId),
+            "creatorProtocolId": str(creatorProtocolId),
+            "parentProtocolDbId": int(parentObject["protocolDbId"]),
+            "parentProtocolId": str(parentObject["protocolId"]),
+            "parentOutputName": parentObject.get("outputName"),
+            "childProtocolDbId": int(childObject["protocolDbId"]),
+            "childProtocolId": str(childObject["protocolId"]),
+            "childOutputName": childObject.get("outputName"),
+        })
+
+        with mapper.db.transaction():
+            mapper.db.execute(
+                """
+                INSERT INTO scipion_relations (
+                    "projectId",
+                    name,
+                    "creatorObjId",
+                    "parentObjId",
+                    "childObjId",
+                    "parentExtended",
+                    "childExtended"
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(projectId),
+                    relationName,
+                    int(creatorProtocolId),
+                    int(parentRuntimeObjectId),
+                    int(childRuntimeObjectId),
+                    parentExtended,
+                    childExtended,
+                ),
+                commit=False,
+            )
+
+            mapper.db.execute(
+                """
+                INSERT INTO scipion_object_relations (
+                    "projectId",
+                    "creatorObjectId",
+                    "parentObjectId",
+                    "childObjectId",
+                    name,
+                    "parentExtended",
+                    "childExtended",
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    int(projectId),
+                    int(parentObject["objectId"]),
+                    int(parentObject["objectId"]),
+                    int(childObject["objectId"]),
+                    relationName,
+                    parentExtended,
+                    childExtended,
+                    json.dumps(relationMetadata),
+                ),
+                commit=False,
+            )
+
+        return {
+            "saved": True,
+            "relationName": relationName,
+            "creatorProtocolId": str(creatorProtocolId),
+            "parentObjectId": int(parentObject["objectId"]),
+            "parentRuntimeObjectId": int(parentRuntimeObjectId),
+            "parentOutputName": parentObject.get("outputName"),
+            "childObjectId": int(childObject["objectId"]),
+            "childRuntimeObjectId": int(childRuntimeObjectId),
+            "childOutputName": childObject.get("outputName"),
+        }
