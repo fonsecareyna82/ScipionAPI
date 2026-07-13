@@ -44,6 +44,13 @@ class RuntimeProtocolStatusSyncService:
         "scheduled",
     }
 
+    TERMINAL_STATUS_TEXTS = {
+        "finished",
+        "failed",
+        "aborted",
+        "interactive",
+    }
+
     @staticmethod
     def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
         try:
@@ -144,8 +151,25 @@ class RuntimeProtocolStatusSyncService:
             params = {}
 
         params = dict(params)
+
+        storedMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(storedMetadata, dict):
+            storedMetadata = {}
+
+        runtimeMetadata = dict(storedMetadata)
+        currentMetadata = self.buildRuntimeMetadata(
+            protocol
+        )
+
+        for key, value in currentMetadata.items():
+            if value is not None:
+                runtimeMetadata[key] = value
+
         params[self.RUNTIME_METADATA_KEY] = (
-            self.buildRuntimeMetadata(protocol)
+            runtimeMetadata
         )
 
         return params
@@ -252,7 +276,8 @@ class RuntimeProtocolStatusSyncService:
 
         if not projectPath:
             raise RuntimeError(
-                "Cannot resolve current project path for PostgreSQL runtime status sync"
+                "Cannot resolve current project path for "
+                "PostgreSQL runtime status sync"
             )
 
         runDbPath = self.resolveRuntimeRunDbPath(
@@ -267,9 +292,6 @@ class RuntimeProtocolStatusSyncService:
         )
 
         runtimeStatus = runtimeProtocol.getStatus()
-        runtimeMetadata = self.buildRuntimeMetadata(
-            runtimeProtocol
-        )
 
         row = mapper.getProjectProtocolByProtocolId(
             projectId=projectId,
@@ -279,66 +301,117 @@ class RuntimeProtocolStatusSyncService:
         if not row:
             raise RuntimeError(
                 f"PostgreSQL protocol row not found. "
-                f"projectId={projectId} protocolId={protocolId}"
+                f"projectId={projectId} "
+                f"protocolId={protocolId}"
             )
 
-        previousStatus = str(
+        previousStatusText = str(
             row.get("status") or ""
         ).strip().lower()
 
-        registerOutputs = (
-                previousStatus in self.ACTIVE_STATUS_TEXTS
+        runtimeStatusText = str(
+            runtimeStatus or ""
+        ).strip().lower()
+
+        persistedStatus = (
+            self.mergeRuntimeProtocolStatus(
+                storedStatus=row.get("status"),
+                runtimeStatus=runtimeStatus,
+            )
         )
 
-        fallbackStatus = self.mergeRuntimeProtocolStatus(
-            storedStatus=row.get("status"),
-            runtimeStatus=runtimeStatus,
+        params = self.mergeRuntimeMetadata(
+            row.get("params"),
+            runtimeProtocol,
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        transitionedToTerminal = (
+                previousStatusText
+                in self.ACTIVE_STATUS_TEXTS
+                and runtimeStatusText
+                in self.TERMINAL_STATUS_TEXTS
         )
 
         outputSync = None
 
-        try:
-            outputSync = syncRuntimeProtocolCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                registerOutputs=registerOutputs,
-            )
+        if transitionedToTerminal:
+            try:
+                outputSync = syncRuntimeProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    registerOutputs=True,
+                )
 
-        except Exception:
-            logger.exception(
-                "Failed to sync PostgreSQL runtime protocol from run.db. "
-                "Falling back to status and timing update. "
-                "projectId=%s protocolId=%s status=%s",
-                projectId,
-                protocolId,
-                runtimeStatus,
-            )
+            except Exception:
+                logger.exception(
+                    "Failed to perform final PostgreSQL runtime sync. "
+                    "Falling back to status and timing update. "
+                    "projectId=%s protocolId=%s status=%s",
+                    projectId,
+                    protocolId,
+                    runtimeStatus,
+                )
 
-            params = self.mergeRuntimeMetadata(
-                row.get("params"),
-                runtimeProtocol,
-            )
+                mapper.updateProtocol({
+                    "id": row["id"],
+                    "status": persistedStatus,
+                    "params": json.dumps(
+                        params,
+                        ensure_ascii=False,
+                    ),
+                })
 
+        else:
+            # Fast path used by the periodic project refresh.
+            #
+            # A launched/running/scheduled protocol only needs its current
+            # state and timing metadata updated. Steps and outputs are synced
+            # when the protocol reaches a terminal state.
             mapper.updateProtocol({
                 "id": row["id"],
-                "status": fallbackStatus,
+                "status": persistedStatus,
                 "params": json.dumps(
                     params,
                     ensure_ascii=False,
                 ),
             })
 
-        persistedRow = mapper.getProjectProtocolByProtocolId(
-            projectId=projectId,
-            protocolId=protocolId,
+        persistedRow = (
+            mapper.getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=protocolId,
+            )
         )
 
-        persistedStatus = (
-            persistedRow.get("status")
-            if persistedRow
-            else runtimeStatus
-        )
+        if persistedRow:
+            persistedStatus = persistedRow.get(
+                "status"
+            )
+
+            persistedParams = (
+                    persistedRow.get("params") or {}
+            )
+
+            if isinstance(persistedParams, str):
+                try:
+                    persistedParams = json.loads(
+                        persistedParams
+                    )
+                except Exception:
+                    persistedParams = {}
+
+            if isinstance(persistedParams, dict):
+                runtimeMetadata = (
+                        persistedParams.get(
+                            self.RUNTIME_METADATA_KEY
+                        )
+                        or runtimeMetadata
+                )
 
         return {
             "projectId": projectId,
@@ -346,9 +419,11 @@ class RuntimeProtocolStatusSyncService:
             "runDbPath": runDbPath,
             "status": persistedStatus,
             "runtimeMetadata": runtimeMetadata,
+            "transitionedToTerminal": (
+                transitionedToTerminal
+            ),
             "outputSync": outputSync,
         }
-
 
     def syncActivePostgresqlRuntimeProtocolStatuses(
             self,
