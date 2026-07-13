@@ -26,6 +26,10 @@
 import logging
 from typing import Any, Callable, Dict, Optional
 
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
+
 from fastapi import HTTPException, status
 from pyworkflow.protocol import (
     MODE_RESUME,
@@ -80,6 +84,32 @@ class RuntimeProtocolLaunchService:
         executeMode = modeAliases.get(executeMode, executeMode)
         params = params or {}
 
+        usingPostgresqlRuntime = (
+            usesPostgresqlRuntimeCallback()
+        )
+
+        elapsedBeforeLaunchSeconds = 0.0
+
+        if (
+                usingPostgresqlRuntime
+                and executeMode
+                in {"launch", "restart"}
+                and protocolId
+                not in (None, "")
+        ):
+            runtimeStatusSyncService = (
+                RuntimeProtocolStatusSyncService()
+            )
+
+            elapsedBeforeLaunchSeconds = (
+                runtimeStatusSyncService
+                .getStoredElapsedTimeSeconds(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
         allowedModes = {"launch", "restart", "schedule", "stop"}
         if executeMode not in allowedModes:
             raise HTTPException(
@@ -112,7 +142,6 @@ class RuntimeProtocolLaunchService:
                 detail=errors,
             )
 
-        usingPostgresqlRuntime = usesPostgresqlRuntimeCallback()
         postgresqlLaunchPointerReport = None
 
         if usingPostgresqlRuntime:
@@ -184,6 +213,9 @@ class RuntimeProtocolLaunchService:
             protocolId=protocolId,
             protocol=protocol,
             executeMode=executeMode,
+            elapsedBeforeLaunchSeconds=(
+                elapsedBeforeLaunchSeconds
+            ),
             currentProject=currentProject,
             usingPostgresqlRuntime=usingPostgresqlRuntime,
             postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
@@ -344,6 +376,7 @@ class RuntimeProtocolLaunchService:
             protocolId,
             protocol,
             executeMode,
+            elapsedBeforeLaunchSeconds: float,
             currentProject,
             usingPostgresqlRuntime: bool,
             postgresqlLaunchPointerReport: Optional[Dict[str, Any]],
@@ -401,6 +434,28 @@ class RuntimeProtocolLaunchService:
 
                     currentProject._storeProtocol(protocol)
 
+                    runtimeStatusSyncService = (
+                        RuntimeProtocolStatusSyncService()
+                    )
+
+                    elapsedTiming = (
+                        runtimeStatusSyncService
+                        .markProtocolLaunched(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=(
+                                launchedProtocolId
+                            ),
+                            baseElapsedTimeSeconds=(
+                                elapsedBeforeLaunchSeconds
+                            ),
+                            resetElapsed=(
+                                executeMode
+                                == "restart"
+                            ),
+                        )
+                    )
+
                     return {
                         "protocols": 1,
                         "dependencies": 0,
@@ -409,6 +464,7 @@ class RuntimeProtocolLaunchService:
                         "protocolId": str(launchedProtocolId),
                         "protocolStatus": STATUS_LAUNCHED,
                         "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
+                        "elapsedTiming": elapsedTiming,
                     }
 
             if usingPostgresqlRuntime:
