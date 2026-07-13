@@ -414,6 +414,28 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return None
 
+    def selectRuntimeProtocolById(self, objId):
+        """
+        Return a fully hydrated protocol for runtime operations.
+
+        Prefer the SQLite compatibility mapper while it exists because it contains
+        the complete Scipion protocol object, including pointers, internal
+        attributes and outputs. The returned protocol is attached to this
+        PostgreSQL runtime mapper so subsequent writes continue going through
+        PostgreSQL and the configured write fallback.
+        """
+        protocol = self._selectByIdFromReadFallback(objId)
+
+        if isinstance(protocol, Protocol):
+            return self._attachRuntimeContext(protocol)
+
+        protocol = self._selectProtocolByIdFromPostgresql(objId)
+
+        if protocol is not None:
+            return self._attachRuntimeContext(protocol)
+
+        return None
+
     def _selectByIdFromReadFallback(self, objId):
         if self.readFallbackMapper is None:
             return None
