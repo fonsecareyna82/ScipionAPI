@@ -2420,6 +2420,79 @@ class ProjectService:
         dbProj["name"] = projectPath
         return dbProj
 
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            enableWriteFallback: bool = True,
+    ) -> Optional[dict]:
+        """
+        Load only the PostgreSQL-aware Scipion runtime context required
+        to mutate or execute protocols.
+
+        This path intentionally avoids:
+          - loading the complete runs graph;
+          - building the project graph response;
+          - loading the legacy ScipionProject first and replacing it later.
+        """
+        dbProj = self.getProjectDbRow(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+
+        if not dbProj:
+            return None
+
+        projectPath = str(
+            dbProj["name"]
+        )
+
+        postgresqlProject = PostgresqlProject(
+            domain=pyworkflow.Config.getDomain(),
+            path=projectPath,
+            projectId=projectId,
+            flatMapper=mapper,
+            enableReadFallback=True,
+            enableWriteFallback=(
+                enableWriteFallback
+            ),
+        )
+
+        try:
+            postgresqlProject.load(
+                chdir=True
+            )
+
+        except Exception:
+            try:
+                postgresqlProject.closeMapper()
+            except Exception:
+                logger.debug(
+                    "Could not close PostgreSQL runtime project "
+                    "after mutation-context load failure. "
+                    "projectId=%s",
+                    projectId,
+                    exc_info=True,
+                )
+
+            raise
+
+        self.currentProject = (
+            postgresqlProject
+        )
+
+        logger.info(
+            "Loaded lightweight PostgreSQL runtime mutation context. "
+            "projectId=%s path=%s writeFallback=%s",
+            projectId,
+            projectPath,
+            enableWriteFallback,
+        )
+
+        return dbProj
+
     def loadProjectForThumbnails(self, dbProj: dict):
         projPath = Path(dbProj["name"])
         self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
