@@ -1632,6 +1632,17 @@ class ProtocolGraphRepository:
             "childOutputName": childObject.get("outputName"),
         })
 
+        legacyParentExtended = (
+            ""
+            if parentExtended is None
+            else str(parentExtended)
+        )
+        legacyChildExtended = (
+            ""
+            if childExtended is None
+            else str(childExtended)
+        )
+
         with mapper.db.transaction():
             mapper.db.execute(
                 """
@@ -1652,8 +1663,8 @@ class ProtocolGraphRepository:
                     int(creatorProtocolId),
                     int(parentRuntimeObjectId),
                     int(childRuntimeObjectId),
-                    parentExtended,
-                    childExtended,
+                    legacyParentExtended,
+                    legacyChildExtended,
                 ),
                 commit=False,
             )
