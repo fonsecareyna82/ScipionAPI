@@ -37,6 +37,9 @@ from pyworkflow.protocol.params import (
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
+from app.backend.runtime.protocol_input_ref_builder_service import (
+    RuntimeProtocolInputRefBuilderService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,10 +216,28 @@ class RuntimeProtocolDuplicateService:
             if not sourceRow:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Source protocol row was not found: %s" % sourceProtocolId,
+                    detail="Source protocol row was not found: %s"
+                           % sourceProtocolId,
                 )
 
-            protocolClassName = sourceRow.get("protocolClassName")
+            sourceInputRefsRepair = self.refreshSourceProtocolInputRefs(
+                mapper=mapper,
+                projectId=projectId,
+                sourceProtocol=sourceProtocol,
+                sourceProtocolDbId=sourceProtocolDbId,
+            )
+
+            logger.info(
+                "Refreshed source protocol input refs before duplicate. "
+                "projectId=%s protocolId=%s report=%s",
+                projectId,
+                sourceScipionProtocolId,
+                sourceInputRefsRepair,
+            )
+
+            protocolClassName = sourceRow.get(
+                "protocolClassName"
+            )
             sourceParams = sourceRow.get("params") or {}
 
             params = self.buildDuplicatedProtocolParams(
@@ -766,6 +787,115 @@ class RuntimeProtocolDuplicateService:
             "dependenciesSaved": dependenciesSaved,
             "parentProtocolIds": parentProtocolIds,
             "parentProtocolDbIds": parentProtocolDbIds,
+        }
+
+    def refreshSourceProtocolInputRefs(
+            self,
+            mapper,
+            projectId: int,
+            sourceProtocol,
+            sourceProtocolDbId: int,
+    ) -> Dict[str, Any]:
+        """
+        Rebuild the source protocol input refs from its fully hydrated Scipion
+        runtime object before duplicating it.
+
+        This repairs imported protocols whose MultiPointer items were previously
+        persisted with the same itemIndex.
+        """
+        rows = mapper.db.fetchAll(
+            """
+            SELECT id, "protocolId"
+              FROM protocols
+             WHERE "projectId" = %s
+             ORDER BY id
+            """,
+            (int(projectId),),
+        )
+
+        protocolDbIdByScipionId = {
+            str(row["protocolId"]): int(row["id"])
+            for row in rows or []
+            if row.get("protocolId") not in (None, "")
+            and row.get("id") not in (None, "")
+        }
+
+        sourceProtocolId = self._getScipionObjectId(
+            sourceProtocol
+        )
+
+        if sourceProtocolId is None:
+            raise ValueError(
+                "Cannot rebuild source input refs without protocol id"
+            )
+
+        protocolDbIdByScipionId[
+            str(sourceProtocolId)
+        ] = int(sourceProtocolDbId)
+
+        inputRefBuilder = (
+            RuntimeProtocolInputRefBuilderService()
+        )
+
+        inputRefs = (
+            inputRefBuilder
+            .buildProtocolInputRefsForPostgresql(
+                projectId=projectId,
+                protocol=sourceProtocol,
+                protocolDbIdByScipionId=protocolDbIdByScipionId,
+            )
+        )
+
+        parentProtocolDbIds = []
+        parentProtocolIds = []
+
+        for ref in inputRefs:
+            parentProtocolDbId = ref.get(
+                "parentProtocolDbId"
+            )
+            parentProtocolId = ref.get(
+                "parentProtocolId"
+            )
+
+            if parentProtocolDbId not in (None, ""):
+                parentProtocolDbId = int(
+                    parentProtocolDbId
+                )
+
+                if parentProtocolDbId not in parentProtocolDbIds:
+                    parentProtocolDbIds.append(
+                        parentProtocolDbId
+                    )
+
+            if parentProtocolId not in (None, ""):
+                parentProtocolId = int(
+                    parentProtocolId
+                )
+
+                if parentProtocolId not in parentProtocolIds:
+                    parentProtocolIds.append(
+                        parentProtocolId
+                    )
+
+        graphRepository = ProtocolGraphRepository()
+
+        graphReport = graphRepository.replaceInputGraphForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(sourceProtocolDbId),
+            parentProtocolDbIds=parentProtocolDbIds,
+            parentProtocolIds=parentProtocolIds,
+            inputRefs=inputRefs,
+        )
+
+        return {
+            "protocolId": str(sourceProtocolId),
+            "protocolDbId": int(sourceProtocolDbId),
+            "inputRefs": len(inputRefs),
+            "dependencies": graphReport.get(
+                "dependencies",
+                0,
+            ),
         }
 
     def restorePostgresqlPointerInputsBeforeCopy(
