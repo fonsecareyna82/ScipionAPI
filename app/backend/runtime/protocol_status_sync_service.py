@@ -51,6 +51,8 @@ class RuntimeProtocolStatusSyncService:
         "interactive",
     }
 
+    FINAL_SYNC_PENDING_KEY = "finalSyncPending"
+
     @staticmethod
     def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
         try:
@@ -329,16 +331,26 @@ class RuntimeProtocolStatusSyncService:
             self.RUNTIME_METADATA_KEY
         ) or {}
 
-        transitionedToTerminal = (
-                previousStatusText
-                in self.ACTIVE_STATUS_TEXTS
-                and runtimeStatusText
+        finalSyncPending = bool(
+            runtimeMetadata.get(
+                self.FINAL_SYNC_PENDING_KEY,
+                False,
+            )
+        )
+
+        needsFinalSync = (
+                runtimeStatusText
                 in self.TERMINAL_STATUS_TEXTS
+                and (
+                        previousStatusText
+                        in self.ACTIVE_STATUS_TEXTS
+                        or finalSyncPending
+                )
         )
 
         outputSync = None
 
-        if transitionedToTerminal:
+        if needsFinalSync:
             try:
                 outputSync = syncRuntimeProtocolCallback(
                     mapper=mapper,
@@ -346,6 +358,42 @@ class RuntimeProtocolStatusSyncService:
                     protocolId=protocolId,
                     registerOutputs=True,
                 )
+
+                syncedRow = mapper.getProjectProtocolByProtocolId(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+
+                if syncedRow:
+                    syncedParams = self.mergeRuntimeMetadata(
+                        syncedRow.get("params"),
+                        runtimeProtocol,
+                    )
+
+                    syncedRuntimeMetadata = (
+                            syncedParams.get(
+                                self.RUNTIME_METADATA_KEY
+                            )
+                            or {}
+                    )
+
+                    if isinstance(syncedRuntimeMetadata, dict):
+                        syncedRuntimeMetadata.pop(
+                            self.FINAL_SYNC_PENDING_KEY,
+                            None,
+                        )
+
+                        syncedParams[
+                            self.RUNTIME_METADATA_KEY
+                        ] = syncedRuntimeMetadata
+
+                    mapper.updateProtocol({
+                        "id": syncedRow["id"],
+                        "params": json.dumps(
+                            syncedParams,
+                            ensure_ascii=False,
+                        ),
+                    })
 
             except Exception:
                 logger.exception(
@@ -356,6 +404,24 @@ class RuntimeProtocolStatusSyncService:
                     protocolId,
                     runtimeStatus,
                 )
+
+                try:
+                    mapper.db.conn.rollback()
+                except Exception:
+                    logger.exception(
+                        "Failed to rollback PostgreSQL connection after final "
+                        "runtime sync error. projectId=%s protocolId=%s",
+                        projectId,
+                        protocolId,
+                    )
+
+                runtimeMetadata[
+                    self.FINAL_SYNC_PENDING_KEY
+                ] = True
+
+                params[
+                    self.RUNTIME_METADATA_KEY
+                ] = runtimeMetadata
 
                 mapper.updateProtocol({
                     "id": row["id"],
@@ -458,7 +524,14 @@ class RuntimeProtocolStatusSyncService:
                             'aborted',
                             'interactive'
                         )
-                        AND (params::jsonb -> %s) IS NULL
+                        AND (
+                            (params::jsonb -> %s) IS NULL
+                            OR (
+                                params::jsonb
+                                -> %s
+                                ->> 'finalSyncPending'
+                            ) = 'true'
+                        )
                     )
                )
              ORDER BY "protocolId"
@@ -466,7 +539,8 @@ class RuntimeProtocolStatusSyncService:
             (
                 projectId,
                 self.RUNTIME_METADATA_KEY,
-            ),
+                self.RUNTIME_METADATA_KEY,
+            )
         )
 
         report = {
@@ -522,6 +596,15 @@ class RuntimeProtocolStatusSyncService:
                     report["unchanged"].append(item)
 
             except Exception as e:
+                try:
+                    mapper.db.conn.rollback()
+                except Exception:
+                    logger.exception(
+                        "Failed to rollback PostgreSQL connection after runtime "
+                        "protocol refresh error. projectId=%s protocolId=%s",
+                        projectId,
+                        protocolId,
+                    )
                 logger.debug(
                     "Could not refresh PostgreSQL runtime protocol status. projectId=%s protocolId=%s",
                     projectId,
