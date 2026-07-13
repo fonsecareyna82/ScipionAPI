@@ -137,12 +137,23 @@ class RuntimeProtocolInputRefBuilderService:
             return []
 
         refs: List[Dict[str, Any]] = []
+        nextItemIndexByInputName: Dict[str, int] = {}
 
         for inputName, pointer in inputAttributes:
-            pointerItems = self.iterProtocolInputPointers(pointer)
+            inputNameText = str(inputName)
+            pointerItems = self.iterProtocolInputPointers(
+                pointer
+            )
 
-            for itemIndex, pointerItem in enumerate(pointerItems):
-                targetObj = self.getPointerTargetObject(pointerItem)
+            itemIndex = nextItemIndexByInputName.get(
+                inputNameText,
+                0,
+            )
+
+            for pointerItem in pointerItems:
+                targetObj = self.getPointerTargetObject(
+                    pointerItem
+                )
 
                 if targetObj is None:
                     continue
@@ -157,24 +168,42 @@ class RuntimeProtocolInputRefBuilderService:
                     else None
                 )
                 parentProtocolDbId = (
-                    protocolDbIdByScipionId.get(parentProtocolIdText)
+                    protocolDbIdByScipionId.get(
+                        parentProtocolIdText
+                    )
                     if parentProtocolIdText is not None
                     else None
                 )
 
-                targetObjectId = self.getScipionObjectId(targetObj)
+                targetObjectId = self.getScipionObjectId(
+                    targetObj
+                )
 
                 refs.append({
                     "projectId": int(projectId),
                     "protocolDbId": int(protocolDbId),
                     "protocolId": protocolIdText,
-                    "inputName": str(inputName),
+                    "inputName": inputNameText,
                     "itemIndex": int(itemIndex),
                     "parentProtocolDbId": parentProtocolDbId,
                     "parentProtocolId": parentProtocolIdText,
-                    "parentOutputName": self.getPointerOutputName(pointerItem),
-                    "objectClassName": self.getScipionClassName(targetObj),
-                    "objectId": str(targetObjectId) if targetObjectId is not None else None,
+                    "parentOutputName": self.getPointerOutputName(
+                        pointerItem
+                    ),
+                    "objectClassName": self.getScipionClassName(
+                        targetObj
+                    ),
+                    "objectId": (
+                        str(targetObjectId)
+                        if targetObjectId is not None
+                        else None
+                    ),
                 })
+
+                itemIndex += 1
+
+            nextItemIndexByInputName[
+                inputNameText
+            ] = itemIndex
 
         return refs
