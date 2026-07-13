@@ -2449,6 +2449,7 @@ class ProjectService:
             runMap: Optional[Dict[str, Any]] = None,
             persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
             protocolStepSummaryByProtocolId: Optional[Dict[str, Dict[str, Any]]] = None,
+            inputRefsByProtocolId: Optional[Dict[str, List[Dict[str, Any]]]] = None,
             allowRuntimeFallback: bool = True,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
@@ -2457,6 +2458,7 @@ class ProjectService:
         liveRuns = runMap or {}
         persistedOutputsByProtocolId = persistedOutputsByProtocolId or {}
         protocolStepSummaryByProtocolId = protocolStepSummaryByProtocolId or {}
+        inputRefsByProtocolId = inputRefsByProtocolId or {}
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -2515,6 +2517,7 @@ class ProjectService:
             nodeId = str(rawNodeId)
             persistedOutputsByName = persistedOutputsByProtocolId.get(nodeId, {})
             stepSummary = protocolStepSummaryByProtocolId.get(nodeId, {}) or {}
+            persistedInputRefs = inputRefsByProtocolId.get(nodeId, [])
             nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
             childrenIds = list(nodeDeps.get("children") or [])
             parentIds = list(nodeDeps.get("parents") or [])
@@ -2750,6 +2753,53 @@ class ProjectService:
                     thumbnailUrl = None
                     thumbnailRebuildUrl = None
 
+            if not inputs:
+                for inputRef in persistedInputRefs:
+                    inputName = str(
+                        inputRef.get("inputName") or ""
+                    ).strip()
+
+                    if not inputName:
+                        continue
+
+                    parentProtocolId = inputRef.get("parentProtocolId")
+                    parentOutputName = str(
+                        inputRef.get("parentOutputName") or ""
+                    ).strip()
+                    objectId = inputRef.get("objectId")
+
+                    value = ""
+
+                    if parentProtocolId not in (None, ""):
+                        value = str(parentProtocolId)
+
+                        if parentOutputName:
+                            value = "%s.%s" % (
+                                value,
+                                parentOutputName,
+                            )
+                    elif objectId not in (None, ""):
+                        value = str(objectId)
+
+                    inputs.append({
+                        "name": inputName,
+                        "paramClass": "PointerParam",
+                        "pointerClass": str(
+                            inputRef.get("objectClassName") or ""
+                        ),
+                        "info": (
+                                parentOutputName
+                                or str(inputRef.get("objectClassName") or "")
+                        ),
+                        "value": value,
+                        "parentId": parentProtocolId,
+                        "itemIndex": int(
+                            inputRef.get("itemIndex") or 0
+                        ),
+                        "objectId": objectId,
+                        "persisted": True,
+                    })
+
             # Add persisted outputs even when there is no runtime protocol object.
             # If runtime already provided the output, only enrich that runtime output above.
             for outputName, persistedOutput in persistedOutputsByName.items():
@@ -2807,6 +2857,7 @@ class ProjectService:
         protocolRows: List[Dict[str, Any]] = []
         persistedOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
         protocolStepSummaryByProtocolId: Dict[str, Dict[str, Any]] = {}
+        inputRefsByProtocolId: Dict[str, List[Dict[str, Any]]] = {}
 
         if mapper is None:
             return {
@@ -2815,6 +2866,7 @@ class ProjectService:
                 "protocolRows": protocolRows,
                 "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
                 "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
+                "inputRefsByProtocolId": inputRefsByProtocolId,
             }
 
         try:
@@ -2834,6 +2886,31 @@ class ProjectService:
                 projectId,
             )
             dependencyMap = {}
+
+        try:
+            inputRefs = mapper.listProtocolInputRefs(
+                projectId
+            ) or []
+
+            for inputRef in inputRefs:
+                protocolId = str(
+                    inputRef.get("protocolId") or ""
+                ).strip()
+
+                if not protocolId:
+                    continue
+
+                inputRefsByProtocolId.setdefault(
+                    protocolId,
+                    [],
+                ).append(dict(inputRef))
+
+        except Exception:
+            logger.exception(
+                "Failed to load protocol input refs from PostgreSQL for project %s",
+                projectId,
+            )
+            inputRefsByProtocolId = {}
 
         try:
             getStepSummary = getattr(
@@ -2877,6 +2954,7 @@ class ProjectService:
             "protocolRows": protocolRows,
             "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
             "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
+            "inputRefsByProtocolId": inputRefsByProtocolId,
         }
 
     def loadProject(
@@ -3026,6 +3104,7 @@ class ProjectService:
             runMap=runMap,
             persistedOutputsByProtocolId=persistedOutputsByProtocolId,
             protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
+            inputRefsByProtocolId=pgGraphData.get("inputRefsByProtocolId"),
             allowRuntimeFallback=False,
         )
 
@@ -3073,6 +3152,7 @@ class ProjectService:
             runMap={},
             persistedOutputsByProtocolId=pgGraphData["persistedOutputsByProtocolId"],
             protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
+            inputRefsByProtocolId=pgGraphData.get("inputRefsByProtocolId"),
             allowRuntimeFallback=False,
         )
 
