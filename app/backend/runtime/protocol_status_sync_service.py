@@ -26,6 +26,7 @@
 import json
 import logging
 import os
+import time
 from typing import Any, Callable, Dict, Optional
 
 from pyworkflow.protocol import STATUS_NEW
@@ -52,6 +53,14 @@ class RuntimeProtocolStatusSyncService:
     }
 
     FINAL_SYNC_PENDING_KEY = "finalSyncPending"
+    ELAPSED_UPDATED_AT_KEY = (
+        "elapsedUpdatedAtEpochSeconds"
+    )
+
+    ELAPSED_ACTIVE_STATUS_TEXTS = {
+        "launched",
+        "running",
+    }
 
     @staticmethod
     def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
@@ -105,6 +114,349 @@ class RuntimeProtocolStatusSyncService:
             return float(value)
         except Exception:
             return None
+
+    def normalizeParams(
+            self,
+            rawParams,
+    ) -> Dict[str, Any]:
+        params = rawParams or {}
+
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = {}
+
+        if not isinstance(params, dict):
+            params = {}
+
+        return dict(params)
+
+    def getStoredElapsedTimeSeconds(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> float:
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            return 0.0
+
+        params = self.normalizeParams(
+            row.get("params")
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(runtimeMetadata, dict):
+            return 0.0
+
+        elapsedSeconds = self.toSeconds(
+            runtimeMetadata.get(
+                "elapsedTimeSeconds"
+            )
+        )
+
+        return max(
+            0.0,
+            float(elapsedSeconds or 0.0),
+        )
+
+    def markProtocolLaunched(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            baseElapsedTimeSeconds: float = 0.0,
+            resetElapsed: bool = False,
+    ) -> Dict[str, Any]:
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot initialize runtime elapsed time: "
+                "protocol row not found. "
+                f"projectId={projectId} "
+                f"protocolId={protocolId}"
+            )
+
+        params = self.normalizeParams(
+            row.get("params")
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(runtimeMetadata, dict):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(runtimeMetadata)
+
+        elapsedSeconds = (
+            0.0
+            if resetElapsed
+            else max(
+                0.0,
+                float(
+                    baseElapsedTimeSeconds
+                    or 0.0
+                ),
+            )
+        )
+
+        runtimeMetadata[
+            "elapsedTimeSeconds"
+        ] = elapsedSeconds
+
+        runtimeMetadata[
+            self.ELAPSED_UPDATED_AT_KEY
+        ] = time.time()
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "params": json.dumps(
+                params,
+                ensure_ascii=False,
+            ),
+        })
+
+        return {
+            "protocolId": str(protocolId),
+            "elapsedTimeSeconds": elapsedSeconds,
+            "resetElapsed": bool(resetElapsed),
+        }
+
+    def updateElapsedTimeMetadata(
+            self,
+            params: Dict[str, Any],
+            statusValue,
+            nowEpochSeconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        params = self.normalizeParams(params)
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(runtimeMetadata, dict):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(runtimeMetadata)
+
+        elapsedSeconds = self.toSeconds(
+            runtimeMetadata.get(
+                "elapsedTimeSeconds"
+            )
+        )
+
+        elapsedSeconds = max(
+            0.0,
+            float(elapsedSeconds or 0.0),
+        )
+
+        previousUpdate = self.toSeconds(
+            runtimeMetadata.get(
+                self.ELAPSED_UPDATED_AT_KEY
+            )
+        )
+
+        nowEpochSeconds = float(
+            nowEpochSeconds
+            if nowEpochSeconds is not None
+            else time.time()
+        )
+
+        if (
+                previousUpdate is not None
+                and nowEpochSeconds
+                >= float(previousUpdate)
+        ):
+            elapsedSeconds += (
+                    nowEpochSeconds
+                    - float(previousUpdate)
+            )
+
+        statusText = str(
+            statusValue or ""
+        ).strip().lower()
+
+        if (
+                statusText
+                in self.ELAPSED_ACTIVE_STATUS_TEXTS
+        ):
+            runtimeMetadata[
+                self.ELAPSED_UPDATED_AT_KEY
+            ] = nowEpochSeconds
+
+        else:
+            runtimeMetadata.pop(
+                self.ELAPSED_UPDATED_AT_KEY,
+                None,
+            )
+
+        runtimeMetadata[
+            "elapsedTimeSeconds"
+        ] = elapsedSeconds
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        return params
+
+    def captureProtocolElapsedState(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Any]:
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            return {
+                "elapsedTimeSeconds": 0.0,
+                self.ELAPSED_UPDATED_AT_KEY: None,
+            }
+
+        params = self.normalizeParams(
+            row.get("params")
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(runtimeMetadata, dict):
+            runtimeMetadata = {}
+
+        return {
+            "elapsedTimeSeconds": max(
+                0.0,
+                float(
+                    self.toSeconds(
+                        runtimeMetadata.get(
+                            "elapsedTimeSeconds"
+                        )
+                    )
+                    or 0.0
+                ),
+            ),
+            self.ELAPSED_UPDATED_AT_KEY: (
+                self.toSeconds(
+                    runtimeMetadata.get(
+                        self.ELAPSED_UPDATED_AT_KEY
+                    )
+                )
+            ),
+        }
+
+    def finalizeProtocolElapsedTime(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            elapsedSnapshot: Dict[str, Any],
+            stoppedAtEpochSeconds: float,
+    ) -> Dict[str, Any]:
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot finalize runtime elapsed time: "
+                "protocol row not found. "
+                f"projectId={projectId} "
+                f"protocolId={protocolId}"
+            )
+
+        params = self.normalizeParams(
+            row.get("params")
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(runtimeMetadata, dict):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(runtimeMetadata)
+
+        elapsedSeconds = max(
+            0.0,
+            float(
+                elapsedSnapshot.get(
+                    "elapsedTimeSeconds",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+
+        previousUpdate = self.toSeconds(
+            elapsedSnapshot.get(
+                self.ELAPSED_UPDATED_AT_KEY
+            )
+        )
+
+        stoppedAtEpochSeconds = float(
+            stoppedAtEpochSeconds
+        )
+
+        if (
+                previousUpdate is not None
+                and stoppedAtEpochSeconds
+                >= float(previousUpdate)
+        ):
+            elapsedSeconds += (
+                    stoppedAtEpochSeconds
+                    - float(previousUpdate)
+            )
+
+        runtimeMetadata[
+            "elapsedTimeSeconds"
+        ] = elapsedSeconds
+
+        runtimeMetadata.pop(
+            self.ELAPSED_UPDATED_AT_KEY,
+            None,
+        )
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "params": json.dumps(
+                params,
+                ensure_ascii=False,
+            ),
+        })
+
+        return {
+            "protocolId": str(protocolId),
+            "elapsedTimeSeconds": elapsedSeconds,
+        }
 
     def buildRuntimeMetadata(
             self,
@@ -166,9 +518,33 @@ class RuntimeProtocolStatusSyncService:
             protocol
         )
 
-        for key, value in currentMetadata.items():
-            if value is not None:
-                runtimeMetadata[key] = value
+        cpuTimeSeconds = currentMetadata.get(
+            "cpuTimeSeconds"
+        )
+
+        if cpuTimeSeconds is not None:
+            runtimeMetadata[
+                "cpuTimeSeconds"
+            ] = cpuTimeSeconds
+
+        # Scipion's native getElapsedTime() preserves the original
+        # initTime in MODE_RESUME and therefore includes paused time.
+        # Use it only to initialize old protocols that do not yet have
+        # ScipionWeb-managed elapsed metadata.
+        if (
+                "elapsedTimeSeconds"
+                not in runtimeMetadata
+        ):
+            nativeElapsedSeconds = (
+                currentMetadata.get(
+                    "elapsedTimeSeconds"
+                )
+            )
+
+            if nativeElapsedSeconds is not None:
+                runtimeMetadata[
+                    "elapsedTimeSeconds"
+                ] = nativeElapsedSeconds
 
         params[self.RUNTIME_METADATA_KEY] = (
             runtimeMetadata
@@ -327,6 +703,11 @@ class RuntimeProtocolStatusSyncService:
             runtimeProtocol,
         )
 
+        params = self.updateElapsedTimeMetadata(
+            params=params,
+            statusValue=persistedStatus,
+        )
+
         runtimeMetadata = params.get(
             self.RUNTIME_METADATA_KEY
         ) or {}
@@ -383,11 +764,36 @@ class RuntimeProtocolStatusSyncService:
                             or {}
                     )
 
-                    if isinstance(syncedRuntimeMetadata, dict):
+                    if isinstance(
+                            syncedRuntimeMetadata,
+                            dict,
+                    ):
                         syncedRuntimeMetadata.pop(
                             self.FINAL_SYNC_PENDING_KEY,
                             None,
                         )
+
+                        syncedRuntimeMetadata[
+                            "elapsedTimeSeconds"
+                        ] = runtimeMetadata.get(
+                            "elapsedTimeSeconds",
+                            0.0,
+                        )
+
+                        if (
+                                self.ELAPSED_UPDATED_AT_KEY
+                                in runtimeMetadata
+                        ):
+                            syncedRuntimeMetadata[
+                                self.ELAPSED_UPDATED_AT_KEY
+                            ] = runtimeMetadata[
+                                self.ELAPSED_UPDATED_AT_KEY
+                            ]
+                        else:
+                            syncedRuntimeMetadata.pop(
+                                self.ELAPSED_UPDATED_AT_KEY,
+                                None,
+                            )
 
                         syncedParams[
                             self.RUNTIME_METADATA_KEY

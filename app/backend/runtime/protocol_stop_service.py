@@ -31,6 +31,9 @@ from typing import Any, Callable, Dict
 
 from fastapi import HTTPException, status
 from pyworkflow.protocol.constants import STATUS_SCHEDULED
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -208,6 +211,15 @@ class RuntimeProtocolStopService:
             scheduledStopped = []
             nativeStopped = []
 
+            runtimeElapsedService = (
+                RuntimeProtocolStatusSyncService()
+                if usingPostgresqlRuntime
+                else None
+            )
+
+            elapsedSnapshots = {}
+            stoppedAtByProtocolId = {}
+
             for protocol in resolvedProtocols:
                 protocolStatus = None
 
@@ -235,6 +247,25 @@ class RuntimeProtocolStopService:
                     "getObjId",
                     lambda: None,
                 )()
+
+                if (
+                        runtimeElapsedService
+                        is not None
+                        and protocolRuntimeId
+                        not in (None, "")
+                ):
+                    elapsedSnapshots[
+                        str(protocolRuntimeId)
+                    ] = (
+                        runtimeElapsedService
+                        .captureProtocolElapsedState(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=(
+                                protocolRuntimeId
+                            ),
+                        )
+                    )
 
                 isScheduledProtocol = (
                     usingPostgresqlRuntime
@@ -294,6 +325,16 @@ class RuntimeProtocolStopService:
                 )
 
                 if (
+                        runtimeElapsedService
+                        is not None
+                        and protocolRuntimeId
+                        not in (None, "")
+                ):
+                    stoppedAtByProtocolId[
+                        str(protocolRuntimeId)
+                    ] = time.time()
+
+                if (
                         usingPostgresqlRuntime
                         and pidBeforeStop
                         and self._isPidAlive(pidBeforeStop)
@@ -327,6 +368,7 @@ class RuntimeProtocolStopService:
                     )
 
             postgresqlSync = None
+            elapsedTimingReports = []
 
             if usingPostgresqlRuntime:
                 postgresqlSync = (
@@ -335,6 +377,55 @@ class RuntimeProtocolStopService:
                         projectId=projectId,
                         protocols=resolvedProtocols,
                         registerOutputs=False,
+                    )
+                )
+
+            elapsedTimingReports = []
+
+            for protocol in resolvedProtocols:
+                protocolRuntimeId = getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                protocolIdText = str(
+                    protocolRuntimeId
+                )
+
+                elapsedSnapshot = (
+                    elapsedSnapshots.get(
+                        protocolIdText
+                    )
+                )
+
+                stoppedAtEpochSeconds = (
+                    stoppedAtByProtocolId.get(
+                        protocolIdText
+                    )
+                )
+
+                if (
+                        elapsedSnapshot is None
+                        or stoppedAtEpochSeconds
+                        is None
+                ):
+                    continue
+
+                elapsedTimingReports.append(
+                    runtimeElapsedService
+                    .finalizeProtocolElapsedTime(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=(
+                            protocolRuntimeId
+                        ),
+                        elapsedSnapshot=(
+                            elapsedSnapshot
+                        ),
+                        stoppedAtEpochSeconds=(
+                            stoppedAtEpochSeconds
+                        ),
                     )
                 )
 
@@ -356,6 +447,9 @@ class RuntimeProtocolStopService:
                 postgresqlRuntimeSync=postgresqlSync,
                 scheduledStopped=scheduledStopped,
                 nativeStopped=nativeStopped,
+                postgresqlRuntimeElapsed=(
+                    elapsedTimingReports
+                ),
             )
 
         except Exception as exc:
