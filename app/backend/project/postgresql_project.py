@@ -23,12 +23,17 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
+from pyworkflow.protocol.constants import (
+    STATUS_SAVED,
+    STATUS_SCHEDULED,
+)
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
@@ -196,6 +201,228 @@ class PostgresqlProject(ScipionProject):
     # ---------------------------------------------------
     #               PROTOCOLS
     # --------------------------------------------------
+    def _getProtocolsDependencies(
+            self,
+            protocols,
+    ) -> str:
+        """
+        Check blocking protocol dependants using PostgreSQL instead of
+        rebuilding Scipion's complete runs graph.
+
+        This preserves the native Project semantics: a dependant protocol
+        blocks relaunch unless it is saved, scheduled, or included in the
+        same mutation group.
+        """
+        if not self.usingPostgresqlRuntimeMapper():
+            return super()._getProtocolsDependencies(
+                protocols
+            )
+
+        selectedProtocolIds = {
+            str(protocolId)
+            for protocolId in (
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+                for protocol in protocols or []
+            )
+            if protocolId not in (None, "")
+        }
+
+        if not selectedProtocolIds:
+            return ""
+
+        adjacency = (
+            self.postgresqlFlatMapper
+            .getProjectProtocolAdjacencyMap(
+                self.postgresqlProjectId
+            )
+        )
+
+        protocolRows = (
+            self.postgresqlFlatMapper
+            .getProtocols(
+                self.postgresqlProjectId
+            )
+            or []
+        )
+
+        rowsByProtocolId = {
+            str(row.get("protocolId")): row
+            for row in protocolRows
+            if row.get("protocolId")
+            not in (None, "")
+        }
+
+        nonBlockingStatuses = {
+            str(STATUS_SAVED)
+            .strip()
+            .lower(),
+
+            str(STATUS_SCHEDULED)
+            .strip()
+            .lower(),
+        }
+
+        errorParts = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolIdText = str(
+                protocolId
+            )
+
+            childProtocolIds = (
+                adjacency
+                .get(
+                    protocolIdText,
+                    {},
+                )
+                .get(
+                    "children",
+                    [],
+                )
+                or []
+            )
+
+            blockingChildren = []
+
+            for childProtocolId in childProtocolIds:
+                childProtocolIdText = str(
+                    childProtocolId
+                )
+
+                if (
+                        childProtocolIdText
+                        in selectedProtocolIds
+                ):
+                    continue
+
+                childRow = rowsByProtocolId.get(
+                    childProtocolIdText
+                )
+
+                if not childRow:
+                    continue
+
+                childStatus = str(
+                    childRow.get("status")
+                    or ""
+                ).strip().lower()
+
+                if (
+                        childStatus
+                        in nonBlockingStatuses
+                ):
+                    continue
+
+                blockingChildren.append(
+                    self._getPostgresqlProtocolLabel(
+                        childRow
+                    )
+                )
+
+            if not blockingChildren:
+                continue
+
+            try:
+                protocolLabel = (
+                    protocol.getRunName()
+                )
+            except Exception:
+                protocolLabel = (
+                    protocolIdText
+                )
+
+            errorParts.append(
+                "\n *%s* is referenced from:\n   - %s"
+                % (
+                    protocolLabel,
+                    "\n   - ".join(
+                        blockingChildren
+                    ),
+                )
+            )
+
+        return "".join(errorParts)
+
+    @staticmethod
+    def _getPostgresqlProtocolLabel(
+            protocolRow: Dict[str, Any],
+    ) -> str:
+        params = protocolRow.get(
+            "params"
+        ) or {}
+
+        if isinstance(params, str):
+            try:
+                params = json.loads(
+                    params
+                )
+            except Exception:
+                params = {}
+
+        if not isinstance(params, dict):
+            params = {}
+
+        for key in (
+                "runName",
+                "_runName",
+                "title",
+                "_title",
+        ):
+            value = params.get(key)
+
+            if isinstance(value, dict):
+                for valueKey in (
+                        "value",
+                        "editableValue",
+                        "default",
+                        "objValue",
+                        "_value",
+                ):
+                    if valueKey in value:
+                        value = value.get(
+                            valueKey
+                        )
+                        break
+
+            valueText = str(
+                value or ""
+            ).strip()
+
+            if valueText:
+                return valueText
+
+        className = str(
+            protocolRow.get(
+                "protocolClassName"
+            )
+            or "Protocol"
+        )
+
+        protocolId = str(
+            protocolRow.get(
+                "protocolId"
+            )
+            or ""
+        )
+
+        return "%s (%s)" % (
+            className,
+            protocolId,
+        )
+
     def stopProtocol(self, protocol):
         """
         Stop a PostgreSQL-runtime protocol through the SQLite compatibility

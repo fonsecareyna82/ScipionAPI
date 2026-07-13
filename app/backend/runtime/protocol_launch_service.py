@@ -179,14 +179,14 @@ class RuntimeProtocolLaunchService:
             queueParams = params.get("_queueParams")
             protocol.setQueueParams([queueName, queueParams])
 
-        if usingPostgresqlRuntime:
-            self._storePreparedPostgresqlRuntimeProtocol(
-                currentProject=currentProject,
-                protocol=protocol,
-                protocolId=protocolId,
-                projectId=projectId,
-                postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
-            )
+        if postgresqlLaunchPointerReport is not None:
+            postgresqlLaunchPointerReport[
+                "storedPreparedProtocol"
+            ] = False
+
+            postgresqlLaunchPointerReport[
+                "persistenceDeferredToNativeLaunch"
+            ] = True
 
         self._validateProtocol(
             protocol=protocol,
@@ -257,37 +257,6 @@ class RuntimeProtocolLaunchService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(e),
             ) from e
-
-    def _storePreparedPostgresqlRuntimeProtocol(
-            self,
-            *,
-            currentProject,
-            protocol,
-            protocolId,
-            projectId: int,
-            postgresqlLaunchPointerReport: Optional[Dict[str, Any]],
-    ) -> None:
-        try:
-            currentProject._storeProtocol(protocol)
-
-            if postgresqlLaunchPointerReport is not None:
-                postgresqlLaunchPointerReport["storedPreparedProtocol"] = True
-
-        except Exception as e:
-            logger.exception(
-                "Failed to persist PostgreSQL-prepared protocol pointers before launch. "
-                "projectId=%s protocolId=%s",
-                projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                        "Failed to persist PostgreSQL-prepared protocol pointers before launch: %s"
-                        % str(e)
-                ),
-            )
 
     def _validateProtocol(
             self,
