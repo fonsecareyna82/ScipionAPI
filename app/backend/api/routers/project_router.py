@@ -30,7 +30,7 @@ from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
-                                                    ProtocolWizardExecuteRequest)
+                                                    ProtocolWizardExecuteRequest, ProjectImportOut)
 from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
@@ -158,7 +158,7 @@ def createProject(
     return service.createProject(mapper, projectData, currentUser)
 
 
-@router.post("/import", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@router.post("/import", response_model=ProjectImportOut, status_code=status.HTTP_201_CREATED)
 def importProject(
     projectData: ProjectImportIn,
     currentUser=Depends(getCurrentUser),

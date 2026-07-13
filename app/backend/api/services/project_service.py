@@ -1456,6 +1456,7 @@ class ProjectService:
             projectId: int,
             refresh: bool = False,
             checkPid: bool = False,
+            strict: bool = False,
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
@@ -1476,6 +1477,7 @@ class ProjectService:
             shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
             refresh=refresh,
             checkPid=checkPid,
+            strict=strict
         )
 
     def syncProjectGraphAfterMutation(
@@ -1522,6 +1524,7 @@ class ProjectService:
                 projectId=projectId,
                 refresh=False,
                 checkPid=False,
+                strict=True,
             )
         finally:
             try:

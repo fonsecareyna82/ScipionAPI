@@ -74,6 +74,10 @@ class ProjectOut(BaseModel):
         orm_mode = True
 
 
+class ProjectImportOut(ProjectOut):
+    importReport: Dict[str, Any]
+
+
 class ProjectShareCreate(BaseModel):
     userIds = []
     permission: Optional[str] = "full"
