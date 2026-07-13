@@ -290,6 +290,11 @@ class RuntimeProtocolStatusSyncService:
                 previousStatus in self.ACTIVE_STATUS_TEXTS
         )
 
+        fallbackStatus = self.mergeRuntimeProtocolStatus(
+            storedStatus=row.get("status"),
+            runtimeStatus=runtimeStatus,
+        )
+
         outputSync = None
 
         try:
@@ -317,7 +322,7 @@ class RuntimeProtocolStatusSyncService:
 
             mapper.updateProtocol({
                 "id": row["id"],
-                "status": runtimeStatus,
+                "status": fallbackStatus,
                 "params": json.dumps(
                     params,
                     ensure_ascii=False,
@@ -343,7 +348,6 @@ class RuntimeProtocolStatusSyncService:
             "runtimeMetadata": runtimeMetadata,
             "outputSync": outputSync,
         }
-
 
 
     def syncActivePostgresqlRuntimeProtocolStatuses(
@@ -372,7 +376,15 @@ class RuntimeProtocolStatusSyncService:
                         'running',
                         'scheduled'
                     )
-                    OR COALESCE(params, '{}'::jsonb) -> %s IS NULL
+                    OR (
+                        LOWER(COALESCE(status, '')) IN (
+                            'finished',
+                            'failed',
+                            'aborted',
+                            'interactive'
+                        )
+                        AND COALESCE(params, '{}'::jsonb) -> %s IS NULL
+                    )
                )
              ORDER BY "protocolId"
             """,
