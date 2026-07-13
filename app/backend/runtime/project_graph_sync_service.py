@@ -26,6 +26,7 @@
 import logging
 from typing import Any, Callable, Dict, List, Set as TypingSet, Tuple
 
+from app.backend.runtime.project_relation_sync_service import RuntimeProjectRelationSyncService
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
@@ -55,7 +56,9 @@ class RuntimeProjectGraphSyncService:
             refresh: bool = False,
             checkPid: bool = False,
             strict: bool = False,
+            syncRelations: bool = False,
     ) -> Dict[str, Any]:
+        runtimeProjectRelationSyncService = RuntimeProjectRelationSyncService()
         if currentProject is None:
             raise RuntimeError("No current project loaded")
 
@@ -261,6 +264,22 @@ class RuntimeProjectGraphSyncService:
             outputSyncResults,
         )
 
+        relationReport = {
+            "relationsDeclared": 0,
+            "relations": 0,
+            "relationMissing": [],
+            "relationErrors": [],
+            "complete": True,
+        }
+
+        if syncRelations:
+            relationReport = runtimeProjectRelationSyncService.syncProjectRelations(
+                mapper=mapper,
+                projectId=projectId,
+                protocolsByScipionId=protocolsByScipionId,
+                protocolDbIdByScipionId=protocolDbIdByScipionId,
+            )
+
         fatalErrors = []
 
         fatalErrors.extend([
@@ -287,6 +306,22 @@ class RuntimeProjectGraphSyncService:
             for item in outputSyncErrors
         ])
 
+        fatalErrors.extend([
+            {
+                "kind": "relation",
+                **item,
+            }
+            for item in relationReport["relationMissing"]
+        ])
+
+        fatalErrors.extend([
+            {
+                "kind": "relation",
+                **item,
+            }
+            for item in relationReport["relationErrors"]
+        ])
+
         report = {
             "protocols": len(protocolDbIdByScipionId),
             "dependencies": int(savedEdges),
@@ -303,6 +338,10 @@ class RuntimeProjectGraphSyncService:
             "purgedProtocols": int(purgedProtocols or 0),
             "fatalErrors": fatalErrors,
             "complete": not fatalErrors,
+            "relationsDeclared": relationReport["relationsDeclared"],
+            "relations": relationReport["relations"],
+            "relationMissing": relationReport["relationMissing"],
+            "relationErrors": relationReport["relationErrors"],
         }
 
         if strict and fatalErrors:
