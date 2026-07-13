@@ -117,6 +117,9 @@ from app.backend.runtime import (
     RuntimeProtocolStopService,
     RuntimeProtocolRenameService,
 )
+from app.backend.runtime.project_import_service import (
+    RuntimeProjectImportService,
+)
 
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
@@ -1503,6 +1506,36 @@ class ProjectService:
                 detail=f"{actionLabel} succeeded but graph sync to PostgreSQL failed: {e}",
             )
 
+    def _migrateImportedProjectToPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            projectPath: str,
+    ) -> Dict[str, Any]:
+        project = self.loadProjectForThumbnails({
+            "name": projectPath,
+        })
+
+        try:
+            return self.syncProjectProtocolsAndDependencies(
+                mapper=mapper,
+                projectId=projectId,
+                refresh=False,
+                checkPid=False,
+            )
+        finally:
+            try:
+                project.closeMapper()
+            except Exception:
+                logger.debug(
+                    "Could not close imported project mapper. projectId=%s path=%s",
+                    projectId,
+                    projectPath,
+                    exc_info=True,
+                )
+
+            self.clearCurrentProject()
+
     def importProject(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1546,6 +1579,26 @@ class ProjectService:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Source path is not a valid Scipion project: {e}",
+            )
+
+        try:
+            description = importedProject.getComment() or ""
+        except Exception:
+            description = ""
+
+        try:
+            importedStatus = importedProject.getStatus()
+            statusValue = str(importedStatus) if importedStatus else "active"
+        except Exception:
+            statusValue = "active"
+
+        try:
+            importedProject.closeMapper()
+        except Exception:
+            logger.debug(
+                "Could not close source project mapper after validation. path=%s",
+                sourcePath,
+                exc_info=True,
             )
 
         copyProject = bool(getattr(projectData, "copyProject", True))
@@ -1607,92 +1660,48 @@ class ProjectService:
                 detail="Source and target project paths cannot be the same",
             )
 
-        targetPath.parent.mkdir(parents=True, exist_ok=True)
+        runtimeProjectImportService = RuntimeProjectImportService()
 
         try:
-            if copyProject:
-                shutil.copytree(str(sourcePath), str(targetPath), symlinks=True)
-            else:
-                targetPath.symlink_to(sourcePath, target_is_directory=True)
-        except Exception as e:
-            try:
-                if targetPath.is_symlink() or targetPath.exists():
-                    if targetPath.is_dir() and not targetPath.is_symlink():
-                        shutil.rmtree(targetPath, ignore_errors=True)
-                    else:
-                        targetPath.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    f"Failed to {'copy' if copyProject else 'link'} project directory: {e}"
+            importResult = runtimeProjectImportService.importProject(
+                mapper=mapper,
+                ownerId=currentUser["id"],
+                sourcePath=sourcePath,
+                targetPath=targetPath,
+                projectsPath=self.projectsPath,
+                copyProject=copyProject,
+                description=description,
+                statusValue=statusValue,
+                migrateProjectCallback=lambda projectId, projectPath: (
+                    self._migrateImportedProjectToPostgresql(
+                        mapper,
+                        projectId,
+                        projectPath,
+                    )
                 ),
             )
-
-        try:
-            description = importedProject.getComment() or ""
-        except Exception:
-            description = ""
-
-        try:
-            importedStatus = importedProject.getStatus()
-            statusValue = str(importedStatus) if importedStatus else "active"
-        except Exception:
-            statusValue = "active"
-
-        storedProjectPath = str(targetPath)
-
-        dbProjectId = mapper.insertProject(
-            ownerId=currentUser["id"],
-            name=storedProjectPath,
-            description=description,
-            status=statusValue,
-        )
-
-        try:
-            self.loadProjectForThumbnails({"name": storedProjectPath})
-            self.syncProjectProtocolsAndDependencies(mapper, dbProjectId)
-        except Exception as e:
+        except Exception as error:
             logger.exception(
-                "Failed to sync imported project protocols. projectId=%s path=%s",
-                dbProjectId,
-                storedProjectPath,
+                "Failed to import project. sourcePath=%s targetPath=%s",
+                sourcePath,
+                targetPath,
             )
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Project was imported but protocols could not be synced to the database: {e}",
+                detail=str(error),
             )
 
-        sizePath = sourcePath if not copyProject else targetPath
+        project = self._buildProjectOutFromPostgresqlRow(
+            mapper=mapper,
+            dbProj=importResult["project"],
+            currentUser=currentUser,
+            includeDiskUsage=True,
+        )
 
-        try:
-            sizeGB = self.getProjectSize(str(sizePath)) / (1024 ** 3)
-        except Exception:
-            sizeGB = 0.0
+        project["importReport"] = importResult["migration"]
 
-        try:
-            protCount = self.countProtocols(os.path.join(str(targetPath), "Runs"))
-        except Exception:
-            protCount = 0
-
-        return {
-            "id": dbProjectId,
-            "name": sanitizedName,
-            "description": description,
-            "createdAt": datetime.utcnow(),
-            "status": statusValue,
-            "protocolsCount": protCount,
-            "diskUsage": f"{sizeGB:.2f} GB",
-            "isOwner": True,
-            "isShared": False,
-            "permission": "full",
-            "projectOwnerId": currentUser["id"],
-            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProjectId),
-            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProjectId),
-            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProjectId),
-        }
+        return project
 
     def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
         dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
