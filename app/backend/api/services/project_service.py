@@ -1518,6 +1518,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             projectPath: str,
+            ownerId: int,
     ) -> Dict[str, Any]:
         project = self.loadProjectForThumbnails({
             "name": projectPath,
@@ -1533,13 +1534,36 @@ class ProjectService:
                 syncRelations=True,
             )
 
-            auditReport = RuntimeProjectImportAuditService().auditProject(
+            auditService = RuntimeProjectImportAuditService()
+
+            auditReport = auditService.auditProject(
                 mapper=mapper,
                 projectId=projectId,
                 migrationReport=migrationReport,
             )
 
+            dbProject = mapper.getProject(
+                projectId=projectId,
+                userId=ownerId,
+            )
+
+            if not dbProject:
+                raise RuntimeError(
+                    "Imported project could not be loaded for PostgreSQL-only reconstruction"
+                )
+
+            loadedProject = self.loadProjectFromPostgresql(
+                dbProj=dbProject,
+                mapper=mapper,
+            )
+
+            postgresqlLoadAudit = auditService.auditLoadedProject(
+                loadedProject=loadedProject,
+                migrationReport=migrationReport,
+            )
+
             migrationReport["audit"] = auditReport
+            migrationReport["postgresqlLoadAudit"] = postgresqlLoadAudit
 
             return migrationReport
         finally:
@@ -1696,6 +1720,7 @@ class ProjectService:
                         mapper,
                         projectId,
                         projectPath,
+                        currentUser["id"],
                     )
                 ),
             )

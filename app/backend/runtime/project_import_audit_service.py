@@ -176,3 +176,78 @@ class RuntimeProjectImportAuditService:
             "actual": actual,
             "mismatches": [],
         }
+
+    def auditLoadedProject(
+            self,
+            *,
+            loadedProject: Dict[str, Any],
+            migrationReport: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        graph = (loadedProject or {}).get("protocols") or {}
+
+        if "PROJECT" not in graph:
+            raise RuntimeError(
+                "PostgreSQL-only project reconstruction did not produce the PROJECT root"
+            )
+
+        protocolNodes = {
+            str(protocolId): node
+            for protocolId, node in graph.items()
+            if str(protocolId) != "PROJECT" and isinstance(node, dict)
+        }
+
+        expected = {
+            "protocols": int(
+                migrationReport.get("protocols") or 0
+            ),
+            "dependencies": int(
+                migrationReport.get("dependencies") or 0
+            ),
+            "inputRefs": int(
+                migrationReport.get("inputRefs") or 0
+            ),
+            "outputs": int(
+                migrationReport.get("outputs") or 0
+            ),
+        }
+
+        actual = {
+            "protocols": len(protocolNodes),
+            "dependencies": sum(
+                len(node.get("parents") or [])
+                for node in protocolNodes.values()
+            ),
+            "inputRefs": sum(
+                len(node.get("inputs") or [])
+                for node in protocolNodes.values()
+            ),
+            "outputs": sum(
+                len(node.get("outputs") or [])
+                for node in protocolNodes.values()
+            ),
+        }
+
+        mismatches = []
+
+        for key, expectedValue in expected.items():
+            actualValue = actual[key]
+
+            if actualValue != expectedValue:
+                mismatches.append({
+                    "resource": key,
+                    "expected": expectedValue,
+                    "actual": actualValue,
+                })
+
+        if mismatches:
+            raise RuntimeError(
+                "PostgreSQL-only project reconstruction audit failed: %s"
+                % mismatches
+            )
+
+        return {
+            "complete": True,
+            "expected": expected,
+            "actual": actual,
+            "mismatches": [],
+        }
