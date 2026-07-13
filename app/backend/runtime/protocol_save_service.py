@@ -119,13 +119,32 @@ class RuntimeProtocolSaveService:
             )
             return protocol, errorList
 
-        self._persistProtocolInScipion(
-            currentProject=currentProject,
-            protocol=protocol,
-            protocolId=protocolId,
-            projectId=projectId,
-            protocolClassName=protocolClassName,
+        deferPersistenceToNativeLaunch = (
+                usingPostgresqlRuntime
+                and not setToSave
+                and protocolId not in (None, "")
         )
+
+        if deferPersistenceToNativeLaunch:
+            logger.info(
+                "Deferring existing PostgreSQL runtime protocol persistence "
+                "to Scipion native launch. projectId=%s protocolId=%s",
+                projectId,
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: protocolId,
+                )(),
+            )
+
+        else:
+            self._persistProtocolInScipion(
+                currentProject=currentProject,
+                protocol=protocol,
+                protocolId=protocolId,
+                projectId=projectId,
+                protocolClassName=protocolClassName,
+            )
 
         if usingPostgresqlRuntime:
             self._syncPostgresqlRuntimeInputsAndDependencies(
