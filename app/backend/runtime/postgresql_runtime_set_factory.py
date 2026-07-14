@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
 
@@ -44,6 +45,8 @@ from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 class PostgresqlRuntimeSetMixin:
     """
@@ -168,6 +171,44 @@ class PostgresqlRuntimeSetFactory:
 
         self._resolvedPointerTargets = {}
         self._resolvingPointerTargets = set()
+
+    def clearCaches(self) -> None:
+        """
+        Release all runtime objects owned by this factory.
+
+        Runtime sets are closed once before references to sets, protocols and
+        resolved pointer targets are discarded.
+        """
+        runtimeSets = []
+        seenSetIdentities = set()
+
+        for runtimeSet in self._runtimeSetsByIdentity.values():
+            runtimeSetIdentity = id(runtimeSet)
+
+            if runtimeSetIdentity in seenSetIdentities:
+                continue
+
+            seenSetIdentities.add(runtimeSetIdentity)
+            runtimeSets.append(runtimeSet)
+
+        self._runtimeSetsByIdentity.clear()
+        self._runtimeProtocolsByIdentity.clear()
+        self._resolvedPointerTargets.clear()
+        self._resolvingPointerTargets.clear()
+
+        for runtimeSet in runtimeSets:
+            close = getattr(runtimeSet, "close", None)
+
+            if not callable(close):
+                continue
+
+            try:
+                close()
+            except Exception:
+                logger.debug(
+                    "Could not close cached PostgreSQL runtime set.",
+                    exc_info=True,
+                )
 
     def build(
             self,

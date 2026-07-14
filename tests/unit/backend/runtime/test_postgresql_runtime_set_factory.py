@@ -1110,3 +1110,50 @@ def test_PointerResolverBuildsExternalSetWithoutMutatingParentOutput():
         targetItem._objParent
         is externalSet
     )
+
+def test_ClearCachesClosesSetsOnceAndReleasesRuntimeObjects():
+    class FakeRuntimeSet:
+        def __init__(self):
+            self.closeCalls = 0
+
+        def close(self):
+            self.closeCalls += 1
+
+    firstSet = FakeRuntimeSet()
+    secondSet = FakeRuntimeSet()
+
+    factory = PostgresqlRuntimeSetFactory()
+
+    factory._runtimeSetsByIdentity = {
+        (4, 300): firstSet,
+        (4, 301): secondSet,
+        (4, 302): firstSet,
+    }
+
+    factory._runtimeProtocolsByIdentity = {
+        (4, 100): object(),
+    }
+
+    factory._resolvedPointerTargets = {
+        (4, 300, 7): object(),
+    }
+
+    factory._resolvingPointerTargets = {
+        (4, 301, 8),
+    }
+
+    factory.clearCaches()
+
+    assert firstSet.closeCalls == 1
+    assert secondSet.closeCalls == 1
+
+    assert factory._runtimeSetsByIdentity == {}
+    assert factory._runtimeProtocolsByIdentity == {}
+    assert factory._resolvedPointerTargets == {}
+    assert factory._resolvingPointerTargets == set()
+
+    # Closing an already cleared factory is safe.
+    factory.clearCaches()
+
+    assert firstSet.closeCalls == 1
+    assert secondSet.closeCalls == 1
