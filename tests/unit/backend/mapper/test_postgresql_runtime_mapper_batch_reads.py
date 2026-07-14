@@ -81,6 +81,25 @@ class FakeFallbackMapper:
         return result
 
 
+class RebuildingFallbackMapper:
+    def __init__(self, protocolClass):
+        self.protocolClass = protocolClass
+        self.calls = []
+        self.createdProtocols = []
+
+    def selectById(self, objId):
+        self.calls.append(objId)
+
+        protocol = buildProtocol(
+            self.protocolClass,
+            int(objId),
+        )
+
+        self.createdProtocols.append(protocol)
+
+        return protocol
+
+
 def buildMapper(rows=None, fallback=None):
     return PostgresqlRuntimeMapper(
         flatMapper=FakeFlatMapper(rows),
@@ -385,3 +404,58 @@ def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
         "protocol": protocol,
         "protocolId": 100,
     }]
+
+
+def test_SelectRuntimeProtocolByIdReusesSqliteMirrorIdentity():
+    fallback = RebuildingFallbackMapper(ExampleProtocol)
+
+    mapper = buildMapper(
+        rows=[
+            buildRow(100),
+        ],
+        fallback=fallback,
+    )
+
+    firstResult = mapper.selectRuntimeProtocolById(100)
+    secondResult = mapper.selectRuntimeProtocolById(100)
+
+    assert firstResult is secondResult
+    assert firstResult is fallback.createdProtocols[0]
+
+    # SQLite is consulted only during the first hydration.
+    assert fallback.calls == [100]
+    assert len(fallback.createdProtocols) == 1
+
+    assert mapper._runtimeProtocolsById[100] is firstResult
+    assert mapper._sqliteProtocolMirrorIds == {100}
+
+    assert mapper.flatMapper.byIdCalls == [
+        (4, 100),
+        (4, 100),
+    ]
+
+
+def test_SelectRuntimeProtocolByIdCachesFallbackOnlyProtocol():
+    fallback = RebuildingFallbackMapper(ExampleProtocol)
+
+    mapper = buildMapper(
+        rows=[],
+        fallback=fallback,
+    )
+
+    firstResult = mapper.selectRuntimeProtocolById(100)
+    secondResult = mapper.selectRuntimeProtocolById(100)
+
+    assert firstResult is secondResult
+    assert firstResult is fallback.createdProtocols[0]
+
+    assert fallback.calls == [100]
+    assert len(fallback.createdProtocols) == 1
+
+    assert mapper._runtimeProtocolsById[100] is firstResult
+    assert mapper._sqliteProtocolMirrorIds == {100}
+
+    assert mapper.flatMapper.byIdCalls == [
+        (4, 100),
+        (4, 100),
+    ]
