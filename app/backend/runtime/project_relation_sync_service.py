@@ -37,6 +37,81 @@ logger = logging.getLogger(__name__)
 class RuntimeProjectRelationSyncService:
     """Migrate original Scipion project relations into PostgreSQL."""
 
+    def collectProtocolRelations(
+            self,
+            protocolCandidates,
+    ) -> Dict[str, Any]:
+        """
+        Collect one relation snapshot from all available protocol representations.
+
+        The runtime protocol loaded from logs/run.db is the primary source.
+        SQLite fallback protocols are also inspected because some Scipion paths
+        may already have copied their relations into project.sqlite.
+        """
+        relations = []
+        relationKeys = set()
+        sources = []
+        errors = []
+
+        relationFields = (
+            "id",
+            "parent_id",
+            "name",
+            "object_parent_id",
+            "object_child_id",
+            "object_parent_extended",
+            "object_child_extended",
+        )
+
+        for sourceName, protocol in protocolCandidates:
+            if protocol is None:
+                continue
+
+            try:
+                sourceRelations = protocol.getRelations() or []
+            except Exception as error:
+                errors.append({
+                    "source": sourceName,
+                    "error": str(error),
+                })
+                continue
+
+            sourceAdded = 0
+
+            for rawRelation in sourceRelations:
+                try:
+                    relation = dict(rawRelation)
+                except Exception as error:
+                    errors.append({
+                        "source": sourceName,
+                        "error": str(error),
+                    })
+                    continue
+
+                relationKey = tuple(
+                    relation.get(fieldName)
+                    for fieldName in relationFields
+                )
+
+                if relationKey in relationKeys:
+                    continue
+
+                relationKeys.add(relationKey)
+                relations.append(relation)
+                sourceAdded += 1
+
+            if sourceAdded:
+                sources.append({
+                    "source": sourceName,
+                    "relations": sourceAdded,
+                })
+
+        return {
+            "relations": relations,
+            "sources": sources,
+            "errors": errors,
+        }
+
     def syncProjectRelations(
             self,
             *,
@@ -44,6 +119,7 @@ class RuntimeProjectRelationSyncService:
             projectId: int,
             protocolsByScipionId: Dict[str, Any],
             protocolDbIdByScipionId: Dict[str, int],
+            relationsByScipionId=None,
     ) -> Dict[str, Any]:
         repository = ProtocolGraphRepository()
 
@@ -64,14 +140,24 @@ class RuntimeProjectRelationSyncService:
                 })
                 continue
 
-            try:
-                relations = protocol.getRelations() or []
-            except Exception as error:
-                errors.append({
-                    "protocolId": protocolIdText,
-                    "error": str(error),
-                })
-                continue
+            preloadedRelations = None
+
+            if relationsByScipionId is not None:
+                preloadedRelations = relationsByScipionId.get(
+                    protocolIdText
+                )
+
+            if preloadedRelations is not None:
+                relations = list(preloadedRelations)
+            else:
+                try:
+                    relations = protocol.getRelations() or []
+                except Exception as error:
+                    errors.append({
+                        "protocolId": protocolIdText,
+                        "error": str(error),
+                    })
+                    continue
 
             protocolRelations = []
             relationKeys = set()

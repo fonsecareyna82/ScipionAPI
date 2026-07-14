@@ -1386,7 +1386,17 @@ class ProjectService:
 
         if shouldRegisterOutputs:
             try:
-                relationProtocol = protocol
+                relationSyncService = (
+                    RuntimeProjectRelationSyncService()
+                )
+
+                protocolCandidates = [
+                    (
+                        "runtime_db",
+                        protocol,
+                    ),
+                ]
+
                 runtimeMapper = None
 
                 try:
@@ -1397,9 +1407,6 @@ class ProjectService:
                 except Exception:
                     runtimeMapper = None
 
-                # Relations are written by Scipion into project.sqlite. Prefer a
-                # protocol loaded directly through that compatibility mapper instead
-                # of the protocol reconstructed from logs/run.db.
                 for fallbackName in (
                         "readFallbackMapper",
                         "writeFallbackMapper",
@@ -1426,22 +1433,45 @@ class ProjectService:
                     except Exception:
                         fallbackProtocol = None
 
-                    if fallbackProtocol is not None:
-                        relationProtocol = fallbackProtocol
-                        break
+                    protocolCandidates.append(
+                        (
+                            fallbackName,
+                            fallbackProtocol,
+                        )
+                    )
+
+                relationSnapshot = (
+                    relationSyncService
+                    .collectProtocolRelations(
+                        protocolCandidates
+                    )
+                )
 
                 relationReport = (
-                    RuntimeProjectRelationSyncService()
+                    relationSyncService
                     .syncProjectRelations(
                         mapper=mapper,
                         projectId=projectId,
                         protocolsByScipionId={
-                            str(scipionProtocolId): relationProtocol,
+                            str(scipionProtocolId): protocol,
                         },
                         protocolDbIdByScipionId={
                             str(scipionProtocolId): int(protocolDbId),
                         },
+                        relationsByScipionId={
+                            str(scipionProtocolId): (
+                                relationSnapshot["relations"]
+                            ),
+                        },
                     )
+                )
+
+                relationReport["sources"] = (
+                    relationSnapshot["sources"]
+                )
+
+                relationReport["sourceErrors"] = (
+                    relationSnapshot["errors"]
                 )
 
             except Exception as relationError:
@@ -1461,6 +1491,8 @@ class ProjectService:
                         "error": str(relationError),
                     }],
                     "cleanup": [],
+                    "sources": [],
+                    "sourceErrors": [],
                     "complete": False,
                 }
 
@@ -1527,6 +1559,12 @@ class ProjectService:
             ),
             "relationCleanup": (
                     relationReport.get("cleanup") or []
+            ),
+            "relationSources": (
+                    relationReport.get("sources") or []
+            ),
+            "relationSourceErrors": (
+                    relationReport.get("sourceErrors") or []
             ),
         }
 
