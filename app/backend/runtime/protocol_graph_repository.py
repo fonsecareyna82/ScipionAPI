@@ -123,6 +123,103 @@ class ProtocolGraphRepository:
 
         return dict(row) if row else None
 
+    def getPersistedSetOutputRowByRuntimeObjectId(
+            self,
+            mapper,
+            projectId: int,
+            runtimeObjectId: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve one persisted PostgreSQL set using the Scipion runtime
+        object id stored in scipion_objects.scipionObjId.
+
+        runtimeObjectId must never be compared directly with
+        scipion_sets.objectId, because that column contains the canonical
+        scipion_objects primary key.
+        """
+        if mapper is None:
+            raise ValueError(
+                "mapper is required"
+            )
+
+        db = getattr(
+            mapper,
+            "db",
+            None,
+        )
+
+        if db is None:
+            raise ValueError(
+                "mapper.db is required"
+            )
+
+        if projectId in (
+                None,
+                "",
+        ):
+            raise ValueError(
+                "projectId is required"
+            )
+
+        if runtimeObjectId in (
+                None,
+                "",
+        ):
+            raise ValueError(
+                "runtimeObjectId is required"
+            )
+
+        rows = db.fetchAll(
+            """
+            SELECT
+                s.id AS "setId",
+                s."projectId",
+                s."protocolDbId",
+                p."protocolId",
+                s."objectId",
+                o."scipionObjId" AS "runtimeObjectId",
+                s."outputName",
+                s."setClassName" AS "className",
+                s."itemClassName",
+                s.properties
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p."projectId" = s."projectId"
+               AND p.id = s."protocolDbId"
+              JOIN scipion_objects o
+                ON o."projectId" = s."projectId"
+               AND o.id = s."objectId"
+             WHERE s."projectId" = %s
+               AND o."scipionObjId" = %s
+             ORDER BY s.id ASC
+             LIMIT 2
+            """,
+            (
+                int(projectId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        rows = [
+            dict(row)
+            for row in rows or []
+        ]
+
+        if not rows:
+            return None
+
+        if len(rows) > 1:
+            raise ValueError(
+                "More than one PostgreSQL set was found "
+                "for project %s and runtime object %s"
+                % (
+                    projectId,
+                    runtimeObjectId,
+                )
+            )
+
+        return rows[0]
+
     def replaceRuntimeOutputRelation(
             self,
             mapper,
