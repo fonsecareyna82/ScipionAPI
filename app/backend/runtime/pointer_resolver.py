@@ -794,7 +794,7 @@ class RuntimePointerResolver:
                     "parentProtocolId": str(parentScipionProtocolId),
                     "parentOutputName": str(outputName),
                     "objectClassName": outputInfo.get("className"),
-                    "objectId": outputInfo.get("objectId"),
+                    "objectId": outputInfo.get("runtimeObjectId"),
                 })
 
         return {
