@@ -95,19 +95,40 @@ class PostgresqlRuntimeSetMixin:
             self
         )
 
+    def getPostgresqlRuntimeProperties(self):
+        properties = getattr(
+            self,
+            "_postgresqlRuntimeProperties",
+            {},
+        )
+
+        return (
+            dict(properties)
+            if isinstance(properties, dict)
+            else {}
+        )
+
     def getLegacyFileName(self):
-        return self._postgresqlRuntimeProperties.get(
+        return self.getPostgresqlRuntimeProperties().get(
             "fileName"
         )
 
     def getLegacyMapperPath(self):
-        return self._postgresqlRuntimeProperties.get(
+        return self.getPostgresqlRuntimeProperties().get(
             "_mapperPath"
         )
 
     def getPostgresqlRuntimeInfo(self):
-        return dict(
-            self._postgresqlRuntimeInfo
+        info = getattr(
+            self,
+            "_postgresqlRuntimeInfo",
+            {},
+        )
+
+        return (
+            dict(info)
+            if isinstance(info, dict)
+            else {}
         )
 
     def isPostgresqlRuntimeOutput(self):
@@ -189,6 +210,10 @@ class PostgresqlRuntimeSetFactory:
                 "PostgreSQL runtime set requires itemClassName"
             )
 
+        properties = self._normalizeProperties(
+            info.get("properties")
+        )
+
         runtimeSetClass = self._getRuntimeSetClass(
             nativeSetClass
         )
@@ -198,14 +223,10 @@ class PostgresqlRuntimeSetFactory:
         self._configureRuntimeSetCompatibility(
             runtimeSet=runtimeSet,
             nativeSetClass=nativeSetClass,
+            runtimeInfo=info,
+            runtimeProperties=properties,
+            classRegistry=classRegistry,
         )
-
-        properties = self._normalizeProperties(
-            info.get("properties")
-        )
-
-        runtimeSet._postgresqlRuntimeInfo = info
-        runtimeSet._postgresqlRuntimeProperties = properties
 
         self._applyBasicMetadata(
             runtimeSet=runtimeSet,
@@ -279,9 +300,28 @@ class PostgresqlRuntimeSetFactory:
                 nativeItemClass
             )
             ):
+                runtimeValues = getattr(
+                    item,
+                    "_postgresqlRuntimeValues",
+                    {},
+                )
+
                 self._configureRuntimeSetCompatibility(
                     runtimeSet=item,
                     nativeSetClass=nativeItemClass,
+                    runtimeInfo={
+                        "setId": int(setId),
+                        "parentItemId": self._toOptionalInt(
+                            row.get("scipionItemId")
+                        ),
+                        "className": item.getClassName(),
+                    },
+                    runtimeProperties=(
+                        runtimeValues
+                        if isinstance(runtimeValues, dict)
+                        else {}
+                    ),
+                    classRegistry=classRegistry,
                 )
 
             self._attachLogicalTableMapper(
@@ -352,9 +392,26 @@ class PostgresqlRuntimeSetFactory:
             self,
             runtimeSet: ScipionSet,
             nativeSetClass: Type,
+            runtimeInfo: Optional[Dict[str, Any]] = None,
+            runtimeProperties: Optional[Dict[str, Any]] = None,
+            classRegistry: Optional[Dict[str, Type]] = None,
     ) -> None:
         runtimeSet._postgresqlNativeSetClass = (
             nativeSetClass
+        )
+
+        runtimeSet._postgresqlRuntimeInfo = dict(
+            runtimeInfo or {}
+        )
+
+        runtimeSet._postgresqlRuntimeProperties = (
+            self._normalizeProperties(
+                runtimeProperties
+            )
+        )
+
+        runtimeSet._postgresqlRuntimeClasses = dict(
+            classRegistry or {}
         )
 
         runtimeSet._postgresqlSqliteMaterializer = (
