@@ -155,31 +155,30 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             ):
                 continue
 
-        self._ensureNestedMapper(
-            targetParentSet=targetSet,
-            targetNestedSet=targetItem,
-            classes=sourceClasses,
-        )
-
-        try:
-            self._copySetItems(
-                sourceSet=sourceItem,
-                targetSet=targetItem,
+            self._ensureNestedMapper(
+                targetParentSet=targetSet,
+                targetNestedSet=targetItem,
                 classes=sourceClasses,
             )
 
-            targetItem.write(
-                properties=False
-            )
+            try:
+                self._copySetItems(
+                    sourceSet=sourceItem,
+                    targetSet=targetItem,
+                    classes=sourceClasses,
+                )
 
-            targetSet.update(
-                targetItem
-            )
-        finally:
-            # The nested mapper shares the root SQLite connection.
-            # Do not close it: detach it so Set.__del__() cannot
-            # close the root connection when targetItem is destroyed.
-            targetItem._mapper = None
+                targetItem.write(
+                    properties=False
+                )
+
+                targetSet.update(
+                    targetItem
+                )
+            finally:
+                # The nested mapper shares the root SQLite connection.
+                # Detach it without closing the shared connection.
+                targetItem._mapper = None
 
         self._ensureSetSchema(
             sourceSet=sourceSet,
