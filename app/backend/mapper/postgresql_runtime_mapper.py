@@ -825,9 +825,89 @@ class PostgresqlRuntimeMapper(Mapper):
             iterate=False,
             objectFilter=None,
     ):
+        requestedClassName = (
+            className.__name__
+            if isinstance(className, type)
+            else str(className or "").strip()
+        )
+
+        requestedClass = self._resolveRuntimeObjectClass(requestedClassName)
+
+        isSetRequest = (
+                self._isScipionSetClass(requestedClass)
+                or requestedClassName.startswith("SetOf")
+        )
+
+        if not isSetRequest:
+            return self._selectByClassFromReadFallback(
+                className=className,
+                includeSubclasses=includeSubclasses,
+                iterate=iterate,
+                objectFilter=objectFilter,
+            )
+
+        if objectFilter is not None and not callable(objectFilter):
+            return self._selectByClassFromReadFallback(
+                className=className,
+                includeSubclasses=includeSubclasses,
+                iterate=iterate,
+                objectFilter=objectFilter,
+            )
+
+        rows = self._getPostgresqlSetRowsForClass(
+            requestedClassName=requestedClassName,
+            requestedClass=requestedClass,
+            includeSubclasses=includeSubclasses,
+        )
+
+        result = []
+
+        for row in rows:
+            runtimeObjectId = self._toOptionalInt(row.get("runtimeObjectId"))
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeSet = self._selectSetByIdFromPostgresql(runtimeObjectId)
+
+            if runtimeSet is None:
+                continue
+
+            if callable(objectFilter) and not objectFilter(runtimeSet):
+                continue
+
+            result.append(runtimeSet)
+
+        if self.readFallbackMapper is not None:
+            fallbackResult = self.readFallbackMapper.selectByClass(
+                className,
+                includeSubclasses=includeSubclasses,
+                iterate=False,
+                objectFilter=objectFilter,
+            )
+
+            fallbackObjects = self._attachRuntimeContextList(
+                fallbackResult or []
+            )
+
+            result = self._mergeRuntimeClassResults(
+                result,
+                fallbackObjects,
+            )
+
+        return iter(result) if iterate else result
+
+    def _selectByClassFromReadFallback(
+            self,
+            className,
+            includeSubclasses,
+            iterate,
+            objectFilter,
+    ):
         if self.readFallbackMapper is None:
             raise NotImplementedError(
-                "PostgreSQL selectByClass is not implemented yet."
+                "PostgreSQL selectByClass is only implemented "
+                "for native Scipion Set classes."
             )
 
         result = self.readFallbackMapper.selectByClass(
@@ -841,6 +921,135 @@ class PostgresqlRuntimeMapper(Mapper):
             return self._attachRuntimeContextIterator(result)
 
         return self._attachRuntimeContextList(result)
+
+    def _getPostgresqlSetRowsForClass(
+            self,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+    ):
+        canonicalClassName = (
+            requestedClass.__name__
+            if isinstance(requestedClass, type)
+            else requestedClassName
+        )
+
+        if not includeSubclasses or requestedClass is None:
+            return self.protocolGraphRepository.listPersistedSetOutputRows(
+                mapper=self,
+                projectId=self.projectId,
+                className=canonicalClassName,
+            )
+
+        rows = self.protocolGraphRepository.listPersistedSetOutputRows(
+            mapper=self,
+            projectId=self.projectId,
+        )
+
+        return [
+            row
+            for row in rows
+            if self._matchesRuntimeSetClass(
+                candidateClassName=row.get("className"),
+                requestedClassName=canonicalClassName,
+                requestedClass=requestedClass,
+            )
+        ]
+
+    def _matchesRuntimeSetClass(
+            self,
+            candidateClassName,
+            requestedClassName,
+            requestedClass,
+    ):
+        candidateClassName = str(candidateClassName or "").strip()
+
+        if not candidateClassName:
+            return False
+
+        candidateClass = self._resolveRuntimeObjectClass(candidateClassName)
+
+        if candidateClass is None or requestedClass is None:
+            return candidateClassName == requestedClassName
+
+        try:
+            return issubclass(candidateClass, requestedClass)
+        except TypeError:
+            return False
+
+    def _resolveRuntimeObjectClass(self, className):
+        if isinstance(className, type):
+            return className
+
+        className = str(className or "").strip()
+
+        if not className:
+            return None
+
+        if className == "Set":
+            return ScipionSet
+
+        classes = getattr(self, "dictClasses", None) or {}
+
+        candidate = classes.get(className)
+
+        if isinstance(candidate, type):
+            return candidate
+
+        for registeredName, registeredClass in classes.items():
+            if str(registeredName).lower() != className.lower():
+                continue
+
+            if isinstance(registeredClass, type):
+                return registeredClass
+
+        return None
+
+    @staticmethod
+    def _isScipionSetClass(candidateClass):
+        if not isinstance(candidateClass, type):
+            return False
+
+        try:
+            return issubclass(candidateClass, ScipionSet)
+        except TypeError:
+            return False
+
+    def _mergeRuntimeClassResults(
+            self,
+            postgresqlObjects,
+            fallbackObjects,
+    ):
+        result = []
+        identities = set()
+
+        for obj in list(postgresqlObjects or []) + list(fallbackObjects or []):
+            identity = self._getRuntimeReadIdentity(obj)
+
+            if identity is not None and identity in identities:
+                continue
+
+            if identity is not None:
+                identities.add(identity)
+
+            result.append(obj)
+
+        return result
+
+    def _getRuntimeReadIdentity(self, obj):
+        objId = self._getObjId(obj)
+
+        if objId is None:
+            return None
+
+        nativeClass = getattr(obj, "_postgresqlNativeSetClass", None)
+
+        if isinstance(nativeClass, type):
+            className = nativeClass.__name__
+        else:
+            className = self._getClassName(obj)
+
+        return str(className), str(objId)
 
     def getParent(
             self,
