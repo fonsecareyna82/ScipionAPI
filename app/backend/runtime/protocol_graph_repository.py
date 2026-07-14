@@ -1950,3 +1950,53 @@ class ProtocolGraphRepository:
             "childRuntimeObjectId": int(childRuntimeObjectId),
             "childOutputName": childObject.get("outputName"),
         }
+
+    def deleteImportedOutputRelationsForCreator(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete the PostgreSQL relation snapshot owned by one Scipion protocol.
+
+        scipion_relations uses native Scipion runtime ids.
+        scipion_object_relations uses canonical scipion_objects ids and stores
+        creatorProtocolDbId in metadata.
+        """
+        with mapper.db.transaction():
+            legacyCursor = mapper.db.execute(
+                """
+                DELETE FROM scipion_relations
+                 WHERE "projectId" = %s
+                   AND "creatorObjId" = %s
+                """,
+                (
+                    int(projectId),
+                    int(creatorProtocolId),
+                ),
+                commit=False,
+            )
+
+            canonicalCursor = mapper.db.execute(
+                """
+                DELETE FROM scipion_object_relations
+                 WHERE "projectId" = %s
+                   AND metadata ->> 'creatorProtocolDbId' = %s
+                """,
+                (
+                    int(projectId),
+                    str(int(creatorProtocolDbId)),
+                ),
+                commit=False,
+            )
+
+        return {
+            "legacyRelationsDeleted": int(
+                getattr(legacyCursor, "rowcount", 0) or 0
+            ),
+            "canonicalRelationsDeleted": int(
+                getattr(canonicalCursor, "rowcount", 0) or 0
+            ),
+        }
