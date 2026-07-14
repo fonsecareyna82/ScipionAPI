@@ -210,6 +210,10 @@ def _createNestedSource(
 
     parentSet.write()
 
+    # The nested mapper shares the parent's SQLite connection.
+    # Detach it before the local nestedSet variable is destroyed.
+    nestedSet._mapper = None
+
     return parentSet
 
 def test_MaterializeCreatesReadableSqliteAndCachesPath(
