@@ -1377,6 +1377,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "getObjParent",
         )
 
+        if targetParent is None:
+            targetParent = getattr(
+                targetObject,
+                "_objParent",
+                None,
+            )
+
         targetObjectId = self._getSourceObjId(
             targetObject
         )
