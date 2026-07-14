@@ -823,15 +823,68 @@ class PostgresqlRuntimeMapper(Mapper):
         return protocol
 
     def selectAllBatch(self, objectFilter=None):
-        if self.readFallbackMapper is None:
-            raise NotImplementedError(
-                "PostgreSQL selectAllBatch is not implemented yet."
-            )
+        if objectFilter is not None and not callable(objectFilter):
+            raise TypeError("objectFilter must be callable or None")
 
-        result = self.readFallbackMapper.selectAllBatch(
-            objectFilter=objectFilter,
-        )
-        return self._attachRuntimeContextList(result)
+        fallbackObjects = []
+        fallbackProtocolsById = {}
+
+        if self.readFallbackMapper is not None:
+            fallbackObjects = self.readFallbackMapper.selectAllBatch(
+                objectFilter=objectFilter,
+            )
+            fallbackObjects = self._attachRuntimeContextList(fallbackObjects)
+
+            for obj in fallbackObjects:
+                if not isinstance(obj, Protocol):
+                    continue
+
+                protocolId = self._getObjId(obj)
+
+                if protocolId is not None:
+                    fallbackProtocolsById[protocolId] = obj
+
+        result = []
+        seenIds = set()
+
+        for row in self.flatMapper.getProtocols(self.projectId) or []:
+            protocolId = self._toOptionalInt(row.get("protocolId"))
+
+            if protocolId is None or protocolId in seenIds:
+                continue
+
+            protocol = fallbackProtocolsById.get(protocolId)
+
+            if protocol is None:
+                protocol = self._getOrBuildProtocolFromPostgresqlRow(row)
+
+                if protocol is None:
+                    continue
+
+                if objectFilter is not None and not objectFilter(protocol):
+                    continue
+            else:
+                # Preserve the complete SQLite protocol instance and make
+                # all subsequent PostgreSQL reads reuse that same object.
+                self._runtimeProtocolsById[protocolId] = protocol
+
+            result.append(protocol)
+            seenIds.add(protocolId)
+
+        # Preserve objects that only exist in the compatibility mapper.
+        # With Project.getRuns(), objectFilter limits these to Protocol.
+        for obj in fallbackObjects:
+            objId = self._getObjId(obj)
+
+            if objId is not None and objId in seenIds:
+                continue
+
+            result.append(obj)
+
+            if objId is not None:
+                seenIds.add(objId)
+
+        return result
 
     def selectBy(self, iterate=False, objectFilter=None, **args):
         if self.readFallbackMapper is None:
