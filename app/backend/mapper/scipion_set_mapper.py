@@ -42,6 +42,7 @@ except Exception:
 
 SELF_LABEL = "self"
 NESTED_LOGICAL_TABLES_VERSION = 15
+SET_PROPERTIES_VERSION = 2
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -85,6 +86,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 skippedProperties["skippedLastSync"] = True
                 skippedProperties["incremental"] = True
                 skippedProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
+                skippedProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
                 if sourceMTime is not None:
                     skippedProperties["sourceMTime"] = sourceMTime
 
@@ -123,6 +125,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
         initialProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
+        initialProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -959,6 +962,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if storedNestedTablesVersion != NESTED_LOGICAL_TABLES_VERSION:
             return False
 
+        storedSetPropertiesVersion = self._toOptionalInt(
+            existingProperties.get("setPropertiesVersion")
+        )
+
+        if storedSetPropertiesVersion != SET_PROPERTIES_VERSION:
+            return False
+
         if itemsCountHint is None:
             return False
 
@@ -1556,28 +1566,56 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "scipionObjId": self._getSourceObjId(scipionSet),
         }
 
-        fileName = self._callOptionalGetter(scipionSet, "getFileName")
+        fileName = self._callOptionalGetter(
+            scipionSet,
+            "getFileName",
+        )
         if fileName is not None:
-            properties["fileName"] = self._toJsonValue(fileName)
+            properties["fileName"] = self._toJsonValue(
+                fileName
+            )
 
-        streamState = self._callOptionalGetter(scipionSet, "getStreamState")
+        streamState = self._callOptionalGetter(
+            scipionSet,
+            "getStreamState",
+        )
         if streamState is not None:
-            properties["streamState"] = self._toJsonValue(streamState)
+            properties["streamState"] = self._toJsonValue(
+                streamState
+            )
 
-        linkedTomograms = self._getLinkedTomogramsSummary(scipionSet)
+        linkedTomograms = self._getLinkedTomogramsSummary(
+            scipionSet
+        )
         if linkedTomograms:
             properties["linkedTomograms"] = linkedTomograms
 
-        tomoDisplayFlags = self._getTomoSetDisplayFlags(scipionSet)
+        tomoDisplayFlags = self._getTomoSetDisplayFlags(
+            scipionSet
+        )
         if tomoDisplayFlags:
             properties.update(tomoDisplayFlags)
 
-        for attrName, attrValue in self._getAttributesToStore(scipionSet):
-            if self._getAttributesToStore(attrValue):
-                continue
-            properties[str(attrName)] = self._toJsonValue(self._getObjectValueText(attrValue))
+        setValues = self._getObjDict(
+            scipionSet,
+            includeClass=False,
+        )
 
-        return {key: value for key, value in properties.items() if value is not None}
+        for attrPath, value in setValues.items():
+            attrPath = str(attrPath)
+
+            if attrPath == SELF_LABEL:
+                continue
+
+            properties[attrPath] = self._toJsonValue(
+                value
+            )
+
+        return {
+            key: value
+            for key, value in properties.items()
+            if value is not None
+        }
 
     def _getLinkedTomogramsSummary(self, scipionSet: Any) -> List[Dict[str, Any]]:
         tomograms = []
