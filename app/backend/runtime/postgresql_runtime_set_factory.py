@@ -172,6 +172,16 @@ class PostgresqlRuntimeSetFactory:
                 % setClassName
             )
 
+        itemClassName = self._resolveItemClassName(
+            itemClassName=itemClassName,
+            nativeSetClass=nativeSetClass,
+        )
+
+        if not itemClassName:
+            raise ValueError(
+                "PostgreSQL runtime set requires itemClassName"
+            )
+
         runtimeSetClass = self._getRuntimeSetClass(
             nativeSetClass
         )
@@ -275,6 +285,42 @@ class PostgresqlRuntimeSetFactory:
         runtimeSet.load()
 
         return runtimeSet
+
+    def _resolveItemClassName(
+            self,
+            itemClassName,
+            nativeSetClass: Type,
+    ) -> Optional[str]:
+        storedName = str(
+            itemClassName or ""
+        ).strip()
+
+        if (
+                storedName
+                and storedName.lower() != "unknown"
+        ):
+            return storedName
+
+        itemType = getattr(
+            nativeSetClass,
+            "ITEM_TYPE",
+            None,
+        )
+
+        if isinstance(itemType, str):
+            itemType = itemType.strip()
+            return itemType or None
+
+        declaredName = getattr(
+            itemType,
+            "__name__",
+            None,
+        )
+
+        if declaredName:
+            return str(declaredName)
+
+        return None
 
     def _loadLogicalTablesByParentItemId(
             self,
