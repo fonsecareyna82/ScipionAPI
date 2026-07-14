@@ -271,3 +271,104 @@ def test_DeleteImportedOutputRelationsClearsBothRepresentations():
         "legacyRelationsDeleted": 1,
         "canonicalRelationsDeleted": 2,
     }
+
+
+def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
+    firstRelation = buildRelation()
+
+    secondRelation = {
+        **buildRelation(),
+        "id": 8,
+        "name": "transform",
+        "object_child_id": 303,
+        "object_child_extended": "outputAverage",
+    }
+
+    runtimeProtocol = FakeProtocol([
+        firstRelation,
+    ])
+
+    fallbackProtocol = FakeProtocol([
+        firstRelation,
+        secondRelation,
+    ])
+
+    service = RuntimeProjectRelationSyncService()
+
+    result = service.collectProtocolRelations([
+        (
+            "runtime_db",
+            runtimeProtocol,
+        ),
+        (
+            "readFallbackMapper",
+            fallbackProtocol,
+        ),
+    ])
+
+    assert result["relations"] == [
+        firstRelation,
+        secondRelation,
+    ]
+
+    assert result["sources"] == [
+        {
+            "source": "runtime_db",
+            "relations": 1,
+        },
+        {
+            "source": "readFallbackMapper",
+            "relations": 1,
+        },
+    ]
+
+    assert result["errors"] == []
+
+
+def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
+        monkeypatch,
+):
+    repository = FakeRepository({
+        101: {
+            "objectId": 1001,
+            "protocolDbId": 200,
+            "protocolId": "20",
+            "outputName": "outputParticles",
+        },
+        202: {
+            "objectId": 2002,
+            "protocolDbId": 300,
+            "protocolId": "30",
+            "outputName": "outputClasses",
+        },
+    })
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "ProtocolGraphRepository",
+        lambda: repository,
+    )
+
+    emptyFallbackProtocol = FakeProtocol([])
+
+    report = RuntimeProjectRelationSyncService().syncProjectRelations(
+        mapper=SimpleNamespace(),
+        projectId=4,
+        protocolsByScipionId={
+            "20": emptyFallbackProtocol,
+        },
+        protocolDbIdByScipionId={
+            "20": 200,
+        },
+        relationsByScipionId={
+            "20": [
+                buildRelation(),
+            ],
+        },
+    )
+
+    assert report["relationsDeclared"] == 1
+    assert report["relations"] == 1
+    assert report["relationMissing"] == []
+    assert report["relationErrors"] == []
+    assert len(repository.insertCalls) == 1
