@@ -51,12 +51,19 @@ class FakeFlatMapper:
         self.db = FakeDb()
         self.rows = list(rows or [])
         self.calls = []
+        self.byIdCalls = []
 
     def getProtocols(self, projectId):
         self.calls.append(projectId)
         return list(self.rows)
 
     def getProjectProtocolByProtocolId(self, projectId, protocolId):
+        self.byIdCalls.append((projectId, protocolId))
+
+        for row in self.rows:
+            if int(row["protocolId"]) == int(protocolId):
+                return dict(row)
+
         return None
 
 
@@ -269,3 +276,115 @@ def test_SelectByClassReturnsProtocolIterator():
     )
 
     assert list(result) == [protocol]
+
+def test_SelectByClassReusesProtocolSelectedById():
+    mapper = buildMapper([
+        buildRow(100, "ExampleProtocol"),
+    ])
+
+    protocol = buildProtocol(ExampleProtocol, 100)
+    buildCalls = []
+
+    def buildProtocolFromRow(row):
+        buildCalls.append(int(row["protocolId"]))
+        return protocol
+
+    mapper._buildProtocolFromPostgresqlRow = buildProtocolFromRow
+
+    selectedProtocol = mapper._selectProtocolByIdFromPostgresql(100)
+    protocols = mapper.selectByClass("ExampleProtocol")
+
+    assert selectedProtocol is protocol
+    assert protocols == [protocol]
+    assert protocols[0] is selectedProtocol
+    assert buildCalls == [100]
+    assert mapper.flatMapper.byIdCalls == [(4, 100)]
+
+
+def test_ProtocolCacheRefreshesWithoutReplacingInstance():
+    mapper = buildMapper([
+        buildRow(100, "ExampleProtocol"),
+    ])
+
+    protocol = buildProtocol(ExampleProtocol, 100)
+    refreshCalls = []
+
+    mapper._buildProtocolFromPostgresqlRow = lambda row: protocol
+
+    firstResult = mapper._selectProtocolByIdFromPostgresql(100)
+
+    def refreshProtocol(cachedProtocol, row):
+        refreshCalls.append({
+            "protocol": cachedProtocol,
+            "status": row["status"],
+        })
+        return cachedProtocol
+
+    mapper._refreshProtocolFromPostgresqlRow = refreshProtocol
+    mapper.flatMapper.rows[0]["status"] = "running"
+
+    secondResult = mapper._selectProtocolByIdFromPostgresql(100)
+
+    assert firstResult is protocol
+    assert secondResult is protocol
+
+    assert refreshCalls == [{
+        "protocol": protocol,
+        "status": "running",
+    }]
+
+
+def test_RefreshProtocolAppliesStoredRuntimeState():
+    mapper = buildMapper()
+
+    protocol = buildProtocol(ExampleProtocol, 100)
+    statusCalls = []
+    paramsCalls = []
+    workingDirCalls = []
+
+    mapper._applyStoredProtocolStatus = (
+        lambda currentProtocol, status: statusCalls.append(
+            (currentProtocol, status)
+        )
+    )
+
+    mapper._applyStoredProtocolParams = (
+        lambda currentProtocol, params: paramsCalls.append(
+            (currentProtocol, params)
+        )
+    )
+
+    mapper._ensureProtocolWorkingDir = (
+        lambda currentProtocol: workingDirCalls.append(
+            currentProtocol
+        )
+    )
+
+    row = buildRow(100, "ExampleProtocol")
+    row["status"] = "running"
+    row["params"] = {
+        "threshold": 3,
+    }
+
+    result = mapper._refreshProtocolFromPostgresqlRow(
+        protocol,
+        row,
+    )
+
+    assert result is protocol
+    assert protocol.getObjId() == 100
+
+    assert statusCalls == [
+        (protocol, "running"),
+    ]
+
+    assert paramsCalls == [
+        (
+            protocol,
+            {
+                "threshold": 3,
+            },
+        ),
+    ]
+
+    assert workingDirCalls == [protocol]
