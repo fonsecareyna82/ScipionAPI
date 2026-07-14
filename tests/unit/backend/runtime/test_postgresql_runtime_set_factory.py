@@ -759,3 +759,78 @@ def test_BuildFallsBackToItemTypeWhenItemClassNameIsMissing():
         ExampleItem,
     )
 
+def test_LocalPointerResolverSelectsItemFromRuntimeSet():
+    targetItem = ExampleItem()
+
+    targetItem.setObjId(
+        7
+    )
+
+    class FakeTargetMapper:
+        def __init__(self):
+            self.selectedIds = []
+
+        def selectById(
+                self,
+                itemId,
+        ):
+            self.selectedIds.append(
+                itemId
+            )
+
+            if itemId == 7:
+                return targetItem
+
+            return None
+
+    class FakePointerRuntimeSet:
+        def __init__(self):
+            self.mapper = (
+                FakeTargetMapper()
+            )
+
+        def getObjId(self):
+            return 300
+
+        def _getMapper(self):
+            return self.mapper
+
+    runtimeSet = FakePointerRuntimeSet()
+
+    resolver = (
+        PostgresqlRuntimeSetFactory()
+        ._buildLocalPointerResolver(
+            runtimeSet
+        )
+    )
+
+    reference = {
+        "targetObjectId": 7,
+        "targetParentObjectId": 300,
+    }
+
+    assert resolver(
+        reference
+    ) is targetItem
+
+    # The second resolution uses the cache.
+    assert resolver(
+        reference
+    ) is targetItem
+
+    assert (
+        runtimeSet.mapper.selectedIds
+        == [7]
+    )
+
+    # A pointer owned by another set is not
+    # resolved by the local resolver.
+    assert resolver({
+        "targetObjectId": 7,
+        "targetParentObjectId": 999,
+    }) is None
+
+    assert (
+        runtimeSet.mapper.selectedIds
+        == [7]
+    )

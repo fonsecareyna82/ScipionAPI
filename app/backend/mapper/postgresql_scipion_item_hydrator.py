@@ -25,7 +25,13 @@
 # ******************************************************************************
 import json
 import logging
-from typing import Any, Dict, Iterable, Optional
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Optional,
+)
 
 from pyworkflow.object import (
     OBJECTS_DICT,
@@ -53,6 +59,9 @@ class PostgresqlScipionItemHydrator:
             columns: Iterable[Dict[str, Any]],
             parent=None,
             classes: Optional[Dict[str, type]] = None,
+            pointerResolver: Optional[
+                Callable[[Dict[str, Any]], Any]
+            ] = None,
     ):
         if not itemClassName:
             raise ValueError("itemClassName is required")
@@ -60,7 +69,15 @@ class PostgresqlScipionItemHydrator:
         self.itemClassName = str(itemClassName)
         self.parent = parent
         self.classes = self._loadClasses(classes)
-        self.columns = self._normalizeColumns(columns)
+        self.columns = self._normalizeColumns(
+            columns
+        )
+
+        self.pointerResolver = (
+            pointerResolver
+            if callable(pointerResolver)
+            else None
+        )
 
         self._classByPath = {
             column["labelProperty"]: column.get("className")
@@ -257,13 +274,23 @@ class PostgresqlScipionItemHydrator:
                 attribute,
             )
 
-        # Pointer relationships are restored separately from the canonical
-        # PostgreSQL relation tables.
         if isinstance(
                 attribute,
-                (Pointer, PointerList),
+                PointerList,
         ):
-            return False
+            return self._hydratePointerList(
+                pointerList=attribute,
+                value=value,
+            )
+
+        if isinstance(
+                attribute,
+                Pointer,
+        ):
+            return self._hydratePointer(
+                pointer=attribute,
+                value=value,
+            )
 
         # Complex objects usually appear together with nested paths. Their
         # own stored value is commonly None, so do not replace the object.
@@ -289,6 +316,206 @@ class PostgresqlScipionItemHydrator:
             )
 
         return True
+
+    def _hydratePointer(
+            self,
+            pointer: Pointer,
+            value: Any,
+    ) -> bool:
+        reference = (
+            self._normalizePointerReference(
+                value
+            )
+        )
+
+        pointer._postgresqlRuntimeReference = dict(
+            reference
+        )
+
+        target = self._resolvePointerReference(
+            reference
+        )
+
+        if target is not None:
+            pointer.set(
+                target
+            )
+
+        extended = reference.get(
+            "extended"
+        )
+
+        if extended not in (
+                None,
+                "",
+        ):
+            pointer.setExtended(
+                str(extended)
+            )
+
+        return True
+
+    def _hydratePointerList(
+            self,
+            pointerList: PointerList,
+            value: Any,
+    ) -> bool:
+        references = (
+            self._normalizePointerReferences(
+                value
+            )
+        )
+
+        pointerList.clear()
+
+        normalizedReferences = []
+
+        for reference in references:
+            pointer = Pointer()
+
+            self._hydratePointer(
+                pointer=pointer,
+                value=reference,
+            )
+
+            pointerList.append(
+                pointer
+            )
+
+            normalizedReferences.append(
+                dict(
+                    getattr(
+                        pointer,
+                        "_postgresqlRuntimeReference",
+                        {},
+                    )
+                )
+            )
+
+        pointerList._postgresqlRuntimeReferences = (
+            normalizedReferences
+        )
+
+        return True
+
+    def _resolvePointerReference(
+            self,
+            reference: Dict[str, Any],
+    ):
+        if not reference:
+            return None
+
+        if self.pointerResolver is None:
+            return None
+
+        try:
+            return self.pointerResolver(
+                dict(reference)
+            )
+        except Exception:
+            logger.debug(
+                "Could not resolve PostgreSQL item pointer. "
+                "itemClass=%s reference=%s",
+                self.itemClassName,
+                reference,
+                exc_info=True,
+            )
+
+            return None
+
+    def _normalizePointerReference(
+            self,
+            value: Any,
+    ) -> Dict[str, Any]:
+        if isinstance(
+                value,
+                dict,
+        ):
+            return dict(value)
+
+        if isinstance(
+                value,
+                str,
+        ):
+            value = value.strip()
+
+            if not value:
+                return {}
+
+            try:
+                parsed = json.loads(
+                    value
+                )
+            except Exception:
+                return {
+                    "version": 0,
+                    "kind": "pointer",
+                    "uniqueId": value,
+                    "extended": "",
+                }
+
+            if isinstance(
+                    parsed,
+                    dict,
+            ):
+                return dict(parsed)
+
+        return {}
+
+    def _normalizePointerReferences(
+            self,
+            value: Any,
+    ):
+        if value is None:
+            return []
+
+        if isinstance(
+                value,
+                str,
+        ):
+            value = value.strip()
+
+            if not value:
+                return []
+
+            try:
+                value = json.loads(
+                    value
+                )
+            except Exception:
+                return [
+                    self._normalizePointerReference(
+                        value
+                    )
+                ]
+
+        if isinstance(
+                value,
+                dict,
+        ):
+            return [
+                dict(value)
+            ]
+
+        if not isinstance(
+                value,
+                (
+                        list,
+                        tuple,
+                ),
+        ):
+            return []
+
+        return [
+            reference
+            for reference in (
+                self._normalizePointerReference(
+                    item
+                )
+                for item in value
+            )
+            if reference
+        ]
 
     # ------------------------------------------------------------------
     # Basic Scipion metadata
