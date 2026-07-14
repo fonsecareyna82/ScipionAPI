@@ -25,6 +25,7 @@
 # ******************************************************************************
 import json
 from typing import Any, Dict, Optional, Type
+from pyworkflow.object import Set as ScipionSet
 
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
@@ -200,6 +201,33 @@ class PostgresqlRuntimeSetFactory:
             db=db
         )
 
+        logicalTablesByParentId = (
+            self._loadLogicalTablesByParentItemId(
+                setMapper=setMapper,
+                setId=int(setId),
+            )
+        )
+
+        itemClassRegistry = dict(
+            classRegistry
+        )
+
+        nativeItemClass = classRegistry.get(
+            str(itemClassName)
+        )
+
+        if (
+                logicalTablesByParentId
+                and self._isScipionSetClass(
+            nativeItemClass
+        )
+        ):
+            itemClassRegistry[
+                str(itemClassName)
+            ] = self._getRuntimeSetClass(
+                nativeItemClass
+            )
+
         columns = setMapper.getStoredSetColumns(
             int(setId)
         )
@@ -208,14 +236,36 @@ class PostgresqlRuntimeSetFactory:
             itemClassName=str(itemClassName),
             columns=columns,
             parent=runtimeSet,
-            classes=classRegistry,
+            classes=itemClassRegistry,
         )
+
+        def buildItem(row):
+            row = dict(
+                row or {}
+            )
+
+            item = itemHydrator.build(
+                row
+            )
+
+            self._attachLogicalTableMapper(
+                db=db,
+                setMapper=setMapper,
+                item=item,
+                row=row,
+                logicalTablesByParentId=(
+                    logicalTablesByParentId
+                ),
+                classRegistry=classRegistry,
+            )
+
+            return item
 
         def mapperFactory():
             return PostgresqlSetRuntimeMapper(
                 db=db,
                 setId=int(setId),
-                itemBuilder=itemHydrator,
+                itemBuilder=buildItem,
             )
 
         runtimeSet._postgresqlMapperFactory = (
@@ -225,6 +275,190 @@ class PostgresqlRuntimeSetFactory:
         runtimeSet.load()
 
         return runtimeSet
+
+    def _loadLogicalTablesByParentItemId(
+            self,
+            setMapper,
+            setId: int,
+    ) -> Dict[int, Dict[str, Any]]:
+        result: Dict[int, Dict[str, Any]] = {}
+
+        tables = setMapper.listStoredSetTables(
+            int(setId)
+        )
+
+        for table in tables or []:
+            table = dict(
+                table or {}
+            )
+
+            if table.get("tableKind") != "child":
+                continue
+
+            parentItemId = self._toOptionalInt(
+                table.get("parentItemId")
+            )
+
+            if parentItemId is None:
+                continue
+
+            parentItemId = int(
+                parentItemId
+            )
+
+            if parentItemId in result:
+                raise ValueError(
+                    "More than one PostgreSQL logical table "
+                    "was found for parent item %s"
+                    % parentItemId
+                )
+
+            result[parentItemId] = table
+
+        return result
+
+    def _attachLogicalTableMapper(
+            self,
+            db,
+            setMapper,
+            item,
+            row: Dict[str, Any],
+            logicalTablesByParentId:
+            Dict[int, Dict[str, Any]],
+            classRegistry: Dict[str, Type],
+    ) -> None:
+        itemId = self._toOptionalInt(
+            row.get("scipionItemId")
+        )
+
+        if itemId is None:
+            return
+
+        table = logicalTablesByParentId.get(
+            int(itemId)
+        )
+
+        if table is None:
+            return
+
+        if not isinstance(
+                item,
+                ScipionSet,
+        ):
+            raise TypeError(
+                "PostgreSQL logical table %s belongs to item %s, "
+                "but hydrated class %s is not a Scipion Set"
+                % (
+                    table.get("id"),
+                    itemId,
+                    item.__class__.__name__,
+                )
+            )
+
+        tableId = self._toOptionalInt(
+            table.get("id")
+        )
+
+        childItemClassName = table.get(
+            "itemClassName"
+        )
+
+        if tableId is None:
+            raise ValueError(
+                "Logical table for item %s does not have an id"
+                % itemId
+            )
+
+        if not childItemClassName:
+            raise ValueError(
+                "Logical table %s does not define itemClassName"
+                % tableId
+            )
+
+        tableProperties = self._normalizeProperties(
+            table.get("properties")
+        )
+
+        runtimeValues = getattr(
+            item,
+            "_postgresqlRuntimeValues",
+            {},
+        )
+
+        nestedProperties = dict(
+            runtimeValues
+            if isinstance(runtimeValues, dict)
+            else {}
+        )
+
+        nestedProperties.update(
+            tableProperties
+        )
+
+        item._postgresqlRuntimeInfo = {
+            "setId": table.get("setId"),
+            "tableId": int(tableId),
+            "parentItemId": int(itemId),
+            "className": item.getClassName(),
+            "itemClassName": str(
+                childItemClassName
+            ),
+            "properties": tableProperties,
+        }
+
+        item._postgresqlRuntimeProperties = (
+            nestedProperties
+        )
+
+        def mapperFactory():
+            childColumns = (
+                setMapper.getStoredSetTableColumns(
+                    int(tableId)
+                )
+            )
+
+            childHydrator = (
+                PostgresqlScipionItemHydrator(
+                    itemClassName=str(
+                        childItemClassName
+                    ),
+                    columns=childColumns,
+                    parent=item,
+                    classes=classRegistry,
+                )
+            )
+
+            return PostgresqlSetRuntimeMapper(
+                db=db,
+                tableId=int(tableId),
+                itemBuilder=childHydrator,
+            )
+
+        item._postgresqlMapperFactory = (
+            mapperFactory
+        )
+
+        # Keep loading lazy. The mapper will be created when iterItems(),
+        # getFirstItem(), getItem() or another Set operation needs it.
+        item._mapper = None
+
+    def _isScipionSetClass(
+            self,
+            objectClass,
+    ) -> bool:
+        if not isinstance(
+                objectClass,
+                type,
+        ):
+            return False
+
+        try:
+            return issubclass(
+                objectClass,
+                ScipionSet,
+            )
+        except TypeError:
+            return False
 
     def _getRuntimeSetClass(
             self,
