@@ -1,28 +1,3 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
 from pathlib import Path
 
 from pyworkflow.object import Float, Object, Set, String
@@ -174,11 +149,15 @@ def _createNestedSource(fileName):
     child.setObjId(3)
     child._value.set("child-3")
     nestedSet.append(child)
-    nestedSet.write(properties=False)
-    nestedSet.close()
 
     parentSet.append(nestedSet)
+
+    nestedSet.write(
+        properties=False
+    )
     parentSet.write()
+
+    nestedSet.close()
     parentSet.close()
 
     return _openSet(
@@ -196,6 +175,14 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
     )
     sourceSet = _createRootSource(
         sourcePath
+    )
+
+    sourceItem = sourceSet.getFirstItem()
+    sourceItem._objParent = owner
+
+    sourceSet.iterItems = (
+        lambda *args, **kwargs:
+        iter([sourceItem])
     )
 
     _configureRuntimeSource(
@@ -316,6 +303,14 @@ def test_MaterializeCopiesNestedLogicalItems(
     )
     sourceSet = _createNestedSource(
         sourcePath
+    )
+
+    sourceNestedSet = sourceSet.getFirstItem()
+    sourceNestedSet._objParent = sourceSet
+
+    sourceSet.iterItems = (
+        lambda *args, **kwargs:
+        iter([sourceNestedSet])
     )
 
     _configureRuntimeSource(

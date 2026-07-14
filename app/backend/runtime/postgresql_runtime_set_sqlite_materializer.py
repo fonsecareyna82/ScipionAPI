@@ -1,28 +1,3 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
 import os
 import re
 import tempfile
@@ -136,7 +111,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         targetSet.copy(
             sourceSet,
             copyId=True,
-            ignoreAttrs=["_mapperPath", "_size"],
+            ignoreAttrs=[
+                "_mapperPath",
+                "_size",
+                "_objParent",
+            ],
         )
         self._copyEnabled(sourceSet, targetSet)
 
@@ -191,7 +170,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetItem.copy(
                 sourceItem,
                 copyId=True,
-                ignoreAttrs=["_mapperPath", "_size"],
+                ignoreAttrs=[
+                    "_mapperPath",
+                    "_size",
+                    "_objParent",
+                ],
             )
         else:
             itemClass = self._getObjectClass(sourceItem)
@@ -200,10 +183,19 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 targetItem.copy(
                     sourceItem,
                     copyId=True,
+                    ignoreAttrs=[
+                        "_objParent",
+                    ],
                     copyEnable=True,
                 )
             except TypeError:
-                targetItem.copy(sourceItem, copyId=True)
+                targetItem.copy(
+                    sourceItem,
+                    copyId=True,
+                    ignoreAttrs=[
+                        "_objParent",
+                    ],
+                )
 
         self._copyEnabled(sourceItem, targetItem)
         return targetItem
