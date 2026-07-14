@@ -36,7 +36,7 @@ from app.backend.utils.postgresql_runtime_output_adapter import (
 )
 
 
-def test_SetOutputUsesNativeRuntimeSetFactory(
+def test_SetOutputUsesNativeFactoryWithoutMutatingParent(
         monkeypatch,
 ):
     db = object()
@@ -44,6 +44,8 @@ def test_SetOutputUsesNativeRuntimeSetFactory(
         db=db
     )
     parent = SimpleNamespace()
+    originalOutput = object()
+    parent.outputParticles = originalOutput
     runtimeSet = object()
     captured = {}
 
@@ -85,7 +87,7 @@ def test_SetOutputUsesNativeRuntimeSetFactory(
     )
 
     assert result is runtimeSet
-    assert parent.outputParticles is runtimeSet
+    assert parent.outputParticles is originalOutput
 
     assert captured == {
         "db": db,
@@ -95,11 +97,13 @@ def test_SetOutputUsesNativeRuntimeSetFactory(
     }
 
 
-def test_NonSetOutputKeepsGenericRuntimeProxy():
+def test_NonSetOutputBuildsProxyWithoutMutatingParent():
     mapper = SimpleNamespace(
         db=object()
     )
     parent = SimpleNamespace()
+    originalOutput = object()
+    parent.outputVolume = originalOutput
 
     result = (
         RuntimeOutputProxyService()
@@ -119,10 +123,10 @@ def test_NonSetOutputKeepsGenericRuntimeProxy():
         PostgresqlRuntimeOutputProxy,
     )
 
-    assert parent.outputVolume is result
+    assert parent.outputVolume is originalOutput
 
 
-def test_SetOutputReusesMapperRuntimeSetFactory():
+def test_SetOutputReusesMapperFactoryWithoutMutatingParent():
     db = object()
     runtimeSet = object()
     classRegistry = {
@@ -175,6 +179,8 @@ def test_SetOutputReusesMapperRuntimeSetFactory():
     )
 
     parent = SimpleNamespace()
+    originalOutput = object()
+    parent.outputParticles = originalOutput
 
     outputInfo = {
         "setId": 31,
@@ -202,7 +208,7 @@ def test_SetOutputReusesMapperRuntimeSetFactory():
 
     assert firstResult is runtimeSet
     assert secondResult is runtimeSet
-    assert parent.outputParticles is runtimeSet
+    assert parent.outputParticles is originalOutput
 
     assert factory.cacheLookups == [
         (4, 300),
