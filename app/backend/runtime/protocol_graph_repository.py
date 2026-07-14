@@ -389,12 +389,21 @@ class ProtocolGraphRepository:
             parentProtocolDbId: int,
             outputName: str,
     ) -> Dict[str, Any]:
+        """
+        Return the Scipion runtime identity associated with a persisted output.
+
+        protocol_input_refs.objectId stores the Scipion runtime object id,
+        not the canonical scipion_objects.id primary key.
+        """
         row = mapper.db.fetchOne(
             """
             SELECT
-                s."objectId"::text AS "objectId",
+                o."scipionObjId"::text AS "runtimeObjectId",
                 s."setClassName" AS "className"
               FROM scipion_sets s
+         LEFT JOIN scipion_objects o
+                ON o."projectId" = s."projectId"
+               AND o.id = s."objectId"
              WHERE s."projectId" = %s
                AND s."protocolDbId" = %s
                AND s."outputName" = %s
@@ -402,7 +411,7 @@ class ProtocolGraphRepository:
             UNION ALL
 
             SELECT
-                o."scipionObjId"::text AS "objectId",
+                o."scipionObjId"::text AS "runtimeObjectId",
                 o."className" AS "className"
               FROM scipion_objects o
              WHERE o."projectId" = %s
@@ -425,12 +434,12 @@ class ProtocolGraphRepository:
 
         if not row:
             return {
-                "objectId": None,
+                "runtimeObjectId": None,
                 "className": None,
             }
 
         return {
-            "objectId": row.get("objectId"),
+            "runtimeObjectId": row.get("runtimeObjectId"),
             "className": row.get("className"),
         }
 
@@ -471,7 +480,7 @@ class ProtocolGraphRepository:
             SELECT
                 'object' AS kind,
                 NULL AS "setId",
-                o."scipionObjId"::text AS "objectId",
+                o.id::text AS "objectId",
                 o."scipionObjId"::text AS "runtimeObjectId",
                 o.name AS "outputName",
                 o."className" AS "className",

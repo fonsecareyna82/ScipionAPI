@@ -46,7 +46,24 @@ class PostgresqlRuntimeItemProxy:
         self._parent = parent
 
     def getObjId(self):
-        return self._row.get("scipionItemId") or self._row.get("id")
+        """
+        Return the Scipion runtime object id.
+
+        objectId is the canonical PostgreSQL scipion_objects.id.
+        runtimeObjectId is the identity exposed by Scipion objects through
+        getObjId() / _objId.
+        """
+        if "runtimeObjectId" in self._info:
+            value = self._info.get("runtimeObjectId")
+        else:
+            # Compatibility with outputInfo dictionaries produced before
+            # runtimeObjectId was exposed explicitly.
+            value = self._info.get("objectId")
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
 
     def getClassName(self):
         return self._itemClassName or self._firstValueBySuffix(
