@@ -220,6 +220,143 @@ class ProtocolGraphRepository:
 
         return rows[0]
 
+    def listPersistedSetOutputRows(
+            self,
+            mapper,
+            projectId: int,
+            className: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List PostgreSQL-backed Scipion set outputs that expose a usable
+        Scipion runtime object id.
+
+        className applies an exact stored set class filter. Subclass
+        expansion belongs to the runtime mapper, where the Scipion class
+        registry is available.
+        """
+        if mapper is None:
+            raise ValueError(
+                "mapper is required"
+            )
+
+        db = getattr(
+            mapper,
+            "db",
+            None,
+        )
+
+        if db is None:
+            raise ValueError(
+                "mapper.db is required"
+            )
+
+        if projectId in (
+                None,
+                "",
+        ):
+            raise ValueError(
+                "projectId is required"
+            )
+
+        classNameText = str(
+            className or ""
+        ).strip()
+
+        query = """
+            SELECT
+                s.id AS "setId",
+                s."projectId",
+                s."protocolDbId",
+                p."protocolId",
+                s."objectId",
+                o."scipionObjId" AS "runtimeObjectId",
+                s."outputName",
+                s."setClassName" AS "className",
+                s."itemClassName",
+                s.properties
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p."projectId" = s."projectId"
+               AND p.id = s."protocolDbId"
+              JOIN scipion_objects o
+                ON o."projectId" = s."projectId"
+               AND o.id = s."objectId"
+             WHERE s."projectId" = %s
+               AND o."scipionObjId" IS NOT NULL
+        """
+
+        params = [
+            int(projectId),
+        ]
+
+        if classNameText:
+            query += """
+               AND s."setClassName" = %s
+            """
+
+            params.append(
+                classNameText
+            )
+
+        query += """
+             ORDER BY
+                s."protocolDbId" ASC,
+                s."outputName" ASC,
+                s.id ASC
+        """
+
+        rows = self._rowsToDicts(
+            db.fetchAll(
+                query,
+                tuple(params),
+            )
+        )
+
+        result = []
+        runtimeObjectIds = set()
+
+        for row in rows:
+            runtimeObjectId = (
+                self._extractRuntimeScipionObjId(
+                    row
+                )
+            )
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeObjectId = int(
+                runtimeObjectId
+            )
+
+            if runtimeObjectId in runtimeObjectIds:
+                raise ValueError(
+                    "More than one PostgreSQL set was found "
+                    "for project %s and runtime object %s"
+                    % (
+                        projectId,
+                        runtimeObjectId,
+                    )
+                )
+
+            runtimeObjectIds.add(
+                runtimeObjectId
+            )
+
+            normalizedRow = dict(
+                row
+            )
+
+            normalizedRow[
+                "runtimeObjectId"
+            ] = runtimeObjectId
+
+            result.append(
+                normalizedRow
+            )
+
+        return result
+
     def replaceRuntimeOutputRelation(
             self,
             mapper,
