@@ -36,6 +36,9 @@ from app.backend.mapper.postgresql_set_runtime_mapper import (
 from app.backend.mapper.scipion_set_mapper import (
     ScipionSetPostgresqlMapper,
 )
+from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
+    PostgresqlRuntimeSetSqliteMaterializer,
+)
 
 
 class PostgresqlRuntimeSetMixin:
@@ -77,11 +80,20 @@ class PostgresqlRuntimeSetMixin:
         self._mapper = None
 
     def getFileName(self):
-        """
-        A PostgreSQL runtime set must not expose the original SQLite as its
-        active persistence source.
-        """
-        return None
+        materializer = getattr(
+            self,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        if materializer is None:
+            raise RuntimeError(
+                "PostgreSQL runtime set does not have a SQLite materializer."
+            )
+
+        return materializer.materialize(
+            self
+        )
 
     def getLegacyFileName(self):
         return self._postgresqlRuntimeProperties.get(
@@ -183,6 +195,11 @@ class PostgresqlRuntimeSetFactory:
 
         runtimeSet = runtimeSetClass()
 
+        self._configureRuntimeSetCompatibility(
+            runtimeSet=runtimeSet,
+            nativeSetClass=nativeSetClass,
+        )
+
         properties = self._normalizeProperties(
             info.get("properties")
         )
@@ -253,6 +270,20 @@ class PostgresqlRuntimeSetFactory:
                 row
             )
 
+            if (
+                    isinstance(
+                        item,
+                        ScipionSet,
+                    )
+                    and self._isScipionSetClass(
+                nativeItemClass
+            )
+            ):
+                self._configureRuntimeSetCompatibility(
+                    runtimeSet=item,
+                    nativeSetClass=nativeItemClass,
+                )
+
             self._attachLogicalTableMapper(
                 db=db,
                 setMapper=setMapper,
@@ -316,6 +347,21 @@ class PostgresqlRuntimeSetFactory:
             return str(declaredName)
 
         return None
+
+    def _configureRuntimeSetCompatibility(
+            self,
+            runtimeSet: ScipionSet,
+            nativeSetClass: Type,
+    ) -> None:
+        runtimeSet._postgresqlNativeSetClass = (
+            nativeSetClass
+        )
+
+        runtimeSet._postgresqlSqliteMaterializer = (
+            PostgresqlRuntimeSetSqliteMaterializer()
+        )
+
+        runtimeSet._postgresqlMaterializedFileName = None
 
     def _loadLogicalTablesByParentItemId(
             self,
