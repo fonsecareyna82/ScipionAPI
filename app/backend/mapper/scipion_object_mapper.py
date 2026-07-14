@@ -153,7 +153,16 @@ class ScipionObjectPostgresqlMapper:
             self.registerObjectTypeFromObject(scipionObj, includeNestedProperties=includeNestedProperties)
 
         storedPaths: List[str] = []
+
         with self.db.transaction():
+            conflictingSetsDeleted = (
+                self._deleteStoredSetForOutput(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=outputName,
+                )
+            )
+
             rootObjectId = self._storeObjectNode(
                 projectId=projectId,
                 protocolDbId=protocolDbId,
@@ -166,6 +175,15 @@ class ScipionObjectPostgresqlMapper:
                 visited=set(),
             )
 
+            staleObjectsDeleted = (
+                self._deleteStaleObjectTreePaths(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=outputName,
+                    storedPaths=storedPaths,
+                )
+            )
+
         return {
             "rootObjectId": rootObjectId,
             "projectId": projectId,
@@ -173,6 +191,8 @@ class ScipionObjectPostgresqlMapper:
             "outputName": outputName,
             "storedObjectsCount": len(storedPaths),
             "storedPaths": storedPaths,
+            "staleObjectsDeleted": staleObjectsDeleted,
+            "conflictingSetsDeleted": conflictingSetsDeleted,
         }
 
     def getStoredObjectTree(self, projectId: int, protocolDbId: int, outputName: str) -> List[Dict[str, Any]]:
@@ -204,6 +224,88 @@ class ScipionObjectPostgresqlMapper:
             """,
             (projectId, protocolDbId),
         )
+
+    def _deleteStoredSetForOutput(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> int:
+        """
+        Remove a previously persisted flat-set representation when the same
+        protocol output is now being stored as an object tree.
+
+        Child set rows are removed through PostgreSQL foreign-key cascades.
+        The associated root scipion_object is kept because scipion_sets.objectId
+        uses ON DELETE SET NULL and will be reused by storeObjectTree().
+        """
+        cursor = self.db.execute(
+            """
+            DELETE FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "outputName" = %s
+            """,
+            (
+                projectId,
+                protocolDbId,
+                str(outputName),
+            ),
+            commit=False,
+        )
+
+        return int(cursor.rowcount or 0)
+
+    def _deleteStaleObjectTreePaths(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            storedPaths: List[str],
+    ) -> int:
+        """
+        Remove persisted paths belonging to one output that were not produced
+        by the current object-tree traversal.
+        """
+        normalizedPaths = [
+            str(path)
+            for path in storedPaths or []
+            if str(path or "").strip()
+        ]
+
+        if not normalizedPaths:
+            return 0
+
+        outputRoot = str(outputName)
+
+        cursor = self.db.execute(
+            """
+            DELETE FROM scipion_objects
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND (
+                    path = %s
+                    OR LEFT(
+                        path,
+                        CHAR_LENGTH(%s) + 1
+                    ) = %s || '.'
+               )
+               AND NOT (
+                    path = ANY(%s)
+               )
+            """,
+            (
+                projectId,
+                protocolDbId,
+                outputRoot,
+                outputRoot,
+                outputRoot,
+                normalizedPaths,
+            ),
+            commit=False,
+        )
+
+        return int(cursor.rowcount or 0)
 
     def getObjectType(self, className: str) -> Optional[Dict[str, Any]]:
         return self.db.fetchOne(

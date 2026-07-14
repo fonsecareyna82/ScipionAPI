@@ -143,11 +143,31 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 protocolDbId=protocolDbId,
                 objectId=rootObjectId,
                 outputName=outputName,
-                setClassName=self._getClassName(scipionSet) or scipionSet.__class__.__name__,
+                setClassName=(
+                        self._getClassName(scipionSet)
+                        or scipionSet.__class__.__name__
+                ),
                 itemClassName=itemClassName,
                 properties=initialProperties,
             )
-            self._upsertSetColumns(setId, columns)
+
+            staleObjectsDeleted = (
+                self._deleteStaleObjectTreePaths(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=outputName,
+                    storedPaths=storedPaths,
+                )
+            )
+
+            self._replaceStoredSetSnapshot(
+                setId=setId,
+            )
+
+            self._upsertSetColumns(
+                setId,
+                columns,
+            )
 
             rootTableId = self._upsertSetTable(
                 setId=setId,
@@ -205,6 +225,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "lastSyncAt": syncTimestamp,
             "lastCheckedAt": syncTimestamp,
             "skipped": False,
+            "snapshotReplaced": existingSet is not None,
+            "staleObjectsDeleted": staleObjectsDeleted,
         }
 
     def getStoredSet(
@@ -339,6 +361,53 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                AND "outputName" = %s
             """,
             (projectId, protocolDbId, outputName),
+        )
+
+    def _replaceStoredSetSnapshot(
+            self,
+            setId: int,
+    ) -> None:
+        """
+        Clear the dependent rows of an existing set before writing the current
+        snapshot.
+
+        The scipion_sets row and its id are preserved, while columns, items,
+        properties and logical tables are rebuilt from the current Scipion set.
+        """
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_tables
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_items
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_columns
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_properties
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
         )
 
     def _upsertSet(
@@ -904,12 +973,30 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if storedMaxItemId != maxItemIdHint:
                 return False
 
-        storedSourceMTime = self._toOptionalFloat(existingProperties.get("sourceMTime"))
-        if sourceMTime is not None:
-            if storedSourceMTime is None:
-                return False
-            if abs(storedSourceMTime - sourceMTime) > 0.000001:
-                return False
+        # itemsCount + maxItemId are only hints. They cannot detect changes
+        # to item values, enabled flags, transforms, coordinates or metadata.
+        #
+        # Only skip when the set also provides a stable source-file mtime.
+        if sourceMTime is None:
+            return False
+
+        storedSourceMTime = self._toOptionalFloat(
+            existingProperties.get(
+                "sourceMTime"
+            )
+        )
+
+        if storedSourceMTime is None:
+            return False
+
+        if (
+                abs(
+                    storedSourceMTime
+                    - sourceMTime
+                )
+                > 0.000001
+        ):
+            return False
 
         return True
 
