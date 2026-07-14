@@ -749,6 +749,39 @@ class PostgresqlFlatMapper(Mapper):
         )
         return self.db.fetchOne(query, params)
 
+    def getProjectRuntimeMetadata(
+            self,
+            projectId: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return project metadata required by the Scipion runtime mapper.
+
+        Older databases may expose unquoted PostgreSQL columns as
+        createdat/updatedat, while migrated schemas may preserve camelCase.
+        Normalize both representations here.
+        """
+        row = self.db.fetchOne(
+            """
+            SELECT *
+              FROM projects
+             WHERE id = %s
+            """,
+            (int(projectId),),
+        )
+
+        if row is None:
+            return None
+
+        result = dict(row)
+
+        if result.get("createdAt") is None:
+            result["createdAt"] = result.get("createdat")
+
+        if result.get("updatedAt") is None:
+            result["updatedAt"] = result.get("updatedat")
+
+        return result
+
     def updateProjectProtocolStatus(
             self,
             projectId: int,
