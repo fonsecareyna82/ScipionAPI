@@ -1283,17 +1283,24 @@ class ProjectService:
                 protocolId=int(scipionProtocolId),
                 steps=steps,
             )
+        runtimeProtocolOutputPersistenceService =  RuntimeProtocolOutputPersistenceService()
 
         outputReport = {
             "declared": [],
             "persisted": [],
             "skipped": [],
+            "removed": [],
             "errors": [],
         }
 
         shouldRegisterOutputs = (
                 registerOutputs
-                and self._shouldRegisterProtocolOutputs(protocol)
+                and (
+                    runtimeProtocolOutputPersistenceService
+                    .shouldSyncProtocolOutputs(
+                        protocol
+                    )
+                )
         )
 
         if shouldRegisterOutputs:
@@ -1314,6 +1321,7 @@ class ProjectService:
                     "declared": [],
                     "persisted": [],
                     "skipped": [],
+                    "removed": [],
                     "errors": [{
                         "protocolId": str(scipionProtocolId),
                         "error": "Failed to register outputs",
@@ -1389,8 +1397,6 @@ class ProjectService:
                     exc_info=True,
                 )
 
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
         syncResult = {
             "protocols": 1,
             "dependencies": 0,
@@ -1400,6 +1406,11 @@ class ProjectService:
             "stepErrors": [],
             "outputsDeclared": len(outputReport.get("declared") or []),
             "outputs": len(outputReport.get("persisted") or []),
+            "outputsRemoved": len(
+                outputReport.get(
+                    "removed"
+                ) or []
+            ),
             "outputsByKind": runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
                 outputReport.get("persisted") or []
             ),

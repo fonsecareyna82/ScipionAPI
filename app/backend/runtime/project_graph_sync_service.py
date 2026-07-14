@@ -76,6 +76,9 @@ class RuntimeProjectGraphSyncService:
         outputSyncErrors: List[Dict[str, Any]] = []
         outputSyncDeclared: List[Dict[str, Any]] = []
         outputSyncMissing: List[Dict[str, Any]] = []
+        outputSyncRemoved: List[
+            Dict[str, Any]
+        ] = []
 
         stepsSyncCount = 0
         stepsSyncProtocolsCount = 0
@@ -135,7 +138,7 @@ class RuntimeProjectGraphSyncService:
                     nodeIdText,
                 )
 
-            if runtimeProtocolOutputPersistenceService.shouldRegisterProtocolOutputs(
+            if runtimeProtocolOutputPersistenceService.shouldSyncProtocolOutputs(
                     protocol=protocol,
             ):
                 try:
@@ -147,6 +150,16 @@ class RuntimeProjectGraphSyncService:
                     )
 
                     outputSyncResults.extend(outputReport.get("persisted") or [])
+                    for removedOutput in (
+                            outputReport.get(
+                                "removed"
+                            )
+                            or []
+                    ):
+                        outputSyncRemoved.append({
+                            "protocolId": nodeIdText,
+                            **removedOutput,
+                        })
 
                     declaredOutputs = outputReport.get("declared") or []
                     persistedOutputs = outputReport.get("persisted") or []
@@ -347,6 +360,12 @@ class RuntimeProjectGraphSyncService:
             "stepErrors": stepsSyncErrors,
             "outputsDeclared": len(outputSyncDeclared),
             "outputs": len(outputSyncResults),
+            "outputsRemoved": len(
+                outputSyncRemoved
+            ),
+            "removedOutputs": (
+                outputSyncRemoved
+            ),
             "outputsMissing": len(outputSyncMissing),
             "outputsByKind": outputResultsByKind,
             "objects": int(storedObjectsCount),

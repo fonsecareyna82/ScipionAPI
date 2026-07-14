@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import shutil
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from pyworkflow.object import (
@@ -150,6 +150,70 @@ class RuntimeProtocolOutputPersistenceService:
                 pass
 
         return False
+
+    def shouldReconcileMissingProtocolOutputs(
+            self,
+            protocol: Any,
+    ) -> bool:
+        """
+        Return True when the protocol output list can be treated as its final
+        snapshot.
+
+        Running and streaming protocols may expose only a partial list of
+        outputs, so missing outputs must never be removed while they are active.
+        """
+        for methodName in (
+                "isFinished",
+                "isFailed",
+                "isAborted",
+        ):
+            method = getattr(
+                protocol,
+                methodName,
+                None,
+            )
+
+            if not callable(method):
+                continue
+
+            try:
+                if bool(method()):
+                    return True
+            except Exception:
+                pass
+
+        statusValue = self.safeCall(
+            protocol,
+            "getStatus",
+            None,
+        )
+
+        statusText = str(
+            statusValue or ""
+        ).strip().lower()
+
+        return statusText in {
+            "finished",
+            "failed",
+            "aborted",
+            "interactive",
+        }
+
+    def shouldSyncProtocolOutputs(
+            self,
+            protocol: Any,
+    ) -> bool:
+        """
+        Return True when outputs must either be persisted or reconciled.
+        """
+        return (
+            self.shouldRegisterProtocolOutputs(
+                protocol
+            )
+            or self.shouldReconcileMissingProtocolOutputs(
+                protocol
+            )
+        )
 
     def countRuntimeOutputKinds(self, outputs: List[Dict[str, Any]]) -> Dict[str, int]:
         result: Dict[str, int] = {}
@@ -1186,6 +1250,169 @@ class RuntimeProtocolOutputPersistenceService:
 
         return protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
 
+    def loadPersistedProtocolOutputNames(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Set[str]:
+        """
+        Load the names of all flat-set and tree outputs currently persisted
+        for one protocol.
+
+        Set root objects are excluded from the tree query because they are
+        represented through scipion_sets.
+        """
+        outputNames: Set[str] = set()
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT "outputName"
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+            """,
+            (
+                projectId,
+                protocolDbId,
+            ),
+        )
+
+        for row in setRows or []:
+            outputName = (
+                row.get("outputName")
+                if isinstance(row, dict)
+                else row[0]
+            )
+
+            outputNameText = str(
+                outputName or ""
+            ).strip()
+
+            if outputNameText:
+                outputNames.add(
+                    outputNameText
+                )
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT COALESCE(
+                       NULLIF(o.path, ''),
+                       o.name
+                   ) AS "outputName"
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+            """,
+            (
+                projectId,
+                protocolDbId,
+            ),
+        )
+
+        for row in treeRows or []:
+            outputName = (
+                row.get("outputName")
+                if isinstance(row, dict)
+                else row[0]
+            )
+
+            outputNameText = str(
+                outputName or ""
+            ).strip()
+
+            if outputNameText:
+                outputNames.add(
+                    outputNameText
+                )
+
+        return outputNames
+
+    def deletePersistedProtocolOutputSnapshots(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            outputNames: List[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Delete PostgreSQL metadata for outputs that are no longer exposed by
+        a terminal protocol.
+
+        Files are intentionally not removed from the filesystem. Their lifecycle
+        remains under the native Scipion protocol operations.
+        """
+        normalizedOutputNames = sorted({
+            str(outputName).strip()
+            for outputName in outputNames or []
+            if str(outputName or "").strip()
+        })
+
+        if not normalizedOutputNames:
+            return []
+
+        removedOutputs: List[
+            Dict[str, Any]
+        ] = []
+
+        with mapper.db.transaction():
+            for outputName in normalizedOutputNames:
+                setCursor = mapper.db.execute(
+                    """
+                    DELETE FROM scipion_sets
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND "outputName" = %s
+                    """,
+                    (
+                        projectId,
+                        protocolDbId,
+                        outputName,
+                    ),
+                    commit=False,
+                )
+
+                objectCursor = mapper.db.execute(
+                    """
+                    DELETE FROM scipion_objects
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND (
+                            path = %s
+                            OR LEFT(
+                                path,
+                                CHAR_LENGTH(%s) + 1
+                            ) = %s || '.'
+                       )
+                    """,
+                    (
+                        projectId,
+                        protocolDbId,
+                        outputName,
+                        outputName,
+                        outputName,
+                    ),
+                    commit=False,
+                )
+
+                removedOutputs.append({
+                    "outputName": outputName,
+                    "setsDeleted": int(
+                        setCursor.rowcount or 0
+                    ),
+                    "objectsDeleted": int(
+                        objectCursor.rowcount or 0
+                    ),
+                })
+
+        return removedOutputs
+
     def storeGeneratedSetInPostgresql(
             self,
             mapper,
@@ -1256,6 +1483,11 @@ class RuntimeProtocolOutputPersistenceService:
         persistedOutputs: List[Dict[str, Any]] = []
         skippedOutputs: List[Dict[str, Any]] = []
         outputErrors: List[Dict[str, Any]] = []
+        removedOutputs: List[
+            Dict[str, Any]
+        ] = []
+
+        currentOutputNames: Set[str] = set()
 
         protocolId = self.getScipionObjectId(protocol)
         protocolDbId = self.resolveProtocolDbIdForOutputPersistence(
@@ -1266,6 +1498,47 @@ class RuntimeProtocolOutputPersistenceService:
 
         if protocolDbId is None:
             raise ValueError(f"Protocol not found in PostgreSQL: {protocolId}")
+
+        reconcileMissingOutputs = (
+            self
+            .shouldReconcileMissingProtocolOutputs(
+                protocol
+            )
+        )
+
+        persistedOutputNames: Set[str] = set()
+
+        if reconcileMissingOutputs:
+            try:
+                persistedOutputNames = (
+                    self
+                    .loadPersistedProtocolOutputNames(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolDbId=int(
+                            protocolDbId
+                        ),
+                    )
+                )
+
+            except Exception as exc:
+                reconcileMissingOutputs = False
+
+                logger.exception(
+                    "Could not load persisted protocol output names. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                outputErrors.append({
+                    "outputName": None,
+                    "outputClassName": None,
+                    "operation": (
+                        "load_persisted_output_names"
+                    ),
+                    "error": str(exc),
+                })
 
         try:
             outputAttributes = list(protocol.iterOutputAttributes())
@@ -1286,6 +1559,7 @@ class RuntimeProtocolOutputPersistenceService:
                 "persisted": persistedOutputs,
                 "skipped": skippedOutputs,
                 "errors": outputErrors,
+                "removed": removedOutputs,
             }
             return report if returnReport else persistedOutputs
 
@@ -1313,6 +1587,10 @@ class RuntimeProtocolOutputPersistenceService:
                     "reason": "empty_output_name",
                 })
                 continue
+
+            currentOutputNames.add(
+                outputName
+            )
 
             declaredOutputs.append({
                 "outputName": outputName,
@@ -1390,10 +1668,52 @@ class RuntimeProtocolOutputPersistenceService:
                     "error": str(exc),
                 })
 
+        if reconcileMissingOutputs:
+            staleOutputNames = sorted(
+                persistedOutputNames
+                - currentOutputNames
+            )
+
+            if staleOutputNames:
+                try:
+                    removedOutputs = (
+                        self
+                        .deletePersistedProtocolOutputSnapshots(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolDbId=int(
+                                protocolDbId
+                            ),
+                            outputNames=staleOutputNames,
+                        )
+                    )
+
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to remove stale persisted protocol outputs. "
+                        "projectId=%s protocolId=%s outputNames=%s",
+                        projectId,
+                        protocolId,
+                        staleOutputNames,
+                    )
+
+                    outputErrors.append({
+                        "outputName": None,
+                        "outputClassName": None,
+                        "operation": (
+                            "remove_stale_outputs"
+                        ),
+                        "staleOutputNames": (
+                            staleOutputNames
+                        ),
+                        "error": str(exc),
+                    })
+
         report = {
             "declared": declaredOutputs,
             "persisted": persistedOutputs,
             "skipped": skippedOutputs,
+            "removed": removedOutputs,
             "errors": outputErrors,
         }
 
