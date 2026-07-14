@@ -123,6 +123,9 @@ from app.backend.runtime.project_import_service import (
 from app.backend.runtime.project_import_audit_service import (
     RuntimeProjectImportAuditService,
 )
+from app.backend.runtime.project_relation_sync_service import (
+    RuntimeProjectRelationSyncService,
+)
 
 from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
@@ -1372,6 +1375,95 @@ class ProjectService:
                 sqliteOutputMirrorReport["stored"] = False
                 sqliteOutputMirrorReport["error"] = str(sqliteMirrorError)
 
+        relationReport = {
+            "relationsDeclared": 0,
+            "relations": 0,
+            "relationMissing": [],
+            "relationErrors": [],
+            "cleanup": [],
+            "complete": True,
+        }
+
+        if shouldRegisterOutputs:
+            try:
+                relationProtocol = protocol
+                runtimeMapper = None
+
+                try:
+                    runtimeMapper = (
+                        self.currentProject
+                        .getPostgresqlRuntimeMapper()
+                    )
+                except Exception:
+                    runtimeMapper = None
+
+                # Relations are written by Scipion into project.sqlite. Prefer a
+                # protocol loaded directly through that compatibility mapper instead
+                # of the protocol reconstructed from logs/run.db.
+                for fallbackName in (
+                        "readFallbackMapper",
+                        "writeFallbackMapper",
+                ):
+                    fallbackMapper = getattr(
+                        runtimeMapper,
+                        fallbackName,
+                        None,
+                    )
+
+                    selectById = getattr(
+                        fallbackMapper,
+                        "selectById",
+                        None,
+                    )
+
+                    if not callable(selectById):
+                        continue
+
+                    try:
+                        fallbackProtocol = selectById(
+                            int(scipionProtocolId)
+                        )
+                    except Exception:
+                        fallbackProtocol = None
+
+                    if fallbackProtocol is not None:
+                        relationProtocol = fallbackProtocol
+                        break
+
+                relationReport = (
+                    RuntimeProjectRelationSyncService()
+                    .syncProjectRelations(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolsByScipionId={
+                            str(scipionProtocolId): relationProtocol,
+                        },
+                        protocolDbIdByScipionId={
+                            str(scipionProtocolId): int(protocolDbId),
+                        },
+                    )
+                )
+
+            except Exception as relationError:
+                logger.exception(
+                    "Failed to synchronize PostgreSQL runtime relations. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                )
+
+                relationReport = {
+                    "relationsDeclared": 0,
+                    "relations": 0,
+                    "relationMissing": [],
+                    "relationErrors": [{
+                        "protocolId": str(scipionProtocolId),
+                        "error": str(relationError),
+                    }],
+                    "cleanup": [],
+                    "complete": False,
+                }
+
         artifactReport = None
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -1421,6 +1513,21 @@ class ProjectService:
             "protocolStatus": self._safeCall(protocol, "getStatus", None),
             "outputsRegistered": bool(outputReport.get("persisted")),
             "sqliteOutputMirror": sqliteOutputMirrorReport,
+            "relationsDeclared": int(
+                relationReport.get("relationsDeclared") or 0
+            ),
+            "relations": int(
+                relationReport.get("relations") or 0
+            ),
+            "relationMissing": (
+                    relationReport.get("relationMissing") or []
+            ),
+            "relationErrors": (
+                    relationReport.get("relationErrors") or []
+            ),
+            "relationCleanup": (
+                    relationReport.get("cleanup") or []
+            ),
         }
 
         if returnProtocolContext:
