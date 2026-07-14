@@ -825,20 +825,14 @@ class PostgresqlRuntimeMapper(Mapper):
             iterate=False,
             objectFilter=None,
     ):
-        requestedClassName = (
-            className.__name__
-            if isinstance(className, type)
-            else str(className or "").strip()
-        )
+        if isinstance(className, type):
+            requestedClassName = className.__name__
+        else:
+            requestedClassName = str(className or "").strip()
 
         requestedClass = self._resolveRuntimeObjectClass(requestedClassName)
 
-        isSetRequest = (
-                self._isScipionSetClass(requestedClass)
-                or requestedClassName.startswith("SetOf")
-        )
-
-        if not isSetRequest:
+        if objectFilter is not None and not callable(objectFilter):
             return self._selectByClassFromReadFallback(
                 className=className,
                 includeSubclasses=includeSubclasses,
@@ -846,7 +840,22 @@ class PostgresqlRuntimeMapper(Mapper):
                 objectFilter=objectFilter,
             )
 
-        if objectFilter is not None and not callable(objectFilter):
+        if self._isProtocolClass(requestedClass):
+            return self._selectProtocolByClass(
+                className=className,
+                requestedClassName=requestedClassName,
+                requestedClass=requestedClass,
+                includeSubclasses=includeSubclasses,
+                iterate=iterate,
+                objectFilter=objectFilter,
+            )
+
+        isSetRequest = (
+                self._isScipionSetClass(requestedClass)
+                or requestedClassName.startswith("SetOf")
+        )
+
+        if not isSetRequest:
             return self._selectByClassFromReadFallback(
                 className=className,
                 includeSubclasses=includeSubclasses,
@@ -896,6 +905,90 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
         return iter(result) if iterate else result
+
+    def _selectProtocolByClass(
+            self,
+            className,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+            iterate,
+            objectFilter,
+    ):
+        rows = self.flatMapper.getProtocols(self.projectId) or []
+        result = []
+
+        for row in rows:
+            candidateClassName = str(
+                row.get("protocolClassName") or ""
+            ).strip()
+
+            if not self._matchesRuntimeProtocolClass(
+                    candidateClassName=candidateClassName,
+                    requestedClassName=requestedClassName,
+                    requestedClass=requestedClass,
+                    includeSubclasses=includeSubclasses,
+            ):
+                continue
+
+            protocol = self._buildProtocolFromPostgresqlRow(row)
+
+            if protocol is None:
+                continue
+
+            if callable(objectFilter) and not objectFilter(protocol):
+                continue
+
+            result.append(protocol)
+
+        if self.readFallbackMapper is not None:
+            fallbackResult = self.readFallbackMapper.selectByClass(
+                className,
+                includeSubclasses=includeSubclasses,
+                iterate=False,
+                objectFilter=objectFilter,
+            )
+
+            fallbackObjects = self._attachRuntimeContextList(
+                fallbackResult or []
+            )
+
+            result = self._mergeRuntimeClassResults(
+                result,
+                fallbackObjects,
+            )
+
+        return iter(result) if iterate else result
+
+    def _matchesRuntimeProtocolClass(
+            self,
+            candidateClassName,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+    ):
+        candidateClassName = str(candidateClassName or "").strip()
+
+        if not candidateClassName:
+            return False
+
+        if candidateClassName == requestedClassName:
+            return True
+
+        if not includeSubclasses:
+            return False
+
+        candidateClass = self._resolveRuntimeObjectClass(
+            candidateClassName
+        )
+
+        if candidateClass is None or requestedClass is None:
+            return False
+
+        try:
+            return issubclass(candidateClass, requestedClass)
+        except TypeError:
+            return False
 
     def _selectByClassFromReadFallback(
             self,
@@ -989,6 +1082,9 @@ class PostgresqlRuntimeMapper(Mapper):
         if className == "Set":
             return ScipionSet
 
+        if className == "Protocol":
+            return Protocol
+
         classes = getattr(self, "dictClasses", None) or {}
 
         candidate = classes.get(className)
@@ -1003,7 +1099,22 @@ class PostgresqlRuntimeMapper(Mapper):
             if isinstance(registeredClass, type):
                 return registeredClass
 
+        protocolClass = self._resolveProtocolClass(className)
+
+        if isinstance(protocolClass, type):
+            return protocolClass
+
         return None
+
+    @staticmethod
+    def _isProtocolClass(candidateClass):
+        if not isinstance(candidateClass, type):
+            return False
+
+        try:
+            return issubclass(candidateClass, Protocol)
+        except TypeError:
+            return False
 
     @staticmethod
     def _isScipionSetClass(candidateClass):
