@@ -37,7 +37,15 @@ from pyworkflow.config import Config
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
-from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+from app.backend.mapper.scipion_set_mapper import (
+    ScipionSetPostgresqlMapper,
+)
+from app.backend.runtime.postgresql_runtime_set_factory import (
+    PostgresqlRuntimeSetFactory,
+)
+from app.backend.runtime.protocol_graph_repository import (
+    ProtocolGraphRepository,
+)
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -81,8 +89,27 @@ class PostgresqlRuntimeMapper(Mapper):
         self.readFallbackMapper = readFallbackMapper
         self.writeFallbackMapper = writeFallbackMapper
 
-        self.objectMapper = ScipionObjectPostgresqlMapper(self.db)
-        self.setMapper = ScipionSetPostgresqlMapper(self.db)
+        self.objectMapper = (
+            ScipionObjectPostgresqlMapper(
+                self.db
+            )
+        )
+
+        self.setMapper = (
+            ScipionSetPostgresqlMapper(
+                self.db
+            )
+        )
+
+        self.protocolGraphRepository = (
+            ProtocolGraphRepository()
+        )
+
+        # Keep one factory per runtime mapper so native sets,
+        # protocols and pointer targets share the same caches.
+        self.runtimeSetFactory = (
+            PostgresqlRuntimeSetFactory()
+        )
 
     # ---------------------------------------------------------------------
     # Lifecycle
@@ -406,14 +433,34 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         return self.readFallbackMapper.updateFrom(obj)
 
-    def selectById(self, objId):
-        obj = self._selectProtocolByIdFromPostgresql(objId)
-        if obj is not None:
-            return self._attachRuntimeContext(obj)
+    def selectById(
+            self,
+            objId,
+    ):
+        obj = self._selectProtocolByIdFromPostgresql(
+            objId
+        )
 
-        obj = self._selectByIdFromReadFallback(objId)
         if obj is not None:
-            return self._attachRuntimeContext(obj)
+            return self._attachRuntimeContext(
+                obj
+            )
+
+        obj = self._selectSetByIdFromPostgresql(
+            objId
+        )
+
+        if obj is not None:
+            return obj
+
+        obj = self._selectByIdFromReadFallback(
+            objId
+        )
+
+        if obj is not None:
+            return self._attachRuntimeContext(
+                obj
+            )
 
         return None
 
@@ -486,6 +533,142 @@ class PostgresqlRuntimeMapper(Mapper):
             return None
 
         return self._buildProtocolFromPostgresqlRow(row)
+
+    def _selectSetByIdFromPostgresql(
+            self,
+            objId,
+    ):
+        runtimeObjectId = self._toOptionalInt(
+            objId
+        )
+
+        if runtimeObjectId is None:
+            logger.warning(
+                "Cannot select PostgreSQL runtime set: "
+                "objId is not an int. objId=%s",
+                objId,
+            )
+
+            return None
+
+        cachedSet = (
+            self.runtimeSetFactory
+            ._getCachedRuntimeSet(
+                projectId=self.projectId,
+                runtimeObjectId=runtimeObjectId,
+            )
+        )
+
+        if cachedSet is not None:
+            return cachedSet
+
+        outputInfo = (
+            self.protocolGraphRepository
+            .getPersistedSetOutputRowByRuntimeObjectId(
+                mapper=self,
+                projectId=self.projectId,
+                runtimeObjectId=runtimeObjectId,
+            )
+        )
+
+        if not outputInfo:
+            return None
+
+        protocolId = self._toOptionalInt(
+            outputInfo.get(
+                "protocolId"
+            )
+        )
+
+        if protocolId is None:
+            logger.warning(
+                "Cannot reconstruct PostgreSQL runtime set: "
+                "parent protocol id is missing. "
+                "projectId=%s runtimeObjectId=%s setId=%s",
+                self.projectId,
+                runtimeObjectId,
+                outputInfo.get("setId"),
+            )
+
+            return None
+
+        parentProtocol = (
+            self.selectRuntimeProtocolById(
+                protocolId
+            )
+        )
+
+        if parentProtocol is None:
+            logger.warning(
+                "Cannot reconstruct PostgreSQL runtime set: "
+                "parent protocol was not found. "
+                "projectId=%s protocolId=%s "
+                "runtimeObjectId=%s",
+                self.projectId,
+                protocolId,
+                runtimeObjectId,
+            )
+
+            return None
+
+        outputName = str(
+            outputInfo.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        if not outputName:
+            logger.warning(
+                "Cannot reconstruct PostgreSQL runtime set: "
+                "output name is missing. "
+                "projectId=%s protocolId=%s "
+                "runtimeObjectId=%s",
+                self.projectId,
+                protocolId,
+                runtimeObjectId,
+            )
+
+            return None
+
+        attachedSet = getattr(
+            parentProtocol,
+            outputName,
+            None,
+        )
+
+        if (
+                self.runtimeSetFactory
+                        ._isMatchingRuntimeSet(
+                    runtimeSet=attachedSet,
+                    runtimeObjectId=runtimeObjectId,
+                )
+        ):
+            self.runtimeSetFactory._cacheRuntimeSet(
+                attachedSet
+            )
+
+            return attachedSet
+
+        runtimeSet = self.runtimeSetFactory.build(
+            db=self.db,
+            parent=parentProtocol,
+            outputName=outputName,
+            outputInfo=outputInfo,
+            classes=getattr(
+                self,
+                "dictClasses",
+                None,
+            ),
+        )
+
+        setattr(
+            parentProtocol,
+            outputName,
+            runtimeSet,
+        )
+
+        return runtimeSet
 
     def exists(self, objId):
         row = self.db.fetchOne(
