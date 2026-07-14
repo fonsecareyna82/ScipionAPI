@@ -191,25 +191,20 @@ def buildOutputInfo():
     }
 
 
-def test_SelectSetByIdBuildsNativePostgresqlSet():
+def test_SelectSetByIdBuildsSetWithoutMutatingParentOutput():
     mapper = buildMapper()
 
     parentProtocol = Object()
+    parentProtocol.setObjId(200)
 
-    parentProtocol.setObjId(
-        200
-    )
+    originalOutput = object()
+    parentProtocol.outputParticles = originalOutput
 
     runtimeSet = ExampleSet()
+    runtimeSet.setObjId(300)
 
-    runtimeSet.setObjId(
-        300
-    )
-
-    repository = (
-        FakeProtocolGraphRepository(
-            outputInfo=buildOutputInfo()
-        )
+    repository = FakeProtocolGraphRepository(
+        outputInfo=buildOutputInfo()
     )
 
     factory = FakeRuntimeSetFactory(
@@ -218,12 +213,8 @@ def test_SelectSetByIdBuildsNativePostgresqlSet():
 
     selectedProtocolIds = []
 
-    def selectRuntimeProtocol(
-            protocolId,
-    ):
-        selectedProtocolIds.append(
-            protocolId
-        )
+    def selectRuntimeProtocol(protocolId):
+        selectedProtocolIds.append(protocolId)
 
         if protocolId == 200:
             return parentProtocol
@@ -232,64 +223,40 @@ def test_SelectSetByIdBuildsNativePostgresqlSet():
 
     mapper.protocolGraphRepository = repository
     mapper.runtimeSetFactory = factory
+    mapper.selectRuntimeProtocolById = selectRuntimeProtocol
 
-    mapper.selectRuntimeProtocolById = (
-        selectRuntimeProtocol
-    )
+    firstResult = mapper._selectSetByIdFromPostgresql(300)
+    secondResult = mapper._selectSetByIdFromPostgresql(300)
 
-    result = (
-        mapper
-        ._selectSetByIdFromPostgresql(
-            300
-        )
-    )
+    assert firstResult is runtimeSet
+    assert secondResult is runtimeSet
 
-    assert result is runtimeSet
+    # Reading the set must not replace the protocol output.
+    assert parentProtocol.outputParticles is originalOutput
 
-    assert repository.calls == [
-        {
-            "mapper": mapper,
-            "projectId": 4,
-            "runtimeObjectId": 300,
-        }
+    assert repository.calls == [{
+        "mapper": mapper,
+        "projectId": 4,
+        "runtimeObjectId": 300,
+    }]
+
+    assert selectedProtocolIds == [200]
+
+    assert factory.cacheLookups == [
+        (4, 300),
+        (4, 300),
     ]
 
-    assert selectedProtocolIds == [
-        200
-    ]
-
-    assert len(
-        factory.buildCalls
-    ) == 1
+    assert factory.cacheWrites == [runtimeSet]
+    assert len(factory.buildCalls) == 1
 
     buildCall = factory.buildCalls[0]
 
     assert buildCall["db"] is mapper.db
-
-    assert (
-        buildCall["parent"]
-        is parentProtocol
-    )
-
-    assert (
-        buildCall["outputName"]
-        == "outputParticles"
-    )
-
-    assert (
-        buildCall["outputInfo"]
-        == buildOutputInfo()
-    )
-
-    assert (
-        buildCall["classes"]
-        == mapper.dictClasses
-    )
-
-    assert (
-        parentProtocol.outputParticles
-        is runtimeSet
-    )
+    assert buildCall["parent"] is parentProtocol
+    assert buildCall["outputName"] == "outputParticles"
+    assert buildCall["outputInfo"] == buildOutputInfo()
+    assert buildCall["classes"] == mapper.dictClasses
 
 
 def test_SelectSetByIdReturnsCachedRuntimeSet():

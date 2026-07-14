@@ -734,18 +734,16 @@ class PostgresqlRuntimeMapper(Mapper):
             parent=parentProtocol,
             outputName=outputName,
             outputInfo=outputInfo,
-            classes=getattr(
-                self,
-                "dictClasses",
-                None,
-            ),
+            classes=getattr(self, "dictClasses", None),
         )
 
-        setattr(
-            parentProtocol,
-            outputName,
-            runtimeSet,
-        )
+        if runtimeSet is None:
+            return None
+
+        # Mapper reads must not attach or replace outputs on the owner protocol.
+        # The runtime set keeps its parent identity and is reused through the
+        # shared factory cache.
+        self.runtimeSetFactory._cacheRuntimeSet(runtimeSet)
 
         return runtimeSet
 
