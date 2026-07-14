@@ -25,9 +25,6 @@
 # ******************************************************************************
 
 from typing import Any, Dict
-from app.backend.runtime.postgresql_runtime_set_factory import (
-    PostgresqlRuntimeSetFactory,
-)
 
 
 class RuntimeOutputProxyService:
@@ -88,6 +85,10 @@ class RuntimeOutputProxyService:
 
         if callable(getattr(factory, "build", None)):
             return factory
+
+        from app.backend.runtime.postgresql_runtime_set_factory import (
+            PostgresqlRuntimeSetFactory,
+        )
 
         return PostgresqlRuntimeSetFactory()
 
