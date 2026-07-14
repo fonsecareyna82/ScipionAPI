@@ -69,11 +69,28 @@ class FakePathOwner(Object):
         return str(self._extraPath.joinpath(*paths))
 
 
-def _openSet(setClass, fileName, prefix=""):
+def _openSet(
+        setClass,
+        fileName,
+        prefix="",
+):
     result = setClass()
-    result.setClassesDict(CLASSES)
-    result._mapperPath.set("%s, %s" % (fileName, prefix))
+
+    result.setClassesDict(
+        CLASSES
+    )
+
+    result._mapperPath.set(
+        "%s, %s"
+        % (
+            fileName,
+            prefix,
+        )
+    )
+
     result.load()
+    result.loadAllProperties()
+
     return result
 
 
@@ -94,77 +111,106 @@ def _configureRuntimeSource(
     sourceSet._postgresqlMaterializedFileName = None
 
 
-def _createRootSource(fileName):
+def _createRootSource(
+        fileName,
+):
     sourceSet = ExampleSet(
         filename=str(fileName),
         classesDict=CLASSES,
     )
-    sourceSet._samplingRate.set(1.5)
+
+    sourceSet._samplingRate.set(
+        1.5
+    )
 
     item = ExampleItem()
-    item.setObjId(7)
-    item._name.set("particle-7")
-    sourceSet.append(item)
 
-    sourceSet.write()
-    sourceSet.close()
-
-    return _openSet(
-        ExampleSet,
-        str(fileName),
+    item.setObjId(
+        7
     )
 
+    item._name.set(
+        "particle-7"
+    )
 
-def _createEmptySource(fileName):
+    sourceSet.append(
+        item
+    )
+
+    sourceSet.write()
+
+    return sourceSet
+
+
+def _createEmptySource(
+        fileName,
+):
     sourceSet = ExampleSet(
         filename=str(fileName),
         classesDict=CLASSES,
     )
-    sourceSet._samplingRate.set(2.0)
-    sourceSet.write()
-    sourceSet.close()
 
-    return _openSet(
-        ExampleSet,
-        str(fileName),
+    sourceSet._samplingRate.set(
+        2.0
     )
 
+    return sourceSet
 
-def _createNestedSource(fileName):
+
+def _createNestedSource(
+        fileName,
+):
     parentSet = ExampleParentSet(
         filename=str(fileName),
         classesDict=CLASSES,
     )
 
     nestedSet = ExampleNestedSet()
-    nestedSet.setClassesDict(CLASSES)
-    nestedSet.setObjId(7)
-    nestedSet._name.set("series-7")
-    nestedSet._mapperPath.set(
-        "%s, Nested7" % fileName
+
+    nestedSet.setClassesDict(
+        CLASSES
     )
+
+    nestedSet.setObjId(
+        7
+    )
+
+    nestedSet._name.set(
+        "series-7"
+    )
+
+    nestedSet._mapperPath.set(
+        "%s, Nested7"
+        % fileName
+    )
+
     nestedSet.load()
 
     child = ExampleChildItem()
-    child.setObjId(3)
-    child._value.set("child-3")
-    nestedSet.append(child)
 
-    parentSet.append(nestedSet)
+    child.setObjId(
+        3
+    )
+
+    child._value.set(
+        "child-3"
+    )
+
+    nestedSet.append(
+        child
+    )
+
+    parentSet.append(
+        nestedSet
+    )
 
     nestedSet.write(
         properties=False
     )
+
     parentSet.write()
 
-    nestedSet.close()
-    parentSet.close()
-
-    return _openSet(
-        ExampleParentSet,
-        str(fileName),
-    )
-
+    return parentSet
 
 def test_MaterializeCreatesReadableSqliteAndCachesPath(
         tmp_path,

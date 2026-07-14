@@ -132,13 +132,27 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet: ScipionSet,
             classes: Dict[str, Type],
     ) -> None:
-        sourceClasses = self._getRuntimeClasses(sourceSet) or classes
+        sourceClasses = (
+                self._getRuntimeClasses(
+                    sourceSet
+                )
+                or classes
+        )
 
         for sourceItem in sourceSet.iterItems():
-            targetItem = self._cloneItem(sourceItem, sourceClasses)
-            targetSet.append(targetItem)
+            targetItem = self._cloneItem(
+                sourceItem,
+                sourceClasses,
+            )
 
-            if not isinstance(sourceItem, ScipionSet):
+            targetSet.append(
+                targetItem
+            )
+
+            if not isinstance(
+                    sourceItem,
+                    ScipionSet,
+            ):
                 continue
 
             self._ensureNestedMapper(
@@ -147,16 +161,114 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 classes=sourceClasses,
             )
 
-            try:
-                self._copySetItems(
-                    sourceSet=sourceItem,
-                    targetSet=targetItem,
-                    classes=sourceClasses,
-                )
-                targetItem.write(properties=False)
-                targetSet.update(targetItem)
-            finally:
-                targetItem.close()
+            self._copySetItems(
+                sourceSet=sourceItem,
+                targetSet=targetItem,
+                classes=sourceClasses,
+            )
+
+            targetItem.write(
+                properties=False
+            )
+
+            targetSet.update(
+                targetItem
+            )
+
+        self._ensureSetSchema(
+            sourceSet=sourceSet,
+            targetSet=targetSet,
+            classes=sourceClasses,
+        )
+
+    def _ensureSetSchema(
+            self,
+            sourceSet: ScipionSet,
+            targetSet: ScipionSet,
+            classes: Dict[str, Type],
+    ) -> None:
+        mapper = targetSet._getMapper()
+
+        if not getattr(
+                mapper,
+                "doCreateTables",
+                False,
+        ):
+            return
+
+        itemClass = self._resolveSetItemClass(
+            sourceSet=sourceSet,
+            targetSet=targetSet,
+            classes=classes,
+        )
+
+        schemaItem = itemClass()
+
+        schemaItem.setObjId(
+            1
+        )
+
+        mapper.insert(
+            schemaItem
+        )
+
+        mapper.delete(
+            schemaItem
+        )
+
+    def _resolveSetItemClass(
+            self,
+            sourceSet: ScipionSet,
+            targetSet: ScipionSet,
+            classes: Dict[str, Type],
+    ) -> Type:
+        itemType = getattr(
+            targetSet,
+            "ITEM_TYPE",
+            None,
+        )
+
+        if isinstance(
+                itemType,
+                type,
+        ):
+            return itemType
+
+        if isinstance(
+                itemType,
+                str,
+        ):
+            itemClass = classes.get(
+                itemType
+            )
+
+            if isinstance(
+                    itemClass,
+                    type,
+            ):
+                return itemClass
+
+        itemClassName = self._getRuntimeInfo(
+            sourceSet
+        ).get(
+            "itemClassName"
+        )
+
+        itemClass = classes.get(
+            str(itemClassName)
+        )
+
+        if isinstance(
+                itemClass,
+                type,
+        ):
+            return itemClass
+
+        raise RuntimeError(
+            "Cannot resolve the item class required to create "
+            "the compatibility SQLite schema for %s"
+            % targetSet.getClassName()
+        )
 
     def _cloneItem(
             self,
