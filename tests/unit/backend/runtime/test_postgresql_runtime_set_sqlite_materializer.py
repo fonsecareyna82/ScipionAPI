@@ -405,7 +405,10 @@ def test_MaterializeCopiesNestedLogicalItems(
             assert child._value.get() == "child-3"
         finally:
             if nestedSet is not None:
-                nestedSet.close()
+                nestedSet._mapper = None
             compatibilitySet.close()
     finally:
+        if sourceNestedSet is not None:
+            sourceNestedSet._mapper = None
+
         sourceSet.close()
