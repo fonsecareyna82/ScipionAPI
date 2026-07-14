@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from pathlib import Path
 from pyworkflow.object import (
     Float,
     Object,
@@ -53,7 +54,33 @@ class ExampleSet(Set):
 
 
 class FakeParent(Object):
-    pass
+    def __init__(
+            self,
+            extraPath=None,
+            **kwargs,
+    ):
+        super().__init__(
+            **kwargs
+        )
+
+        self._extraPath = extraPath
+
+    def getExtraPath(
+            self,
+            *paths,
+    ):
+        if self._extraPath is None:
+            raise RuntimeError(
+                "FakeParent does not have an extra path"
+            )
+
+        return str(
+            Path(
+                self._extraPath
+            ).joinpath(
+                *paths
+            )
+        )
 
 
 class FakeDb:
@@ -509,8 +536,12 @@ class ExampleNestedSet(Set):
         self._name = String()
 
 
-def buildNestedRuntimeSet():
-    parent = FakeParent()
+def buildNestedRuntimeSet(
+        extraPath=None,
+):
+    parent = FakeParent(
+        extraPath=extraPath
+    )
     parent.setObjId(5)
 
     db = FakeNestedSetDb()
@@ -544,9 +575,12 @@ class ExampleParentSet(Set):
     ITEM_TYPE = ExampleNestedSet
 
 
-
-def buildRuntimeSet():
-    parent = FakeParent()
+def buildRuntimeSet(
+        extraPath=None,
+):
+    parent = FakeParent(
+        extraPath=extraPath
+    )
     parent.setObjId(5)
 
     runtimeSet = PostgresqlRuntimeSetFactory().build(
@@ -617,10 +651,50 @@ def test_IterItemsReturnsNativeScipionItems():
     assert items[0]._name.get() == "particle-7"
 
 
-def test_RuntimeSetDoesNotExposeLegacySqlite():
-    _, runtimeSet = buildRuntimeSet()
+def test_RuntimeSetMaterializesCompatibilitySqlite(
+        tmp_path,
+):
+    _, runtimeSet = buildRuntimeSet(
+        extraPath=tmp_path
+    )
 
-    assert runtimeSet.getFileName() is None
+    materializedPath = runtimeSet.getFileName()
+
+    assert Path(
+        materializedPath
+    ).is_file()
+
+    assert materializedPath != (
+        "/legacy/output.sqlite"
+    )
+
+    assert runtimeSet.getFileName() == (
+        materializedPath
+    )
+
+    compatibilitySet = ExampleSet()
+
+    compatibilitySet._mapperPath.set(
+        "%s, " % materializedPath
+    )
+
+    compatibilitySet.load()
+
+    try:
+        assert compatibilitySet.getSize() == 1
+        assert compatibilitySet.getSamplingRate() == 1.5
+
+        item = compatibilitySet.getFirstItem()
+
+        assert isinstance(
+            item,
+            ExampleItem,
+        )
+
+        assert item.getObjId() == 7
+        assert item._name.get() == "particle-7"
+    finally:
+        compatibilitySet.close()
 
     assert (
         runtimeSet.getLegacyFileName()
@@ -673,7 +747,6 @@ def test_NestedSetItemsUseLogicalTableMapper():
     )
 
     assert nestedSet._mapper is None
-    assert nestedSet.getFileName() is None
     assert nestedSet.isPostgresqlRuntimeOutput()
 
     children = list(
@@ -743,3 +816,55 @@ def test_BuildFallsBackToItemTypeWhenItemClassNameIsMissing():
         item,
         ExampleItem,
     )
+
+def test_NestedRuntimeSetMaterializesLogicalItems(
+        tmp_path,
+):
+    _, runtimeSet = buildNestedRuntimeSet(
+        extraPath=tmp_path
+    )
+
+    materializedPath = runtimeSet.getFileName()
+
+    assert Path(
+        materializedPath
+    ).is_file()
+
+    compatibilitySet = ExampleParentSet()
+
+    compatibilitySet._mapperPath.set(
+        "%s, " % materializedPath
+    )
+
+    compatibilitySet.load()
+
+    nestedSet = None
+
+    try:
+        assert compatibilitySet.getSize() == 1
+
+        nestedSet = compatibilitySet.getFirstItem()
+
+        assert isinstance(
+            nestedSet,
+            ExampleNestedSet,
+        )
+
+        assert nestedSet.getObjId() == 7
+        assert nestedSet._name.get() == "series-7"
+        assert nestedSet.getSize() == 1
+
+        child = nestedSet.getFirstItem()
+
+        assert isinstance(
+            child,
+            ExampleChildItem,
+        )
+
+        assert child.getObjId() == 3
+        assert child._value.get() == "child-3"
+    finally:
+        if nestedSet is not None:
+            nestedSet.close()
+
+        compatibilitySet.close()
