@@ -131,6 +131,420 @@ class FakeDb:
         return None
 
 
+class FakeNestedSetDb:
+    ROOT_SET_ID = 41
+    ROOT_TABLE_ID = 90
+    CHILD_TABLE_ID = 91
+
+    ROOT_ITEM_ID = 7
+    CHILD_ITEM_ID = 3
+
+    def __init__(self):
+        self.queries = []
+
+        self.rootItemRows = [
+            {
+                "id": 601,
+                "setId": self.ROOT_SET_ID,
+                "scipionItemId": self.ROOT_ITEM_ID,
+                "parentItemId": None,
+                "enabled": True,
+                "label": "series-7",
+                "comment": "",
+                "creation": None,
+                "values": {
+                    "_name": "series-7",
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            },
+        ]
+
+        self.childItemRows = [
+            {
+                "id": 701,
+                "tableId": self.CHILD_TABLE_ID,
+                "scipionItemId": self.CHILD_ITEM_ID,
+                "parentItemId": self.ROOT_ITEM_ID,
+                "enabled": True,
+                "label": "child-3",
+                "comment": "",
+                "creation": None,
+                "values": {
+                    "_value": "child-3",
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            },
+        ]
+
+        self.logicalTables = [
+            {
+                "id": self.ROOT_TABLE_ID,
+                "setId": self.ROOT_SET_ID,
+                "name": "objects",
+                "alias": "ExampleParentSet",
+                "tableKind": "root",
+                "parentTableId": None,
+                "parentItemId": None,
+                "itemClassName": "ExampleNestedSet",
+                "properties": {
+                    "source": "postgresql",
+                    "legacySetTable": True,
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            },
+            {
+                "id": self.CHILD_TABLE_ID,
+                "setId": self.ROOT_SET_ID,
+                "name": "series_7_Objects",
+                "alias": "series_7_ExampleChildItem",
+                "tableKind": "child",
+                "parentTableId": self.ROOT_TABLE_ID,
+                "parentItemId": self.ROOT_ITEM_ID,
+                "itemClassName": "ExampleChildItem",
+                "properties": {
+                    "source": "postgresql",
+                    "parentItemId": self.ROOT_ITEM_ID,
+                    "parentClassName": "ExampleNestedSet",
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            },
+        ]
+
+    def fetchAll(self, query, params=None):
+        normalizedQuery = self._normalizeQuery(
+            query
+        )
+
+        self.queries.append(
+            (
+                normalizedQuery,
+                params,
+            )
+        )
+
+        if (
+                "FROM scipion_set_table_columns"
+                in normalizedQuery
+        ):
+            tableId = int(
+                params[0]
+            )
+
+            if tableId != self.CHILD_TABLE_ID:
+                return []
+
+            return [
+                {
+                    "id": 201,
+                    "tableId": self.CHILD_TABLE_ID,
+                    "labelProperty": "_value",
+                    "columnName": "c00",
+                    "className": "String",
+                    "valueType": "text",
+                    "position": 0,
+                    "indexed": False,
+                    "properties": {},
+                },
+            ]
+
+        if (
+                "FROM scipion_set_columns"
+                in normalizedQuery
+        ):
+            setId = int(
+                params[0]
+            )
+
+            if setId != self.ROOT_SET_ID:
+                return []
+
+            return [
+                {
+                    "id": 101,
+                    "setId": self.ROOT_SET_ID,
+                    "labelProperty": "_name",
+                    "columnName": "c00",
+                    "className": "String",
+                    "valueType": "text",
+                    "position": 0,
+                    "indexed": False,
+                },
+            ]
+
+        if (
+                "FROM scipion_set_tables"
+                in normalizedQuery
+        ):
+            setId = int(
+                params[0]
+            )
+
+            if setId != self.ROOT_SET_ID:
+                return []
+
+            return [
+                dict(table)
+                for table in self.logicalTables
+            ]
+
+        if (
+                "FROM scipion_set_table_items"
+                in normalizedQuery
+        ):
+            tableId = int(
+                params[0]
+            )
+
+            if tableId != self.CHILD_TABLE_ID:
+                return []
+
+            return [
+                dict(row)
+                for row in self.childItemRows
+            ]
+
+        if (
+                "FROM scipion_set_items"
+                in normalizedQuery
+        ):
+            setId = int(
+                params[0]
+            )
+
+            if setId != self.ROOT_SET_ID:
+                return []
+
+            return [
+                dict(row)
+                for row in self.rootItemRows
+            ]
+
+        return []
+
+    def fetchOne(self, query, params=None):
+        normalizedQuery = self._normalizeQuery(
+            query
+        )
+
+        self.queries.append(
+            (
+                normalizedQuery,
+                params,
+            )
+        )
+
+        if (
+                "SELECT properties"
+                in normalizedQuery
+                and "FROM scipion_set_tables"
+                in normalizedQuery
+        ):
+            tableId = int(
+                params[0]
+            )
+
+            table = self._findLogicalTable(
+                tableId
+            )
+
+            if table is None:
+                return None
+
+            return {
+                "properties": dict(
+                    table.get("properties")
+                    or {}
+                ),
+            }
+
+        if "COUNT(*) AS count" in normalizedQuery:
+            rows = self._rowsForQuery(
+                normalizedQuery,
+                params,
+            )
+
+            return {
+                "count": len(rows),
+            }
+
+        if (
+                'MAX("scipionItemId") AS "maxItemId"'
+                in normalizedQuery
+        ):
+            rows = self._rowsForQuery(
+                normalizedQuery,
+                params,
+            )
+
+            itemIds = [
+                int(row["scipionItemId"])
+                for row in rows
+            ]
+
+            return {
+                "maxItemId": (
+                    max(itemIds)
+                    if itemIds
+                    else None
+                ),
+            }
+
+        if (
+                "FROM scipion_set_table_items"
+                in normalizedQuery
+        ):
+            rows = self._filterRowsByItemId(
+                rows=self.childItemRows,
+                params=params,
+            )
+
+            return (
+                dict(rows[0])
+                if rows
+                else None
+            )
+
+        if (
+                "FROM scipion_set_items"
+                in normalizedQuery
+        ):
+            rows = self._filterRowsByItemId(
+                rows=self.rootItemRows,
+                params=params,
+            )
+
+            return (
+                dict(rows[0])
+                if rows
+                else None
+            )
+
+        return None
+
+    def _rowsForQuery(
+            self,
+            normalizedQuery,
+            params,
+    ):
+        if (
+                "FROM scipion_set_table_items"
+                in normalizedQuery
+        ):
+            tableId = int(
+                params[0]
+            )
+
+            if tableId == self.CHILD_TABLE_ID:
+                return self.childItemRows
+
+            return []
+
+        if (
+                "FROM scipion_set_items"
+                in normalizedQuery
+        ):
+            setId = int(
+                params[0]
+            )
+
+            if setId == self.ROOT_SET_ID:
+                return self.rootItemRows
+
+        return []
+
+    def _filterRowsByItemId(
+            self,
+            rows,
+            params,
+    ):
+        if not params or len(params) < 2:
+            return list(
+                rows
+            )
+
+        requestedItemId = int(
+            params[1]
+        )
+
+        return [
+            row
+            for row in rows
+            if int(
+                row["scipionItemId"]
+            ) == requestedItemId
+        ]
+
+    def _findLogicalTable(
+            self,
+            tableId,
+    ):
+        for table in self.logicalTables:
+            if int(table["id"]) == int(tableId):
+                return table
+
+        return None
+
+    @staticmethod
+    def _normalizeQuery(query):
+        return " ".join(
+            str(query).split()
+        )
+
+
+class ExampleChildItem(Object):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._value = String()
+
+
+class ExampleNestedSet(Set):
+    ITEM_TYPE = ExampleChildItem
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._name = String()
+
+
+def buildNestedRuntimeSet():
+    parent = FakeParent()
+    parent.setObjId(5)
+
+    db = FakeNestedSetDb()
+
+    runtimeSet = PostgresqlRuntimeSetFactory().build(
+        db=db,
+        parent=parent,
+        outputName="outputTiltSeries",
+        outputInfo={
+            "setId": 41,
+            "objectId": 901,
+            "runtimeObjectId": 45,
+            "className": "ExampleParentSet",
+            "itemClassName": "ExampleNestedSet",
+            "itemsCount": 1,
+            "properties": {
+                "_streamState": Set.STREAM_CLOSED,
+            },
+        },
+        classes={
+            "ExampleParentSet": ExampleParentSet,
+            "ExampleNestedSet": ExampleNestedSet,
+            "ExampleChildItem": ExampleChildItem,
+        },
+    )
+
+    return parent, runtimeSet
+
+
+class ExampleParentSet(Set):
+    ITEM_TYPE = ExampleNestedSet
+
+
+
 def buildRuntimeSet():
     parent = FakeParent()
     parent.setObjId(5)
@@ -246,3 +660,56 @@ def test_RuntimeSetPreservesPostgresqlIdentity():
     assert info["objectId"] == 900
     assert info["runtimeObjectId"] == 44
     assert runtimeSet.isPostgresqlRuntimeOutput() is True
+
+
+def test_NestedSetItemsUseLogicalTableMapper():
+    _, runtimeSet = buildNestedRuntimeSet()
+
+    nestedSet = runtimeSet.getFirstItem()
+
+    assert isinstance(
+        nestedSet,
+        ExampleNestedSet,
+    )
+
+    assert nestedSet._mapper is None
+    assert nestedSet.getFileName() is None
+    assert nestedSet.isPostgresqlRuntimeOutput()
+
+    children = list(
+        nestedSet.iterItems()
+    )
+
+    assert len(children) == 1
+    assert isinstance(
+        children[0],
+        ExampleChildItem,
+    )
+
+    assert children[0].getObjParentId() == (
+        nestedSet.getObjId()
+    )
+
+    assert children[0]._value.get() == (
+        "child-3"
+    )
+
+def test_NestedSetCanReloadLogicalMapper():
+    _, runtimeSet = buildNestedRuntimeSet()
+
+    nestedSet = runtimeSet.getFirstItem()
+
+    list(
+        nestedSet.iterItems()
+    )
+
+    nestedSet.close()
+
+    assert nestedSet._mapper is None
+
+    child = nestedSet.getFirstItem()
+
+    assert isinstance(
+        child,
+        ExampleChildItem,
+    )
