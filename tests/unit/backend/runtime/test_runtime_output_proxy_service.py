@@ -120,3 +120,99 @@ def test_NonSetOutputKeepsGenericRuntimeProxy():
     )
 
     assert parent.outputVolume is result
+
+
+def test_SetOutputReusesMapperRuntimeSetFactory():
+    db = object()
+    runtimeSet = object()
+    classRegistry = {
+        "SetOfParticles": object,
+    }
+
+    class FakeRuntimeSetFactory:
+        def __init__(self):
+            self.cachedSet = None
+            self.cacheLookups = []
+            self.buildCalls = []
+
+        def _getCachedRuntimeSet(
+                self,
+                projectId,
+                runtimeObjectId,
+        ):
+            self.cacheLookups.append(
+                (projectId, runtimeObjectId)
+            )
+
+            return self.cachedSet
+
+        def build(
+                self,
+                db,
+                parent,
+                outputName,
+                outputInfo,
+                classes=None,
+        ):
+            self.buildCalls.append({
+                "db": db,
+                "parent": parent,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
+                "classes": classes,
+            })
+
+            self.cachedSet = runtimeSet
+            return runtimeSet
+
+    factory = FakeRuntimeSetFactory()
+
+    mapper = SimpleNamespace(
+        db=db,
+        projectId=4,
+        dictClasses=classRegistry,
+        runtimeSetFactory=factory,
+    )
+
+    parent = SimpleNamespace()
+
+    outputInfo = {
+        "setId": 31,
+        "projectId": 4,
+        "runtimeObjectId": 300,
+        "className": "SetOfParticles",
+        "itemClassName": "Particle",
+    }
+
+    service = RuntimeOutputProxyService()
+
+    firstResult = service.attachPostgresqlRuntimeOutputProxy(
+        parentProtocol=parent,
+        outputName="outputParticles",
+        outputInfo=outputInfo,
+        mapper=mapper,
+    )
+
+    secondResult = service.attachPostgresqlRuntimeOutputProxy(
+        parentProtocol=parent,
+        outputName="outputParticles",
+        outputInfo=outputInfo,
+        mapper=mapper,
+    )
+
+    assert firstResult is runtimeSet
+    assert secondResult is runtimeSet
+    assert parent.outputParticles is runtimeSet
+
+    assert factory.cacheLookups == [
+        (4, 300),
+        (4, 300),
+    ]
+
+    assert factory.buildCalls == [{
+        "db": db,
+        "parent": parent,
+        "outputName": "outputParticles",
+        "outputInfo": outputInfo,
+        "classes": classRegistry,
+    }]
