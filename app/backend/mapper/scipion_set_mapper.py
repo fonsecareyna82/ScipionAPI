@@ -31,7 +31,15 @@ import logging
 
 import psycopg2.extras
 
-from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
+from pyworkflow.object import (
+    Pointer,
+    PointerList,
+)
+
+from app.backend.mapper.scipion_object_mapper import (
+    ScipionObjectPostgresqlMapper,
+)
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -41,7 +49,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 16
+NESTED_LOGICAL_TABLES_VERSION = 17
 SET_PROPERTIES_VERSION = 2
 
 
@@ -1171,11 +1179,52 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         except TypeError:
             raise ValueError("scipionSet must provide iterItems() or be iterable")
 
-    def _getItemSchema(self, item: Any) -> Dict[str, Any]:
-        return self._getObjDict(item, includeClass=True)
+    def _getItemSchema(
+            self,
+            item: Any,
+    ) -> Dict[str, Any]:
+        schema = self._getObjDict(
+            item,
+            includeClass=True,
+        )
 
-    def _getItemValues(self, item: Any, scipionSet: Optional[Any] = None) -> Dict[str, Any]:
-        rawValues = self._getObjDict(item, includeClass=False)
+        self._removeLegacyPointerListEntries(
+            schema
+        )
+
+        for path, pointerAttribute in (
+                self._iterPointerAttributes(
+                    item
+                )
+        ):
+            schema[str(path)] = (
+                self._getClassName(
+                    pointerAttribute
+                ),
+                None,
+            )
+
+        return schema
+
+    def _getItemValues(
+            self,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        rawValues = self._getObjDict(
+            item,
+            includeClass=False,
+        )
+
+        self._removeLegacyPointerListEntries(
+            rawValues
+        )
+
+        rawValues.update(
+            self._getItemPointerValues(
+                item
+            )
+        )
 
         values = {
             str(label): self._toJsonValue(value)
@@ -1188,8 +1237,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             values=values,
         )
 
-        classSize = self._getClassItemSize(item)
-        if classSize is not None and "_size" not in values:
+        classSize = self._getClassItemSize(
+            item
+        )
+
+        if (
+                classSize is not None
+                and "_size" not in values
+        ):
             values["_size"] = classSize
 
         self._addCoordinate3dBottomLeftCoordinates(
@@ -1199,6 +1254,227 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         return values
+
+    def _iterPointerAttributes(
+            self,
+            scipionObj: Any,
+            prefix: str = "",
+            visited: Optional[set] = None,
+    ):
+        if scipionObj is None:
+            return
+
+        if visited is None:
+            visited = set()
+
+        objectIdentity = id(
+            scipionObj
+        )
+
+        if objectIdentity in visited:
+            return
+
+        visited.add(
+            objectIdentity
+        )
+
+        for attrName, attrValue in (
+                self._getAttributesToStore(
+                    scipionObj
+                )
+        ):
+            path = (
+                "%s.%s"
+                % (
+                    prefix,
+                    attrName,
+                )
+                if prefix
+                else str(attrName)
+            )
+
+            if isinstance(
+                    attrValue,
+                    Pointer,
+            ):
+                yield path, attrValue
+                continue
+
+            if isinstance(
+                    attrValue,
+                    PointerList,
+            ):
+                yield path, attrValue
+                continue
+
+            childAttributes = (
+                self._getAttributesToStore(
+                    attrValue
+                )
+            )
+
+            if not childAttributes:
+                continue
+
+            yield from self._iterPointerAttributes(
+                scipionObj=attrValue,
+                prefix=path,
+                visited=visited,
+            )
+
+    def _getItemPointerValues(
+            self,
+            item: Any,
+    ) -> Dict[str, Any]:
+        result = {}
+
+        for path, pointerAttribute in (
+                self._iterPointerAttributes(
+                    item
+                )
+        ):
+            if isinstance(
+                    pointerAttribute,
+                    PointerList,
+            ):
+                result[str(path)] = [
+                    self._serializePointerReference(
+                        pointer
+                    )
+                    for pointer in pointerAttribute
+                    if isinstance(
+                        pointer,
+                        Pointer,
+                    )
+                ]
+
+                continue
+
+            result[str(path)] = (
+                self._serializePointerReference(
+                    pointerAttribute
+                )
+            )
+
+        return result
+
+    def _serializePointerReference(
+            self,
+            pointer: Pointer,
+    ) -> Dict[str, Any]:
+        targetObject = None
+
+        try:
+            if pointer.hasValue():
+                targetObject = (
+                    pointer.getObjValue()
+                )
+        except Exception:
+            targetObject = None
+
+        targetParent = self._callOptionalGetter(
+            targetObject,
+            "getObjParent",
+        )
+
+        targetObjectId = self._getSourceObjId(
+            targetObject
+        )
+
+        targetParentObjectId = (
+            self._getSourceObjId(
+                targetParent
+            )
+        )
+
+        if targetParentObjectId is None:
+            targetParentObjectId = (
+                self._toOptionalInt(
+                    self._callOptionalGetter(
+                        targetObject,
+                        "getObjParentId",
+                    )
+                )
+            )
+
+        extended = self._callOptionalGetter(
+            pointer,
+            "getExtended",
+        )
+
+        uniqueId = None
+
+        try:
+            if targetObject is not None:
+                uniqueId = pointer.getUniqueId()
+        except Exception:
+            uniqueId = None
+
+        targetObjectName = (
+            self._callOptionalGetter(
+                targetObject,
+                "getObjName",
+            )
+        )
+
+        return {
+            "version": 1,
+            "kind": "pointer",
+            "targetObjectId": (
+                targetObjectId
+            ),
+            "targetClassName": (
+                self._getClassName(
+                    targetObject
+                )
+                if targetObject is not None
+                else None
+            ),
+            "targetObjectName": (
+                str(targetObjectName)
+                if targetObjectName
+                else None
+            ),
+            "targetParentObjectId": (
+                targetParentObjectId
+            ),
+            "targetParentClassName": (
+                self._getClassName(
+                    targetParent
+                )
+                if targetParent is not None
+                else None
+            ),
+            "extended": str(
+                extended or ""
+            ),
+            "uniqueId": (
+                str(uniqueId)
+                if uniqueId
+                else None
+            ),
+        }
+
+    def _removeLegacyPointerListEntries(
+            self,
+            values: Dict[str, Any],
+    ) -> None:
+        if not isinstance(
+                values,
+                dict,
+        ):
+            return
+
+        for path in list(
+                values.keys()
+        ):
+            if str(path).startswith(
+                    "__item__"
+            ):
+                values.pop(
+                    path,
+                    None,
+                )
 
     def _addRelationIdentityValues(
             self,
@@ -1591,8 +1867,17 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return "integer"
         if className in ("Float", "Decimal"):
             return "float"
-        if className in ("String", "CsvList", "Pointer", "PointerList"):
+        if className in (
+                "String",
+                "CsvList",
+        ):
             return "text"
+
+        if className == "Pointer":
+            return "pointer"
+
+        if className == "PointerList":
+            return "pointer_list"
         return className
 
     def _callOptionalBoolGetter(self, scipionObj: Any, getterName: str) -> Optional[bool]:
