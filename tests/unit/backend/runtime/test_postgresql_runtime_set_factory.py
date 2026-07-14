@@ -834,3 +834,277 @@ def test_LocalPointerResolverSelectsItemFromRuntimeSet():
         runtimeSet.mapper.selectedIds
         == [7]
     )
+
+def test_PointerResolverBuildsExternalSetAndCachesTarget():
+    targetItem = ExampleItem()
+
+    targetItem.setObjId(
+        7
+    )
+
+    class FakeExternalSetMapper:
+        def __init__(
+                self,
+        ):
+            self.selectedIds = []
+
+        def selectById(
+                self,
+                itemId,
+        ):
+            self.selectedIds.append(
+                itemId
+            )
+
+            if itemId == 7:
+                return targetItem
+
+            return None
+
+    class FakeExternalSet(ExampleSet):
+        def __init__(
+                self,
+        ):
+            super().__init__()
+
+            self.mapper = (
+                FakeExternalSetMapper()
+            )
+
+        def _getMapper(
+                self,
+        ):
+            return self.mapper
+
+        def isPostgresqlRuntimeOutput(
+                self,
+        ):
+            return True
+
+    class FakeRuntimeProtocol(Object):
+        def __init__(
+                self,
+                mapper,
+                protocolId,
+        ):
+            super().__init__()
+
+            self.runtimeMapper = mapper
+
+            self.setObjId(
+                protocolId
+            )
+
+        def getMapper(
+                self,
+        ):
+            return self.runtimeMapper
+
+    class FakeRuntimeMapper:
+        def __init__(
+                self,
+        ):
+            self.projectId = 4
+            self.db = object()
+            self.selectedProtocolIds = []
+            self.targetProtocol = None
+
+        def selectById(
+                self,
+                protocolId,
+        ):
+            self.selectedProtocolIds.append(
+                protocolId
+            )
+
+            if protocolId == 200:
+                return self.targetProtocol
+
+            return None
+
+    class FakeProtocolGraphRepository:
+        def __init__(
+                self,
+        ):
+            self.calls = []
+
+        def getPersistedSetOutputRowByRuntimeObjectId(
+                self,
+                mapper,
+                projectId,
+                runtimeObjectId,
+        ):
+            self.calls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+                "runtimeObjectId": (
+                    runtimeObjectId
+                ),
+            })
+
+            if runtimeObjectId != 999:
+                return None
+
+            return {
+                "setId": 32,
+                "projectId": 4,
+                "protocolDbId": 20,
+                "protocolId": "200",
+                "objectId": 402,
+                "runtimeObjectId": 999,
+                "outputName": (
+                    "outputTargets"
+                ),
+                "className": "ExampleSet",
+                "itemClassName": (
+                    "ExampleItem"
+                ),
+                "properties": {},
+            }
+
+    runtimeMapper = FakeRuntimeMapper()
+
+    sourceProtocol = FakeRuntimeProtocol(
+        mapper=runtimeMapper,
+        protocolId=100,
+    )
+
+    targetProtocol = FakeRuntimeProtocol(
+        mapper=runtimeMapper,
+        protocolId=200,
+    )
+
+    runtimeMapper.targetProtocol = (
+        targetProtocol
+    )
+
+    sourceSet = ExampleSet()
+
+    sourceSet.setObjId(
+        300
+    )
+
+    sourceSet._objParent = sourceProtocol
+
+    sourceSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 300,
+    }
+
+    externalSet = FakeExternalSet()
+
+    externalSet.setObjId(
+        999
+    )
+
+    externalSet._objParent = targetProtocol
+
+    externalSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 999,
+    }
+
+    targetItem._objParent = externalSet
+    targetItem._objParentId = 999
+
+    factory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    repository = (
+        FakeProtocolGraphRepository()
+    )
+
+    factory.protocolGraphRepository = (
+        repository
+    )
+
+    buildCalls = []
+
+    def buildExternalSet(
+            **kwargs,
+    ):
+        buildCalls.append(
+            dict(kwargs)
+        )
+
+        return externalSet
+
+    factory.build = buildExternalSet
+
+    resolver = (
+        factory._buildPointerResolver(
+            db=runtimeMapper.db,
+            runtimeSet=sourceSet,
+            classRegistry={
+                "ExampleSet": ExampleSet,
+                "ExampleItem": ExampleItem,
+            },
+        )
+    )
+
+    reference = {
+        "targetObjectId": 7,
+        "targetParentObjectId": 999,
+    }
+
+    assert resolver(
+        reference
+    ) is targetItem
+
+    # All expensive operations must be cached.
+    assert resolver(
+        reference
+    ) is targetItem
+
+    assert len(
+        repository.calls
+    ) == 1
+
+    assert (
+        repository.calls[0][
+            "projectId"
+        ]
+        == 4
+    )
+
+    assert (
+        repository.calls[0][
+            "runtimeObjectId"
+        ]
+        == 999
+    )
+
+    assert (
+        runtimeMapper.selectedProtocolIds
+        == [200]
+    )
+
+    assert len(
+        buildCalls
+    ) == 1
+
+    assert (
+        buildCalls[0]["parent"]
+        is targetProtocol
+    )
+
+    assert (
+        buildCalls[0]["outputName"]
+        == "outputTargets"
+    )
+
+    assert (
+        targetProtocol.outputTargets
+        is externalSet
+    )
+
+    assert (
+        externalSet.mapper.selectedIds
+        == [7]
+    )
+
+    assert (
+        targetItem._objParent
+        is externalSet
+    )

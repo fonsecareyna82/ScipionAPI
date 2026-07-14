@@ -24,7 +24,9 @@
 # *
 # ******************************************************************************
 import json
+from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
+
 from pyworkflow.object import Set as ScipionSet
 
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
@@ -39,7 +41,9 @@ from app.backend.mapper.scipion_set_mapper import (
 from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
     PostgresqlRuntimeSetSqliteMaterializer,
 )
-
+from app.backend.runtime.protocol_graph_repository import (
+    ProtocolGraphRepository,
+)
 
 class PostgresqlRuntimeSetMixin:
     """
@@ -151,6 +155,19 @@ class PostgresqlRuntimeSetFactory:
     }
 
     _runtimeClassCache: Dict[Type, Type] = {}
+
+    def __init__(
+            self,
+    ):
+        self.protocolGraphRepository = (
+            ProtocolGraphRepository()
+        )
+
+        self._runtimeSetsByIdentity = {}
+        self._runtimeProtocolsByIdentity = {}
+
+        self._resolvedPointerTargets = {}
+        self._resolvingPointerTargets = set()
 
     def build(
             self,
@@ -281,8 +298,10 @@ class PostgresqlRuntimeSetFactory:
             parent=runtimeSet,
             classes=itemClassRegistry,
             pointerResolver=(
-                self._buildLocalPointerResolver(
-                    runtimeSet
+                self._buildPointerResolver(
+                    db=db,
+                    runtimeSet=runtimeSet,
+                    classRegistry=classRegistry,
                 )
             ),
         )
@@ -354,6 +373,10 @@ class PostgresqlRuntimeSetFactory:
         )
 
         runtimeSet.load()
+
+        self._cacheRuntimeSet(
+            runtimeSet
+        )
 
         return runtimeSet
 
@@ -575,8 +598,10 @@ class PostgresqlRuntimeSetFactory:
                     parent=item,
                     classes=classRegistry,
                     pointerResolver=(
-                        self._buildLocalPointerResolver(
-                            item
+                        self._buildPointerResolver(
+                            db=db,
+                            runtimeSet=item,
+                            classRegistry=classRegistry,
                         )
                     ),
                 )
@@ -690,6 +715,574 @@ class PostgresqlRuntimeSetFactory:
                 )
 
         return resolvePointer
+
+    def _buildPointerResolver(
+            self,
+            db,
+            runtimeSet: ScipionSet,
+            classRegistry: Dict[str, Type],
+    ):
+        localResolver = (
+            self._buildLocalPointerResolver(
+                runtimeSet
+            )
+        )
+
+        def resolvePointer(
+                reference: Dict[str, Any],
+        ):
+            targetObjectId = self._toOptionalInt(
+                reference.get(
+                    "targetObjectId"
+                )
+            )
+
+            targetParentObjectId = (
+                self._toOptionalInt(
+                    reference.get(
+                        "targetParentObjectId"
+                    )
+                )
+            )
+
+            runtimeSetObjectId = (
+                self._toOptionalInt(
+                    runtimeSet.getObjId()
+                )
+            )
+
+            if not isinstance(
+                    targetObjectId,
+                    int,
+            ):
+                return None
+
+            if not isinstance(
+                    targetParentObjectId,
+                    int,
+            ):
+                return None
+
+            if (
+                    isinstance(
+                        runtimeSetObjectId,
+                        int,
+                    )
+                    and targetParentObjectId
+                    == runtimeSetObjectId
+            ):
+                return localResolver(
+                    reference
+                )
+
+            return self._resolveExternalPointerTarget(
+                db=db,
+                runtimeSet=runtimeSet,
+                classRegistry=classRegistry,
+                targetParentObjectId=(
+                    targetParentObjectId
+                ),
+                targetObjectId=targetObjectId,
+            )
+
+        return resolvePointer
+
+    def _resolveExternalPointerTarget(
+            self,
+            db,
+            runtimeSet: ScipionSet,
+            classRegistry: Dict[str, Type],
+            targetParentObjectId: int,
+            targetObjectId: int,
+    ):
+        projectId = self._getRuntimeProjectId(
+            runtimeSet
+        )
+
+        if not isinstance(
+                projectId,
+                int,
+        ):
+            return None
+
+        targetKey = (
+            projectId,
+            int(targetParentObjectId),
+            int(targetObjectId),
+        )
+
+        if targetKey in self._resolvedPointerTargets:
+            return self._resolvedPointerTargets[
+                targetKey
+            ]
+
+        if targetKey in self._resolvingPointerTargets:
+            return None
+
+        self._resolvingPointerTargets.add(
+            targetKey
+        )
+
+        try:
+            sourceProtocol = (
+                self._findProtocolParent(
+                    runtimeSet
+                )
+            )
+
+            runtimeMapper = (
+                self._getProtocolMapper(
+                    sourceProtocol
+                )
+            )
+
+            repositoryMapper = runtimeMapper
+
+            if (
+                    repositoryMapper is None
+                    or getattr(
+                repositoryMapper,
+                "db",
+                None,
+            ) is None
+            ):
+                repositoryMapper = SimpleNamespace(
+                    db=db
+                )
+
+            targetOutputInfo = (
+                self.protocolGraphRepository
+                .getPersistedSetOutputRowByRuntimeObjectId(
+                    mapper=repositoryMapper,
+                    projectId=projectId,
+                    runtimeObjectId=(
+                        targetParentObjectId
+                    ),
+                )
+            )
+
+            if targetOutputInfo is None:
+                return None
+
+            targetSet = self._getCachedRuntimeSet(
+                projectId=projectId,
+                runtimeObjectId=(
+                    targetParentObjectId
+                ),
+            )
+
+            if targetSet is None:
+                targetProtocol = (
+                    self._resolveRuntimeProtocol(
+                        projectId=projectId,
+                        sourceProtocol=sourceProtocol,
+                        runtimeMapper=runtimeMapper,
+                        targetOutputInfo=(
+                            targetOutputInfo
+                        ),
+                    )
+                )
+
+                if targetProtocol is None:
+                    return None
+
+                outputName = str(
+                    targetOutputInfo.get(
+                        "outputName"
+                    )
+                    or ""
+                ).strip()
+
+                if not outputName:
+                    return None
+
+                attachedSet = getattr(
+                    targetProtocol,
+                    outputName,
+                    None,
+                )
+
+                if self._isMatchingRuntimeSet(
+                        runtimeSet=attachedSet,
+                        runtimeObjectId=(
+                                targetParentObjectId
+                        ),
+                ):
+                    targetSet = attachedSet
+
+                else:
+                    targetSet = self.build(
+                        db=db,
+                        parent=targetProtocol,
+                        outputName=outputName,
+                        outputInfo=targetOutputInfo,
+                        classes=classRegistry,
+                    )
+
+                    setattr(
+                        targetProtocol,
+                        outputName,
+                        targetSet,
+                    )
+
+                self._cacheRuntimeSet(
+                    targetSet
+                )
+
+            target = self._selectRuntimeSetItem(
+                runtimeSet=targetSet,
+                itemId=targetObjectId,
+            )
+
+            if target is not None:
+                self._resolvedPointerTargets[
+                    targetKey
+                ] = target
+
+            return target
+
+        finally:
+            self._resolvingPointerTargets.discard(
+                targetKey
+            )
+
+    def _resolveRuntimeProtocol(
+            self,
+            projectId: int,
+            sourceProtocol,
+            runtimeMapper,
+            targetOutputInfo: Dict[str, Any],
+    ):
+        targetProtocolId = self._toOptionalInt(
+            targetOutputInfo.get(
+                "protocolId"
+            )
+        )
+
+        if not isinstance(
+                targetProtocolId,
+                int,
+        ):
+            return None
+
+        sourceProtocolId = self._toOptionalInt(
+            self._callOptionalMethod(
+                sourceProtocol,
+                "getObjId",
+            )
+        )
+
+        if (
+                sourceProtocol is not None
+                and sourceProtocolId
+                == targetProtocolId
+        ):
+            return sourceProtocol
+
+        protocolKey = (
+            int(projectId),
+            int(targetProtocolId),
+        )
+
+        if protocolKey in self._runtimeProtocolsByIdentity:
+            return self._runtimeProtocolsByIdentity[
+                protocolKey
+            ]
+
+        if runtimeMapper is None:
+            return None
+
+        selector = getattr(
+            runtimeMapper,
+            "selectById",
+            None,
+        )
+
+        if not callable(
+                selector
+        ):
+            return None
+
+        targetProtocol = selector(
+            targetProtocolId
+        )
+
+        if targetProtocol is None:
+            return None
+
+        self._runtimeProtocolsByIdentity[
+            protocolKey
+        ] = targetProtocol
+
+        return targetProtocol
+
+    def _findProtocolParent(
+            self,
+            runtimeSet: ScipionSet,
+    ):
+        current = runtimeSet
+        visited = set()
+
+        while isinstance(
+                current,
+                ScipionSet,
+        ):
+            currentIdentity = id(
+                current
+            )
+
+            if currentIdentity in visited:
+                return None
+
+            visited.add(
+                currentIdentity
+            )
+
+            current = getattr(
+                current,
+                "_objParent",
+                None,
+            )
+
+        return current
+
+    def _getProtocolMapper(
+            self,
+            protocol,
+    ):
+        if protocol is None:
+            return None
+
+        getter = getattr(
+            protocol,
+            "getMapper",
+            None,
+        )
+
+        if callable(
+                getter
+        ):
+            try:
+                mapper = getter()
+
+                if mapper is not None:
+                    return mapper
+            except Exception:
+                pass
+
+        for attrName in (
+                "_mapper",
+                "mapper",
+        ):
+            mapper = getattr(
+                protocol,
+                attrName,
+                None,
+            )
+
+            if mapper is not None:
+                return mapper
+
+        return None
+
+    def _getRuntimeProjectId(
+            self,
+            runtimeSet: ScipionSet,
+    ):
+        current = runtimeSet
+        visited = set()
+
+        while current is not None:
+            currentIdentity = id(
+                current
+            )
+
+            if currentIdentity in visited:
+                break
+
+            visited.add(
+                currentIdentity
+            )
+
+            runtimeInfo = getattr(
+                current,
+                "_postgresqlRuntimeInfo",
+                {},
+            )
+
+            if isinstance(
+                    runtimeInfo,
+                    dict,
+            ):
+                projectId = self._toOptionalInt(
+                    runtimeInfo.get(
+                        "projectId"
+                    )
+                )
+
+                if isinstance(
+                        projectId,
+                        int,
+                ):
+                    return projectId
+
+            current = getattr(
+                current,
+                "_objParent",
+                None,
+            )
+
+        protocol = self._findProtocolParent(
+            runtimeSet
+        )
+
+        mapper = self._getProtocolMapper(
+            protocol
+        )
+
+        return self._toOptionalInt(
+            getattr(
+                mapper,
+                "projectId",
+                None,
+            )
+        )
+
+    def _cacheRuntimeSet(
+            self,
+            runtimeSet,
+    ) -> None:
+        if runtimeSet is None:
+            return
+
+        projectId = self._getRuntimeProjectId(
+            runtimeSet
+        )
+
+        runtimeObjectId = self._toOptionalInt(
+            self._callOptionalMethod(
+                runtimeSet,
+                "getObjId",
+            )
+        )
+
+        if not isinstance(
+                projectId,
+                int,
+        ):
+            return
+
+        if not isinstance(
+                runtimeObjectId,
+                int,
+        ):
+            return
+
+        self._runtimeSetsByIdentity[
+            (
+                projectId,
+                runtimeObjectId,
+            )
+        ] = runtimeSet
+
+    def _getCachedRuntimeSet(
+            self,
+            projectId: int,
+            runtimeObjectId: int,
+    ):
+        return self._runtimeSetsByIdentity.get(
+            (
+                int(projectId),
+                int(runtimeObjectId),
+            )
+        )
+
+    def _isMatchingRuntimeSet(
+            self,
+            runtimeSet,
+            runtimeObjectId: int,
+    ) -> bool:
+        if not isinstance(
+                runtimeSet,
+                ScipionSet,
+        ):
+            return False
+
+        candidateObjectId = self._toOptionalInt(
+            self._callOptionalMethod(
+                runtimeSet,
+                "getObjId",
+            )
+        )
+
+        if candidateObjectId != int(
+                runtimeObjectId
+        ):
+            return False
+
+        checker = getattr(
+            runtimeSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if not callable(
+                checker
+        ):
+            return False
+
+        try:
+            return bool(
+                checker()
+            )
+        except Exception:
+            return False
+
+    def _selectRuntimeSetItem(
+            self,
+            runtimeSet: ScipionSet,
+            itemId: int,
+    ):
+        mapper = runtimeSet._getMapper()
+
+        selector = getattr(
+            mapper,
+            "selectById",
+            None,
+        )
+
+        if not callable(
+                selector
+        ):
+            return None
+
+        return selector(
+            int(itemId)
+        )
+
+    @staticmethod
+    def _callOptionalMethod(
+            obj,
+            methodName: str,
+    ):
+        if obj is None:
+            return None
+
+        method = getattr(
+            obj,
+            methodName,
+            None,
+        )
+
+        if not callable(
+                method
+        ):
+            return None
+
+        try:
+            return method()
+        except Exception:
+            return None
 
     def _isScipionSetClass(
             self,
