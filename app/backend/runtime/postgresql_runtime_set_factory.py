@@ -153,11 +153,6 @@ class PostgresqlRuntimeSetFactory:
                 "PostgreSQL runtime set requires className"
             )
 
-        if not itemClassName:
-            raise ValueError(
-                "PostgreSQL runtime set requires itemClassName"
-            )
-
         classRegistry = self._loadClasses(
             classes
         )
@@ -176,6 +171,11 @@ class PostgresqlRuntimeSetFactory:
             itemClassName=itemClassName,
             nativeSetClass=nativeSetClass,
         )
+
+        if not itemClassName:
+            raise ValueError(
+                "PostgreSQL runtime set requires itemClassName"
+            )
 
         runtimeSetClass = self._getRuntimeSetClass(
             nativeSetClass

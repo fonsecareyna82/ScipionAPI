@@ -713,3 +713,33 @@ def test_NestedSetCanReloadLogicalMapper():
         child,
         ExampleChildItem,
     )
+
+
+def test_BuildFallsBackToItemTypeWhenItemClassNameIsMissing():
+    parent = FakeParent()
+    parent.setObjId(5)
+
+    runtimeSet = PostgresqlRuntimeSetFactory().build(
+        db=FakeDb(),
+        parent=parent,
+        outputName="outputParticles",
+        outputInfo={
+            "setId": 31,
+            "objectId": 900,
+            "runtimeObjectId": 44,
+            "className": "ExampleSet",
+            "itemsCount": 1,
+            "properties": {},
+        },
+        classes={
+            "ExampleSet": ExampleSet,
+            "ExampleItem": ExampleItem,
+        },
+    )
+
+    item = runtimeSet.getFirstItem()
+
+    assert isinstance(
+        item,
+        ExampleItem,
+    )
