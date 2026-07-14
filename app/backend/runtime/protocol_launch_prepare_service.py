@@ -26,7 +26,7 @@
 import logging
 from typing import Any, Callable, Dict
 
-from pyworkflow.object import Pointer
+from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol.params import MultiPointerParam
 
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
@@ -58,7 +58,7 @@ class RuntimeProtocolLaunchPrepareService:
         - Runtime output relations are not modified.
         - Parent protocols and outputs are never persisted.
 
-        Only Pointer attributes belonging to the child protocol are updated.
+        Only Pointer and PointerList attributes belonging to the child protocol are updated.
         """
         protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
@@ -103,6 +103,7 @@ class RuntimeProtocolLaunchPrepareService:
 
         preparedItems = []
         errors = []
+        multiPointerLists = {}
 
         for row in rows or []:
             inputName = str(row.get("inputName") or "").strip()
@@ -122,6 +123,7 @@ class RuntimeProtocolLaunchPrepareService:
 
             itemReport = {
                 "inputName": inputName,
+                "itemIndex": row.get("itemIndex"),
                 "parentProtocolId": str(parentProtocolId),
                 "parentProtocolDbId": parentProtocolDbId,
                 "parentOutputName": parentOutputName,
@@ -214,11 +216,37 @@ class RuntimeProtocolLaunchPrepareService:
                 param = protocol.getParam(inputName)
 
                 if isinstance(param, MultiPointerParam):
-                    # Preserve the current behavior until PointerList restoration
-                    # is implemented explicitly from protocol_input_refs.
-                    itemReport["skippedPointerResetReason"] = (
-                        "multipointer_not_rebuilt"
+                    pointerList = multiPointerLists.get(inputName)
+
+                    if pointerList is None:
+                        pointerList = PointerList()
+                        multiPointerLists[inputName] = pointerList
+
+                        # The PointerList belongs exclusively to the child protocol.
+                        setattr(protocol, inputName, pointerList)
+
+                    pointer = Pointer(
+                        parentProtocol,
+                        extended=parentOutputName,
                     )
+
+                    pointerList.append(pointer)
+
+                    pointerValue = "%s.%s" % (
+                        str(parentScipionProtocolId),
+                        parentOutputName,
+                    )
+
+                    itemReport["multiPointer"] = True
+                    itemReport["pointerReset"] = True
+                    itemReport["pointerValue"] = pointerValue
+                    itemReport["paramDefaultUpdateSkipped"] = (
+                        "multipointer_runtime_pointer_list"
+                    )
+                    itemReport["pointerResolutionSkipped"] = (
+                        "parent_protocol_and_outputs_are_read_only"
+                    )
+
                     preparedItems.append(itemReport)
                     continue
 
