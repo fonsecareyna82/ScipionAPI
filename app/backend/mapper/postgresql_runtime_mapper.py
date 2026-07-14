@@ -111,6 +111,7 @@ class PostgresqlRuntimeMapper(Mapper):
             PostgresqlRuntimeSetFactory()
         )
         self._runtimeProtocolsById = {}
+        self._sqliteProtocolMirrorIds = set()
 
     # ---------------------------------------------------------------------
     # Lifecycle
@@ -557,7 +558,53 @@ class PostgresqlRuntimeMapper(Mapper):
             self._runtimeProtocolsById[protocolId] = protocol
             return protocol
 
+        if protocolId in self._sqliteProtocolMirrorIds:
+            return self._refreshSqliteProtocolMirrorFromPostgresqlRow(
+                protocol,
+                row,
+            )
+
         return self._refreshProtocolFromPostgresqlRow(protocol, row)
+
+    def _refreshSqliteProtocolMirrorFromPostgresqlRow(self, protocol, row):
+        """
+        Refresh PostgreSQL-owned runtime metadata without replacing the
+        complete protocol state already hydrated from SQLite.
+
+        Stored protocol params are deliberately not reapplied because the
+        SQLite protocol already contains native Pointer, PointerList and
+        output attributes.
+        """
+        protocolId = self._toOptionalInt(row.get("protocolId"))
+
+        if protocolId is not None:
+            self._setObjId(protocol, protocolId)
+
+        self._attachRuntimeContext(protocol)
+        self._applyStoredProtocolStatus(protocol, row.get("status"))
+        self._ensureProtocolWorkingDir(protocol)
+
+        return protocol
+
+    def _adoptSqliteProtocolMirror(self, protocol, row):
+        protocolId = self._toOptionalInt(row.get("protocolId"))
+
+        if protocolId is None:
+            logger.warning(
+                "Cannot adopt SQLite protocol mirror without protocolId. row=%s",
+                row,
+            )
+            return None
+
+        protocol = self._refreshSqliteProtocolMirrorFromPostgresqlRow(
+            protocol,
+            row,
+        )
+
+        self._runtimeProtocolsById[protocolId] = protocol
+        self._sqliteProtocolMirrorIds.add(protocolId)
+
+        return protocol
 
     def _selectSetByIdFromPostgresql(
             self,
@@ -864,9 +911,13 @@ class PostgresqlRuntimeMapper(Mapper):
                 if objectFilter is not None and not objectFilter(protocol):
                     continue
             else:
-                # Preserve the complete SQLite protocol instance and make
-                # all subsequent PostgreSQL reads reuse that same object.
-                self._runtimeProtocolsById[protocolId] = protocol
+                    protocol = self._adoptSqliteProtocolMirror(protocol, row)
+
+                    if protocol is None:
+                        continue
+
+                    if objectFilter is not None and not objectFilter(protocol):
+                        continue
 
             result.append(protocol)
             seenIds.add(protocolId)

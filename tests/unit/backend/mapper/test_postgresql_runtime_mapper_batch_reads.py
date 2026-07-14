@@ -163,8 +163,11 @@ def test_SelectAllBatchPrefersFallbackMirrorAndBuildsPostgresqlOnlyProtocols():
 
     assert mapper._runtimeProtocolsById[100] is fallbackProtocol
     assert mapper._runtimeProtocolsById[101] is postgresqlOnlyProtocol
+    assert mapper._sqliteProtocolMirrorIds == {
+        100,
+    }
 
-    mapper._refreshProtocolFromPostgresqlRow = (
+    mapper._refreshSqliteProtocolMirrorFromPostgresqlRow = (
         lambda protocol, row: protocol
     )
 
@@ -251,3 +254,134 @@ def test_SelectAllBatchRejectsInvalidObjectFilter():
         mapper.selectAllBatch(
             objectFilter="Protocol"
         )
+
+def test_SelectAllBatchRefreshesMirrorStatusWithoutReapplyingParams():
+    fallbackProtocol = buildProtocol(ExampleProtocol, 100)
+
+    fallback = FakeFallbackMapper([
+        fallbackProtocol,
+    ])
+
+    row = buildRow(100)
+    row["status"] = "running"
+    row["params"] = {
+        "inputParticles": "99.outputParticles",
+    }
+
+    mapper = buildMapper(
+        rows=[row],
+        fallback=fallback,
+    )
+
+    statusCalls = []
+    paramCalls = []
+    workingDirCalls = []
+
+    mapper._applyStoredProtocolStatus = (
+        lambda protocol, status: statusCalls.append(
+            (protocol, status)
+        )
+    )
+
+    mapper._applyStoredProtocolParams = (
+        lambda protocol, params: paramCalls.append(
+            (protocol, params)
+        )
+    )
+
+    mapper._ensureProtocolWorkingDir = (
+        lambda protocol: workingDirCalls.append(protocol)
+    )
+
+    result = mapper.selectAllBatch(
+        objectFilter=lambda obj: isinstance(obj, Protocol)
+    )
+
+    assert result == [
+        fallbackProtocol,
+    ]
+
+    assert statusCalls == [
+        (fallbackProtocol, "running"),
+    ]
+
+    assert paramCalls == []
+    assert workingDirCalls == [fallbackProtocol]
+
+    assert mapper._runtimeProtocolsById[100] is fallbackProtocol
+    assert mapper._sqliteProtocolMirrorIds == {100}
+
+
+def test_SelectByIdUsesSafeRefreshForSqliteProtocolMirror():
+    protocol = buildProtocol(ExampleProtocol, 100)
+
+    mapper = buildMapper([
+        buildRow(100),
+    ])
+
+    mapper._runtimeProtocolsById[100] = protocol
+    mapper._sqliteProtocolMirrorIds.add(100)
+
+    safeRefreshCalls = []
+
+    def safeRefresh(cachedProtocol, row):
+        safeRefreshCalls.append({
+            "protocol": cachedProtocol,
+            "protocolId": int(row["protocolId"]),
+        })
+        return cachedProtocol
+
+    def failFullRefresh(cachedProtocol, row):
+        raise AssertionError(
+            "Full PostgreSQL param refresh must not run "
+            "for a SQLite protocol mirror"
+        )
+
+    mapper._refreshSqliteProtocolMirrorFromPostgresqlRow = safeRefresh
+    mapper._refreshProtocolFromPostgresqlRow = failFullRefresh
+
+    result = mapper._selectProtocolByIdFromPostgresql(100)
+
+    assert result is protocol
+
+    assert safeRefreshCalls == [{
+        "protocol": protocol,
+        "protocolId": 100,
+    }]
+
+
+def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
+    protocol = buildProtocol(ExampleProtocol, 100)
+
+    mapper = buildMapper([
+        buildRow(100),
+    ])
+
+    mapper._runtimeProtocolsById[100] = protocol
+
+    fullRefreshCalls = []
+
+    def fullRefresh(cachedProtocol, row):
+        fullRefreshCalls.append({
+            "protocol": cachedProtocol,
+            "protocolId": int(row["protocolId"]),
+        })
+        return cachedProtocol
+
+    def failSafeRefresh(cachedProtocol, row):
+        raise AssertionError(
+            "SQLite mirror refresh must not run "
+            "for a native PostgreSQL protocol"
+        )
+
+    mapper._refreshProtocolFromPostgresqlRow = fullRefresh
+    mapper._refreshSqliteProtocolMirrorFromPostgresqlRow = failSafeRefresh
+
+    result = mapper._selectProtocolByIdFromPostgresql(100)
+
+    assert result is protocol
+
+    assert fullRefreshCalls == [{
+        "protocol": protocol,
+        "protocolId": 100,
+    }]
