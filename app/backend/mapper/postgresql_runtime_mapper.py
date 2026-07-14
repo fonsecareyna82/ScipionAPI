@@ -144,7 +144,28 @@ class PostgresqlRuntimeMapper(Mapper):
             try:
                 self.readFallbackMapper.close()
             except Exception:
-                logger.debug("Could not close read fallback mapper.", exc_info=True)
+                logger.debug(
+                    "Could not close read fallback mapper.",
+                    exc_info=True,
+                )
+
+        clearRuntimeCaches = getattr(
+            self.runtimeSetFactory,
+            "clearCaches",
+            None,
+        )
+
+        if callable(clearRuntimeCaches):
+            try:
+                clearRuntimeCaches()
+            except Exception:
+                logger.debug(
+                    "Could not clear PostgreSQL runtime set caches.",
+                    exc_info=True,
+                )
+
+        self._runtimeProtocolsById.clear()
+        self._sqliteProtocolMirrorIds.clear()
 
     # ---------------------------------------------------------------------
     # Generic Mapper API
