@@ -496,23 +496,56 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def selectRuntimeProtocolById(self, objId):
         """
-        Return a fully hydrated protocol for runtime operations.
+        Return one stable, fully hydrated protocol for runtime operations.
 
-        Prefer the SQLite compatibility mapper while it exists because it contains
-        the complete Scipion protocol object, including pointers, internal
-        attributes and outputs. The returned protocol is attached to this
-        PostgreSQL runtime mapper so subsequent writes continue going through
-        PostgreSQL and the configured write fallback.
+        Prefer the SQLite compatibility object on the first read because it
+        contains native pointers, internal attributes and outputs. Cache that
+        instance so all subsequent runtime reads reuse the same protocol identity.
         """
-        protocol = self._selectByIdFromReadFallback(objId)
+        protocolId = self._toOptionalInt(objId)
+
+        if protocolId is None:
+            logger.warning(
+                "Cannot select runtime protocol: objId is not an int. objId=%s",
+                objId,
+            )
+            return None
+
+        row = self.flatMapper.getProjectProtocolByProtocolId(
+            self.projectId,
+            protocolId,
+        )
+
+        cachedProtocol = self._runtimeProtocolsById.get(protocolId)
+
+        if cachedProtocol is not None:
+            if row:
+                return self._getOrBuildProtocolFromPostgresqlRow(row)
+
+            if protocolId in self._sqliteProtocolMirrorIds:
+                return self._attachRuntimeContext(cachedProtocol)
+
+            # A PostgreSQL-native cached protocol whose row disappeared must
+            # not remain available as a stale runtime object.
+            self._runtimeProtocolsById.pop(protocolId, None)
+
+        protocol = self._selectByIdFromReadFallback(protocolId)
 
         if isinstance(protocol, Protocol):
-            return self._attachRuntimeContext(protocol)
+            if row:
+                return self._adoptSqliteProtocolMirror(protocol, row)
 
-        protocol = self._selectProtocolByIdFromPostgresql(objId)
+            protocol = self._attachRuntimeContext(protocol)
 
-        if protocol is not None:
-            return self._attachRuntimeContext(protocol)
+            # Preserve identity for compatibility-only protocols too. If the
+            # PostgreSQL row appears later, it will receive the safe mirror refresh.
+            self._runtimeProtocolsById[protocolId] = protocol
+            self._sqliteProtocolMirrorIds.add(protocolId)
+
+            return protocol
+
+        if row:
+            return self._getOrBuildProtocolFromPostgresqlRow(row)
 
         return None
 
