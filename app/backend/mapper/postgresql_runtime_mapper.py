@@ -1499,8 +1499,16 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
         if self.readFallbackMapper is not None:
-            parent = self.readFallbackMapper.getParent(obj)
-            return self._attachRuntimeContext(parent)
+            parent = (
+                self.readFallbackMapper
+                .getParent(
+                    obj
+                )
+            )
+
+            return self._attachRuntimeContext(
+                parent
+            )
 
         return None
 
@@ -1528,180 +1536,6 @@ class PostgresqlRuntimeMapper(Mapper):
     # ---------------------------------------------------------------------
     # Relations API
     # ---------------------------------------------------------------------
-
-    @staticmethod
-    def _normalizePostgresqlRelationRow(row):
-        """
-        Expose PostgreSQL relations using the field names returned by
-        Scipion's SQLite Relations table.
-
-        Keep the PostgreSQL names too, so internal callers may use either
-        representation during the migration.
-        """
-        relation = dict(row)
-
-        relation.setdefault(
-            "parent_id",
-            relation.get("creatorObjId"),
-        )
-
-        relation.setdefault(
-            "object_parent_id",
-            relation.get("parentObjId"),
-        )
-
-        relation.setdefault(
-            "object_child_id",
-            relation.get("childObjId"),
-        )
-
-        relation.setdefault(
-            "object_parent_extended",
-            relation.get("parentExtended"),
-        )
-
-        relation.setdefault(
-            "object_child_extended",
-            relation.get("childExtended"),
-        )
-
-        # These columns exist in SQLite Relations but are not required by
-        # PostgreSQL runtime relations. Preserve the expected row contract.
-        relation.setdefault("classname", None)
-        relation.setdefault("value", None)
-        relation.setdefault("label", None)
-        relation.setdefault("comment", None)
-        relation.setdefault("creation", None)
-
-        return relation
-
-    def _selectPostgresqlRelationsByCreatorId(
-            self,
-            creatorId,
-    ):
-        rows = self.db.fetchAll(
-            """
-            SELECT *
-              FROM scipion_relations
-             WHERE "projectId" = %s
-               AND "creatorObjId" = %s
-             ORDER BY id ASC
-            """,
-            (
-                self.projectId,
-                int(creatorId),
-            ),
-        )
-
-        return [
-            self._normalizePostgresqlRelationRow(row)
-            for row in rows or []
-        ]
-
-    def _selectPostgresqlRelationsByName(
-            self,
-            relationName,
-    ):
-        rows = self.db.fetchAll(
-            """
-            SELECT *
-              FROM scipion_relations
-             WHERE "projectId" = %s
-               AND name = %s
-             ORDER BY id ASC
-            """,
-            (
-                self.projectId,
-                str(relationName),
-            ),
-        )
-
-        return [
-            self._normalizePostgresqlRelationRow(row)
-            for row in rows or []
-        ]
-
-    def _selectPostgresqlRelatedObjects(
-            self,
-            relationName,
-            runtimeObjectId,
-            selectChilds,
-    ):
-        if selectChilds:
-            sourceColumn = '"parentObjId"'
-            targetColumn = '"childObjId"'
-        else:
-            sourceColumn = '"childObjId"'
-            targetColumn = '"parentObjId"'
-
-        rows = self.db.fetchAll(
-            f"""
-            SELECT {targetColumn} AS "runtimeObjectId"
-              FROM scipion_relations
-             WHERE "projectId" = %s
-               AND name = %s
-               AND {sourceColumn} = %s
-             ORDER BY id ASC
-            """,
-            (
-                self.projectId,
-                str(relationName),
-                int(runtimeObjectId),
-            ),
-        )
-
-        relatedObjects = []
-        unresolvedIds = []
-        resolvedIds = set()
-
-        for row in rows or []:
-            relatedObjectId = self._toOptionalInt(
-                row.get("runtimeObjectId")
-            )
-
-            if relatedObjectId is None:
-                continue
-
-            if relatedObjectId in resolvedIds:
-                continue
-
-            relatedObject = self.selectById(
-                relatedObjectId
-            )
-
-            if relatedObject is None:
-                unresolvedIds.append(
-                    relatedObjectId
-                )
-                continue
-
-            resolvedIds.add(
-                relatedObjectId
-            )
-
-            relatedObjects.append(
-                relatedObject
-            )
-
-        return {
-            "objects": relatedObjects,
-            "rowsFound": bool(rows),
-            "unresolvedIds": unresolvedIds,
-        }
-
-    def _mergePostgresqlRelatedObjectsWithFallback(
-            self,
-            postgresqlObjects,
-            fallbackObjects,
-    ):
-        fallbackObjects = self._attachRuntimeContextList(
-            fallbackObjects or []
-        )
-
-        return self._mergeRuntimeClassResults(
-            postgresqlObjects,
-            fallbackObjects,
-        )
 
     def insertRelation(self, relName, creatorObj, parentObj, childObj,
                        parentExt=None, childExt=None):
@@ -1923,144 +1757,51 @@ class PostgresqlRuntimeMapper(Mapper):
         self._deleteCanonicalObjectRelationsByCreatorId(creatorId)
 
     def getRelationsByCreator(self, creatorObj):
-        creatorId = self._requireObjId(
-            creatorObj
-        )
-
-        relations = (
-            self._selectPostgresqlRelationsByCreatorId(
-                creatorId
-            )
-        )
-
-        if relations:
-            return relations
-
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationsByCreator(
-                creatorObj
-            )
+            return self.readFallbackMapper.getRelationsByCreator(creatorObj)
 
-        return []
+        creatorId = self._requireObjId(creatorObj)
+        return self.db.fetchAll(
+            """
+            SELECT *
+              FROM scipion_relations
+             WHERE "projectId" = %s
+               AND "creatorObjId" = %s
+             ORDER BY id ASC
+            """,
+            (self.projectId, int(creatorId)),
+        )
 
     def getRelationsByName(self, relationName):
-        relations = (
-            self._selectPostgresqlRelationsByName(
-                relationName
-            )
-        )
-
-        if relations:
-            return relations
-
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationsByName(
-                relationName
-            )
+            return self.readFallbackMapper.getRelationsByName(relationName)
 
-        return []
+        return self.db.fetchAll(
+            """
+            SELECT *
+              FROM scipion_relations
+             WHERE "projectId" = %s
+               AND name = %s
+             ORDER BY id ASC
+            """,
+            (self.projectId, str(relationName)),
+        )
 
     def getRelationChilds(self, relName, parentObj):
-        parentId = self._requireObjId(
-            parentObj
+        if self.readFallbackMapper is not None:
+            return self.readFallbackMapper.getRelationChilds(relName, parentObj)
+
+        raise NotImplementedError(
+            "PostgreSQL getRelationChilds object reconstruction is not implemented yet."
         )
-
-        result = self._selectPostgresqlRelatedObjects(
-            relationName=relName,
-            runtimeObjectId=parentId,
-            selectChilds=True,
-        )
-
-        postgresqlObjects = result["objects"]
-
-        if not result["rowsFound"]:
-            if self.readFallbackMapper is None:
-                return []
-
-            fallbackObjects = (
-                self.readFallbackMapper
-                .getRelationChilds(
-                    relName,
-                    parentObj,
-                )
-            )
-
-            return self._attachRuntimeContextList(
-                fallbackObjects or []
-            )
-
-        if (
-                result["unresolvedIds"]
-                and self.readFallbackMapper is not None
-        ):
-            fallbackObjects = (
-                self.readFallbackMapper
-                .getRelationChilds(
-                    relName,
-                    parentObj,
-                )
-            )
-
-            return (
-                self
-                ._mergePostgresqlRelatedObjectsWithFallback(
-                    postgresqlObjects,
-                    fallbackObjects,
-                )
-            )
-
-        return postgresqlObjects
 
     def getRelationParents(self, relName, childObj):
-        childId = self._requireObjId(
-            childObj
+        if self.readFallbackMapper is not None:
+            return self.readFallbackMapper.getRelationParents(relName, childObj)
+
+        raise NotImplementedError(
+            "PostgreSQL getRelationParents object reconstruction is not implemented yet."
         )
-
-        result = self._selectPostgresqlRelatedObjects(
-            relationName=relName,
-            runtimeObjectId=childId,
-            selectChilds=False,
-        )
-
-        postgresqlObjects = result["objects"]
-
-        if not result["rowsFound"]:
-            if self.readFallbackMapper is None:
-                return []
-
-            fallbackObjects = (
-                self.readFallbackMapper
-                .getRelationParents(
-                    relName,
-                    childObj,
-                )
-            )
-
-            return self._attachRuntimeContextList(
-                fallbackObjects or []
-            )
-
-        if (
-                result["unresolvedIds"]
-                and self.readFallbackMapper is not None
-        ):
-            fallbackObjects = (
-                self.readFallbackMapper
-                .getRelationParents(
-                    relName,
-                    childObj,
-                )
-            )
-
-            return (
-                self
-                ._mergePostgresqlRelatedObjectsWithFallback(
-                    postgresqlObjects,
-                    fallbackObjects,
-                )
-            )
-
-        return postgresqlObjects
 
     # ---------------------------------------------------------------------
     # PostgreSQL persistence helpers
