@@ -149,3 +149,147 @@ def test_UnsupportedWhereExpressionFailsExplicitly():
             where="_score > 0.5",
             iterate=False,
         )
+
+def test_MapperRequiresExactlyOneStorageScope():
+    with pytest.raises(
+            ValueError,
+            match="Exactly one",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=FakeDb(),
+            itemBuilder=buildItem,
+        )
+
+    with pytest.raises(
+            ValueError,
+            match="Exactly one",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=FakeDb(),
+            setId=31,
+            tableId=91,
+            itemBuilder=buildItem,
+        )
+
+
+
+class FakeLogicalTableDb:
+    def __init__(self):
+        self.query = None
+        self.params = None
+
+    def fetchAll(self, query, params=None):
+        self.query = " ".join(
+            str(query).split()
+        )
+        self.params = params
+
+        if (
+                "FROM scipion_set_table_columns"
+                in self.query
+        ):
+            return [
+                {
+                    "labelProperty": "_tiltAngle",
+                    "className": "Float",
+                    "valueType": "float",
+                    "position": 0,
+                },
+            ]
+
+        if (
+                "FROM scipion_set_table_items"
+                in self.query
+        ):
+            return [
+                {
+                    "id": 701,
+                    "tableId": 91,
+                    "scipionItemId": 3,
+                    "enabled": True,
+                    "label": "",
+                    "comment": "",
+                    "creation": None,
+                    "values": {
+                        "_tiltAngle": -45.0,
+                    },
+                    "createdAt": None,
+                    "updatedAt": None,
+                },
+            ]
+
+        return []
+
+    def fetchOne(self, query, params=None):
+        self.query = " ".join(
+            str(query).split()
+        )
+        self.params = params
+
+        if "FROM scipion_set_tables" in self.query:
+            return {
+                "properties": {
+                    "source": "postgresql",
+                    "parentItemId": 7,
+                },
+            }
+
+        if "COUNT(*) AS count" in self.query:
+            return {
+                "count": 1,
+            }
+
+        if 'MAX("scipionItemId")' in self.query:
+            return {
+                "maxItemId": 3,
+            }
+
+        return None
+
+
+def test_LogicalTableMapperReadsChildItems():
+    db = FakeLogicalTableDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        itemBuilder=buildItem,
+    )
+
+    items = mapper.selectAll(
+        iterate=False,
+    )
+
+    assert len(items) == 1
+    assert items[0]["scipionItemId"] == 3
+
+    assert (
+        "FROM scipion_set_table_items"
+        in db.query
+    )
+
+    assert (
+        'WHERE "tableId" = %s'
+        in db.query
+    )
+
+    assert db.params == (91,)
+
+
+def test_LogicalTableMapperUsesStoredProperties():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeLogicalTableDb(),
+        tableId=91,
+        itemBuilder=buildItem,
+    )
+
+    assert mapper.hasProperty("source")
+    assert (
+        mapper.getProperty("source")
+        == "postgresql"
+    )
+
+    assert mapper.getPropertyKeys() == [
+        "parentItemId",
+        "source",
+    ]
