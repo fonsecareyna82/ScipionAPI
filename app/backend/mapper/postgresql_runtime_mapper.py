@@ -670,22 +670,65 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return runtimeSet
 
-    def exists(self, objId):
-        row = self.db.fetchOne(
-            """
-            SELECT id
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-             LIMIT 1
-            """,
-            (self.projectId, str(objId)),
+    def exists(
+            self,
+            objId,
+    ):
+        runtimeObjectId = self._toOptionalInt(
+            objId
         )
-        if row is not None:
-            return True
+
+        if runtimeObjectId is not None:
+            protocolRow = self.db.fetchOne(
+                """
+                SELECT id
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND "protocolId" = %s
+                 LIMIT 1
+                """,
+                (
+                    self.projectId,
+                    str(runtimeObjectId),
+                ),
+            )
+
+            if protocolRow is not None:
+                return True
+
+            cachedSet = (
+                self.runtimeSetFactory
+                ._getCachedRuntimeSet(
+                    projectId=self.projectId,
+                    runtimeObjectId=(
+                        runtimeObjectId
+                    ),
+                )
+            )
+
+            if cachedSet is not None:
+                return True
+
+            outputInfo = (
+                self.protocolGraphRepository
+                .getPersistedSetOutputRowByRuntimeObjectId(
+                    mapper=self,
+                    projectId=self.projectId,
+                    runtimeObjectId=(
+                        runtimeObjectId
+                    ),
+                )
+            )
+
+            if outputInfo is not None:
+                return True
 
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.exists(objId)
+            return bool(
+                self.readFallbackMapper.exists(
+                    objId
+                )
+            )
 
         return False
 
@@ -799,17 +842,62 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return self._attachRuntimeContextList(result)
 
-    def getParent(self, obj):
-        if self.readFallbackMapper is not None:
-            parent = self.readFallbackMapper.getParent(obj)
-            self._attachRuntimeContext(parent)
-            return parent
-
-        parentId = getattr(obj, "_objParentId", None)
-        if parentId is None:
+    def getParent(
+            self,
+            obj,
+    ):
+        if obj is None:
             return None
 
-        return self.selectById(parentId)
+        # Native PostgreSQL items and sets are hydrated
+        # with their actual parent object.
+        parent = getattr(
+            obj,
+            "_objParent",
+            None,
+        )
+
+        if parent is not None:
+            return self._attachRuntimeContext(
+                parent
+            )
+
+        parentId = self._call(
+            obj,
+            "getObjParentId",
+            None,
+        )
+
+        if parentId is None:
+            parentId = getattr(
+                obj,
+                "_objParentId",
+                None,
+            )
+
+        if parentId is not None:
+            parent = self.selectById(
+                parentId
+            )
+
+            if parent is not None:
+                return self._attachRuntimeContext(
+                    parent
+                )
+
+        if self.readFallbackMapper is not None:
+            parent = (
+                self.readFallbackMapper
+                .getParent(
+                    obj
+                )
+            )
+
+            return self._attachRuntimeContext(
+                parent
+            )
+
+        return None
 
     def delete(self, obj):
         if self.writeFallbackMapper is not None:
