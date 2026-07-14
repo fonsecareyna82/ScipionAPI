@@ -112,7 +112,6 @@ def test_SelectAllSupportsJsonFieldEquality():
         31,
         "_tomoId",
         "TS_01",
-        "id",
     )
 
 
