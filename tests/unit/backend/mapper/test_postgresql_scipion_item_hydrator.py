@@ -28,6 +28,8 @@ import pytest
 from pyworkflow.object import (
     Integer,
     Object,
+    Pointer,
+    PointerList,
     String,
 )
 
@@ -47,6 +49,19 @@ class ExampleItem(Object):
         super().__init__(**kwargs)
         self._name = String()
         self._nested = None
+
+
+class ExamplePointerItem(Object):
+    def __init__(
+            self,
+            **kwargs,
+    ):
+        super().__init__(
+            **kwargs
+        )
+
+        self._single = Pointer()
+        self._many = PointerList()
 
 
 def buildHydrator(parent=None):
@@ -136,3 +151,198 @@ def test_UnknownItemClassFailsExplicitly():
             columns=[],
             classes={},
         )
+
+
+def test_BuildHydratesNativePointerAttributes():
+    firstTarget = Object()
+    firstTarget.setObjId(
+        7
+    )
+
+    secondTarget = Object()
+    secondTarget.setObjId(
+        8
+    )
+
+    targets = {
+        7: firstTarget,
+        8: secondTarget,
+    }
+
+    resolvedReferences = []
+
+    def resolvePointer(
+            reference,
+    ):
+        resolvedReferences.append(
+            dict(reference)
+        )
+
+        return targets.get(
+            reference.get(
+                "targetObjectId"
+            )
+        )
+
+    hydrator = (
+        PostgresqlScipionItemHydrator(
+            itemClassName=(
+                "ExamplePointerItem"
+            ),
+            columns=[
+                {
+                    "labelProperty": (
+                        "_single"
+                    ),
+                    "className": "Pointer",
+                },
+                {
+                    "labelProperty": (
+                        "_many"
+                    ),
+                    "className": (
+                        "PointerList"
+                    ),
+                },
+            ],
+            classes={
+                "ExamplePointerItem": (
+                    ExamplePointerItem
+                ),
+            },
+            pointerResolver=resolvePointer,
+        )
+    )
+
+    item = hydrator.build({
+        "scipionItemId": 21,
+        "values": {
+            "_single": {
+                "version": 1,
+                "kind": "pointer",
+                "targetObjectId": 7,
+                "targetParentObjectId": 300,
+                "extended": "payload",
+            },
+            "_many": [
+                {
+                    "version": 1,
+                    "kind": "pointer",
+                    "targetObjectId": 7,
+                    "targetParentObjectId": 300,
+                    "extended": "",
+                },
+                {
+                    "version": 1,
+                    "kind": "pointer",
+                    "targetObjectId": 8,
+                    "targetParentObjectId": 300,
+                    "extended": "child",
+                },
+            ],
+        },
+    })
+
+    assert isinstance(
+        item._single,
+        Pointer,
+    )
+
+    assert (
+        item._single.getObjValue()
+        is firstTarget
+    )
+
+    assert (
+        item._single.getExtended()
+        == "payload"
+    )
+
+    assert isinstance(
+        item._many,
+        PointerList,
+    )
+
+    assert len(
+        item._many
+    ) == 2
+
+    assert (
+        item._many[0].getObjValue()
+        is firstTarget
+    )
+
+    assert (
+        item._many[1].getObjValue()
+        is secondTarget
+    )
+
+    assert (
+        item._many[1].getExtended()
+        == "child"
+    )
+
+    assert len(
+        resolvedReferences
+    ) == 3
+
+
+def test_BuildPreservesUnresolvedPointerReference():
+    hydrator = (
+        PostgresqlScipionItemHydrator(
+            itemClassName=(
+                "ExamplePointerItem"
+            ),
+            columns=[
+                {
+                    "labelProperty": (
+                        "_single"
+                    ),
+                    "className": "Pointer",
+                },
+            ],
+            classes={
+                "ExamplePointerItem": (
+                    ExamplePointerItem
+                ),
+            },
+            pointerResolver=(
+                lambda reference: None
+            ),
+        )
+    )
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 17,
+        "targetParentObjectId": 999,
+        "targetClassName": "Particle",
+        "targetParentClassName": (
+            "SetOfParticles"
+        ),
+        "extended": "",
+    }
+
+    item = hydrator.build({
+        "scipionItemId": 21,
+        "values": {
+            "_single": reference,
+        },
+    })
+
+    assert isinstance(
+        item._single,
+        Pointer,
+    )
+
+    assert (
+        item._single.getObjValue()
+        is None
+    )
+
+    assert (
+        item._single
+        ._postgresqlRuntimeReference
+        == reference
+    )

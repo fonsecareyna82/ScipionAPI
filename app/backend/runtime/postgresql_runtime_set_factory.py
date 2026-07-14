@@ -280,6 +280,11 @@ class PostgresqlRuntimeSetFactory:
             columns=columns,
             parent=runtimeSet,
             classes=itemClassRegistry,
+            pointerResolver=(
+                self._buildLocalPointerResolver(
+                    runtimeSet
+                )
+            ),
         )
 
         def buildItem(row):
@@ -569,6 +574,11 @@ class PostgresqlRuntimeSetFactory:
                     columns=childColumns,
                     parent=item,
                     classes=classRegistry,
+                    pointerResolver=(
+                        self._buildLocalPointerResolver(
+                            item
+                        )
+                    ),
                 )
             )
 
@@ -585,6 +595,101 @@ class PostgresqlRuntimeSetFactory:
         # Keep loading lazy. The mapper will be created when iterItems(),
         # getFirstItem(), getItem() or another Set operation needs it.
         item._mapper = None
+
+    def _buildLocalPointerResolver(
+            self,
+            runtimeSet: ScipionSet,
+    ):
+        resolvedTargets = {}
+        resolvingTargets = set()
+
+        def resolvePointer(
+                reference: Dict[str, Any],
+        ):
+            targetObjectId = self._toOptionalInt(
+                reference.get(
+                    "targetObjectId"
+                )
+            )
+
+            targetParentObjectId = (
+                self._toOptionalInt(
+                    reference.get(
+                        "targetParentObjectId"
+                    )
+                )
+            )
+
+            runtimeSetObjectId = (
+                self._toOptionalInt(
+                    runtimeSet.getObjId()
+                )
+            )
+
+            if not isinstance(
+                    targetObjectId,
+                    int,
+            ):
+                return None
+
+            if not isinstance(
+                    targetParentObjectId,
+                    int,
+            ):
+                return None
+
+            if not isinstance(
+                    runtimeSetObjectId,
+                    int,
+            ):
+                return None
+
+            # This resolver only owns pointers to items
+            # contained in this runtime set.
+            if (
+                    targetParentObjectId
+                    != runtimeSetObjectId
+            ):
+                return None
+
+            targetKey = (
+                targetParentObjectId,
+                targetObjectId,
+            )
+
+            if targetKey in resolvedTargets:
+                return resolvedTargets[
+                    targetKey
+                ]
+
+            # Avoid infinite recursion for circular pointers:
+            # item A -> item B -> item A.
+            if targetKey in resolvingTargets:
+                return None
+
+            resolvingTargets.add(
+                targetKey
+            )
+
+            try:
+                mapper = runtimeSet._getMapper()
+
+                target = mapper.selectById(
+                    targetObjectId
+                )
+
+                if target is not None:
+                    resolvedTargets[
+                        targetKey
+                    ] = target
+
+                return target
+            finally:
+                resolvingTargets.discard(
+                    targetKey
+                )
+
+        return resolvePointer
 
     def _isScipionSetClass(
             self,
