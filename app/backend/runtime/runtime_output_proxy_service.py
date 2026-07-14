@@ -28,7 +28,7 @@ from typing import Any, Dict
 
 
 class RuntimeOutputProxyService:
-    """Attach PostgreSQL-backed output proxies to runtime protocols."""
+    """Build PostgreSQL-backed output proxies without mutating protocols."""
 
     def attachPostgresqlRuntimeOutputProxy(
             self,
@@ -38,11 +38,11 @@ class RuntimeOutputProxyService:
             mapper=None,
     ):
         """
-        Attach a PostgreSQL-backed output proxy to the parent protocol.
+        Build and return a PostgreSQL-backed proxy for a persisted output.
 
-        This intentionally replaces the legacy sqlite-backed output attribute when
-        PostgreSQL has the output persisted. The goal is that child PointerParams
-        resolve through PostgreSQL instead of the original parent output sqlite.
+        The owner protocol is strictly read-only. The proxy may keep a reference
+        to that protocol, but this method never attaches, replaces or removes
+        any output attribute.
         """
         db = getattr(mapper, "db", None)
 
@@ -74,8 +74,6 @@ class RuntimeOutputProxyService:
                 outputName=outputName,
                 outputInfo=outputInfo,
             )
-
-        setattr(parentProtocol, outputName, proxy)
 
         return proxy
 
