@@ -44,21 +44,35 @@ class RuntimeOutputProxyService:
         PostgreSQL has the output persisted. The goal is that child PointerParams
         resolve through PostgreSQL instead of the original parent output sqlite.
         """
-        from app.backend.utils.postgresql_runtime_output_adapter import (
-            PostgresqlRuntimeOutputProxy,
-        )
-
         db = getattr(mapper, "db", None)
 
         if db is None:
-            raise ValueError("PostgreSQL mapper/db is required to attach runtime output proxy")
+            raise ValueError(
+                "PostgreSQL mapper/db is required to attach runtime output proxy"
+            )
 
-        proxy = PostgresqlRuntimeOutputProxy(
-            db=db,
-            parent=parentProtocol,
-            outputName=outputName,
-            outputInfo=outputInfo,
-        )
+        if outputInfo.get("setId") is not None:
+            from app.backend.runtime.postgresql_runtime_set_factory import (
+                PostgresqlRuntimeSetFactory,
+            )
+
+            proxy = PostgresqlRuntimeSetFactory().build(
+                db=db,
+                parent=parentProtocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+            )
+        else:
+            from app.backend.utils.postgresql_runtime_output_adapter import (
+                PostgresqlRuntimeOutputProxy,
+            )
+
+            proxy = PostgresqlRuntimeOutputProxy(
+                db=db,
+                parent=parentProtocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+            )
 
         setattr(parentProtocol, outputName, proxy)
 
