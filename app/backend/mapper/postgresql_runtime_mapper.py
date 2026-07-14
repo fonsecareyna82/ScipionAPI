@@ -25,13 +25,20 @@
 # ******************************************************************************
 import logging
 import json
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from pyworkflow.mapper.mapper import Mapper
-from pyworkflow.project.project import PROJECT_RUNS
+from pyworkflow.project.project import (
+    PROJECT_CREATION_TIME,
+    PROJECT_RUNS,
+)
 from pyworkflow.protocol.protocol import Protocol
-from pyworkflow.object import Object as ScipionObject
-from pyworkflow.object import Set as ScipionSet
+from pyworkflow.object import (
+    Object as ScipionObject,
+    Set as ScipionSet,
+    String,
+)
 from pyworkflow.utils import joinExt, replaceExt
 from pyworkflow.config import Config
 
@@ -938,9 +945,46 @@ class PostgresqlRuntimeMapper(Mapper):
         return result
 
     def selectBy(self, iterate=False, objectFilter=None, **args):
+        if objectFilter is not None and not callable(objectFilter):
+            if self.readFallbackMapper is None:
+                raise TypeError("objectFilter must be callable or None")
+
+            return self._selectByFromReadFallback(
+                iterate=iterate,
+                objectFilter=objectFilter,
+                **args,
+            )
+
+        if self._isProjectCreationTimeQuery(args):
+            creationTime = self._selectProjectCreationTimeFromPostgresql()
+
+            if creationTime is not None:
+                result = [creationTime]
+
+                if objectFilter is not None and not objectFilter(creationTime):
+                    result = []
+
+                return iter(result) if iterate else result
+
+            if self.readFallbackMapper is None:
+                return iter(()) if iterate else []
+
+        return self._selectByFromReadFallback(
+            iterate=iterate,
+            objectFilter=objectFilter,
+            **args,
+        )
+
+    def _selectByFromReadFallback(
+            self,
+            iterate=False,
+            objectFilter=None,
+            **args,
+    ):
         if self.readFallbackMapper is None:
             raise NotImplementedError(
-                "PostgreSQL selectBy is not implemented yet."
+                "PostgreSQL selectBy is only implemented "
+                "for project CreationTime."
             )
 
         result = self.readFallbackMapper.selectBy(
@@ -953,6 +997,67 @@ class PostgresqlRuntimeMapper(Mapper):
             return self._attachRuntimeContextIterator(result)
 
         return self._attachRuntimeContextList(result)
+
+    @staticmethod
+    def _isProjectCreationTimeQuery(args):
+        name = str(args.get("name") or "").strip()
+
+        if name != PROJECT_CREATION_TIME:
+            return False
+
+        return all(
+            key == "name" or value is None
+            for key, value in args.items()
+        )
+
+    def _selectProjectCreationTimeFromPostgresql(self):
+        row = self.flatMapper.getProjectRuntimeMetadata(self.projectId)
+
+        if not row:
+            return None
+
+        value = self._formatProjectCreationTime(row.get("createdAt"))
+
+        if value is None:
+            logger.warning(
+                "PostgreSQL project does not have a valid creation time. "
+                "projectId=%s createdAt=%s",
+                self.projectId,
+                row.get("createdAt"),
+            )
+            return None
+
+        creationTime = String(value)
+        self._setObjName(creationTime, PROJECT_CREATION_TIME)
+
+        return creationTime
+
+    @staticmethod
+    def _formatProjectCreationTime(value):
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, datetime):
+            creationTime = value
+        else:
+            valueText = str(value).strip()
+
+            try:
+                creationTime = datetime.fromisoformat(
+                    valueText.replace("Z", "+00:00")
+                )
+            except ValueError:
+                try:
+                    creationTime = String.getDatetime(valueText)
+                except ValueError:
+                    return None
+
+        if creationTime.tzinfo is not None:
+            creationTime = creationTime.replace(tzinfo=None)
+
+        return creationTime.strftime(
+            String.DATETIME_FORMAT + String.FS
+        )
 
     def selectByClass(
             self,
