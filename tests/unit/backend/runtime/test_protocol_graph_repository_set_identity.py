@@ -225,3 +225,178 @@ def test_GetPersistedSetOutputRowByRuntimeObjectIdValidatesIdentity(
                 runtimeObjectId=runtimeObjectId,
             )
         )
+
+
+def test_ListPersistedSetOutputRows():
+    firstRow = buildSetRow()
+
+    secondRow = {
+        **buildSetRow(),
+        "setId": 32,
+        "protocolDbId": 11,
+        "protocolId": "101",
+        "objectId": 402,
+        "runtimeObjectId": "301",
+        "outputName": "outputVolumes",
+        "className": "SetOfVolumes",
+        "itemClassName": "Volume",
+    }
+
+    mapper = FakeMapper(
+        rows=[
+            firstRow,
+            secondRow,
+        ]
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .listPersistedSetOutputRows(
+            mapper=mapper,
+            projectId=4,
+        )
+    )
+
+    assert result == [
+        firstRow,
+        {
+            **secondRow,
+            "runtimeObjectId": 301,
+        },
+    ]
+
+    assert len(
+        mapper.db.calls
+    ) == 1
+
+    call = mapper.db.calls[0]
+
+    assert (
+        "FROM scipion_sets s"
+        in call["query"]
+    )
+
+    assert (
+        "JOIN scipion_objects o"
+        in call["query"]
+    )
+
+    assert (
+        'o."scipionObjId" IS NOT NULL'
+        in call["query"]
+    )
+
+    assert (
+        's."setClassName" = %s'
+        not in call["query"]
+    )
+
+    assert (
+        'ORDER BY s."protocolDbId" ASC'
+        in call["query"]
+    )
+
+    assert call["params"] == (
+        4,
+    )
+
+
+def test_ListPersistedSetOutputRowsFiltersExactClass():
+    mapper = FakeMapper(
+        rows=[
+            buildSetRow(),
+        ]
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .listPersistedSetOutputRows(
+            mapper=mapper,
+            projectId=4,
+            className="SetOfParticles",
+        )
+    )
+
+    assert result == [
+        buildSetRow(),
+    ]
+
+    call = mapper.db.calls[0]
+
+    assert (
+        's."setClassName" = %s'
+        in call["query"]
+    )
+
+    assert call["params"] == (
+        4,
+        "SetOfParticles",
+    )
+
+
+def test_ListPersistedSetOutputRowsSkipsMissingRuntimeIdentity():
+    mapper = FakeMapper(
+        rows=[
+            {
+                **buildSetRow(),
+                "runtimeObjectId": None,
+                "properties": {},
+            },
+            buildSetRow(),
+        ]
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .listPersistedSetOutputRows(
+            mapper=mapper,
+            projectId=4,
+        )
+    )
+
+    assert result == [
+        buildSetRow(),
+    ]
+
+
+def test_ListPersistedSetOutputRowsRejectsDuplicateRuntimeIdentity():
+    mapper = FakeMapper(
+        rows=[
+            buildSetRow(),
+            {
+                **buildSetRow(),
+                "setId": 32,
+                "outputName": "duplicatedOutput",
+            },
+        ]
+    )
+
+    with pytest.raises(
+            ValueError,
+            match=(
+                "More than one PostgreSQL set"
+            ),
+    ):
+        (
+            ProtocolGraphRepository()
+            .listPersistedSetOutputRows(
+                mapper=mapper,
+                projectId=4,
+            )
+        )
+
+
+def test_ListPersistedSetOutputRowsValidatesProject():
+    mapper = FakeMapper()
+
+    with pytest.raises(
+            ValueError,
+            match="projectId is required",
+    ):
+        (
+            ProtocolGraphRepository()
+            .listPersistedSetOutputRows(
+                mapper=mapper,
+                projectId=None,
+            )
+        )
