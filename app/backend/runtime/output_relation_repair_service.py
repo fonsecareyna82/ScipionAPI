@@ -87,12 +87,60 @@ class RuntimeOutputRelationRepairService:
         return None
 
     @staticmethod
-    def isPostgresqlProxy(obj) -> bool:
+    def isPostgresqlProxy(
+            obj,
+    ) -> bool:
         try:
-            checker = getattr(obj, "isPostgresqlRuntimeOutput", None)
-            return callable(checker) and bool(checker())
+            checker = getattr(
+                obj,
+                "isPostgresqlRuntimeOutput",
+                None,
+            )
+
+            return (
+                    callable(checker)
+                    and bool(checker())
+            )
         except Exception:
             return False
+
+    @classmethod
+    def isNativePostgresqlRuntimeOutput(
+            cls,
+            obj,
+    ) -> bool:
+        if not cls.isPostgresqlProxy(
+                obj
+        ):
+            return False
+
+        nativeClass = getattr(
+            obj,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        return isinstance(
+            nativeClass,
+            type,
+        )
+
+    @classmethod
+    def requiresFallbackOutput(
+            cls,
+            obj,
+    ) -> bool:
+        if obj is None:
+            return True
+
+        if cls.isNativePostgresqlRuntimeOutput(
+                obj
+        ):
+            return False
+
+        return cls.isPostgresqlProxy(
+            obj
+        )
 
     @staticmethod
     def outputInfoMatchesRule(
@@ -614,7 +662,9 @@ class RuntimeOutputRelationRepairService:
         except Exception:
             sourceOutputInfo = {}
 
-        if outputObj is None or self.isPostgresqlProxy(outputObj):
+        if self.requiresFallbackOutput(
+                outputObj
+        ):
             try:
                 parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
                     mapper=mapper,
@@ -651,9 +701,25 @@ class RuntimeOutputRelationRepairService:
 
         report["checked"] = True
 
-        if repairOutputMapperCallback is not None and sourceOutputInfo.get("exists"):
+        if self.isNativePostgresqlRuntimeOutput(
+                outputObj
+        ):
+            report[
+                "sourceOutputMapperRepaired"
+            ] = False
+
+            report[
+                "sourceOutputMapperRepairSkipped"
+            ] = "native_postgresql_runtime_output"
+
+        elif (
+                repairOutputMapperCallback is not None
+                and sourceOutputInfo.get("exists")
+        ):
             try:
-                report["sourceOutputMapperRepaired"] = bool(
+                report[
+                    "sourceOutputMapperRepaired"
+                ] = bool(
                     repairOutputMapperCallback(
                         mapper=mapper,
                         projectId=projectId,
@@ -662,13 +728,22 @@ class RuntimeOutputRelationRepairService:
                     )
                 )
             except Exception as mapperRepairError:
-                report["sourceOutputMapperRepaired"] = False
-                report["sourceOutputMapperRepairError"] = str(mapperRepairError)
+                report[
+                    "sourceOutputMapperRepaired"
+                ] = False
+
+                report[
+                    "sourceOutputMapperRepairError"
+                ] = str(
+                    mapperRepairError
+                )
 
                 logger.debug(
-                    "Could not repair source output mapper before writing runtime relation. "
-                    "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                    "outputName=%s relationName=%s",
+                    "Could not repair source output mapper before "
+                    "writing runtime relation. "
+                    "projectId=%s parentProtocolId=%s "
+                    "parentProtocolDbId=%s outputName=%s "
+                    "relationName=%s",
                     projectId,
                     parentScipionProtocolId,
                     parentProtocolDbId,
@@ -755,7 +830,9 @@ class RuntimeOutputRelationRepairService:
                 report["error"] = str(e)
                 return report
 
-        if relatedOutputObj is None or self.isPostgresqlProxy(relatedOutputObj):
+        if self.requiresFallbackOutput(
+                relatedOutputObj
+        ):
             fallbackRelatedOutputObj = self._loadRuntimeOutputFromFallback(
                 mapper=mapper,
                 outputInfo=relatedOutputInfo,
@@ -774,18 +851,39 @@ class RuntimeOutputRelationRepairService:
                 )
                 return report
 
-        if repairOutputMapperCallback is not None:
+        if self.isNativePostgresqlRuntimeOutput(
+                relatedOutputObj
+        ):
+            report[
+                "relatedOutputMapperRepaired"
+            ] = False
+
+            report[
+                "relatedOutputMapperRepairSkipped"
+            ] = "native_postgresql_runtime_output"
+
+        elif repairOutputMapperCallback is not None:
             try:
-                repairOutputMapperCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    outputObj=relatedOutputObj,
-                    outputInfo=relatedOutputInfo,
+                report[
+                    "relatedOutputMapperRepaired"
+                ] = bool(
+                    repairOutputMapperCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        outputObj=relatedOutputObj,
+                        outputInfo=relatedOutputInfo,
+                    )
                 )
             except Exception:
+                report[
+                    "relatedOutputMapperRepaired"
+                ] = False
+
                 logger.debug(
-                    "Could not repair related output mapper before linking runtime relation. "
-                    "projectId=%s relatedParentProtocolId=%s relatedOutputName=%s",
+                    "Could not repair related output mapper before "
+                    "linking runtime relation. "
+                    "projectId=%s relatedParentProtocolId=%s "
+                    "relatedOutputName=%s",
                     projectId,
                     relatedParentProtocolId,
                     relatedOutputName,
@@ -793,38 +891,83 @@ class RuntimeOutputRelationRepairService:
                 )
 
         try:
-            getattr(outputObj, setterName)(relatedOutputObj)
 
-            writeMethod = getattr(outputObj, "write", None)
+            getattr(
+                outputObj,
+                setterName,
+            )(
+                relatedOutputObj
+            )
 
-            if callable(writeMethod):
-                try:
-                    writeMethod(properties=True)
-                    report["relationPropertiesWritten"] = True
-                except TypeError:
-                    writeMethod()
-                    report["relationPropertiesWritten"] = True
-                except Exception as writeError:
-                    report["relationPropertiesWritten"] = False
-                    report["relationPropertiesWriteError"] = str(writeError)
+            if self.isNativePostgresqlRuntimeOutput(
+                    outputObj
+            ):
+                report[
+                    "relationPropertiesWritten"
+                ] = False
 
-                    logger.debug(
-                        "Could not write runtime output relation properties. "
-                        "The canonical PostgreSQL relation will still be persisted. "
-                        "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
-                        "outputName=%s relationName=%s relatedOutputName=%s",
-                        projectId,
-                        parentScipionProtocolId,
-                        parentProtocolDbId,
-                        outputName,
-                        relationName,
-                        relatedOutputName,
-                        exc_info=True,
-                    )
+                report[
+                    "relationPropertiesWriteSkipped"
+                ] = "postgresql_runtime_output_read_only"
+
             else:
-                report["relationPropertiesWritten"] = False
-                report["relationPropertiesWriteSkipped"] = "output_has_no_write_method"
+                writeMethod = getattr(
+                    outputObj,
+                    "write",
+                    None,
+                )
 
+                if callable(writeMethod):
+                    try:
+                        writeMethod(
+                            properties=True
+                        )
+
+                        report[
+                            "relationPropertiesWritten"
+                        ] = True
+
+                    except TypeError:
+                        writeMethod()
+
+                        report[
+                            "relationPropertiesWritten"
+                        ] = True
+
+                    except Exception as writeError:
+                        report[
+                            "relationPropertiesWritten"
+                        ] = False
+
+                        report[
+                            "relationPropertiesWriteError"
+                        ] = str(
+                            writeError
+                        )
+
+                        logger.debug(
+                            "Could not write runtime output relation properties. "
+                            "The canonical PostgreSQL relation will still be "
+                            "persisted. "
+                            "projectId=%s parentProtocolId=%s "
+                            "parentProtocolDbId=%s outputName=%s "
+                            "relationName=%s relatedOutputName=%s",
+                            projectId,
+                            parentScipionProtocolId,
+                            parentProtocolDbId,
+                            outputName,
+                            relationName,
+                            relatedOutputName,
+                            exc_info=True,
+                        )
+                else:
+                    report[
+                        "relationPropertiesWritten"
+                    ] = False
+
+                    report[
+                        "relationPropertiesWriteSkipped"
+                    ] = "output_has_no_write_method"
             # Do not store the parent protocol while preparing a child launch.
             # In PostgreSQL runtime mode the loaded parentProtocol may be a partial
             # runtime/proxy reconstruction. Storing it into the SQLite fallback can
