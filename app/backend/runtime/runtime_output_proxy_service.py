@@ -25,6 +25,9 @@
 # ******************************************************************************
 
 from typing import Any, Dict
+from app.backend.runtime.postgresql_runtime_set_factory import (
+    PostgresqlRuntimeSetFactory,
+)
 
 
 class RuntimeOutputProxyService:
@@ -52,16 +55,17 @@ class RuntimeOutputProxyService:
             )
 
         if outputInfo.get("setId") is not None:
-            from app.backend.runtime.postgresql_runtime_set_factory import (
-                PostgresqlRuntimeSetFactory,
-            )
+            factory = self._getRuntimeSetFactory(mapper)
+            proxy = self._getCachedRuntimeSet(factory, mapper, outputInfo)
 
-            proxy = PostgresqlRuntimeSetFactory().build(
-                db=db,
-                parent=parentProtocol,
-                outputName=outputName,
-                outputInfo=outputInfo,
-            )
+            if proxy is None:
+                proxy = factory.build(
+                    db=db,
+                    parent=parentProtocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    classes=getattr(mapper, "dictClasses", None),
+                )
         else:
             from app.backend.utils.postgresql_runtime_output_adapter import (
                 PostgresqlRuntimeOutputProxy,
@@ -77,3 +81,40 @@ class RuntimeOutputProxyService:
         setattr(parentProtocol, outputName, proxy)
 
         return proxy
+
+    @staticmethod
+    def _getRuntimeSetFactory(mapper):
+        factory = getattr(mapper, "runtimeSetFactory", None)
+
+        if callable(getattr(factory, "build", None)):
+            return factory
+
+        return PostgresqlRuntimeSetFactory()
+
+    @staticmethod
+    def _getCachedRuntimeSet(factory, mapper, outputInfo):
+        getCachedSet = getattr(factory, "_getCachedRuntimeSet", None)
+
+        if not callable(getCachedSet):
+            return None
+
+        projectId = outputInfo.get("projectId")
+
+        if projectId in (None, ""):
+            projectId = getattr(mapper, "projectId", None)
+
+        runtimeObjectId = outputInfo.get("runtimeObjectId")
+
+        if projectId in (None, "") or runtimeObjectId in (None, ""):
+            return None
+
+        try:
+            projectId = int(projectId)
+            runtimeObjectId = int(runtimeObjectId)
+        except (TypeError, ValueError):
+            return None
+
+        return getCachedSet(
+            projectId=projectId,
+            runtimeObjectId=runtimeObjectId,
+        )
