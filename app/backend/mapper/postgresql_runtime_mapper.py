@@ -110,6 +110,7 @@ class PostgresqlRuntimeMapper(Mapper):
         self.runtimeSetFactory = (
             PostgresqlRuntimeSetFactory()
         )
+        self._runtimeProtocolsById = {}
 
     # ---------------------------------------------------------------------
     # Lifecycle
@@ -511,6 +512,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def _selectProtocolByIdFromPostgresql(self, objId):
         protocolId = self._toOptionalInt(objId)
+
         if protocolId is None:
             logger.warning(
                 "Cannot select PostgreSQL protocol: objId is not an int. objId=%s",
@@ -532,7 +534,30 @@ class PostgresqlRuntimeMapper(Mapper):
         if not row:
             return None
 
-        return self._buildProtocolFromPostgresqlRow(row)
+        return self._getOrBuildProtocolFromPostgresqlRow(row)
+
+    def _getOrBuildProtocolFromPostgresqlRow(self, row):
+        protocolId = self._toOptionalInt(row.get("protocolId"))
+
+        if protocolId is None:
+            logger.warning(
+                "Cannot build PostgreSQL protocol without protocolId. row=%s",
+                row,
+            )
+            return None
+
+        protocol = self._runtimeProtocolsById.get(protocolId)
+
+        if protocol is None:
+            protocol = self._buildProtocolFromPostgresqlRow(row)
+
+            if protocol is None:
+                return None
+
+            self._runtimeProtocolsById[protocolId] = protocol
+            return protocol
+
+        return self._refreshProtocolFromPostgresqlRow(protocol, row)
 
     def _selectSetByIdFromPostgresql(
             self,
@@ -770,14 +795,8 @@ class PostgresqlRuntimeMapper(Mapper):
             return None
 
         protocol = self._instantiateProtocol(protocolClass)
-
+        protocol = self._refreshProtocolFromPostgresqlRow(protocol, row)
         protocolId = self._toOptionalInt(row.get("protocolId"))
-        if protocolId is not None:
-            self._setObjId(protocol, protocolId)
-
-        self._attachRuntimeContext(protocol)
-        self._applyStoredProtocolParams(protocol, row.get("params") or {})
-        self._ensureProtocolWorkingDir(protocol)
 
         logger.debug(
             "Built PostgreSQL protocol object. projectId=%s protocolId=%s protocol=%s class=%s workingDir=%s",
@@ -787,6 +806,19 @@ class PostgresqlRuntimeMapper(Mapper):
             protocol.__class__.__name__,
             getattr(protocol, "getWorkingDir", lambda: None)(),
         )
+
+        return protocol
+
+    def _refreshProtocolFromPostgresqlRow(self, protocol, row):
+        protocolId = self._toOptionalInt(row.get("protocolId"))
+
+        if protocolId is not None:
+            self._setObjId(protocol, protocolId)
+
+        self._attachRuntimeContext(protocol)
+        self._applyStoredProtocolStatus(protocol, row.get("status"))
+        self._applyStoredProtocolParams(protocol, row.get("params") or {})
+        self._ensureProtocolWorkingDir(protocol)
 
         return protocol
 
@@ -931,7 +963,7 @@ class PostgresqlRuntimeMapper(Mapper):
             ):
                 continue
 
-            protocol = self._buildProtocolFromPostgresqlRow(row)
+            protocol = self._getOrBuildProtocolFromPostgresqlRow(row)
 
             if protocol is None:
                 continue
