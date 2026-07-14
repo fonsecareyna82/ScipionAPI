@@ -896,20 +896,13 @@ class PostgresqlRuntimeSetFactory:
                 if not outputName:
                     return None
 
-                attachedSet = getattr(
-                    targetProtocol,
-                    outputName,
-                    None,
-                )
+                attachedSet = getattr(targetProtocol, outputName, None)
 
                 if self._isMatchingRuntimeSet(
                         runtimeSet=attachedSet,
-                        runtimeObjectId=(
-                                targetParentObjectId
-                        ),
+                        runtimeObjectId=targetParentObjectId,
                 ):
                     targetSet = attachedSet
-
                 else:
                     targetSet = self.build(
                         db=db,
@@ -919,15 +912,10 @@ class PostgresqlRuntimeSetFactory:
                         classes=classRegistry,
                     )
 
-                    setattr(
-                        targetProtocol,
-                        outputName,
-                        targetSet,
-                    )
-
-                self._cacheRuntimeSet(
-                    targetSet
-                )
+                # The external set can reference its owner protocol, but resolving
+                # an item for another protocol must never replace or attach outputs
+                # on the target parent protocol.
+                self._cacheRuntimeSet(targetSet)
 
             target = self._selectRuntimeSetItem(
                 runtimeSet=targetSet,

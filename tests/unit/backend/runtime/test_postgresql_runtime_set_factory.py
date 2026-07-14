@@ -835,7 +835,8 @@ def test_LocalPointerResolverSelectsItemFromRuntimeSet():
         == [7]
     )
 
-def test_PointerResolverBuildsExternalSetAndCachesTarget():
+
+def test_PointerResolverBuildsExternalSetWithoutMutatingParentOutput():
     targetItem = ExampleItem()
 
     targetItem.setObjId(
@@ -978,6 +979,9 @@ def test_PointerResolverBuildsExternalSetAndCachesTarget():
         targetProtocol
     )
 
+    originalParentOutput = object()
+    targetProtocol.outputTargets = originalParentOutput
+
     sourceSet = ExampleSet()
 
     sourceSet.setObjId(
@@ -1094,10 +1098,8 @@ def test_PointerResolverBuildsExternalSetAndCachesTarget():
         == "outputTargets"
     )
 
-    assert (
-        targetProtocol.outputTargets
-        is externalSet
-    )
+    assert targetProtocol.outputTargets is originalParentOutput
+    assert externalSet._objParent is targetProtocol
 
     assert (
         externalSet.mapper.selectedIds
