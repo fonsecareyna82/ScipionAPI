@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 from datetime import datetime
+from unittest.mock import Mock
 
 from pyworkflow.object import (
     Integer,
@@ -398,3 +399,78 @@ def test_RelationResolverPrefersSetBeforeGenericObject():
             False,
         ),
     ]
+
+
+def test_SelectByIdUsesGenericPostgresqlObjectBeforeFallback():
+    mapper = buildRuntimeMapper(buildRows())
+
+    mapper._selectProtocolByIdFromPostgresql = (
+        lambda objId, refreshCached=True: None
+    )
+
+    mapper._selectSetByIdFromPostgresql = (
+        lambda objId, refreshParentProtocol=True: None
+    )
+
+    def failIfFallbackIsUsed(objId, auditOperation="selectById"):
+        raise AssertionError(
+            "SQLite fallback must not be used"
+        )
+
+    mapper._selectByIdFromReadFallback = failIfFallbackIsUsed
+
+    result = mapper.selectById("700")
+
+    assert isinstance(result, FakeComposite)
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+    assert result.title.get() == "PostgreSQL object"
+    assert result.count.get() == 5
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_ExistsUsesGenericPostgresqlObjectBeforeFallback():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 7
+
+    mapper.db = Mock()
+    mapper.db.fetchOne.return_value = None
+
+    mapper.runtimeSetFactory = Mock()
+    mapper.runtimeSetFactory._getCachedRuntimeSet.return_value = None
+
+    mapper.protocolGraphRepository = Mock()
+    getSetOutput = (
+        mapper.protocolGraphRepository
+        .getPersistedSetOutputRowByRuntimeObjectId
+    )
+    getSetOutput.return_value = None
+
+    mapper._resolveCanonicalScipionObjectRowId = Mock(
+        return_value=10
+    )
+
+    mapper.readFallbackMapper = Mock()
+    mapper.readFallbackMapper.exists.side_effect = AssertionError(
+        "SQLite fallback must not be used"
+    )
+
+    mapper._recordReadFallback = Mock()
+
+    assert mapper.exists("700") is True
+
+    mapper._resolveCanonicalScipionObjectRowId.assert_called_once_with(
+        700
+    )
+
+    mapper._recordReadFallback.assert_not_called()
+    mapper.readFallbackMapper.exists.assert_not_called()
