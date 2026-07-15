@@ -31,6 +31,7 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
+import pyworkflow.object as pwobject
 from pyworkflow.mapper.mapper import Mapper
 from pyworkflow.project.project import (
     PROJECT_CREATION_TIME,
@@ -1138,6 +1139,411 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return runtimeSet
 
+    def _selectGenericObjectByIdFromPostgresql(
+            self,
+            objId,
+    ):
+        """
+        Reconstruct one detached, generic Scipion object from PostgreSQL.
+
+        Protocols and sets have their own readers and are deliberately rejected
+        here. Pointer-containing trees are also rejected until their complete
+        target and extended semantics can be restored safely.
+        """
+        runtimeObjectId = self._toOptionalInt(
+            objId
+        )
+
+        if runtimeObjectId is None:
+            return None
+
+        objectMapper = getattr(
+            self,
+            "objectMapper",
+            None,
+        )
+
+        reader = getattr(
+            objectMapper,
+            "getStoredObjectSubtreeByScipionObjId",
+            None,
+        )
+
+        if not callable(reader):
+            return None
+
+        rows = reader(
+            projectId=self.projectId,
+            scipionObjId=runtimeObjectId,
+        )
+
+        if not rows:
+            return None
+
+        return self._buildGenericObjectFromPostgresqlRows(
+            rows
+        )
+
+    def _buildGenericObjectFromPostgresqlRows(
+            self,
+            rows,
+    ):
+        """
+        Build an independent object tree without modifying or attaching it to
+        the owner protocol.
+        """
+        objectsByRowId = {}
+        rootObject = None
+
+        for row in rows or []:
+            rowId = self._toOptionalInt(
+                row.get("id")
+            )
+            depth = self._toOptionalInt(
+                row.get("depth")
+            )
+
+            if (
+                    rowId is None
+                    or depth is None
+            ):
+                return None
+
+            metadata = (
+                self
+                ._normalizeStoredObjectMetadata(
+                    row.get("metadata")
+                )
+            )
+
+            pointerFlag = metadata.get(
+                "isPointer",
+                False,
+            )
+
+            if (
+                    pointerFlag is True
+                    or str(pointerFlag)
+                    .strip()
+                    .lower()
+                    in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
+            ):
+                return None
+
+            objectClass = (
+                self
+                ._resolveRuntimeObjectClass(
+                    row.get("className")
+                )
+            )
+
+            if not self._isSupportedGenericRuntimeObjectClass(
+                    objectClass
+            ):
+                return None
+
+            parentObject = None
+            attributeName = None
+
+            if depth > 0:
+                parentRowId = self._toOptionalInt(
+                    row.get("parentObjectId")
+                )
+
+                parentObject = objectsByRowId.get(
+                    parentRowId
+                )
+
+                if parentObject is None:
+                    return None
+
+                attributeName = str(
+                    row.get("name")
+                    or ""
+                ).strip()
+
+                if not attributeName:
+                    return None
+
+            scipionObject = None
+
+            if parentObject is not None:
+                existingAttribute = getattr(
+                    parentObject,
+                    attributeName,
+                    None,
+                )
+
+                if isinstance(
+                        existingAttribute,
+                        objectClass,
+                ):
+                    scipionObject = (
+                        existingAttribute
+                    )
+
+            if scipionObject is None:
+                try:
+                    scipionObject = objectClass()
+                except Exception:
+                    logger.debug(
+                        "Could not instantiate PostgreSQL "
+                        "generic object. "
+                        "projectId=%s className=%s "
+                        "runtimeObjectId=%s",
+                        self.projectId,
+                        row.get("className"),
+                        row.get("scipionObjId"),
+                        exc_info=True,
+                    )
+                    return None
+
+            if self._call(
+                    scipionObject,
+                    "isPointer",
+                    False,
+            ):
+                return None
+
+            if not self._restoreGenericObjectStateFromPostgresqlRow(
+                    scipionObject,
+                    row,
+            ):
+                return None
+
+            objectsByRowId[
+                rowId
+            ] = scipionObject
+
+            if parentObject is not None:
+                setattr(
+                    parentObject,
+                    attributeName,
+                    scipionObject,
+                )
+
+                scipionObject._objParent = (
+                    parentObject
+                )
+
+                parentRuntimeObjectId = (
+                    self._getObjId(
+                        parentObject
+                    )
+                )
+
+                if parentRuntimeObjectId is not None:
+                    self._setObjParentId(
+                        scipionObject,
+                        parentRuntimeObjectId,
+                    )
+
+                continue
+
+            if rootObject is not None:
+                return None
+
+            rootObject = scipionObject
+
+            ownerProtocolId = self._toOptionalInt(
+                row.get(
+                    "ownerProtocolId"
+                )
+            )
+
+            if ownerProtocolId is not None:
+                self._setObjParentId(
+                    rootObject,
+                    ownerProtocolId,
+                )
+
+        return rootObject
+
+    @staticmethod
+    def _isSupportedGenericRuntimeObjectClass(
+            objectClass,
+    ):
+        if not isinstance(
+                objectClass,
+                type,
+        ):
+            return False
+
+        try:
+            if not issubclass(
+                    objectClass,
+                    ScipionObject,
+            ):
+                return False
+
+            if issubclass(
+                    objectClass,
+                    (
+                            Protocol,
+                            ScipionSet,
+                    ),
+            ):
+                return False
+
+        except TypeError:
+            return False
+
+        return True
+
+    def _restoreGenericObjectStateFromPostgresqlRow(
+            self,
+            scipionObject,
+            row,
+    ):
+        runtimeObjectId = self._toOptionalInt(
+            row.get("scipionObjId")
+        )
+
+        if runtimeObjectId is not None:
+            self._setObjId(
+                scipionObject,
+                runtimeObjectId,
+            )
+
+        objectPath = str(
+            row.get("path")
+            or row.get("name")
+            or ""
+        ).strip()
+
+        if objectPath:
+            self._setObjName(
+                scipionObject,
+                objectPath,
+            )
+
+        valueSetter = getattr(
+            scipionObject,
+            "set",
+            None,
+        )
+
+        if not callable(valueSetter):
+            return False
+
+        try:
+            valueSetter(
+                row.get("value")
+            )
+        except Exception:
+            logger.debug(
+                "Could not restore PostgreSQL "
+                "generic object value. "
+                "projectId=%s runtimeObjectId=%s "
+                "className=%s value=%s",
+                self.projectId,
+                runtimeObjectId,
+                row.get("className"),
+                row.get("value"),
+                exc_info=True,
+            )
+            return False
+
+        label = row.get("label")
+        comment = row.get("comment")
+
+        labelSetter = getattr(
+            scipionObject,
+            "setObjLabel",
+            None,
+        )
+
+        if callable(labelSetter):
+            labelSetter(
+                label or ""
+            )
+        else:
+            scipionObject._objLabel = (
+                label or ""
+            )
+
+        commentSetter = getattr(
+            scipionObject,
+            "setObjComment",
+            None,
+        )
+
+        if callable(commentSetter):
+            commentSetter(
+                comment or ""
+            )
+        else:
+            scipionObject._objComment = (
+                comment or ""
+            )
+
+        creation = row.get("creation")
+
+        if creation not in (
+                None,
+                "",
+        ):
+            creation = (
+                self
+                ._formatProjectCreationTime(
+                    creation
+                )
+            )
+
+            if creation is None:
+                return False
+
+        creationSetter = getattr(
+            scipionObject,
+            "setObjCreation",
+            None,
+        )
+
+        if callable(creationSetter):
+            creationSetter(
+                creation
+            )
+        else:
+            scipionObject._objCreation = (
+                creation
+            )
+
+        return True
+
+    @staticmethod
+    def _normalizeStoredObjectMetadata(
+            metadata,
+    ):
+        if isinstance(
+                metadata,
+                dict,
+        ):
+            return metadata
+
+        if isinstance(
+                metadata,
+                str,
+        ):
+            try:
+                parsedMetadata = json.loads(
+                    metadata
+                )
+            except Exception:
+                return {}
+
+            if isinstance(
+                    parsedMetadata,
+                    dict,
+            ):
+                return parsedMetadata
+
+        return {}
+
     def exists(
             self,
             objId,
@@ -1890,6 +2296,25 @@ class PostgresqlRuntimeMapper(Mapper):
             if isinstance(registeredClass, type):
                 return registeredClass
 
+        coreObjectClass = getattr(
+            pwobject,
+            className,
+            None,
+        )
+
+        if isinstance(
+                coreObjectClass,
+                type,
+        ):
+            try:
+                if issubclass(
+                        coreObjectClass,
+                        ScipionObject,
+                ):
+                    return coreObjectClass
+            except TypeError:
+                pass
+
         protocolClass = self._resolveProtocolClass(className)
 
         if isinstance(protocolClass, type):
@@ -2391,6 +2816,16 @@ class PostgresqlRuntimeMapper(Mapper):
         obj = self._selectProtocolByIdFromPostgresql(
             objId,
             refreshCached=False,
+        )
+
+        if obj is not None:
+            return obj
+
+        obj = (
+            self
+            ._selectGenericObjectByIdFromPostgresql(
+                objId
+            )
         )
 
         if obj is not None:
