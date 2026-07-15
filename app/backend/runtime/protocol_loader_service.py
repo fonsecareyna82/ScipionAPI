@@ -108,6 +108,7 @@ class RuntimeProtocolLoaderService:
             protocolId: int,
             currentProject,
             getProtocolByRuntimeIdCallback: Callable,
+            protocol=None,
     ):
         """
         Load the real runtime protocol from logs/run.db.
@@ -118,10 +119,13 @@ class RuntimeProtocolLoaderService:
         if currentProject is None:
             return None
 
-        try:
-            protocol = getProtocolByRuntimeIdCallback(protocolId)
-        except Exception:
-            protocol = None
+        if protocol is None:
+            try:
+                protocol = getProtocolByRuntimeIdCallback(
+                    protocolId
+                )
+            except Exception:
+                protocol = None
 
         if protocol is None:
             return None
