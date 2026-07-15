@@ -720,6 +720,11 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is not None:
             return obj
 
+        obj = self._selectGenericObjectByIdFromPostgresql(objId)
+
+        if obj is not None:
+            return obj
+
         obj = self._selectByIdFromReadFallback(
             objId
         )
@@ -1598,6 +1603,9 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             if outputInfo is not None:
+                return True
+
+            if self._resolveCanonicalScipionObjectRowId(runtimeObjectId) is not None:
                 return True
 
         if self.readFallbackMapper is not None:
