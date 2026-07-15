@@ -281,10 +281,9 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
                 if moduleName != __name__:
-                    return "%s.%s:%s" % (
+                    return "%s.%s" % (
                         moduleName,
                         frame.f_code.co_name,
-                        frame.f_lineno,
                     )
 
                 frame = frame.f_back
@@ -1099,10 +1098,13 @@ class PostgresqlRuntimeMapper(Mapper):
                 return True
 
         if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "exists",
+                objectId=objId,
+            )
+
             return bool(
-                self.readFallbackMapper.exists(
-                    objId
-                )
+                self.readFallbackMapper.exists(objId)
             )
 
         return False
@@ -2034,9 +2036,17 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def getRelationsByCreator(self, creatorObj):
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationsByCreator(creatorObj)
+            self._recordReadFallback(
+                "getRelationsByCreator",
+                creatorId=self._getObjId(creatorObj),
+            )
+
+            return self.readFallbackMapper.getRelationsByCreator(
+                creatorObj
+            )
 
         creatorId = self._requireObjId(creatorObj)
+
         return self.db.fetchAll(
             """
             SELECT *
@@ -2045,12 +2055,22 @@ class PostgresqlRuntimeMapper(Mapper):
                AND "creatorObjId" = %s
              ORDER BY id ASC
             """,
-            (self.projectId, int(creatorId)),
+            (
+                self.projectId,
+                int(creatorId),
+            ),
         )
 
     def getRelationsByName(self, relationName):
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationsByName(relationName)
+            self._recordReadFallback(
+                "getRelationsByName",
+                relationName=relationName,
+            )
+
+            return self.readFallbackMapper.getRelationsByName(
+                relationName
+            )
 
         return self.db.fetchAll(
             """
@@ -2060,23 +2080,46 @@ class PostgresqlRuntimeMapper(Mapper):
                AND name = %s
              ORDER BY id ASC
             """,
-            (self.projectId, str(relationName)),
+            (
+                self.projectId,
+                str(relationName),
+            ),
         )
 
     def getRelationChilds(self, relName, parentObj):
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationChilds(relName, parentObj)
+            self._recordReadFallback(
+                "getRelationChilds",
+                relationName=relName,
+                parentId=self._getObjId(parentObj),
+            )
+
+            return self.readFallbackMapper.getRelationChilds(
+                relName,
+                parentObj,
+            )
 
         raise NotImplementedError(
-            "PostgreSQL getRelationChilds object reconstruction is not implemented yet."
+            "PostgreSQL getRelationChilds object reconstruction "
+            "is not implemented yet."
         )
 
     def getRelationParents(self, relName, childObj):
         if self.readFallbackMapper is not None:
-            return self.readFallbackMapper.getRelationParents(relName, childObj)
+            self._recordReadFallback(
+                "getRelationParents",
+                relationName=relName,
+                childId=self._getObjId(childObj),
+            )
+
+            return self.readFallbackMapper.getRelationParents(
+                relName,
+                childObj,
+            )
 
         raise NotImplementedError(
-            "PostgreSQL getRelationParents object reconstruction is not implemented yet."
+            "PostgreSQL getRelationParents object reconstruction "
+            "is not implemented yet."
         )
 
     # ---------------------------------------------------------------------
