@@ -459,3 +459,60 @@ def test_SelectRuntimeProtocolByIdCachesFallbackOnlyProtocol():
         (4, 100),
         (4, 100),
     ]
+
+
+def test_GetPostgresqlProtocolLabelsBuildsFromPostgresqlRowsWithoutFallback():
+    fallbackProtocol = buildProtocol(
+        ExampleProtocol,
+        100,
+    )
+
+    fallback = FakeFallbackMapper([
+        fallbackProtocol,
+    ])
+
+    mapper = buildMapper(
+        rows=[
+            buildRow(100),
+            buildRow(101),
+        ],
+        fallback=fallback,
+    )
+
+    labelsById = {
+        100: "Import movies",
+        101: "Import movies (2)",
+    }
+
+    buildCalls = []
+
+    def buildProtocolFromRow(row):
+        protocolId = int(row["protocolId"])
+        buildCalls.append(protocolId)
+
+        protocol = buildProtocol(
+            ExampleProtocol,
+            protocolId,
+        )
+        protocol.setObjLabel(
+            labelsById[protocolId]
+        )
+
+        return protocol
+
+    mapper._buildProtocolFromPostgresqlRow = (
+        buildProtocolFromRow
+    )
+
+    assert mapper.getPostgresqlProtocolLabels() == [
+        "Import movies",
+        "Import movies (2)",
+    ]
+
+    assert buildCalls == [
+        100,
+        101,
+    ]
+
+    # Reading labels must never load the SQLite batch.
+    assert fallback.calls == []

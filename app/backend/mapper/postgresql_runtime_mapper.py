@@ -1181,6 +1181,22 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return protocol
 
+    def getPostgresqlProtocolLabels(self):
+        labels = []
+
+        for row in self.flatMapper.getProtocols(self.projectId) or []:
+            protocol = self._buildProtocolFromPostgresqlRow(row)
+
+            if protocol is None:
+                continue
+
+            label = str(protocol.getObjLabel() or "").strip()
+
+            if label:
+                labels.append(label)
+
+        return labels
+
     def selectAllBatch(self, objectFilter=None):
         if objectFilter is not None and not callable(objectFilter):
             raise TypeError("objectFilter must be callable or None")
