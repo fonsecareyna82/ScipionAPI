@@ -46,12 +46,16 @@ class FakeComposite(Object):
         self.count = Integer()
 
 
+class FakeDerivedComposite(FakeComposite):
+    pass
+
+
 class FakeObjectMapper:
-    def __init__(self, rows=None):
-        self.rows = list(
-            rows or []
-        )
+    def __init__(self, rows=None, classRows=None):
+        self.rows = list(rows or [])
+        self.classRows = list(classRows or [])
         self.calls = []
+        self.classCalls = []
 
     def getStoredObjectSubtreeByScipionObjId(
             self,
@@ -63,9 +67,19 @@ class FakeObjectMapper:
             scipionObjId,
         ))
 
-        return list(
-            self.rows
-        )
+        return list(self.rows)
+
+    def listCanonicalStoredObjectRows(
+            self,
+            projectId,
+            className=None,
+    ):
+        self.classCalls.append((
+            projectId,
+            className,
+        ))
+
+        return list(self.classRows)
 
 
 def buildRows():
@@ -132,19 +146,22 @@ def buildRows():
     ]
 
 
-def buildRuntimeMapper(rows):
+def buildRuntimeMapper(rows, classRows=None):
     mapper = PostgresqlRuntimeMapper.__new__(
         PostgresqlRuntimeMapper
     )
 
     mapper.projectId = 7
     mapper.project = None
+    mapper.readFallbackMapper = None
     mapper.dictClasses = {
         "FakeComposite": FakeComposite,
+        "FakeDerivedComposite": FakeDerivedComposite,
     }
 
     mapper.objectMapper = FakeObjectMapper(
         rows=rows,
+        classRows=classRows,
     )
 
     def failIfRuntimeContextIsAttached(obj):
@@ -152,9 +169,7 @@ def buildRuntimeMapper(rows):
             "Generic PostgreSQL objects must remain detached"
         )
 
-    mapper._attachRuntimeContext = (
-        failIfRuntimeContextIsAttached
-    )
+    mapper._attachRuntimeContext = failIfRuntimeContextIsAttached
 
     return mapper
 
@@ -474,3 +489,170 @@ def test_ExistsUsesGenericPostgresqlObjectBeforeFallback():
 
     mapper._recordReadFallback.assert_not_called()
     mapper.readFallbackMapper.exists.assert_not_called()
+
+
+def test_SelectByClassUsesGenericPostgresqlObjectsBeforeFallback():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": "700",
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectByClass(
+        FakeComposite,
+        includeSubclasses=False,
+        objectFilter=lambda obj: obj.count.get() == 5,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            "FakeComposite",
+        ),
+    ]
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+def test_SelectByClassReturnsIteratorForGenericObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectByClass(
+        "FakeComposite",
+        includeSubclasses=False,
+        iterate=True,
+    )
+
+    objects = list(result)
+
+    assert len(objects) == 1
+    assert isinstance(objects[0], FakeComposite)
+    assert objects[0].getObjId() == 700
+
+
+def test_GenericObjectClassRowsIncludeRegisteredSubclasses():
+    classRows = [
+        {
+            "id": 10,
+            "runtimeObjectId": 700,
+            "className": "FakeComposite",
+        },
+        {
+            "id": 20,
+            "runtimeObjectId": 800,
+            "className": "FakeDerivedComposite",
+        },
+        {
+            "id": 30,
+            "runtimeObjectId": 900,
+            "className": "String",
+        },
+    ]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    rows = mapper._getPostgresqlGenericObjectRowsForClass(
+        requestedClassName="FakeComposite",
+        requestedClass=FakeComposite,
+        includeSubclasses=True,
+    )
+
+    assert [
+        row["runtimeObjectId"]
+        for row in rows
+    ] == [
+        700,
+        800,
+    ]
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
+    ]
+
+
+def test_SelectByClassMergesGenericPostgresqlAndFallbackObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    postgresqlDuplicate = FakeComposite()
+    postgresqlDuplicate.setObjId(700)
+
+    fallbackOnly = FakeComposite()
+    fallbackOnly.setObjId(900)
+
+    mapper.readFallbackMapper = Mock()
+    mapper.readFallbackMapper.selectByClass.return_value = [
+        postgresqlDuplicate,
+        fallbackOnly,
+    ]
+
+    mapper._attachRuntimeContext = lambda obj: obj
+    mapper._recordReadFallback = Mock()
+
+    result = mapper.selectByClass(
+        FakeComposite,
+        includeSubclasses=False,
+    )
+
+    assert [
+        obj.getObjId()
+        for obj in result
+    ] == [
+        700,
+        900,
+    ]
+
+    mapper._recordReadFallback.assert_called_once_with(
+        "selectByClass.genericCompatibilityMerge",
+        className=FakeComposite,
+        includeSubclasses=False,
+        objectFilter=None,
+    )
+
+    mapper.readFallbackMapper.selectByClass.assert_called_once_with(
+        FakeComposite,
+        includeSubclasses=False,
+        iterate=False,
+        objectFilter=None,
+    )
+
+

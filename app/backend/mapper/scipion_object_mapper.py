@@ -331,6 +331,54 @@ class ScipionObjectPostgresqlMapper:
             ),
         )
 
+    def listCanonicalStoredObjectRows(
+            self,
+            projectId: int,
+            className: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return the latest stored row for every runtime object id.
+
+        Set roots are excluded because they are reconstructed by the dedicated
+        PostgreSQL set reader. The class filter is applied after canonical row
+        selection so an older version of an object is never returned.
+        """
+        values = [int(projectId)]
+        classFilter = ""
+
+        if className:
+            classFilter = '\n               AND canonical."className" = %s'
+            values.append(str(className))
+
+        return self.db.fetchAll(
+            f"""
+            WITH canonical_objects AS (
+                SELECT DISTINCT ON (object_row."scipionObjId")
+                    object_row.id,
+                    object_row."scipionObjId" AS "runtimeObjectId",
+                    object_row."className",
+                    EXISTS (
+                        SELECT 1
+                          FROM scipion_sets stored_set
+                         WHERE stored_set."objectId" = object_row.id
+                    ) AS "isStoredSet"
+                  FROM scipion_objects object_row
+                 WHERE object_row."projectId" = %s
+                   AND object_row."scipionObjId" IS NOT NULL
+              ORDER BY object_row."scipionObjId",
+                       object_row.id DESC
+            )
+            SELECT
+                canonical.id,
+                canonical."runtimeObjectId",
+                canonical."className"
+              FROM canonical_objects canonical
+             WHERE NOT canonical."isStoredSet"{classFilter}
+          ORDER BY canonical.id ASC
+            """,
+            tuple(values),
+        )
+
     def listProtocolStoredObjects(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
