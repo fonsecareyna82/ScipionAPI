@@ -1225,6 +1225,7 @@ class ProjectService:
             protocolId,
             registerOutputs: bool = True,
             returnProtocolContext: bool = False,
+            protocol=None,
     ) -> Dict[str, Any]:
         """
         Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
@@ -1241,6 +1242,7 @@ class ProjectService:
 
         protocol = self._loadProtocolFromRuntimeDb(
             protocolId=scipionProtocolId,
+            protocol=protocol,
         )
 
         if protocol is None:
@@ -1592,13 +1594,22 @@ class ProjectService:
             getCurrentProjectPathCallback=self._getCurrentProjectPath,
         )
 
-    def _loadProtocolFromRuntimeDb(self, protocolId: int):
-        runtimeProtocolLoaderService = RuntimeProtocolLoaderService()
+    def _loadProtocolFromRuntimeDb(
+            self,
+            protocolId: int,
+            protocol=None,
+    ):
+        runtimeProtocolLoaderService = (
+            RuntimeProtocolLoaderService()
+        )
 
         return runtimeProtocolLoaderService.loadProtocolFromRuntimeDb(
             protocolId=protocolId,
             currentProject=self.currentProject,
-            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+            getProtocolByRuntimeIdCallback=(
+                self._getScipionProtocolByRuntimeId
+            ),
+            protocol=protocol,
         )
 
     def _getCurrentProjectPath(self) -> Optional[str]:

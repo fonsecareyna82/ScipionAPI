@@ -305,6 +305,7 @@ class RuntimeProtocolDuplicateService:
                     projectId=projectId,
                     protocolId=duplicatedProtocolId,
                     registerOutputs=False,
+                    protocol=newProtocol,
                 )
 
                 dependencySync = self.copyPostgresqlInputRefsForDuplicatedProtocol(
