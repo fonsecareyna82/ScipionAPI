@@ -730,13 +730,22 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return None
 
-    def selectRuntimeProtocolById(self, objId):
+    def selectRuntimeProtocolById(
+            self,
+            objId,
+            refreshCached: bool = True,
+    ):
         """
         Return one stable, fully hydrated protocol for runtime operations.
 
         Prefer the SQLite compatibility object on the first read because it
         contains native pointers, internal attributes and outputs. Cache that
-        instance so all subsequent runtime reads reuse the same protocol identity.
+        instance so all subsequent runtime reads reuse the same protocol
+        identity.
+
+        When refreshCached is False, an existing protocol instance is returned
+        without applying PostgreSQL status, params or runtime metadata. This is
+        used by relation reads to keep owner protocols strictly read-only.
         """
         protocolId = self._toOptionalInt(objId)
 
@@ -752,18 +761,36 @@ class PostgresqlRuntimeMapper(Mapper):
             protocolId,
         )
 
-        cachedProtocol = self._runtimeProtocolsById.get(protocolId)
+        cachedProtocol = self._runtimeProtocolsById.get(
+            protocolId
+        )
 
         if cachedProtocol is not None:
             if row:
-                return self._getOrBuildProtocolFromPostgresqlRow(row)
+                if refreshCached:
+                    return (
+                        self
+                        ._getOrBuildProtocolFromPostgresqlRow(
+                            row
+                        )
+                    )
+
+                return cachedProtocol
 
             if protocolId in self._sqliteProtocolMirrorIds:
-                return self._attachRuntimeContext(cachedProtocol)
+                if refreshCached:
+                    return self._attachRuntimeContext(
+                        cachedProtocol
+                    )
+
+                return cachedProtocol
 
             # A PostgreSQL-native cached protocol whose row disappeared must
             # not remain available as a stale runtime object.
-            self._runtimeProtocolsById.pop(protocolId, None)
+            self._runtimeProtocolsById.pop(
+                protocolId,
+                None,
+            )
 
         protocol = self._selectByIdFromReadFallback(
             protocolId,
@@ -775,19 +802,48 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if isinstance(protocol, Protocol):
             if row:
-                return self._adoptSqliteProtocolMirror(protocol, row)
+                if refreshCached:
+                    return self._adoptSqliteProtocolMirror(
+                        protocol,
+                        row,
+                    )
 
-            protocol = self._attachRuntimeContext(protocol)
+                return protocol
+
+            if not refreshCached:
+                return protocol
+
+            protocol = self._attachRuntimeContext(
+                protocol
+            )
 
             # Preserve identity for compatibility-only protocols too. If the
-            # PostgreSQL row appears later, it will receive the safe mirror refresh.
-            self._runtimeProtocolsById[protocolId] = protocol
-            self._sqliteProtocolMirrorIds.add(protocolId)
+            # PostgreSQL row appears later, it will receive the safe mirror
+            # refresh.
+            self._runtimeProtocolsById[
+                protocolId
+            ] = protocol
+
+            self._sqliteProtocolMirrorIds.add(
+                protocolId
+            )
 
             return protocol
 
         if row:
-            return self._getOrBuildProtocolFromPostgresqlRow(row)
+            if refreshCached:
+                return (
+                    self
+                    ._getOrBuildProtocolFromPostgresqlRow(
+                        row
+                    )
+                )
+
+            # Build an independent read representation. Do not place it in
+            # the shared protocol cache and do not modify another instance.
+            return self._buildProtocolFromPostgresqlRow(
+                row
+            )
 
         return None
 
@@ -822,31 +878,60 @@ class PostgresqlRuntimeMapper(Mapper):
         )
         return obj
 
-    def _selectProtocolByIdFromPostgresql(self, objId):
-        protocolId = self._toOptionalInt(objId)
+    def _selectProtocolByIdFromPostgresql(
+            self,
+            objId,
+            refreshCached: bool = True,
+    ):
+        protocolId = self._toOptionalInt(
+            objId
+        )
 
         if protocolId is None:
             logger.warning(
-                "Cannot select PostgreSQL protocol: objId is not an int. objId=%s",
+                "Cannot select PostgreSQL protocol: "
+                "objId is not an int. objId=%s",
                 objId,
             )
             return None
 
         logger.debug(
-            "Looking for PostgreSQL protocol row. projectId=%s protocolId=%s",
+            "Looking for PostgreSQL protocol row. "
+            "projectId=%s protocolId=%s",
             self.projectId,
             protocolId,
         )
 
-        row = self.flatMapper.getProjectProtocolByProtocolId(
-            self.projectId,
-            protocolId,
+        row = (
+            self.flatMapper
+            .getProjectProtocolByProtocolId(
+                self.projectId,
+                protocolId,
+            )
         )
 
         if not row:
             return None
 
-        return self._getOrBuildProtocolFromPostgresqlRow(row)
+        if refreshCached:
+            return (
+                self
+                ._getOrBuildProtocolFromPostgresqlRow(
+                    row
+                )
+            )
+
+        cachedProtocol = self._runtimeProtocolsById.get(
+            protocolId
+        )
+
+        if cachedProtocol is not None:
+            return cachedProtocol
+
+        # Detached read representation: it is deliberately not cached.
+        return self._buildProtocolFromPostgresqlRow(
+            row
+        )
 
     def _getOrBuildProtocolFromPostgresqlRow(self, row):
         protocolId = self._toOptionalInt(row.get("protocolId"))
@@ -920,6 +1005,7 @@ class PostgresqlRuntimeMapper(Mapper):
     def _selectSetByIdFromPostgresql(
             self,
             objId,
+            refreshParentProtocol: bool = True,
     ):
         runtimeObjectId = self._toOptionalInt(
             objId
@@ -977,7 +1063,8 @@ class PostgresqlRuntimeMapper(Mapper):
 
         parentProtocol = (
             self.selectRuntimeProtocolById(
-                protocolId
+                protocolId,
+                refreshCached=refreshParentProtocol,
             )
         )
 
@@ -2235,6 +2322,48 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return relations
 
+    def _selectRelationObjectById(
+            self,
+            objId,
+    ):
+        """
+        Resolve one relation target without refreshing any existing owner
+        protocol.
+
+        PostgreSQL protocols and sets are attempted first. SQLite remains a
+        compatibility fallback. No protocol or output is stored, replaced or
+        attached to its owner by this method.
+        """
+        obj = self._selectProtocolByIdFromPostgresql(
+            objId,
+            refreshCached=False,
+        )
+
+        if obj is not None:
+            return obj
+
+        obj = self._selectSetByIdFromPostgresql(
+            objId,
+            refreshParentProtocol=False,
+        )
+
+        if obj is not None:
+            return obj
+
+        obj = self._selectByIdFromReadFallback(
+            objId,
+            auditOperation=(
+                "relationObject.selectById"
+            ),
+        )
+
+        if obj is not None:
+            return self._attachRuntimeContext(
+                obj
+            )
+
+        return None
+
     def getRelationChilds(self, relName, parentObj):
         parentId = self._requireObjId(
             parentObj
@@ -2247,7 +2376,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if relations:
             return [
-                self.selectById(
+                self._selectRelationObjectById(
                     row["object_child_id"]
                 )
                 for row in relations
@@ -2283,7 +2412,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if relations:
             return [
-                self.selectById(
+                self._selectRelationObjectById(
                     row["object_parent_id"]
                 )
                 for row in relations
