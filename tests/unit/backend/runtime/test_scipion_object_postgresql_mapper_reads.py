@@ -122,3 +122,75 @@ def test_GetStoredObjectSubtreeUsesRecursiveQuery():
         )
         == 4
     )
+
+
+def test_ListCanonicalStoredObjectRowsFiltersClassAfterCanonicalSelection():
+    expectedRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    database = FakeDatabase(rows=expectedRows)
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    result = mapper.listCanonicalStoredObjectRows(
+        projectId=7,
+        className="FakeComposite",
+    )
+
+    assert result == expectedRows
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+
+    assert call["values"] == (
+        7,
+        "FakeComposite",
+    )
+
+    assert (
+        'DISTINCT ON (object_row."scipionObjId")'
+        in call["query"]
+    )
+
+    assert (
+        'ORDER BY object_row."scipionObjId",'
+        in call["query"]
+    )
+
+    assert (
+        "object_row.id DESC"
+        in call["query"]
+    )
+
+    assert (
+        'stored_set."objectId" = object_row.id'
+        in call["query"]
+    )
+
+    assert (
+        'WHERE NOT canonical."isStoredSet"'
+        in call["query"]
+    )
+
+    assert (
+        'AND canonical."className" = %s'
+        in call["query"]
+    )
+
+
+def test_ListCanonicalStoredObjectRowsCanReturnAllClasses():
+    database = FakeDatabase()
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    mapper.listCanonicalStoredObjectRows(projectId=7)
+
+    call = database.calls[0]
+
+    assert call["values"] == (7,)
+
+    assert (
+        'AND canonical."className" = %s'
+        not in call["query"]
+    )

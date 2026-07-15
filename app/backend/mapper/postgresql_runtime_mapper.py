@@ -2042,8 +2042,18 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         if not isSetRequest:
-            return self._selectByClassFromReadFallback(
+            if not self._isSupportedGenericRuntimeObjectClass(requestedClass):
+                return self._selectByClassFromReadFallback(
+                    className=className,
+                    includeSubclasses=includeSubclasses,
+                    iterate=iterate,
+                    objectFilter=objectFilter,
+                )
+
+            return self._selectGenericObjectByClass(
                 className=className,
+                requestedClassName=requestedClassName,
+                requestedClass=requestedClass,
                 includeSubclasses=includeSubclasses,
                 iterate=iterate,
                 objectFilter=objectFilter,
@@ -2159,6 +2169,138 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
         return iter(result) if iterate else result
+
+    def _selectGenericObjectByClass(
+            self,
+            className,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+            iterate,
+            objectFilter,
+    ):
+        rows = self._getPostgresqlGenericObjectRowsForClass(
+            requestedClassName=requestedClassName,
+            requestedClass=requestedClass,
+            includeSubclasses=includeSubclasses,
+        )
+
+        result = []
+
+        for row in rows:
+            runtimeObjectId = self._toOptionalInt(row.get("runtimeObjectId"))
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeObject = self._selectGenericObjectByIdFromPostgresql(
+                runtimeObjectId
+            )
+
+            if runtimeObject is None:
+                continue
+
+            if callable(objectFilter) and not objectFilter(runtimeObject):
+                continue
+
+            result.append(runtimeObject)
+
+        if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "selectByClass.genericCompatibilityMerge",
+                className=className,
+                includeSubclasses=includeSubclasses,
+                objectFilter=objectFilter,
+            )
+
+            fallbackResult = self.readFallbackMapper.selectByClass(
+                className,
+                includeSubclasses=includeSubclasses,
+                iterate=False,
+                objectFilter=objectFilter,
+            )
+
+            fallbackObjects = self._attachRuntimeContextList(
+                fallbackResult or []
+            )
+
+            result = self._mergeRuntimeClassResults(
+                result,
+                fallbackObjects,
+            )
+
+        return iter(result) if iterate else result
+
+    def _getPostgresqlGenericObjectRowsForClass(
+            self,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+    ):
+        objectMapper = getattr(self, "objectMapper", None)
+        reader = getattr(
+            objectMapper,
+            "listCanonicalStoredObjectRows",
+            None,
+        )
+
+        if not callable(reader):
+            return []
+
+        canonicalClassName = (
+            requestedClass.__name__
+            if isinstance(requestedClass, type)
+            else requestedClassName
+        )
+
+        if not includeSubclasses:
+            return reader(
+                projectId=self.projectId,
+                className=canonicalClassName,
+            )
+
+        rows = reader(projectId=self.projectId)
+
+        return [
+            row
+            for row in rows
+            if self._matchesRuntimeGenericObjectClass(
+                candidateClassName=row.get("className"),
+                requestedClassName=canonicalClassName,
+                requestedClass=requestedClass,
+                includeSubclasses=True,
+            )
+        ]
+
+    def _matchesRuntimeGenericObjectClass(
+            self,
+            candidateClassName,
+            requestedClassName,
+            requestedClass,
+            includeSubclasses,
+    ):
+        candidateClassName = str(candidateClassName or "").strip()
+
+        if not candidateClassName:
+            return False
+
+        if candidateClassName == requestedClassName:
+            return True
+
+        if not includeSubclasses:
+            return False
+
+        candidateClass = self._resolveRuntimeObjectClass(
+            candidateClassName
+        )
+
+        if not self._isSupportedGenericRuntimeObjectClass(candidateClass):
+            return False
+
+        try:
+            return issubclass(candidateClass, requestedClass)
+        except TypeError:
+            return False
 
     def _matchesRuntimeProtocolClass(
             self,
