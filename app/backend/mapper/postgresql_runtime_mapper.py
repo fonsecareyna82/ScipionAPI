@@ -1231,6 +1231,32 @@ class PostgresqlRuntimeMapper(Mapper):
             result.append(protocol)
             seenIds.add(protocolId)
 
+        postgresqlIds = set(seenIds)
+        fallbackOnlyIds = []
+
+        for obj in fallbackObjects:
+            objId = self._getObjId(obj)
+
+            if objId is None or objId in postgresqlIds:
+                continue
+
+            fallbackOnlyIds.append(objId)
+
+        if getattr(self, "_fallbackAuditEnabled", False):
+            logger.warning(
+                "POSTGRESQL_RUNTIME_FALLBACK selectAllBatchDetails %s",
+                json.dumps(
+                    {
+                        "projectId": self.projectId,
+                        "postgresqlCount": len(postgresqlIds),
+                        "fallbackCount": len(fallbackObjects),
+                        "fallbackOnlyCount": len(fallbackOnlyIds),
+                        "fallbackOnlyIds": fallbackOnlyIds,
+                    },
+                    sort_keys=True,
+                ),
+            )
+
         # Preserve objects that only exist in the compatibility mapper.
         # With Project.getRuns(), objectFilter limits these to Protocol.
         for obj in fallbackObjects:
