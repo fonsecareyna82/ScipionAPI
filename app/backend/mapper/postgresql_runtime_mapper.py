@@ -268,11 +268,12 @@ class PostgresqlRuntimeMapper(Mapper):
     @staticmethod
     def _findFallbackAuditCaller():
         frame = inspect.currentframe()
+        callers = []
 
         try:
             frame = frame.f_back
 
-            while frame is not None:
+            while frame is not None and len(callers) < 4:
                 moduleName = str(
                     frame.f_globals.get(
                         "__name__",
@@ -281,17 +282,23 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
                 if moduleName != __name__:
-                    return "%s.%s" % (
+                    caller = "%s.%s" % (
                         moduleName,
                         frame.f_code.co_name,
                     )
+
+                    if not callers or callers[-1] != caller:
+                        callers.append(caller)
 
                 frame = frame.f_back
 
         finally:
             del frame
 
-        return "unknown"
+        if not callers:
+            return "unknown"
+
+        return " -> ".join(callers)
 
     @classmethod
     def _normalizeFallbackAuditValue(
@@ -1186,6 +1193,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 "selectAllBatch.compatibilityMerge",
                 objectFilter=objectFilter,
             )
+
             fallbackObjects = self.readFallbackMapper.selectAllBatch(
                 objectFilter=objectFilter,
             )
@@ -1202,6 +1210,8 @@ class PostgresqlRuntimeMapper(Mapper):
 
         result = []
         seenIds = set()
+        sqliteMirrorIds = []
+        postgresqlNativeIds = []
 
         for row in self.flatMapper.getProtocols(self.projectId) or []:
             protocolId = self._toOptionalInt(row.get("protocolId"))
@@ -1219,14 +1229,19 @@ class PostgresqlRuntimeMapper(Mapper):
 
                 if objectFilter is not None and not objectFilter(protocol):
                     continue
+
+                postgresqlNativeIds.append(protocolId)
+
             else:
-                    protocol = self._adoptSqliteProtocolMirror(protocol, row)
+                protocol = self._adoptSqliteProtocolMirror(protocol, row)
 
-                    if protocol is None:
-                        continue
+                if protocol is None:
+                    continue
 
-                    if objectFilter is not None and not objectFilter(protocol):
-                        continue
+                if objectFilter is not None and not objectFilter(protocol):
+                    continue
+
+                sqliteMirrorIds.append(protocolId)
 
             result.append(protocol)
             seenIds.add(protocolId)
@@ -1252,6 +1267,10 @@ class PostgresqlRuntimeMapper(Mapper):
                         "fallbackCount": len(fallbackObjects),
                         "fallbackOnlyCount": len(fallbackOnlyIds),
                         "fallbackOnlyIds": fallbackOnlyIds,
+                        "sqliteMirrorCount": len(sqliteMirrorIds),
+                        "sqliteMirrorIds": sqliteMirrorIds,
+                        "postgresqlNativeCount": len(postgresqlNativeIds),
+                        "postgresqlNativeIds": postgresqlNativeIds,
                     },
                     sort_keys=True,
                 ),
