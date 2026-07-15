@@ -1642,19 +1642,20 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
         def rootObjectFilter(obj):
-            if getattr(
-                    obj,
-                    "_objParentId",
-                    None,
-            ) is not None:
+            parentObject = getattr(obj, "_objParent", None)
+            parentId = self._call(
+                obj,
+                "getObjParentId",
+                getattr(obj, "_objParentId", None),
+            )
+
+            if parentObject is not None or parentId is not None:
                 return False
 
             if objectFilter is None:
                 return True
 
-            return bool(
-                objectFilter(obj)
-            )
+            return bool(objectFilter(obj))
 
         result = list(
             self.selectAllBatch(
@@ -1772,6 +1773,40 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return labels
 
+    def _selectAllGenericObjectsFromPostgresql(
+            self,
+            objectFilter=None,
+    ):
+        rows = self._getPostgresqlGenericObjectRowsForClass(
+            requestedClassName=ScipionObject.__name__,
+            requestedClass=ScipionObject,
+            includeSubclasses=True,
+        )
+
+        result = []
+
+        for row in rows:
+            runtimeObjectId = self._toOptionalInt(
+                row.get("runtimeObjectId")
+            )
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeObject = self._selectGenericObjectByIdFromPostgresql(
+                runtimeObjectId
+            )
+
+            if runtimeObject is None:
+                continue
+
+            if callable(objectFilter) and not objectFilter(runtimeObject):
+                continue
+
+            result.append(runtimeObject)
+
+        return result
+
     def selectAllBatch(self, objectFilter=None):
         if objectFilter is not None and not callable(objectFilter):
             raise TypeError("objectFilter must be callable or None")
@@ -1788,7 +1823,10 @@ class PostgresqlRuntimeMapper(Mapper):
             fallbackObjects = self.readFallbackMapper.selectAllBatch(
                 objectFilter=objectFilter,
             )
-            fallbackObjects = self._attachRuntimeContextList(fallbackObjects)
+
+            fallbackObjects = self._attachRuntimeContextList(
+                fallbackObjects
+            )
 
             for obj in fallbackObjects:
                 if not isinstance(obj, Protocol):
@@ -1800,53 +1838,99 @@ class PostgresqlRuntimeMapper(Mapper):
                     fallbackProtocolsById[protocolId] = obj
 
         result = []
-        seenIds = set()
+        seenProtocolIds = set()
         sqliteMirrorIds = []
-        postgresqlNativeIds = []
+        postgresqlNativeProtocolIds = []
 
         for row in self.flatMapper.getProtocols(self.projectId) or []:
-            protocolId = self._toOptionalInt(row.get("protocolId"))
+            protocolId = self._toOptionalInt(
+                row.get("protocolId")
+            )
 
-            if protocolId is None or protocolId in seenIds:
+            if (
+                    protocolId is None
+                    or protocolId in seenProtocolIds
+            ):
                 continue
 
             protocol = fallbackProtocolsById.get(protocolId)
 
             if protocol is None:
-                protocol = self._getOrBuildProtocolFromPostgresqlRow(row)
+                protocol = self._getOrBuildProtocolFromPostgresqlRow(
+                    row
+                )
 
                 if protocol is None:
                     continue
 
-                if objectFilter is not None and not objectFilter(protocol):
+                if (
+                        objectFilter is not None
+                        and not objectFilter(protocol)
+                ):
                     continue
 
-                postgresqlNativeIds.append(protocolId)
+                postgresqlNativeProtocolIds.append(protocolId)
 
             else:
-                protocol = self._adoptSqliteProtocolMirror(protocol, row)
+                protocol = self._adoptSqliteProtocolMirror(
+                    protocol,
+                    row,
+                )
 
                 if protocol is None:
                     continue
 
-                if objectFilter is not None and not objectFilter(protocol):
+                if (
+                        objectFilter is not None
+                        and not objectFilter(protocol)
+                ):
                     continue
 
                 sqliteMirrorIds.append(protocolId)
 
             result.append(protocol)
-            seenIds.add(protocolId)
+            seenProtocolIds.add(protocolId)
 
-        postgresqlIds = set(seenIds)
+        genericObjects = self._selectAllGenericObjectsFromPostgresql(
+            objectFilter=objectFilter,
+        )
+
+        result.extend(genericObjects)
+
+        postgresqlIdentities = set()
+
+        for obj in result:
+            identity = self._getRuntimeReadIdentity(obj)
+
+            if identity is not None:
+                postgresqlIdentities.add(identity)
+
         fallbackOnlyIds = []
+        fallbackOnlyIdentities = []
 
         for obj in fallbackObjects:
-            objId = self._getObjId(obj)
+            identity = self._getRuntimeReadIdentity(obj)
 
-            if objId is None or objId in postgresqlIds:
+            if (
+                    identity is not None
+                    and identity in postgresqlIdentities
+            ):
                 continue
 
-            fallbackOnlyIds.append(objId)
+            fallbackOnlyIdentities.append(identity)
+
+            objId = self._getObjId(obj)
+
+            if objId is not None:
+                fallbackOnlyIds.append(objId)
+
+        genericObjectIds = []
+
+        for obj in genericObjects:
+            objId = self._getObjId(obj)
+
+            if objId is not None:
+                genericObjectIds.append(objId)
 
         if getattr(self, "_fallbackAuditEnabled", False):
             logger.warning(
@@ -1854,33 +1938,44 @@ class PostgresqlRuntimeMapper(Mapper):
                 json.dumps(
                     {
                         "projectId": self.projectId,
-                        "postgresqlCount": len(postgresqlIds),
-                        "fallbackCount": len(fallbackObjects),
-                        "fallbackOnlyCount": len(fallbackOnlyIds),
+                        "postgresqlCount": len(
+                            postgresqlIdentities
+                        ),
+                        "fallbackCount": len(
+                            fallbackObjects
+                        ),
+                        "fallbackOnlyCount": len(
+                            fallbackOnlyIdentities
+                        ),
                         "fallbackOnlyIds": fallbackOnlyIds,
-                        "sqliteMirrorCount": len(sqliteMirrorIds),
+                        "fallbackOnlyIdentities": (
+                            fallbackOnlyIdentities
+                        ),
+                        "sqliteMirrorCount": len(
+                            sqliteMirrorIds
+                        ),
                         "sqliteMirrorIds": sqliteMirrorIds,
-                        "postgresqlNativeCount": len(postgresqlNativeIds),
-                        "postgresqlNativeIds": postgresqlNativeIds,
+                        "postgresqlNativeCount": len(
+                            postgresqlNativeProtocolIds
+                        ),
+                        "postgresqlNativeIds": (
+                            postgresqlNativeProtocolIds
+                        ),
+                        "postgresqlGenericCount": len(
+                            genericObjects
+                        ),
+                        "postgresqlGenericIds": (
+                            genericObjectIds
+                        ),
                     },
                     sort_keys=True,
                 ),
             )
 
-        # Preserve objects that only exist in the compatibility mapper.
-        # With Project.getRuns(), objectFilter limits these to Protocol.
-        for obj in fallbackObjects:
-            objId = self._getObjId(obj)
-
-            if objId is not None and objId in seenIds:
-                continue
-
-            result.append(obj)
-
-            if objId is not None:
-                seenIds.add(objId)
-
-        return result
+        return self._mergeRuntimeClassResults(
+            result,
+            fallbackObjects,
+        )
 
     def selectBy(self, iterate=False, objectFilter=None, **args):
         if objectFilter is not None and not callable(objectFilter):
