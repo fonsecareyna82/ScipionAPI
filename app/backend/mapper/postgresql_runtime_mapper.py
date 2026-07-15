@@ -2358,9 +2358,7 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         if obj is not None:
-            return self._attachRuntimeContext(
-                obj
-            )
+            return obj
 
         return None
 

@@ -626,3 +626,42 @@ def test_SelectRelationSetDisablesParentProtocolRefresh():
             False,
         ),
     ]
+
+
+def test_SelectRelationObjectFallbackKeepsObjectUnchanged():
+    mapper = buildRuntimeMapper(
+        rows=[],
+        fallbackMapper=None,
+    )
+
+    fallbackObject = FakeObject(
+        701
+    )
+
+    mapper._selectProtocolByIdFromPostgresql = (
+        lambda objId, refreshCached=True: None
+    )
+
+    mapper._selectSetByIdFromPostgresql = (
+        lambda objId, refreshParentProtocol=True: None
+    )
+
+    mapper._selectByIdFromReadFallback = (
+        lambda objId, auditOperation="selectById":
+        fallbackObject
+    )
+
+    def failIfRuntimeContextIsAttached(obj):
+        raise AssertionError(
+            "Fallback relation objects must remain unchanged"
+        )
+
+    mapper._attachRuntimeContext = (
+        failIfRuntimeContextIsAttached
+    )
+
+    result = mapper._selectRelationObjectById(
+        701
+    )
+
+    assert result is fallbackObject
