@@ -23,18 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de Bioinformatica of Centro Nacional de Biotecnologia, CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# ******************************************************************************
 import pytest
 
 from app.backend.mapper.postgresql_runtime_mapper import (
@@ -43,48 +31,94 @@ from app.backend.mapper.postgresql_runtime_mapper import (
 
 
 class FakeObject:
-    def __init__(self, objId):
+    def __init__(
+            self,
+            objId,
+            parentId=None,
+            name=None,
+    ):
         self._objId = objId
+        self._objParentId = parentId
+        self._objName = name
 
     def getObjId(self):
         return self._objId
 
 
-def buildRuntimeMapper(batchResult):
+def buildRuntimeMapper(
+        batchResult,
+        creationTime=None,
+):
     mapper = PostgresqlRuntimeMapper.__new__(
         PostgresqlRuntimeMapper
     )
 
     batchCalls = []
+    creationTimeCalls = []
 
     def selectAllBatch(objectFilter=None):
         batchCalls.append(
             objectFilter
         )
 
-        return list(
-            batchResult
+        return [
+            obj
+            for obj in batchResult
+            if (
+                    objectFilter is None
+                    or objectFilter(obj)
+            )
+        ]
+
+    def selectProjectCreationTime():
+        creationTimeCalls.append(
+            True
         )
+
+        return creationTime
 
     mapper.selectAllBatch = (
         selectAllBatch
     )
 
-    return mapper, batchCalls
+    mapper._selectProjectCreationTimeFromPostgresql = (
+        selectProjectCreationTime
+    )
+
+    return (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    )
 
 
-def test_SelectAllUsesPostgresqlBatchPath():
-    objects = [
-        FakeObject(101),
-        FakeObject(102),
-    ]
+def test_SelectAllCombinesRootAndUserFilters():
+    acceptedRoot = FakeObject(
+        101
+    )
+    rejectedRoot = FakeObject(
+        99
+    )
+    childObject = FakeObject(
+        102,
+        parentId=101,
+    )
 
-    mapper, batchCalls = buildRuntimeMapper(
-        objects
+    (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    ) = buildRuntimeMapper(
+        [
+            acceptedRoot,
+            rejectedRoot,
+            childObject,
+        ],
+        creationTime=None,
     )
 
     objectFilter = lambda obj: (
-        obj.getObjId() > 100
+        obj.getObjId() >= 100
     )
 
     result = mapper.selectAll(
@@ -92,21 +126,166 @@ def test_SelectAllUsesPostgresqlBatchPath():
         objectFilter=objectFilter,
     )
 
-    assert result == objects
+    assert result == [
+        acceptedRoot,
+    ]
 
-    assert batchCalls == [
-        objectFilter,
+    assert len(
+        batchCalls
+    ) == 1
+
+    rootFilter = batchCalls[0]
+
+    assert callable(
+        rootFilter
+    )
+    assert rootFilter(
+        acceptedRoot
+    )
+    assert not rootFilter(
+        rejectedRoot
+    )
+    assert not rootFilter(
+        childObject
+    )
+
+    assert creationTimeCalls == [
+        True,
+    ]
+
+
+def test_SelectAllAddsPostgresqlCreationTime():
+    protocol = FakeObject(
+        201
+    )
+    creationTime = FakeObject(
+        None,
+        name="CreationTime",
+    )
+
+    (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    ) = buildRuntimeMapper(
+        [
+            protocol,
+        ],
+        creationTime=creationTime,
+    )
+
+    result = mapper.selectAll()
+
+    assert result == [
+        creationTime,
+        protocol,
+    ]
+
+    assert len(
+        batchCalls
+    ) == 1
+
+    assert creationTimeCalls == [
+        True,
+    ]
+
+
+def test_SelectAllDoesNotDuplicateExistingCreationTime():
+    protocol = FakeObject(
+        201
+    )
+    existingCreationTime = FakeObject(
+        1,
+        name="CreationTime",
+    )
+    postgresqlCreationTime = FakeObject(
+        None,
+        name="CreationTime",
+    )
+
+    (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    ) = buildRuntimeMapper(
+        [
+            protocol,
+            existingCreationTime,
+        ],
+        creationTime=postgresqlCreationTime,
+    )
+
+    result = mapper.selectAll()
+
+    assert result == [
+        existingCreationTime,
+        protocol,
+    ]
+
+    assert len(
+        batchCalls
+    ) == 1
+
+    assert creationTimeCalls == []
+
+
+def test_SelectAllAppliesFilterToPostgresqlCreationTime():
+    protocol = FakeObject(
+        301
+    )
+    creationTime = FakeObject(
+        None,
+        name="CreationTime",
+    )
+
+    (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    ) = buildRuntimeMapper(
+        [
+            protocol,
+        ],
+        creationTime=creationTime,
+    )
+
+    result = mapper.selectAll(
+        objectFilter=lambda obj: (
+            obj.getObjId() is not None
+        ),
+    )
+
+    assert result == [
+        protocol,
+    ]
+
+    assert len(
+        batchCalls
+    ) == 1
+
+    assert creationTimeCalls == [
+        True,
     ]
 
 
 def test_SelectAllReturnsIteratorWhenRequested():
-    objects = [
-        FakeObject(201),
-        FakeObject(202),
-    ]
+    creationTime = FakeObject(
+        1,
+        name="CreationTime",
+    )
+    protocol = FakeObject(
+        401
+    )
 
-    mapper, batchCalls = buildRuntimeMapper(
-        objects
+    (
+        mapper,
+        batchCalls,
+        creationTimeCalls,
+    ) = buildRuntimeMapper(
+        [
+            creationTime,
+            protocol,
+        ],
     )
 
     result = mapper.selectAll(
@@ -115,14 +294,19 @@ def test_SelectAllReturnsIteratorWhenRequested():
 
     assert iter(result) is result
 
-    assert list(result) == objects
-
-    assert batchCalls == [
-        None,
+    assert list(result) == [
+        creationTime,
+        protocol,
     ]
 
+    assert len(
+        batchCalls
+    ) == 1
 
-def test_SelectAllPropagatesBatchFilterValidation():
+    assert creationTimeCalls == []
+
+
+def test_SelectAllRejectsInvalidFilter():
     mapper = PostgresqlRuntimeMapper.__new__(
         PostgresqlRuntimeMapper
     )
