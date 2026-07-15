@@ -697,7 +697,7 @@ def test_SelectAllBatchIncludesGenericPostgresqlObjects():
     mapper.flatMapper.getProtocols.assert_called_once_with(7)
 
 
-def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
+def test_SelectAllBatchMergesGenericAndFallbackObjectsByRuntimeId():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -712,9 +712,9 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
     fallbackDuplicate = FakeComposite()
     fallbackDuplicate.setObjId(700)
 
-    fallbackSameIdDifferentClass = String()
-    fallbackSameIdDifferentClass.set("Fallback string")
-    fallbackSameIdDifferentClass.setObjId(700)
+    fallbackStaleClass = String()
+    fallbackStaleClass.set("Fallback string")
+    fallbackStaleClass.setObjId(700)
 
     fallbackOnly = FakeComposite()
     fallbackOnly.setObjId(900)
@@ -722,7 +722,7 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
     mapper.readFallbackMapper = Mock()
     mapper.readFallbackMapper.selectAllBatch.return_value = [
         fallbackDuplicate,
-        fallbackSameIdDifferentClass,
+        fallbackStaleClass,
         fallbackOnly,
     ]
 
@@ -743,10 +743,6 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
             700,
         ),
         (
-            "String",
-            700,
-        ),
-        (
             "FakeComposite",
             900,
         ),
@@ -754,6 +750,9 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
 
     assert result[0] is not fallbackDuplicate
     assert result[0].title.get() == "PostgreSQL object"
+    assert fallbackDuplicate not in result
+    assert fallbackStaleClass not in result
+    assert fallbackOnly in result
 
     mapper._recordReadFallback.assert_called_once_with(
         "selectAllBatch.compatibilityMerge",
