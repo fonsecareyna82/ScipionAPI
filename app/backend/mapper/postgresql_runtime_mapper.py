@@ -23,8 +23,11 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import logging
+import inspect
 import json
+import logging
+import os
+from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -119,7 +122,226 @@ class PostgresqlRuntimeMapper(Mapper):
         )
         self._runtimeProtocolsById = {}
         self._sqliteProtocolMirrorIds = set()
+        self._initializeFallbackAudit()
 
+    FALLBACK_AUDIT_ENV = (
+        "SCIPION_POSTGRESQL_FALLBACK_AUDIT"
+    )
+
+    FALLBACK_AUDIT_TRUE_VALUES = {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    def _initializeFallbackAudit(self):
+        auditValue = os.environ.get(
+            self.FALLBACK_AUDIT_ENV,
+            "",
+        )
+
+        self._fallbackAuditEnabled = (
+                str(auditValue).strip().lower()
+                in self.FALLBACK_AUDIT_TRUE_VALUES
+        )
+
+        self._fallbackAuditCounts = Counter()
+        self._fallbackAuditContexts = {}
+
+    def _recordReadFallback(
+            self,
+            operation,
+            **context,
+    ):
+        if not getattr(
+                self,
+                "_fallbackAuditEnabled",
+                False,
+        ):
+            return
+
+        caller = self._findFallbackAuditCaller()
+
+        key = (
+            str(operation),
+            caller,
+        )
+
+        self._fallbackAuditCounts[key] += 1
+
+        if key not in self._fallbackAuditContexts:
+            self._fallbackAuditContexts[key] = {
+                str(name): self._normalizeFallbackAuditValue(value)
+                for name, value in context.items()
+            }
+
+        if self._fallbackAuditCounts[key] == 1:
+            logger.warning(
+                "POSTGRESQL_RUNTIME_FALLBACK firstUse %s",
+                json.dumps(
+                    {
+                        "projectId": self.projectId,
+                        "operation": str(operation),
+                        "caller": caller,
+                        "context": self._fallbackAuditContexts[key],
+                    },
+                    sort_keys=True,
+                ),
+            )
+
+    def getFallbackAuditReport(self):
+        counts = getattr(
+            self,
+            "_fallbackAuditCounts",
+            {},
+        )
+
+        contexts = getattr(
+            self,
+            "_fallbackAuditContexts",
+            {},
+        )
+
+        items = []
+
+        for (
+                operation,
+                caller,
+        ), count in sorted(
+            counts.items(),
+            key=lambda item: (
+                    item[0][0],
+                    item[0][1],
+            ),
+        ):
+            items.append({
+                "operation": operation,
+                "caller": caller,
+                "count": int(count),
+                "context": contexts.get(
+                    (
+                        operation,
+                        caller,
+                    ),
+                    {},
+                ),
+            })
+
+        return {
+            "projectId": getattr(
+                self,
+                "projectId",
+                None,
+            ),
+            "totalCalls": sum(
+                int(count)
+                for count in counts.values()
+            ),
+            "items": items,
+        }
+
+    def _logFallbackAuditSummary(self):
+        if not getattr(
+                self,
+                "_fallbackAuditEnabled",
+                False,
+        ):
+            return
+
+        report = self.getFallbackAuditReport()
+
+        if report["totalCalls"] == 0:
+            return
+
+        logger.warning(
+            "POSTGRESQL_RUNTIME_FALLBACK summary %s",
+            json.dumps(
+                report,
+                sort_keys=True,
+            ),
+        )
+
+        self._fallbackAuditCounts.clear()
+        self._fallbackAuditContexts.clear()
+
+    @staticmethod
+    def _findFallbackAuditCaller():
+        frame = inspect.currentframe()
+
+        try:
+            frame = frame.f_back
+
+            while frame is not None:
+                moduleName = str(
+                    frame.f_globals.get(
+                        "__name__",
+                        "",
+                    )
+                )
+
+                if moduleName != __name__:
+                    return "%s.%s:%s" % (
+                        moduleName,
+                        frame.f_code.co_name,
+                        frame.f_lineno,
+                    )
+
+                frame = frame.f_back
+
+        finally:
+            del frame
+
+        return "unknown"
+
+    @classmethod
+    def _normalizeFallbackAuditValue(
+            cls,
+            value,
+    ):
+        if value is None or isinstance(
+                value,
+                (
+                        str,
+                        int,
+                        float,
+                        bool,
+                ),
+        ):
+            return value
+
+        if isinstance(value, type):
+            return value.__name__
+
+        if callable(value):
+            return getattr(
+                value,
+                "__qualname__",
+                str(value),
+            )
+
+        if isinstance(value, dict):
+            return {
+                str(key): cls._normalizeFallbackAuditValue(
+                    itemValue
+                )
+                for key, itemValue in value.items()
+            }
+
+        if isinstance(
+                value,
+                (
+                        list,
+                        tuple,
+                        set,
+                ),
+        ):
+            return [
+                cls._normalizeFallbackAuditValue(item)
+                for item in value
+            ]
+
+        return str(value)
     # ---------------------------------------------------------------------
     # Lifecycle
     # ---------------------------------------------------------------------
@@ -138,6 +360,8 @@ class PostgresqlRuntimeMapper(Mapper):
             self.writeFallbackMapper.commit()
 
     def close(self):
+        self._logFallbackAuditSummary()
+
         # Do not close the shared PostgreSQL connection here. It belongs to the
         # request/session mapper lifecycle.
         if self.readFallbackMapper is not None:
@@ -461,6 +685,12 @@ class PostgresqlRuntimeMapper(Mapper):
                 "PostgreSQL updateFrom is not implemented yet. "
                 "Use readFallbackMapper during the migration phase."
             )
+        self._recordReadFallback(
+            "updateFrom",
+            objectId=self._getObjId(obj),
+            objectClass=self._getClassName(obj),
+        )
+
         return self.readFallbackMapper.updateFrom(obj)
 
     def selectById(
@@ -529,7 +759,13 @@ class PostgresqlRuntimeMapper(Mapper):
             # not remain available as a stale runtime object.
             self._runtimeProtocolsById.pop(protocolId, None)
 
-        protocol = self._selectByIdFromReadFallback(protocolId)
+        protocol = self._selectByIdFromReadFallback(
+            protocolId,
+            auditOperation=(
+                "selectRuntimeProtocolById."
+                "compatibilityMirror"
+            ),
+        )
 
         if isinstance(protocol, Protocol):
             if row:
@@ -549,7 +785,11 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return None
 
-    def _selectByIdFromReadFallback(self, objId):
+    def _selectByIdFromReadFallback(
+            self,
+            objId,
+            auditOperation="selectById",
+    ):
         if self.readFallbackMapper is None:
             return None
 
@@ -570,6 +810,10 @@ class PostgresqlRuntimeMapper(Mapper):
             )
             return None
 
+        self._recordReadFallback(
+            auditOperation,
+            objectId=objId,
+        )
         return obj
 
     def _selectProtocolByIdFromPostgresql(self, objId):
@@ -936,6 +1180,10 @@ class PostgresqlRuntimeMapper(Mapper):
         fallbackProtocolsById = {}
 
         if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "selectAllBatch.compatibilityMerge",
+                objectFilter=objectFilter,
+            )
             fallbackObjects = self.readFallbackMapper.selectAllBatch(
                 objectFilter=objectFilter,
             )
@@ -1038,6 +1286,13 @@ class PostgresqlRuntimeMapper(Mapper):
                 "PostgreSQL selectBy is only implemented "
                 "for project CreationTime."
             )
+
+        self._recordReadFallback(
+            "selectBy",
+            iterate=iterate,
+            query=args,
+            objectFilter=objectFilter,
+        )
 
         result = self.readFallbackMapper.selectBy(
             iterate=iterate,
@@ -1181,6 +1436,13 @@ class PostgresqlRuntimeMapper(Mapper):
             result.append(runtimeSet)
 
         if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "selectByClass.setCompatibilityMerge",
+                className=className,
+                includeSubclasses=includeSubclasses,
+                objectFilter=objectFilter,
+            )
+
             fallbackResult = self.readFallbackMapper.selectByClass(
                 className,
                 includeSubclasses=includeSubclasses,
@@ -1235,6 +1497,13 @@ class PostgresqlRuntimeMapper(Mapper):
             result.append(protocol)
 
         if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "selectByClass.protocolCompatibilityMerge",
+                className=className,
+                includeSubclasses=includeSubclasses,
+                objectFilter=objectFilter,
+            )
+
             fallbackResult = self.readFallbackMapper.selectByClass(
                 className,
                 includeSubclasses=includeSubclasses,
@@ -1295,6 +1564,14 @@ class PostgresqlRuntimeMapper(Mapper):
                 "PostgreSQL selectByClass is only implemented "
                 "for native Scipion Set classes."
             )
+
+        self._recordReadFallback(
+            "selectByClass.unsupportedClass",
+            className=className,
+            includeSubclasses=includeSubclasses,
+            iterate=iterate,
+            objectFilter=objectFilter,
+        )
 
         result = self.readFallbackMapper.selectByClass(
             className,
@@ -1499,16 +1776,15 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
         if self.readFallbackMapper is not None:
-            parent = (
-                self.readFallbackMapper
-                .getParent(
-                    obj
-                )
+            self._recordReadFallback(
+                "getParent",
+                objectId=self._getObjId(obj),
+                objectClass=self._getClassName(obj),
             )
 
-            return self._attachRuntimeContext(
-                parent
-            )
+            parent = self.readFallbackMapper.getParent(obj)
+            return self._attachRuntimeContext(parent)
+
 
         return None
 
