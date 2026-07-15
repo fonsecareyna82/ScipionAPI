@@ -1350,16 +1350,19 @@ class PostgresqlRuntimeMapper(Mapper):
 
             rootObject = scipionObject
 
-            ownerProtocolId = self._toOptionalInt(
-                row.get(
-                    "ownerProtocolId"
-                )
+            parentRuntimeObjectId = self._toOptionalInt(
+                row.get("rootParentScipionObjId")
             )
 
-            if ownerProtocolId is not None:
+            if parentRuntimeObjectId is None:
+                parentRuntimeObjectId = self._toOptionalInt(
+                    row.get("ownerProtocolId")
+                )
+
+            if parentRuntimeObjectId is not None:
                 self._setObjParentId(
                     rootObject,
-                    ownerProtocolId,
+                    parentRuntimeObjectId,
                 )
 
         return rootObject
@@ -2801,31 +2804,18 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return relations
 
-    def _selectRelationObjectById(
-            self,
-            objId,
-    ):
+    def _selectRelationObjectById(self, objId):
         """
         Resolve one relation target without refreshing any existing owner
         protocol.
 
-        PostgreSQL protocols and sets are attempted first. SQLite remains a
-        compatibility fallback. No protocol or output is stored, replaced or
-        attached to its owner by this method.
+        PostgreSQL protocols, sets and generic objects are attempted first.
+        SQLite remains a compatibility fallback. No protocol or output is
+        stored, replaced or attached to its owner by this method.
         """
         obj = self._selectProtocolByIdFromPostgresql(
             objId,
             refreshCached=False,
-        )
-
-        if obj is not None:
-            return obj
-
-        obj = (
-            self
-            ._selectGenericObjectByIdFromPostgresql(
-                objId
-            )
         )
 
         if obj is not None:
@@ -2839,17 +2829,15 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is not None:
             return obj
 
-        obj = self._selectByIdFromReadFallback(
-            objId,
-            auditOperation=(
-                "relationObject.selectById"
-            ),
-        )
+        obj = self._selectGenericObjectByIdFromPostgresql(objId)
 
         if obj is not None:
             return obj
 
-        return None
+        return self._selectByIdFromReadFallback(
+            objId,
+            auditOperation="relationObject.selectById",
+        )
 
     def getRelationChilds(self, relName, parentObj):
         parentId = self._requireObjId(

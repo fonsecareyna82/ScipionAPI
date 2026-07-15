@@ -103,3 +103,22 @@ def test_GetStoredObjectSubtreeUsesRecursiveQuery():
         "ORDER BY depth ASC"
         in call["query"]
     )
+
+    assert (
+        'selected_root."rootParentScipionObjId"'
+        in call["query"]
+    )
+
+    assert (
+        call["query"].count(
+            'object_tree."rootParentScipionObjId"'
+        )
+        == 1
+    )
+
+    assert (
+        call["query"].count(
+            '"rootParentScipionObjId"'
+        )
+        == 4
+    )

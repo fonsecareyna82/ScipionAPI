@@ -137,6 +137,7 @@ def buildRuntimeMapper(rows):
     )
 
     mapper.projectId = 7
+    mapper.project = None
     mapper.dictClasses = {
         "FakeComposite": FakeComposite,
     }
@@ -314,4 +315,86 @@ def test_RelationResolverUsesGenericPostgresqlObject():
 
     assert genericCalls == [
         700,
+    ]
+
+
+def test_SelectGenericNestedRootPreservesDirectParentId():
+    rows = [{
+        "id": 11,
+        "scipionObjId": 701,
+        "parentObjectId": 10,
+        "rootParentScipionObjId": 700,
+        "name": "title",
+        "path": "outputObject.title",
+        "className": "String",
+        "value": "Nested value",
+        "label": None,
+        "comment": None,
+        "creation": None,
+        "metadata": {
+            "isPointer": False,
+        },
+        "ownerProtocolId": "101",
+        "depth": 0,
+    }]
+
+    mapper = buildRuntimeMapper(rows)
+
+    result = mapper._selectGenericObjectByIdFromPostgresql(701)
+
+    assert isinstance(result, String)
+    assert result.get() == "Nested value"
+    assert result.getObjId() == 701
+    assert result.getObjParentId() == 700
+
+
+def test_RelationResolverPrefersSetBeforeGenericObject():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    runtimeSet = object()
+    setCalls = []
+
+    mapper._selectProtocolByIdFromPostgresql = (
+        lambda objId, refreshCached=True: None
+    )
+
+    def selectSet(objId, refreshParentProtocol=True):
+        setCalls.append((
+            objId,
+            refreshParentProtocol,
+        ))
+
+        return runtimeSet
+
+    mapper._selectSetByIdFromPostgresql = selectSet
+
+    def failIfGenericReaderIsUsed(objId):
+        raise AssertionError(
+            "Set reader must run before generic object reader"
+        )
+
+    mapper._selectGenericObjectByIdFromPostgresql = (
+        failIfGenericReaderIsUsed
+    )
+
+    def failIfFallbackIsUsed(
+            objId,
+            auditOperation="selectById",
+    ):
+        raise AssertionError(
+            "SQLite fallback must not be used"
+        )
+
+    mapper._selectByIdFromReadFallback = failIfFallbackIsUsed
+
+    result = mapper._selectRelationObjectById(700)
+
+    assert result is runtimeSet
+    assert setCalls == [
+        (
+            700,
+            False,
+        ),
     ]
