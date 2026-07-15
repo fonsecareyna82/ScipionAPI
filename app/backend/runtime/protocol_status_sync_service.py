@@ -744,6 +744,8 @@ class RuntimeProtocolStatusSyncService:
                     projectId=projectId,
                     protocolId=protocolId,
                     registerOutputs=True,
+                    syncRelations=True,
+                    protocol=runtimeProtocol,
                 )
 
                 syncedRow = mapper.getProjectProtocolByProtocolId(
