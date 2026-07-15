@@ -1185,12 +1185,15 @@ class PostgresqlRuntimeMapper(Mapper):
         labels = []
 
         for row in self.flatMapper.getProtocols(self.projectId) or []:
-            protocol = self._buildProtocolFromPostgresqlRow(row)
+            params = self._normalizeStoredProtocolParams(
+                row.get("params") or {}
+            )
 
-            if protocol is None:
-                continue
+            label = self._extractStoredProtocolParamValue(
+                params.get("object.label")
+            )
 
-            label = str(protocol.getObjLabel() or "").strip()
+            label = str(label or "").strip()
 
             if label:
                 labels.append(label)
