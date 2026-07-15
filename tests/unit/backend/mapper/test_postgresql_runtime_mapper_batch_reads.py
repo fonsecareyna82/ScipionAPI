@@ -461,7 +461,22 @@ def test_SelectRuntimeProtocolByIdCachesFallbackOnlyProtocol():
     ]
 
 
-def test_GetPostgresqlProtocolLabelsBuildsFromPostgresqlRowsWithoutFallback():
+def test_GetPostgresqlProtocolLabelsReadsStoredLabelsWithoutBuildingProtocols():
+    firstRow = buildRow(100)
+    firstRow["params"] = {
+        "object.label": "Import movies",
+    }
+
+    secondRow = buildRow(101)
+    secondRow["params"] = {
+        "object.label": {
+            "value": "Import movies (2)",
+        },
+    }
+
+    unlabeledRow = buildRow(102)
+    unlabeledRow["params"] = {}
+
     fallbackProtocol = buildProtocol(
         ExampleProtocol,
         100,
@@ -473,35 +488,20 @@ def test_GetPostgresqlProtocolLabelsBuildsFromPostgresqlRowsWithoutFallback():
 
     mapper = buildMapper(
         rows=[
-            buildRow(100),
-            buildRow(101),
+            firstRow,
+            secondRow,
+            unlabeledRow,
         ],
         fallback=fallback,
     )
 
-    labelsById = {
-        100: "Import movies",
-        101: "Import movies (2)",
-    }
-
-    buildCalls = []
-
-    def buildProtocolFromRow(row):
-        protocolId = int(row["protocolId"])
-        buildCalls.append(protocolId)
-
-        protocol = buildProtocol(
-            ExampleProtocol,
-            protocolId,
+    def failBuildProtocolFromRow(row):
+        raise AssertionError(
+            "Reading PostgreSQL labels must not build protocols"
         )
-        protocol.setObjLabel(
-            labelsById[protocolId]
-        )
-
-        return protocol
 
     mapper._buildProtocolFromPostgresqlRow = (
-        buildProtocolFromRow
+        failBuildProtocolFromRow
     )
 
     assert mapper.getPostgresqlProtocolLabels() == [
@@ -509,10 +509,8 @@ def test_GetPostgresqlProtocolLabelsBuildsFromPostgresqlRowsWithoutFallback():
         "Import movies (2)",
     ]
 
-    assert buildCalls == [
-        100,
-        101,
+    assert mapper.flatMapper.calls == [
+        4,
     ]
 
-    # Reading labels must never load the SQLite batch.
     assert fallback.calls == []
