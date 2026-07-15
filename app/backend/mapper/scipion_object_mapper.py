@@ -231,6 +231,7 @@ class ScipionObjectPostgresqlMapper:
                     object_row."protocolDbId",
                     object_row."scipionObjId",
                     object_row."parentObjectId",
+                    parent_row."scipionObjId" AS "rootParentScipionObjId",
                     object_row.name,
                     object_row.path,
                     object_row."className",
@@ -245,6 +246,8 @@ class ScipionObjectPostgresqlMapper:
                         AS "ownerProtocolId",
                     0 AS depth
                   FROM scipion_objects object_row
+            LEFT JOIN scipion_objects parent_row
+                    ON parent_row.id = object_row."parentObjectId"
              LEFT JOIN protocols protocol
                     ON protocol.id = object_row."protocolDbId"
                  WHERE object_row."projectId" = %s
@@ -252,13 +255,14 @@ class ScipionObjectPostgresqlMapper:
               ORDER BY object_row.id DESC
                  LIMIT 1
             ),
-            object_tree AS (
+                        object_tree AS (
                 SELECT
                     selected_root.id,
                     selected_root."projectId",
                     selected_root."protocolDbId",
                     selected_root."scipionObjId",
                     selected_root."parentObjectId",
+                    selected_root."rootParentScipionObjId",
                     selected_root.name,
                     selected_root.path,
                     selected_root."className",
@@ -281,6 +285,7 @@ class ScipionObjectPostgresqlMapper:
                     child."protocolDbId",
                     child."scipionObjId",
                     child."parentObjectId",
+                    object_tree."rootParentScipionObjId",
                     child.name,
                     child.path,
                     child."className",
@@ -303,6 +308,7 @@ class ScipionObjectPostgresqlMapper:
                 "protocolDbId",
                 "scipionObjId",
                 "parentObjectId",
+                "rootParentScipionObjId",
                 name,
                 path,
                 "className",
