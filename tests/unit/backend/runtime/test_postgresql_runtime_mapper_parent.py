@@ -56,6 +56,15 @@ def buildRuntimeMapper():
         failIfGeneralSelectorIsUsed
     )
 
+    def failIfRuntimeContextIsAttached(obj):
+        raise AssertionError(
+            "getParent must not mutate or reattach the parent"
+        )
+
+    mapper._attachRuntimeContext = (
+        failIfRuntimeContextIsAttached
+    )
+
     return (
         mapper,
         resolvedParent,
@@ -83,6 +92,30 @@ def test_GetParentUsesReadOnlyResolver():
     assert resolvedIds == [
         401,
     ]
+
+
+def test_GetParentReturnsAttachedParentUnchanged():
+    (
+        mapper,
+        resolvedParent,
+        resolvedIds,
+    ) = buildRuntimeMapper()
+
+    attachedParent = object()
+
+    child = FakeObject(
+        parentId=401,
+    )
+    child._objParent = (
+        attachedParent
+    )
+
+    result = mapper.getParent(
+        child
+    )
+
+    assert result is attachedParent
+    assert resolvedIds == []
 
 
 def test_GetParentSupportsRawParentAttribute():

@@ -1957,11 +1957,16 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             obj,
     ):
+        """
+        Return the direct parent without refreshing or reattaching it.
+
+        Native PostgreSQL objects may already carry their parent through
+        _objParent. Otherwise, resolve it by id through the same read-only
+        path used by relation reads.
+        """
         if obj is None:
             return None
 
-        # Native PostgreSQL items and sets are hydrated
-        # with their actual parent object.
         parent = getattr(
             obj,
             "_objParent",
@@ -1969,45 +1974,26 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         if parent is not None:
-            return self._attachRuntimeContext(
-                parent
-            )
+            return parent
 
-        parentId = self._call(
-            obj,
-            "getObjParentId",
-            None,
+        parentId = self._toOptionalInt(
+            self._call(
+                obj,
+                "getObjParentId",
+                getattr(
+                    obj,
+                    "_objParentId",
+                    None,
+                ),
+            )
         )
 
         if parentId is None:
-            parentId = getattr(
-                obj,
-                "_objParentId",
-                None,
-            )
+            return None
 
-        if parentId is not None:
-            parent = self.selectById(
-                parentId
-            )
-
-            if parent is not None:
-                return self._attachRuntimeContext(
-                    parent
-                )
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getParent",
-                objectId=self._getObjId(obj),
-                objectClass=self._getClassName(obj),
-            )
-
-            parent = self.readFallbackMapper.getParent(obj)
-            return self._attachRuntimeContext(parent)
-
-
-        return None
+        return self._selectRelationObjectById(
+            parentId
+        )
 
     def delete(self, obj):
         if self.writeFallbackMapper is not None:
