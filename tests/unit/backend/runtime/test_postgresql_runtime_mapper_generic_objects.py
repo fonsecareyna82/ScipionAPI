@@ -154,6 +154,9 @@ def buildRuntimeMapper(rows, classRows=None):
     mapper.projectId = 7
     mapper.project = None
     mapper.readFallbackMapper = None
+    mapper.flatMapper = Mock()
+    mapper.flatMapper.getProtocols.return_value = []
+    mapper.flatMapper.getProjectRuntimeMetadata.return_value = None
     mapper.dictClasses = {
         "FakeComposite": FakeComposite,
         "FakeDerivedComposite": FakeDerivedComposite,
@@ -654,5 +657,159 @@ def test_SelectByClassMergesGenericPostgresqlAndFallbackObjects():
         iterate=False,
         objectFilter=None,
     )
+
+
+def test_SelectAllBatchIncludesGenericPostgresqlObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectAllBatch()
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
+    ]
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+    mapper.flatMapper.getProtocols.assert_called_once_with(7)
+
+
+def test_SelectAllBatchMergesGenericAndFallbackObjectsByIdentity():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    fallbackDuplicate = FakeComposite()
+    fallbackDuplicate.setObjId(700)
+
+    fallbackSameIdDifferentClass = String()
+    fallbackSameIdDifferentClass.set("Fallback string")
+    fallbackSameIdDifferentClass.setObjId(700)
+
+    fallbackOnly = FakeComposite()
+    fallbackOnly.setObjId(900)
+
+    mapper.readFallbackMapper = Mock()
+    mapper.readFallbackMapper.selectAllBatch.return_value = [
+        fallbackDuplicate,
+        fallbackSameIdDifferentClass,
+        fallbackOnly,
+    ]
+
+    mapper._attachRuntimeContext = lambda obj: obj
+    mapper._recordReadFallback = Mock()
+
+    result = mapper.selectAllBatch()
+
+    assert [
+        (
+            obj.getClassName(),
+            obj.getObjId(),
+        )
+        for obj in result
+    ] == [
+        (
+            "FakeComposite",
+            700,
+        ),
+        (
+            "String",
+            700,
+        ),
+        (
+            "FakeComposite",
+            900,
+        ),
+    ]
+
+    assert result[0] is not fallbackDuplicate
+    assert result[0].title.get() == "PostgreSQL object"
+
+    mapper._recordReadFallback.assert_called_once_with(
+        "selectAllBatch.compatibilityMerge",
+        objectFilter=None,
+    )
+
+    mapper.readFallbackMapper.selectAllBatch.assert_called_once_with(
+        objectFilter=None,
+    )
+
+
+def test_SelectAllExcludesProtocolOwnedGenericObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectAll()
+
+    assert result == []
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_SelectAllIncludesParentlessGenericRoot():
+    rows = buildRows()
+    rows[0]["ownerProtocolId"] = None
+
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        rows,
+        classRows=classRows,
+    )
+
+    result = mapper.selectAll(iterate=True)
+    objects = list(result)
+
+    assert len(objects) == 1
+    assert isinstance(objects[0], FakeComposite)
+    assert objects[0].getObjId() == 700
+    assert objects[0].getObjParentId() is None
 
 
