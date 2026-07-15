@@ -1203,21 +1203,28 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return False
 
-    def selectAll(self, iterate=False, objectFilter=None):
-        if self.readFallbackMapper is None:
-            raise NotImplementedError(
-                "PostgreSQL selectAll is not implemented yet."
-            )
+    def selectAll(
+            self,
+            iterate=False,
+            objectFilter=None,
+    ):
+        """
+        Return all runtime objects using the PostgreSQL-first batch reader.
 
-        result = self.readFallbackMapper.selectAll(
-            iterate=iterate,
+        selectAllBatch owns the PostgreSQL/SQLite compatibility merge,
+        filtering and duplicate removal. This method only preserves the
+        iterable behavior expected by Scipion's Mapper API.
+        """
+        result = self.selectAllBatch(
             objectFilter=objectFilter,
         )
 
         if iterate:
-            return self._attachRuntimeContextIterator(result)
+            return iter(
+                result
+            )
 
-        return self._attachRuntimeContextList(result)
+        return result
 
     def _buildProtocolFromPostgresqlRow(self, row):
 
