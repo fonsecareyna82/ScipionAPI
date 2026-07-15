@@ -138,6 +138,9 @@ def buildRuntimeMapper(
     mapper._fallbackAuditCounts = {}
     mapper._fallbackAuditContexts = {}
 
+    mapper._runtimeProtocolsById = {}
+    mapper._sqliteProtocolMirrorIds = set()
+
     return mapper
 
 
@@ -308,7 +311,7 @@ def test_GetRelationChildsUsesPostgresqlBeforeFallback():
 
     selectedIds = []
 
-    def selectById(objId):
+    def selectRelationObjectById(objId):
         selectedIds.append(
             objId
         )
@@ -317,7 +320,9 @@ def test_GetRelationChildsUsesPostgresqlBeforeFallback():
             objId
         )
 
-    mapper.selectById = selectById
+    mapper._selectRelationObjectById = (
+        selectRelationObjectById
+    )
 
     parentObj = FakeObject(
         201
@@ -376,7 +381,7 @@ def test_GetRelationParentsUsesPostgresqlBeforeFallback():
 
     selectedIds = []
 
-    def selectById(objId):
+    def selectRelationObjectById(objId):
         selectedIds.append(
             objId
         )
@@ -385,7 +390,9 @@ def test_GetRelationParentsUsesPostgresqlBeforeFallback():
             objId
         )
 
-    mapper.selectById = selectById
+    mapper._selectRelationObjectById = (
+        selectRelationObjectById
+    )
 
     childObj = FakeObject(
         501
@@ -494,3 +501,128 @@ def test_EmptyRelationObjectsWithoutFallbackReturnEmptyLists():
         "missingRelation",
         FakeObject(501),
     ) == []
+
+
+class FakeFlatMapper:
+    def __init__(self, protocolRow=None):
+        self.protocolRow = protocolRow
+
+    def getProjectProtocolByProtocolId(
+            self,
+            projectId,
+            protocolId,
+    ):
+        if self.protocolRow is None:
+            return None
+
+        return dict(
+            self.protocolRow
+        )
+
+
+def test_SelectRelationObjectKeepsCachedProtocolUnchanged():
+    mapper = buildRuntimeMapper(
+        rows=[],
+        fallbackMapper=None,
+    )
+
+    cachedProtocol = FakeObject(
+        401
+    )
+    cachedProtocol.status = "running"
+
+    mapper._runtimeProtocolsById[
+        401
+    ] = cachedProtocol
+
+    mapper._sqliteProtocolMirrorIds.add(
+        401
+    )
+
+    mapper.flatMapper = FakeFlatMapper({
+        "protocolId": "401",
+        "status": "finished",
+        "params": {
+            "someParam": {
+                "value": "changed",
+            },
+        },
+    })
+
+    def failIfProtocolIsRefreshed(row):
+        raise AssertionError(
+            "Cached parent protocol must not be refreshed "
+            "during relation resolution"
+        )
+
+    mapper._getOrBuildProtocolFromPostgresqlRow = (
+        failIfProtocolIsRefreshed
+    )
+
+    result = mapper._selectRelationObjectById(
+        401
+    )
+
+    assert result is cachedProtocol
+    assert cachedProtocol.status == "running"
+
+
+def test_SelectRelationSetDisablesParentProtocolRefresh():
+    mapper = buildRuntimeMapper(
+        rows=[],
+        fallbackMapper=None,
+    )
+
+    protocolCalls = []
+    setCalls = []
+
+    def selectProtocol(
+            objId,
+            refreshCached=True,
+    ):
+        protocolCalls.append((
+            objId,
+            refreshCached,
+        ))
+
+        return None
+
+    def selectSet(
+            objId,
+            refreshParentProtocol=True,
+    ):
+        setCalls.append((
+            objId,
+            refreshParentProtocol,
+        ))
+
+        return FakeObject(
+            objId
+        )
+
+    mapper._selectProtocolByIdFromPostgresql = (
+        selectProtocol
+    )
+    mapper._selectSetByIdFromPostgresql = (
+        selectSet
+    )
+
+    result = mapper._selectRelationObjectById(
+        301
+    )
+
+    assert result.getObjId() == 301
+
+    assert protocolCalls == [
+        (
+            301,
+            False,
+        ),
+    ]
+
+    assert setCalls == [
+        (
+            301,
+            False,
+        ),
+    ]
