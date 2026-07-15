@@ -2102,6 +2102,8 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             creatorId: Optional[int] = None,
             relationName: Optional[str] = None,
+            parentId: Optional[int] = None,
+            childId: Optional[int] = None,
     ):
         """
         Read relation rows from PostgreSQL using the column names exposed
@@ -2131,6 +2133,22 @@ class PostgresqlRuntimeMapper(Mapper):
             )
             values.append(
                 str(relationName)
+            )
+
+        if parentId is not None:
+            filters.append(
+                '"parentObjId" = %s'
+            )
+            values.append(
+                int(parentId)
+            )
+
+        if childId is not None:
+            filters.append(
+                '"childObjId" = %s'
+            )
+            values.append(
+                int(childId)
             )
 
         whereSql = "\n               AND ".join(
@@ -2218,40 +2236,76 @@ class PostgresqlRuntimeMapper(Mapper):
         return relations
 
     def getRelationChilds(self, relName, parentObj):
+        parentId = self._requireObjId(
+            parentObj
+        )
+
+        relations = self._selectPostgresqlRelations(
+            relationName=relName,
+            parentId=parentId,
+        )
+
+        if relations:
+            return [
+                self.selectById(
+                    row["object_child_id"]
+                )
+                for row in relations
+            ]
+
         if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationChilds",
                 relationName=relName,
-                parentId=self._getObjId(parentObj),
+                parentId=parentId,
+                reason="postgresql_empty",
             )
 
-            return self.readFallbackMapper.getRelationChilds(
-                relName,
-                parentObj,
+            return (
+                self.readFallbackMapper
+                .getRelationChilds(
+                    relName,
+                    parentObj,
+                )
             )
 
-        raise NotImplementedError(
-            "PostgreSQL getRelationChilds object reconstruction "
-            "is not implemented yet."
-        )
+        return []
 
     def getRelationParents(self, relName, childObj):
+        childId = self._requireObjId(
+            childObj
+        )
+
+        relations = self._selectPostgresqlRelations(
+            relationName=relName,
+            childId=childId,
+        )
+
+        if relations:
+            return [
+                self.selectById(
+                    row["object_parent_id"]
+                )
+                for row in relations
+            ]
+
         if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationParents",
                 relationName=relName,
-                childId=self._getObjId(childObj),
+                childId=childId,
+                reason="postgresql_empty",
             )
 
-            return self.readFallbackMapper.getRelationParents(
-                relName,
-                childObj,
+            return (
+                self.readFallbackMapper
+                .getRelationParents(
+                    relName,
+                    childObj,
+                )
             )
 
-        raise NotImplementedError(
-            "PostgreSQL getRelationParents object reconstruction "
-            "is not implemented yet."
-        )
+        return []
 
     # ---------------------------------------------------------------------
     # PostgreSQL persistence helpers
