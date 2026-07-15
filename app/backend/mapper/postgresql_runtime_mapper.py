@@ -1209,15 +1209,76 @@ class PostgresqlRuntimeMapper(Mapper):
             objectFilter=None,
     ):
         """
-        Return all runtime objects using the PostgreSQL-first batch reader.
+        Return root runtime objects using the PostgreSQL-first batch reader.
 
-        selectAllBatch owns the PostgreSQL/SQLite compatibility merge,
-        filtering and duplicate removal. This method only preserves the
-        iterable behavior expected by Scipion's Mapper API.
+        selectAllBatch owns the PostgreSQL/SQLite compatibility merge.
+        selectAll preserves the native Mapper contract by excluding child
+        attributes and restoring the project CreationTime root when it is
+        not available through the compatibility mapper.
         """
-        result = self.selectAllBatch(
-            objectFilter=objectFilter,
+        if (
+                objectFilter is not None
+                and not callable(objectFilter)
+        ):
+            raise TypeError(
+                "objectFilter must be callable or None"
+            )
+
+        def rootObjectFilter(obj):
+            if getattr(
+                    obj,
+                    "_objParentId",
+                    None,
+            ) is not None:
+                return False
+
+            if objectFilter is None:
+                return True
+
+            return bool(
+                objectFilter(obj)
+            )
+
+        result = list(
+            self.selectAllBatch(
+                objectFilter=rootObjectFilter,
+            )
         )
+
+        creationTimeIndex = next(
+            (
+                index
+                for index, obj in enumerate(result)
+                if self._getObjectName(obj)
+                   == PROJECT_CREATION_TIME
+            ),
+            None,
+        )
+
+        if creationTimeIndex is None:
+            creationTime = (
+                self
+                ._selectProjectCreationTimeFromPostgresql()
+            )
+
+            if (
+                    creationTime is not None
+                    and rootObjectFilter(creationTime)
+            ):
+                result.insert(
+                    0,
+                    creationTime,
+                )
+
+        elif creationTimeIndex > 0:
+            creationTime = result.pop(
+                creationTimeIndex
+            )
+
+            result.insert(
+                0,
+                creationTime,
+            )
 
         if iterate:
             return iter(
