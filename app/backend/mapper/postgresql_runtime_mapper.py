@@ -2098,57 +2098,124 @@ class PostgresqlRuntimeMapper(Mapper):
 
         self._deleteCanonicalObjectRelationsByCreatorId(creatorId)
 
+    def _selectPostgresqlRelations(
+            self,
+            creatorId: Optional[int] = None,
+            relationName: Optional[str] = None,
+    ):
+        """
+        Read relation rows from PostgreSQL using the column names exposed
+        by Scipion's native SQLite Relations table.
+
+        This method returns relation metadata only. It never reconstructs,
+        stores or modifies the related parent or child objects.
+        """
+        filters = [
+            '"projectId" = %s',
+        ]
+        values = [
+            self.projectId,
+        ]
+
+        if creatorId is not None:
+            filters.append(
+                '"creatorObjId" = %s'
+            )
+            values.append(
+                int(creatorId)
+            )
+
+        if relationName is not None:
+            filters.append(
+                'name = %s'
+            )
+            values.append(
+                str(relationName)
+            )
+
+        whereSql = "\n               AND ".join(
+            filters
+        )
+
+        return self.db.fetchAll(
+            f"""
+            SELECT
+                id,
+                "creatorObjId" AS parent_id,
+                name,
+                NULL::text AS classname,
+                NULL::text AS value,
+                NULL::text AS label,
+                NULL::text AS comment,
+                "parentObjId" AS object_parent_id,
+                "childObjId" AS object_child_id,
+                "createdAt" AS creation,
+                NULLIF(
+                    "parentExtended",
+                    ''
+                ) AS object_parent_extended,
+                NULLIF(
+                    "childExtended",
+                    ''
+                ) AS object_child_extended
+              FROM scipion_relations
+             WHERE {whereSql}
+             ORDER BY id ASC
+            """,
+            tuple(values),
+        )
+
     def getRelationsByCreator(self, creatorObj):
+        creatorId = self._requireObjId(
+            creatorObj
+        )
+
+        relations = self._selectPostgresqlRelations(
+            creatorId=creatorId,
+        )
+
+        if relations:
+            return relations
+
         if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationsByCreator",
-                creatorId=self._getObjId(creatorObj),
+                creatorId=creatorId,
+                reason="postgresql_empty",
             )
 
-            return self.readFallbackMapper.getRelationsByCreator(
-                creatorObj
+            return (
+                self.readFallbackMapper
+                .getRelationsByCreator(
+                    creatorObj
+                )
             )
 
-        creatorId = self._requireObjId(creatorObj)
-
-        return self.db.fetchAll(
-            """
-            SELECT *
-              FROM scipion_relations
-             WHERE "projectId" = %s
-               AND "creatorObjId" = %s
-             ORDER BY id ASC
-            """,
-            (
-                self.projectId,
-                int(creatorId),
-            ),
-        )
+        return relations
 
     def getRelationsByName(self, relationName):
+        relations = self._selectPostgresqlRelations(
+            relationName=relationName,
+        )
+
+        if relations:
+            return relations
+
         if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationsByName",
                 relationName=relationName,
+                reason="postgresql_empty",
             )
 
-            return self.readFallbackMapper.getRelationsByName(
-                relationName
+            return (
+                self.readFallbackMapper
+                .getRelationsByName(
+                    relationName
+                )
             )
 
-        return self.db.fetchAll(
-            """
-            SELECT *
-              FROM scipion_relations
-             WHERE "projectId" = %s
-               AND name = %s
-             ORDER BY id ASC
-            """,
-            (
-                self.projectId,
-                str(relationName),
-            ),
-        )
+        return relations
 
     def getRelationChilds(self, relName, parentObj):
         if self.readFallbackMapper is not None:
