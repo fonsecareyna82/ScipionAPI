@@ -1224,6 +1224,7 @@ class ProjectService:
             projectId: int,
             protocolId,
             registerOutputs: bool = True,
+            syncRelations: bool = True,
             returnProtocolContext: bool = False,
             protocol=None,
     ) -> Dict[str, Any]:
@@ -1231,8 +1232,9 @@ class ProjectService:
         Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
 
         The process launched by Scipion updates logs/run.db and steps.sqlite.
-        PostgreSQL must be refreshed from that runtime state, not from the
-        legacy project graph.
+        When syncRelations is enabled, only relations created by this
+        protocol are synchronized. Parent protocols and their outputs are
+        treated as read-only relation targets.
         """
         scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
@@ -1386,7 +1388,7 @@ class ProjectService:
             "complete": True,
         }
 
-        if shouldRegisterOutputs:
+        if shouldRegisterOutputs and syncRelations:
             try:
                 relationSyncService = (
                     RuntimeProjectRelationSyncService()
@@ -1543,6 +1545,7 @@ class ProjectService:
             "outputMissing": [],
             "outputErrors": outputReport.get("errors") or [],
             "postgresqlRuntimeSync": True,
+            "relationsSyncRequested": bool(syncRelations),
             "protocolId": str(scipionProtocolId),
             "protocolStatus": self._safeCall(protocol, "getStatus", None),
             "outputsRegistered": bool(outputReport.get("persisted")),
@@ -1685,6 +1688,7 @@ class ProjectService:
                 projectId,
                 refresh=refresh,
                 checkPid=checkPid,
+                syncRelations=False,
             )
         except HTTPException:
             raise
