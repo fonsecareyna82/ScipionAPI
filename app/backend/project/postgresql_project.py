@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 
 from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
+from pyworkflow.project.project import REGEX_NUMBER_ENDING
 from pyworkflow.protocol.constants import (
     STATUS_SAVED,
     STATUS_SCHEDULED,
@@ -201,6 +202,63 @@ class PostgresqlProject(ScipionProject):
     # ---------------------------------------------------
     #               PROTOCOLS
     # --------------------------------------------------
+    def _setPostgresqlProtocolLabel(self, protocol):
+        defaultLabel = protocol.getClassLabel()
+        maxSuffix = 0
+
+        for otherLabel in self.mapper.getPostgresqlProtocolLabels():
+            match = REGEX_NUMBER_ENDING.match(otherLabel)
+
+            if (
+                    match
+                    and match.group("prefix").strip() == defaultLabel
+            ):
+                suffix = match.group("number").strip("()")
+
+                try:
+                    maxSuffix = max(
+                        int(suffix),
+                        maxSuffix,
+                    )
+                except (TypeError, ValueError):
+                    logger.error(
+                        "Could not calculate protocol label suffix: %s",
+                        suffix,
+                    )
+
+            elif otherLabel == defaultLabel:
+                maxSuffix = max(1, maxSuffix)
+
+        if maxSuffix:
+            label = "%s (%d)" % (
+                defaultLabel,
+                maxSuffix + 1,
+            )
+        else:
+            label = defaultLabel
+
+        protocol.setObjLabel(label)
+
+    def newProtocol(self, protocolClass, **kwargs):
+        if not self.usingPostgresqlRuntimeMapper():
+            return super().newProtocol(
+                protocolClass,
+                **kwargs,
+            )
+
+        protocol = protocolClass(
+            project=self,
+            **kwargs,
+        )
+
+        if not protocol.getObjLabel():
+            self._setPostgresqlProtocolLabel(protocol)
+
+        protocol.setMapper(self.mapper)
+        protocol.setProject(self)
+
+        return protocol
+
     def _getProtocolsDependencies(
             self,
             protocols,
