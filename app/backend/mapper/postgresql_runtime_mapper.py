@@ -2617,14 +2617,7 @@ class PostgresqlRuntimeMapper(Mapper):
         if objId is None:
             return None
 
-        nativeClass = getattr(obj, "_postgresqlNativeSetClass", None)
-
-        if isinstance(nativeClass, type):
-            className = nativeClass.__name__
-        else:
-            className = self._getClassName(obj)
-
-        return str(className), str(objId)
+        return str(objId)
 
     def getParent(
             self,
