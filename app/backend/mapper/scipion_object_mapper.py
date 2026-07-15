@@ -211,6 +211,120 @@ class ScipionObjectPostgresqlMapper:
             (projectId, protocolDbId, rootPath, f"{rootPath}.%"),
         )
 
+    def getStoredObjectSubtreeByScipionObjId(
+            self,
+            projectId: int,
+            scipionObjId: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return one stored object and all its descendants.
+
+        The latest matching PostgreSQL row is selected to preserve the same
+        resolution policy used by canonical runtime relations.
+        """
+        return self.db.fetchAll(
+            """
+            WITH RECURSIVE selected_root AS (
+                SELECT
+                    object_row.id,
+                    object_row."projectId",
+                    object_row."protocolDbId",
+                    object_row."scipionObjId",
+                    object_row."parentObjectId",
+                    object_row.name,
+                    object_row.path,
+                    object_row."className",
+                    object_row.value,
+                    object_row.label,
+                    object_row.comment,
+                    object_row.creation,
+                    object_row.metadata,
+                    object_row."createdAt",
+                    object_row."updatedAt",
+                    protocol."protocolId"
+                        AS "ownerProtocolId",
+                    0 AS depth
+                  FROM scipion_objects object_row
+             LEFT JOIN protocols protocol
+                    ON protocol.id = object_row."protocolDbId"
+                 WHERE object_row."projectId" = %s
+                   AND object_row."scipionObjId" = %s
+              ORDER BY object_row.id DESC
+                 LIMIT 1
+            ),
+            object_tree AS (
+                SELECT
+                    selected_root.id,
+                    selected_root."projectId",
+                    selected_root."protocolDbId",
+                    selected_root."scipionObjId",
+                    selected_root."parentObjectId",
+                    selected_root.name,
+                    selected_root.path,
+                    selected_root."className",
+                    selected_root.value,
+                    selected_root.label,
+                    selected_root.comment,
+                    selected_root.creation,
+                    selected_root.metadata,
+                    selected_root."createdAt",
+                    selected_root."updatedAt",
+                    selected_root."ownerProtocolId",
+                    selected_root.depth
+                  FROM selected_root
+
+                UNION ALL
+
+                SELECT
+                    child.id,
+                    child."projectId",
+                    child."protocolDbId",
+                    child."scipionObjId",
+                    child."parentObjectId",
+                    child.name,
+                    child.path,
+                    child."className",
+                    child.value,
+                    child.label,
+                    child.comment,
+                    child.creation,
+                    child.metadata,
+                    child."createdAt",
+                    child."updatedAt",
+                    object_tree."ownerProtocolId",
+                    object_tree.depth + 1
+                  FROM scipion_objects child
+                  JOIN object_tree
+                    ON child."parentObjectId" = object_tree.id
+            )
+            SELECT
+                id,
+                "projectId",
+                "protocolDbId",
+                "scipionObjId",
+                "parentObjectId",
+                name,
+                path,
+                "className",
+                value,
+                label,
+                comment,
+                creation,
+                metadata,
+                "createdAt",
+                "updatedAt",
+                "ownerProtocolId",
+                depth
+              FROM object_tree
+          ORDER BY depth ASC,
+                   path ASC
+            """,
+            (
+                int(projectId),
+                int(scipionObjId),
+            ),
+        )
+
     def listProtocolStoredObjects(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
