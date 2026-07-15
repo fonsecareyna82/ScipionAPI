@@ -750,9 +750,9 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByRuntimeId():
 
     assert result[0] is not fallbackDuplicate
     assert result[0].title.get() == "PostgreSQL object"
-    assert fallbackDuplicate not in result
-    assert fallbackStaleClass not in result
-    assert fallbackOnly in result
+    assert result[0] is not fallbackDuplicate
+    assert result[0] is not fallbackStaleClass
+    assert result[1] is fallbackOnly
 
     mapper._recordReadFallback.assert_called_once_with(
         "selectAllBatch.compatibilityMerge",
