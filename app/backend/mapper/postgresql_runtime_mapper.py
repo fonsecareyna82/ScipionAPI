@@ -796,7 +796,9 @@ class PostgresqlRuntimeMapper(Mapper):
             ),
         )
 
-        if storedParentId is not None:
+        if storedParentId is None:
+            targetObject._objParentId = None
+        else:
             self._setObjParentId(
                 targetObject,
                 storedParentId,

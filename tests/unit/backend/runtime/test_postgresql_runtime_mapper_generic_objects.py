@@ -1137,7 +1137,12 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
 
     targetObject = FakeComposite()
     targetObject.setObjId(700)
-    targetObject.setObjName("staleOutput")
+
+    mapper._setObjName(
+        targetObject,
+        "staleOutput",
+    )
+
     targetObject.setObjLabel("Stale label")
     targetObject.setObjComment("Stale comment")
     targetObject.title.set("Stale title")
@@ -1245,4 +1250,29 @@ def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():
         )
 
 
+def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
+    rows = buildRows()
+    rows[0]["ownerProtocolId"] = None
+    rows[0]["rootParentScipionObjId"] = None
+
+    mapper = buildRuntimeMapper(
+        rows
+    )
+
+    mapper.readFallbackMapper = Mock()
+    mapper._recordReadFallback = Mock()
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+    targetObject._objParentId = 999
+
+    result = mapper.updateFrom(
+        targetObject
+    )
+
+    assert result is None
+    assert targetObject.getObjParentId() is None
+
+    mapper.readFallbackMapper.updateFrom.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
