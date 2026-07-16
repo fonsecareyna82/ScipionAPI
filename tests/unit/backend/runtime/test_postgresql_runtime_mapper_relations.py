@@ -239,7 +239,7 @@ def buildRuntimeMapper(
     return mapper
 
 
-def test_GetRelationsByCreatorUsesPostgresqlBeforeFallback():
+def test_GetRelationsByCreatorUsesSynchronizedPostgresqlSnapshot():
     postgresqlRows = [{
         "id": 10,
         "parent_id": 101,
@@ -255,6 +255,9 @@ def test_GetRelationsByCreatorUsesPostgresqlBeforeFallback():
     mapper = buildRuntimeMapper(
         rows=postgresqlRows,
         fallbackMapper=fallbackMapper,
+        synchronizedCreatorIds={
+            101,
+        },
     )
 
     creator = FakeObject(
@@ -569,6 +572,9 @@ def test_GetRelationChildsUsesPostgresqlBeforeFallback():
     ]
 
     assert fallbackMapper.childCalls == []
+    assert fallbackMapper.nameCalls == [
+        "source",
+    ]
 
     call = mapper.db.calls[0]
 
@@ -714,7 +720,7 @@ def test_GetRelationChildsUsesCompatibilityRelationRowsWhenPostgresqlIsEmpty():
     ]
 
     assert fallbackMapper.nameCalls == [
-        "source",
+        "legacyRelation",
     ]
 
     assert fallbackMapper.childCalls == []
@@ -824,6 +830,53 @@ def test_GetRelationChildsDoesNotResurrectSynchronizedFallbackRelation():
     assert fallbackMapper.nameCalls == [
         "source",
     ]
+
+
+def test_GetRelationParentsDoesNotResurrectSynchronizedFallbackRelation():
+    fallbackMapper = FakeFallbackMapper()
+
+    fallbackMapper.nameRows = [{
+        "id": 931,
+        "parent_id": 101,
+        "name": "source",
+        "object_parent_id": 904,
+        "object_child_id": 501,
+        "object_parent_extended": None,
+        "object_child_extended": None,
+    }]
+
+    mapper = buildRuntimeMapper(
+        rows=[],
+        fallbackMapper=fallbackMapper,
+        synchronizedCreatorIds={
+            101,
+        },
+    )
+
+    selectedIds = []
+
+    mapper._selectRelationObjectById = (
+        lambda objId: selectedIds.append(
+            objId
+        )
+    )
+
+    result = mapper.getRelationParents(
+        "source",
+        FakeObject(
+            501
+        ),
+    )
+
+    assert result == []
+    assert selectedIds == []
+
+    assert fallbackMapper.nameCalls == [
+        "source",
+    ]
+
+    assert fallbackMapper.parentCalls == []
+
 
 def test_EmptyRelationObjectsWithoutFallbackReturnEmptyLists():
     mapper = buildRuntimeMapper(
@@ -1048,4 +1101,74 @@ def test_GetRelationParentsDoesNotResurrectSynchronizedFallbackRelation():
     assert fallbackMapper.nameCalls == [
         "source",
     ]
+
+def test_GetRelationsByCreatorMergesUnsynchronizedPostgresqlAndFallback():
+    postgresqlRelation = {
+        "id": 10,
+        "parent_id": 101,
+        "name": "source",
+        "object_parent_id": 201,
+        "object_child_id": 301,
+        "object_parent_extended": None,
+        "object_child_extended": None,
+    }
+
+    duplicatedFallbackRelation = {
+        **postgresqlRelation,
+        "id": 910,
+    }
+
+    compatibilityRelation = {
+        "id": 911,
+        "parent_id": 101,
+        "name": "transform",
+        "object_parent_id": 201,
+        "object_child_id": 302,
+        "object_parent_extended": None,
+        "object_child_extended": (
+            "outputAverage"
+        ),
+    }
+
+    fallbackMapper = FakeFallbackMapper()
+
+    fallbackMapper.creatorRows = [
+        duplicatedFallbackRelation,
+        compatibilityRelation,
+    ]
+
+    mapper = buildRuntimeMapper(
+        rows=[
+            postgresqlRelation,
+        ],
+        fallbackMapper=fallbackMapper,
+        persistedCreatorIds={
+            101,
+        },
+    )
+
+    creator = FakeObject(
+        101
+    )
+
+    result = mapper.getRelationsByCreator(
+        creator
+    )
+
+    assert result == [
+        postgresqlRelation,
+        compatibilityRelation,
+    ]
+
+    assert fallbackMapper.creatorCalls == [
+        creator,
+    ]
+
+    assert mapper.db.snapshotCalls[0][
+        "values"
+    ] == (
+        7,
+        "101",
+    )
+
 
