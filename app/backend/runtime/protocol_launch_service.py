@@ -66,6 +66,9 @@ class RuntimeProtocolLaunchService:
             syncProjectProtocolsAndDependenciesCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
+            refreshPostgresqlRuntimeProtocolForResumeCallback: Optional[
+                Callable
+            ] = None,
     ) -> Dict[str, Any]:
         """
         Save, validate, and execute a protocol action.
@@ -125,6 +128,44 @@ class RuntimeProtocolLaunchService:
                 stopProtocolCallback=stopProtocolCallback,
                 usesPostgresqlRuntimeCallback=usesPostgresqlRuntimeCallback,
                 syncProjectProtocolsAndDependenciesCallback=syncProjectProtocolsAndDependenciesCallback,
+            )
+
+        if (
+                usingPostgresqlRuntime
+                and executeMode == "launch"
+                and protocolId not in (
+                    None,
+                    "",
+                )
+        ):
+            if not callable(
+                    refreshPostgresqlRuntimeProtocolForResumeCallback
+            ):
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail=(
+                        "PostgreSQL runtime protocol resume "
+                        "refresh is not configured."
+                    ),
+                )
+
+            refreshReport = (
+                refreshPostgresqlRuntimeProtocolForResumeCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            logger.info(
+                "Prepared PostgreSQL runtime protocol for native "
+                "Scipion resume. projectId=%s protocolId=%s "
+                "refresh=%s",
+                projectId,
+                protocolId,
+                refreshReport,
             )
 
         protocol, errors = saveProtocolCallback(
