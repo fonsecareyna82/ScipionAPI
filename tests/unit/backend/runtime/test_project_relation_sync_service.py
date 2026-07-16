@@ -144,6 +144,7 @@ class FakeRepository:
             "saved": True,
             "cleanup": cleanupReport,
             "relations": persistedRelations,
+            "snapshotSynchronized": True,
         }
 
 
@@ -281,6 +282,17 @@ class FakeCursor:
 
 class FakeTransaction:
     def __enter__(self):
+        self.snapshot = {
+            "rows": list(
+                self.db.rows
+            ),
+            "relationsSynchronized": (
+                self.db.relationsSynchronized
+            ),
+        }
+
+        self.db.transactionCalls += 1
+
         return self
 
     def __exit__(self, excType, excValue, traceback):
@@ -338,7 +350,15 @@ class AtomicRelationTransaction:
     ):
         if exceptionType is not None:
             self.db.rows = list(
-                self.snapshot
+                self.snapshot[
+                    "rows"
+                ]
+            )
+
+            self.db.relationsSynchronized = (
+                self.snapshot[
+                    "relationsSynchronized"
+                ]
             )
 
             self.db.rollbackCalls += 1
@@ -351,7 +371,10 @@ class AtomicRelationTransaction:
 
 
 class AtomicRelationDb:
-    def __init__(self):
+    def __init__(
+            self,
+            markerRowcount=1,
+    ):
         self.rows = [
             (
                 "legacy",
@@ -362,6 +385,10 @@ class AtomicRelationDb:
                 "old",
             ),
         ]
+        self.relationsSynchronized = False
+        self.markerRowcount = int(
+            markerRowcount
+        )
 
         self.calls = []
         self.cursor = FakeCursor(
@@ -471,6 +498,20 @@ class AtomicRelationDb:
             ))
 
             self.cursor.rowcount = 1
+
+            return self.cursor
+
+        if normalizedQuery.startswith(
+                'UPDATE protocols SET "relationsSynchronized" = TRUE'
+        ):
+            self.cursor.rowcount = (
+                self.markerRowcount
+            )
+
+            if self.markerRowcount == 1:
+                self.relationsSynchronized = (
+                    True
+                )
 
             return self.cursor
 
@@ -892,6 +933,148 @@ def test_ReplaceImportedOutputRelationsRollsBackCompleteSnapshotOnFailure():
         for call in db.calls
     )
 
+
+def test_ReplaceEmptyImportedOutputSnapshotMarksProtocolSynchronized():
+    db = AtomicRelationDb()
+
+    mapper = SimpleNamespace(
+        db=db
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .replaceImportedOutputRelationsForCreator(
+            mapper=mapper,
+            projectId=4,
+            creatorProtocolDbId=200,
+            creatorProtocolId=20,
+            relations=[],
+        )
+    )
+
+    assert result == {
+        "saved": True,
+        "cleanup": {
+            "legacyRelationsDeleted": 1,
+            "canonicalRelationsDeleted": 1,
+        },
+        "relations": [],
+        "snapshotSynchronized": True,
+    }
+
+    assert db.rows == []
+    assert db.relationsSynchronized is True
+
+    assert db.transactionCalls == 1
+    assert db.commitCalls == 1
+    assert db.rollbackCalls == 0
+
+    assert len(db.calls) == 3
+
+    assert (
+        db.calls[2]["query"]
+        .startswith(
+            'UPDATE protocols SET "relationsSynchronized" = TRUE'
+        )
+    )
+
+    assert db.calls[2]["params"] == (
+        4,
+        200,
+        "20",
+    )
+
+    assert all(
+        call["commit"] is False
+        for call in db.calls
+    )
+
+
+def test_ReplaceImportedOutputRelationsRollsBackWhenMarkerCannotBeStored():
+    db = AtomicRelationDb(
+        markerRowcount=0
+    )
+
+    mapper = SimpleNamespace(
+        db=db
+    )
+
+    previousRows = list(
+        db.rows
+    )
+
+    parentObject = {
+        "objectId": 1001,
+        "protocolDbId": 200,
+        "protocolId": "20",
+        "outputName": "outputParticles",
+    }
+
+    childObject = {
+        "objectId": 2002,
+        "protocolDbId": 300,
+        "protocolId": "30",
+        "outputName": "outputClasses",
+    }
+
+    try:
+        (
+            ProtocolGraphRepository()
+            .replaceImportedOutputRelationsForCreator(
+                mapper=mapper,
+                projectId=4,
+                creatorProtocolDbId=200,
+                creatorProtocolId=20,
+                relations=[{
+                    "relationId": 7,
+                    "relationName": (
+                        "relation_datasource"
+                    ),
+                    "creatorProtocolId": 20,
+                    "parentRuntimeObjectId": 101,
+                    "childRuntimeObjectId": 202,
+                    "parentExtended": (
+                        "outputParticles"
+                    ),
+                    "childExtended": (
+                        "outputClasses"
+                    ),
+                    "parentObject": parentObject,
+                    "childObject": childObject,
+                    "metadata": {
+                        "source": "test",
+                    },
+                }],
+            )
+        )
+
+    except RuntimeError as error:
+        assert str(error) == (
+            "Cannot mark relation snapshot as synchronized "
+            "for protocol 20."
+        )
+
+    else:
+        raise AssertionError(
+            "Expected relation snapshot marker "
+            "update to fail"
+        )
+
+    assert db.rows == previousRows
+
+    assert (
+        db.relationsSynchronized
+        is False
+    )
+
+    assert db.transactionCalls == 1
+    assert db.commitCalls == 0
+    assert db.rollbackCalls == 1
+
+    assert all(
+        call["commit"] is False
+        for call in db.calls
+    )
 
 
 

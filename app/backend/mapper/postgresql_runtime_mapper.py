@@ -3942,15 +3942,15 @@ class PostgresqlRuntimeMapper(Mapper):
             tuple(values),
         )
 
-    def _isRelationCreatorOwnedByPostgresql(
+    def _isRelationSnapshotSynchronized(
             self,
             creatorId,
     ) -> bool:
         """
-        Return whether PostgreSQL owns the runtime relation creator.
+        Return whether PostgreSQL contains an authoritative relation snapshot.
 
-        An empty PostgreSQL relation snapshot is authoritative when its
-        creator is already persisted as a protocol or generic object.
+        The existence of a protocol row alone is not enough. A snapshot only
+        becomes authoritative after its complete atomic synchronization.
         """
         creatorId = self._toOptionalInt(
             creatorId
@@ -3961,19 +3961,11 @@ class PostgresqlRuntimeMapper(Mapper):
 
         row = self.db.fetchOne(
             """
-            SELECT 1 AS owned
-             WHERE EXISTS (
-                    SELECT 1
-                      FROM protocols p
-                     WHERE p."projectId" = %s
-                       AND p."protocolId" = %s
-                   )
-                OR EXISTS (
-                    SELECT 1
-                      FROM scipion_objects o
-                     WHERE o."projectId" = %s
-                       AND o."scipionObjId" = %s
-                   )
+            SELECT
+                "relationsSynchronized"
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
              LIMIT 1
             """,
             (
@@ -3981,12 +3973,125 @@ class PostgresqlRuntimeMapper(Mapper):
                 str(
                     creatorId
                 ),
-                self.projectId,
-                creatorId,
             ),
         )
 
-        return row is not None
+        return bool(
+            row
+            and row.get(
+                "relationsSynchronized"
+            )
+        )
+
+    def _buildRuntimeRelationIdentity(
+            self,
+            relation,
+    ):
+        """
+        Build the logical identity used by PostgreSQL relation uniqueness.
+
+        SQLite relation ids are deliberately excluded.
+        """
+        def normalizeId(value):
+            normalizedValue = (
+                self._toOptionalInt(
+                    value
+                )
+            )
+
+            return (
+                ""
+                if normalizedValue is None
+                else str(
+                    normalizedValue
+                )
+            )
+
+        def normalizeText(value):
+            return (
+                ""
+                if value is None
+                else str(
+                    value
+                )
+            )
+
+        return (
+            normalizeText(
+                relation.get(
+                    "name"
+                )
+            ),
+            normalizeId(
+                relation.get(
+                    "parent_id"
+                )
+            ),
+            normalizeId(
+                relation.get(
+                    "object_parent_id"
+                )
+            ),
+            normalizeId(
+                relation.get(
+                    "object_child_id"
+                )
+            ),
+            normalizeText(
+                relation.get(
+                    "object_parent_extended"
+                )
+            ),
+            normalizeText(
+                relation.get(
+                    "object_child_extended"
+                )
+            ),
+        )
+
+    def _mergeRuntimeRelationRows(
+            self,
+            postgresqlRelations,
+            compatibilityRelations,
+    ):
+        """
+        Merge PostgreSQL and compatibility relations.
+
+        PostgreSQL rows are placed first and therefore win whenever both
+        sources expose the same logical relation.
+        """
+        result = []
+        identities = set()
+
+        for relation in (
+                list(
+                    postgresqlRelations
+                    or []
+                )
+                + list(
+                    compatibilityRelations
+                    or []
+                )
+        ):
+            identity = (
+                self
+                ._buildRuntimeRelationIdentity(
+                    relation
+                )
+            )
+
+            if identity in identities:
+                continue
+
+            identities.add(
+                identity
+            )
+
+            result.append(
+                relation
+            )
+
+        return result
 
     def _selectCompatibilityRelationsFromReadFallback(
             self,
@@ -3996,12 +4101,13 @@ class PostgresqlRuntimeMapper(Mapper):
             relationName=None,
             parentId=None,
             childId=None,
+            synchronizationByCreator=None,
     ):
         """
-        Read only relations still owned exclusively by SQLite.
+        Read relation rows still owned by the SQLite compatibility mapper.
 
-        Relations whose creator already exists in PostgreSQL are discarded,
-        even when the corresponding PostgreSQL snapshot is empty.
+        A fallback row is discarded only when the corresponding protocol has a
+        successfully synchronized PostgreSQL relation snapshot.
         """
         if self.readFallbackMapper is None:
             return []
@@ -4025,6 +4131,7 @@ class PostgresqlRuntimeMapper(Mapper):
                     creatorObj
                 )
             )
+
         elif relationName is not None:
             rawRelations = (
                 self.readFallbackMapper
@@ -4032,11 +4139,16 @@ class PostgresqlRuntimeMapper(Mapper):
                     relationName
                 )
             )
+
         else:
             return []
 
         compatibleRelations = []
-        creatorOwnership = {}
+
+        synchronizationByCreator = dict(
+            synchronizationByCreator
+            or {}
+        )
 
         for rawRelation in rawRelations or []:
             relation = dict(
@@ -4055,8 +4167,13 @@ class PostgresqlRuntimeMapper(Mapper):
                     relationCreatorId is None
                     and creatorId is not None
             ):
-                relationCreatorId = creatorId
-                relation["parent_id"] = creatorId
+                relationCreatorId = (
+                    creatorId
+                )
+
+                relation[
+                    "parent_id"
+                ] = creatorId
 
             if (
                     creatorId is not None
@@ -4068,14 +4185,14 @@ class PostgresqlRuntimeMapper(Mapper):
             if (
                     relationName is not None
                     and str(
-                relation.get(
-                    "name"
-                )
-                or ""
-            )
+                        relation.get(
+                            "name"
+                        )
+                        or ""
+                    )
                     != str(
-                relationName
-            )
+                        relationName
+                    )
             ):
                 continue
 
@@ -4112,19 +4229,19 @@ class PostgresqlRuntimeMapper(Mapper):
             if relationCreatorId is not None:
                 if (
                         relationCreatorId
-                        not in creatorOwnership
+                        not in synchronizationByCreator
                 ):
-                    creatorOwnership[
+                    synchronizationByCreator[
                         relationCreatorId
                     ] = (
                         self
-                        ._isRelationCreatorOwnedByPostgresql(
+                        ._isRelationSnapshotSynchronized(
                             relationCreatorId
                         )
                     )
 
-                if creatorOwnership[
-                    relationCreatorId
+                if synchronizationByCreator[
+                        relationCreatorId
                 ]:
                     continue
 
@@ -4142,26 +4259,33 @@ class PostgresqlRuntimeMapper(Mapper):
             creatorObj
         )
 
-        relations = self._selectPostgresqlRelations(
-            creatorId=creatorId,
+        postgresqlRelations = (
+            self._selectPostgresqlRelations(
+                creatorId=creatorId,
+            )
         )
 
-        if relations:
-            return relations
+        if postgresqlRelations:
+            return postgresqlRelations
 
         if self.readFallbackMapper is None:
-            return relations
+            return postgresqlRelations
 
-        if self._isRelationCreatorOwnedByPostgresql(
+        snapshotSynchronized = (
+            self
+            ._isRelationSnapshotSynchronized(
                 creatorId
-        ):
-            return relations
+            )
+        )
+
+        if snapshotSynchronized:
+            return postgresqlRelations
 
         self._recordReadFallback(
             "getRelationsByCreator",
             creatorId=creatorId,
             reason=(
-                "creator_not_postgresql_owned"
+                "snapshot_not_synchronized"
             ),
         )
 
@@ -4170,6 +4294,9 @@ class PostgresqlRuntimeMapper(Mapper):
             ._selectCompatibilityRelationsFromReadFallback(
                 creatorObj=creatorObj,
                 creatorId=creatorId,
+                synchronizationByCreator={
+                    creatorId: False,
+                },
             )
         )
 
@@ -4177,43 +4304,48 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             relationName,
     ):
-        relations = self._selectPostgresqlRelations(
-            relationName=relationName,
-        )
-
-        if relations:
-            return relations
-
-        if self.readFallbackMapper is None:
-            return relations
-
-        self._recordReadFallback(
-            "getRelationsByName",
-            relationName=relationName,
-            reason=(
-                "postgresql_empty_compatibility_filter"
-            ),
-        )
-
-        return (
-            self
-            ._selectCompatibilityRelationsFromReadFallback(
+        postgresqlRelations = (
+            self._selectPostgresqlRelations(
                 relationName=relationName,
             )
         )
 
-    def _selectRelationObjectById(self, objId):
-        """
-        Resolve one relation target without refreshing any existing owner
-        protocol.
+        compatibilityRelations = []
 
-        PostgreSQL protocols, sets and generic objects are attempted first.
-        SQLite remains a compatibility fallback. No protocol or output is
-        stored, replaced or attached to its owner by this method.
-        """
-        obj = self._selectProtocolByIdFromPostgresql(
+        if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "getRelationsByName",
+                relationName=relationName,
+                reason=(
+                    "merge_unsynchronized_snapshots"
+                ),
+            )
+
+            compatibilityRelations = (
+                self
+                ._selectCompatibilityRelationsFromReadFallback(
+                    relationName=relationName,
+                )
+            )
+
+        return self._mergeRuntimeRelationRows(
+            postgresqlRelations,
+            compatibilityRelations,
+        )
+
+    def _selectRelationObjectById(
+            self,
             objId,
-            refreshCached=False,
+    ):
+        """
+        Resolve one relation target without refreshing any owner protocol.
+        """
+        obj = (
+            self
+            ._selectProtocolByIdFromPostgresql(
+                objId,
+                refreshCached=False,
+            )
         )
 
         if obj is not None:
@@ -4227,14 +4359,21 @@ class PostgresqlRuntimeMapper(Mapper):
         if obj is not None:
             return obj
 
-        obj = self._selectGenericObjectByIdFromPostgresql(objId)
+        obj = (
+            self
+            ._selectGenericObjectByIdFromPostgresql(
+                objId
+            )
+        )
 
         if obj is not None:
             return obj
 
         return self._selectByIdFromReadFallback(
             objId,
-            auditOperation="relationObject.selectById",
+            auditOperation=(
+                "relationObject.selectById"
+            ),
         )
 
     def getRelationChilds(
@@ -4246,32 +4385,37 @@ class PostgresqlRuntimeMapper(Mapper):
             parentObj
         )
 
-        relations = self._selectPostgresqlRelations(
-            relationName=relName,
-            parentId=parentId,
+        postgresqlRelations = (
+            self._selectPostgresqlRelations(
+                relationName=relName,
+                parentId=parentId,
+            )
         )
 
-        if (
-                not relations
-                and self.readFallbackMapper
-                is not None
-        ):
+        compatibilityRelations = []
+
+        if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationChilds",
                 relationName=relName,
                 parentId=parentId,
                 reason=(
-                    "postgresql_empty_compatibility_filter"
+                    "merge_unsynchronized_snapshots"
                 ),
             )
 
-            relations = (
+            compatibilityRelations = (
                 self
                 ._selectCompatibilityRelationsFromReadFallback(
                     relationName=relName,
                     parentId=parentId,
                 )
             )
+
+        relations = self._mergeRuntimeRelationRows(
+            postgresqlRelations,
+            compatibilityRelations,
+        )
 
         return [
             self._selectRelationObjectById(
@@ -4291,32 +4435,37 @@ class PostgresqlRuntimeMapper(Mapper):
             childObj
         )
 
-        relations = self._selectPostgresqlRelations(
-            relationName=relName,
-            childId=childId,
+        postgresqlRelations = (
+            self._selectPostgresqlRelations(
+                relationName=relName,
+                childId=childId,
+            )
         )
 
-        if (
-                not relations
-                and self.readFallbackMapper
-                is not None
-        ):
+        compatibilityRelations = []
+
+        if self.readFallbackMapper is not None:
             self._recordReadFallback(
                 "getRelationParents",
                 relationName=relName,
                 childId=childId,
                 reason=(
-                    "postgresql_empty_compatibility_filter"
+                    "merge_unsynchronized_snapshots"
                 ),
             )
 
-            relations = (
+            compatibilityRelations = (
                 self
                 ._selectCompatibilityRelationsFromReadFallback(
                     relationName=relName,
                     childId=childId,
                 )
             )
+
+        relations = self._mergeRuntimeRelationRows(
+            postgresqlRelations,
+            compatibilityRelations,
+        )
 
         return [
             self._selectRelationObjectById(
