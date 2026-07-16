@@ -133,6 +133,7 @@ class PostgresqlFlatMapper(Mapper):
                 params JSONB,
                 "parentIds" INTEGER[] NOT NULL DEFAULT ARRAY[]::INTEGER[],
                 "childIds" INTEGER[] NOT NULL DEFAULT ARRAY[]::INTEGER[],
+                "relationsSynchronized" BOOLEAN NOT NULL DEFAULT FALSE,
                 "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 "updatedAt" TIMESTAMPTZ
             );
@@ -142,6 +143,10 @@ class PostgresqlFlatMapper(Mapper):
 
             CREATE UNIQUE INDEX IF NOT EXISTS protocols_project_dbid_ux
               ON protocols("projectId", id);
+              
+            ALTER TABLE protocols
+                ADD COLUMN IF NOT EXISTS "relationsSynchronized"
+                BOOLEAN NOT NULL DEFAULT FALSE;
             """
         )
 

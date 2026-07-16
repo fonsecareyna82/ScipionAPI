@@ -1971,10 +1971,22 @@ class ProtocolGraphRepository:
                     )
                 )
 
+            self._markImportedRelationSnapshotSynchronized(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolDbId=(
+                    creatorProtocolDbId
+                ),
+                creatorProtocolId=(
+                    creatorProtocolId
+                ),
+            )
+
         return {
             "saved": True,
             "cleanup": cleanupReport,
             "relations": persistedRelations,
+            "snapshotSynchronized": True,
         }
 
     def deleteImportedOutputRelationsForCreator(
@@ -1999,6 +2011,54 @@ class ProtocolGraphRepository:
                     creatorProtocolDbId=creatorProtocolDbId,
                     creatorProtocolId=creatorProtocolId,
                 )
+            )
+
+    def _markImportedRelationSnapshotSynchronized(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+    ) -> None:
+        """
+        Mark one complete relation snapshot as PostgreSQL-authoritative.
+
+        The caller owns the transaction. This update must commit or roll back
+        together with deletion and insertion of the relation rows.
+        """
+        markerCursor = mapper.db.execute(
+            """
+            UPDATE protocols
+               SET "relationsSynchronized" = TRUE,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND id = %s
+               AND "protocolId" = %s
+            """,
+            (
+                int(projectId),
+                int(creatorProtocolDbId),
+                str(
+                    creatorProtocolId
+                ),
+            ),
+            commit=False,
+        )
+
+        markedProtocolCount = int(
+            getattr(
+                markerCursor,
+                "rowcount",
+                0,
+            )
+            or 0
+        )
+
+        if markedProtocolCount != 1:
+            raise RuntimeError(
+                "Cannot mark relation snapshot as synchronized "
+                "for protocol %s."
+                % creatorProtocolId
             )
 
     def _insertImportedOutputRelationRows(
