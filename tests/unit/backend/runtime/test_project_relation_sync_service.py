@@ -85,6 +85,67 @@ class FakeRepository:
             "relationName": kwargs["relationName"],
         }
 
+    def replaceImportedOutputRelationsForCreator(
+            self,
+            mapper,
+            projectId,
+            creatorProtocolDbId,
+            creatorProtocolId,
+            relations,
+    ):
+        cleanupReport = (
+            self.deleteImportedOutputRelationsForCreator(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolDbId=(
+                    creatorProtocolDbId
+                ),
+                creatorProtocolId=creatorProtocolId,
+            )
+        )
+
+        persistedRelations = []
+
+        for relation in relations:
+            result = self.insertImportedOutputRelation(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolDbId=(
+                    creatorProtocolDbId
+                ),
+                creatorProtocolId=relation[
+                    "creatorProtocolId"
+                ],
+                relationName=relation[
+                    "relationName"
+                ],
+                parentRuntimeObjectId=relation[
+                    "parentRuntimeObjectId"
+                ],
+                childRuntimeObjectId=relation[
+                    "childRuntimeObjectId"
+                ],
+                parentExtended=relation[
+                    "parentExtended"
+                ],
+                childExtended=relation[
+                    "childExtended"
+                ],
+                metadata=relation[
+                    "metadata"
+                ],
+            )
+
+            persistedRelations.append(
+                result
+            )
+
+        return {
+            "saved": True,
+            "cleanup": cleanupReport,
+            "relations": persistedRelations,
+        }
+
 
 def buildRelation():
     return {
@@ -253,6 +314,170 @@ class FakeDb:
         )
 
         return self.cursor
+
+
+class AtomicRelationTransaction:
+    def __init__(self, db):
+        self.db = db
+        self.snapshot = None
+
+    def __enter__(self):
+        self.snapshot = list(
+            self.db.rows
+        )
+
+        self.db.transactionCalls += 1
+
+        return self
+
+    def __exit__(
+            self,
+            exceptionType,
+            exceptionValue,
+            traceback,
+    ):
+        if exceptionType is not None:
+            self.db.rows = list(
+                self.snapshot
+            )
+
+            self.db.rollbackCalls += 1
+
+            return False
+
+        self.db.commitCalls += 1
+
+        return False
+
+
+class AtomicRelationDb:
+    def __init__(self):
+        self.rows = [
+            (
+                "legacy",
+                "old",
+            ),
+            (
+                "canonical",
+                "old",
+            ),
+        ]
+
+        self.calls = []
+        self.cursor = FakeCursor(
+            0
+        )
+
+        self.transactionCalls = 0
+        self.commitCalls = 0
+        self.rollbackCalls = 0
+
+    def transaction(self):
+        return AtomicRelationTransaction(
+            self
+        )
+
+    def execute(
+            self,
+            query,
+            params,
+            commit=True,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        self.calls.append({
+            "query": normalizedQuery,
+            "params": params,
+            "commit": commit,
+        })
+
+        if normalizedQuery.startswith(
+                "DELETE FROM scipion_relations"
+        ):
+            previousCount = len(
+                self.rows
+            )
+
+            self.rows = [
+                row
+                for row in self.rows
+                if row[0] != "legacy"
+            ]
+
+            self.cursor.rowcount = (
+                previousCount
+                - len(
+                    self.rows
+                )
+            )
+
+            return self.cursor
+
+        if normalizedQuery.startswith(
+                "DELETE FROM scipion_object_relations"
+        ):
+            previousCount = len(
+                self.rows
+            )
+
+            self.rows = [
+                row
+                for row in self.rows
+                if row[0] != "canonical"
+            ]
+
+            self.cursor.rowcount = (
+                previousCount
+                - len(
+                    self.rows
+                )
+            )
+
+            return self.cursor
+
+        if normalizedQuery.startswith(
+                "INSERT INTO scipion_relations"
+        ):
+            childRuntimeObjectId = int(
+                params[4]
+            )
+
+            if childRuntimeObjectId == 303:
+                raise RuntimeError(
+                    "forced relation insert failure"
+                )
+
+            self.rows.append((
+                "legacy",
+                tuple(
+                    params
+                ),
+            ))
+
+            self.cursor.rowcount = 1
+
+            return self.cursor
+
+        if normalizedQuery.startswith(
+                "INSERT INTO scipion_object_relations"
+        ):
+            self.rows.append((
+                "canonical",
+                tuple(
+                    params
+                ),
+            ))
+
+            self.cursor.rowcount = 1
+
+            return self.cursor
+
+        raise AssertionError(
+            "Unexpected SQL: %s"
+            % normalizedQuery
+        )
 
 
 def test_DeleteImportedOutputRelationsClearsBothRepresentations():
@@ -555,4 +780,118 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
         "ON CONFLICT DO NOTHING"
         in db.calls[1]["query"]
     )
+
+
+def test_ReplaceImportedOutputRelationsRollsBackCompleteSnapshotOnFailure():
+    db = AtomicRelationDb()
+
+    mapper = SimpleNamespace(
+        db=db
+    )
+
+    repository = ProtocolGraphRepository()
+
+    parentObject = {
+        "objectId": 1001,
+        "protocolDbId": 200,
+        "protocolId": "20",
+        "outputName": "outputParticles",
+    }
+
+    firstChildObject = {
+        "objectId": 2002,
+        "protocolDbId": 300,
+        "protocolId": "30",
+        "outputName": "outputClasses",
+    }
+
+    secondChildObject = {
+        "objectId": 3003,
+        "protocolDbId": 400,
+        "protocolId": "40",
+        "outputName": "outputAverage",
+    }
+
+    previousRows = list(
+        db.rows
+    )
+
+    try:
+        repository.replaceImportedOutputRelationsForCreator(
+            mapper=mapper,
+            projectId=4,
+            creatorProtocolDbId=200,
+            creatorProtocolId=20,
+            relations=[
+                {
+                    "relationId": 7,
+                    "relationName": (
+                        "relation_datasource"
+                    ),
+                    "creatorProtocolId": 20,
+                    "parentRuntimeObjectId": 101,
+                    "childRuntimeObjectId": 202,
+                    "parentExtended": (
+                        "outputParticles"
+                    ),
+                    "childExtended": (
+                        "outputClasses"
+                    ),
+                    "parentObject": parentObject,
+                    "childObject": (
+                        firstChildObject
+                    ),
+                    "metadata": {
+                        "source": "test",
+                    },
+                },
+                {
+                    "relationId": 8,
+                    "relationName": (
+                        "relation_datasource"
+                    ),
+                    "creatorProtocolId": 20,
+                    "parentRuntimeObjectId": 101,
+                    "childRuntimeObjectId": 303,
+                    "parentExtended": (
+                        "outputParticles"
+                    ),
+                    "childExtended": (
+                        "outputAverage"
+                    ),
+                    "parentObject": parentObject,
+                    "childObject": (
+                        secondChildObject
+                    ),
+                    "metadata": {
+                        "source": "test",
+                    },
+                },
+            ],
+        )
+
+    except RuntimeError as error:
+        assert str(error) == (
+            "forced relation insert failure"
+        )
+
+    else:
+        raise AssertionError(
+            "Expected relation replacement "
+            "to fail"
+        )
+
+    assert db.rows == previousRows
+
+    assert db.transactionCalls == 1
+    assert db.commitCalls == 0
+    assert db.rollbackCalls == 1
+
+    assert all(
+        call["commit"] is False
+        for call in db.calls
+    )
+
+
+
 

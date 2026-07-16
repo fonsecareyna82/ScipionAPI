@@ -1863,94 +1863,118 @@ class ProtocolGraphRepository:
                 "reason": "child_output_not_found",
             }
 
-        relationMetadata = dict(metadata or {})
-        relationMetadata.update({
-            "creatorProtocolDbId": int(creatorProtocolDbId),
-            "creatorProtocolId": str(creatorProtocolId),
-            "parentProtocolDbId": int(parentObject["protocolDbId"]),
-            "parentProtocolId": str(parentObject["protocolId"]),
-            "parentOutputName": parentObject.get("outputName"),
-            "childProtocolDbId": int(childObject["protocolDbId"]),
-            "childProtocolId": str(childObject["protocolId"]),
-            "childOutputName": childObject.get("outputName"),
-        })
+        with mapper.db.transaction():
+            return self._insertImportedOutputRelationRows(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolDbId=creatorProtocolDbId,
+                creatorProtocolId=creatorProtocolId,
+                relationName=relationName,
+                parentRuntimeObjectId=parentRuntimeObjectId,
+                childRuntimeObjectId=childRuntimeObjectId,
+                parentObject=parentObject,
+                childObject=childObject,
+                parentExtended=parentExtended,
+                childExtended=childExtended,
+                metadata=metadata,
+            )
 
-        legacyParentExtended = (
-            ""
-            if parentExtended is None
-            else str(parentExtended)
-        )
-        legacyChildExtended = (
-            ""
-            if childExtended is None
-            else str(childExtended)
-        )
+    def replaceImportedOutputRelationsForCreator(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+            relations: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Replace one protocol relation snapshot atomically.
+
+        All relation objects must be resolved before entering this method.
+        Deleting the previous snapshot and inserting every new relation happen
+        in one PostgreSQL transaction. Any insertion failure restores the
+        complete previous snapshot.
+        """
+        persistedRelations = []
 
         with mapper.db.transaction():
-            mapper.db.execute(
-                """
-                INSERT INTO scipion_relations (
-                    "projectId",
-                    name,
-                    "creatorObjId",
-                    "parentObjId",
-                    "childObjId",
-                    "parentExtended",
-                    "childExtended"
+            cleanupReport = (
+                self._deleteImportedOutputRelationsForCreatorRows(
+                    mapper=mapper,
+                    projectId=projectId,
+                    creatorProtocolDbId=creatorProtocolDbId,
+                    creatorProtocolId=creatorProtocolId,
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    int(projectId),
-                    relationName,
-                    int(creatorProtocolId),
-                    int(parentRuntimeObjectId),
-                    int(childRuntimeObjectId),
-                    legacyParentExtended,
-                    legacyChildExtended,
-                ),
-                commit=False,
             )
 
-            mapper.db.execute(
-                """
-                INSERT INTO scipion_object_relations (
-                    "projectId",
-                    "creatorObjectId",
-                    "parentObjectId",
-                    "childObjectId",
-                    name,
-                    "parentExtended",
-                    "childExtended",
-                    metadata
+            for relation in relations or []:
+                parentObject = relation.get(
+                    "parentObject"
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    int(projectId),
-                    int(parentObject["objectId"]),
-                    int(parentObject["objectId"]),
-                    int(childObject["objectId"]),
-                    relationName,
-                    parentExtended,
-                    childExtended,
-                    json.dumps(relationMetadata),
-                ),
-                commit=False,
-            )
+
+                childObject = relation.get(
+                    "childObject"
+                )
+
+                if not parentObject or not childObject:
+                    raise RuntimeError(
+                        "Cannot replace imported relation snapshot "
+                        "because relation objects were not resolved."
+                    )
+
+                relationCreatorProtocolId = relation.get(
+                    "creatorProtocolId"
+                )
+
+                if relationCreatorProtocolId in (
+                        None,
+                        "",
+                ):
+                    relationCreatorProtocolId = (
+                        creatorProtocolId
+                    )
+
+                persistedRelations.append(
+                    self._insertImportedOutputRelationRows(
+                        mapper=mapper,
+                        projectId=projectId,
+                        creatorProtocolDbId=(
+                            creatorProtocolDbId
+                        ),
+                        creatorProtocolId=int(
+                            relationCreatorProtocolId
+                        ),
+                        relationName=relation.get(
+                            "relationName"
+                        ),
+                        parentRuntimeObjectId=int(
+                            relation[
+                                "parentRuntimeObjectId"
+                            ]
+                        ),
+                        childRuntimeObjectId=int(
+                            relation[
+                                "childRuntimeObjectId"
+                            ]
+                        ),
+                        parentObject=parentObject,
+                        childObject=childObject,
+                        parentExtended=relation.get(
+                            "parentExtended"
+                        ),
+                        childExtended=relation.get(
+                            "childExtended"
+                        ),
+                        metadata=relation.get(
+                            "metadata"
+                        ),
+                    )
+                )
 
         return {
             "saved": True,
-            "relationName": relationName,
-            "creatorProtocolId": str(creatorProtocolId),
-            "parentObjectId": int(parentObject["objectId"]),
-            "parentRuntimeObjectId": int(parentRuntimeObjectId),
-            "parentOutputName": parentObject.get("outputName"),
-            "childObjectId": int(childObject["objectId"]),
-            "childRuntimeObjectId": int(childRuntimeObjectId),
-            "childOutputName": childObject.get("outputName"),
+            "cleanup": cleanupReport,
+            "relations": persistedRelations,
         }
 
     def deleteImportedOutputRelationsForCreator(
@@ -1968,53 +1992,219 @@ class ProtocolGraphRepository:
         creatorProtocolDbId in metadata.
         """
         with mapper.db.transaction():
-            legacyCursor = mapper.db.execute(
-                """
-                DELETE FROM scipion_relations
-                 WHERE "projectId" = %s
-                   AND "creatorObjId" = %s
-                """,
-                (
-                    int(projectId),
-                    int(creatorProtocolId),
-                ),
-                commit=False,
-            )
-
-            legacyRelationsDeleted = int(
-                getattr(
-                    legacyCursor,
-                    "rowcount",
-                    0,
+            return (
+                self._deleteImportedOutputRelationsForCreatorRows(
+                    mapper=mapper,
+                    projectId=projectId,
+                    creatorProtocolDbId=creatorProtocolDbId,
+                    creatorProtocolId=creatorProtocolId,
                 )
-                or 0
             )
 
-            canonicalCursor = mapper.db.execute(
-                """
-                DELETE FROM scipion_object_relations
-                 WHERE "projectId" = %s
-                   AND metadata ->> 'creatorProtocolDbId' = %s
-                """,
-                (
-                    int(projectId),
-                    str(
-                        int(
-                            creatorProtocolDbId
-                        )
-                    ),
+    def _insertImportedOutputRelationRows(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+            relationName: str,
+            parentRuntimeObjectId: int,
+            childRuntimeObjectId: int,
+            parentObject: Dict[str, Any],
+            childObject: Dict[str, Any],
+            parentExtended=None,
+            childExtended=None,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Insert both PostgreSQL relation representations.
+
+        The caller owns the transaction.
+        """
+        relationMetadata = dict(
+            metadata or {}
+        )
+
+        relationMetadata.update({
+            "creatorProtocolDbId": int(
+                creatorProtocolDbId
+            ),
+            "creatorProtocolId": str(
+                creatorProtocolId
+            ),
+            "parentProtocolDbId": int(
+                parentObject["protocolDbId"]
+            ),
+            "parentProtocolId": str(
+                parentObject["protocolId"]
+            ),
+            "parentOutputName": parentObject.get(
+                "outputName"
+            ),
+            "childProtocolDbId": int(
+                childObject["protocolDbId"]
+            ),
+            "childProtocolId": str(
+                childObject["protocolId"]
+            ),
+            "childOutputName": childObject.get(
+                "outputName"
+            ),
+        })
+
+        legacyParentExtended = (
+            ""
+            if parentExtended is None
+            else str(parentExtended)
+        )
+
+        legacyChildExtended = (
+            ""
+            if childExtended is None
+            else str(childExtended)
+        )
+
+        mapper.db.execute(
+            """
+            INSERT INTO scipion_relations (
+                "projectId",
+                name,
+                "creatorObjId",
+                "parentObjId",
+                "childObjId",
+                "parentExtended",
+                "childExtended"
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                int(projectId),
+                relationName,
+                int(creatorProtocolId),
+                int(parentRuntimeObjectId),
+                int(childRuntimeObjectId),
+                legacyParentExtended,
+                legacyChildExtended,
+            ),
+            commit=False,
+        )
+
+        mapper.db.execute(
+            """
+            INSERT INTO scipion_object_relations (
+                "projectId",
+                "creatorObjectId",
+                "parentObjectId",
+                "childObjectId",
+                name,
+                "parentExtended",
+                "childExtended",
+                metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                int(projectId),
+                int(parentObject["objectId"]),
+                int(parentObject["objectId"]),
+                int(childObject["objectId"]),
+                relationName,
+                parentExtended,
+                childExtended,
+                json.dumps(
+                    relationMetadata
                 ),
-                commit=False,
-            )
+            ),
+            commit=False,
+        )
 
-            canonicalRelationsDeleted = int(
-                getattr(
-                    canonicalCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
+        return {
+            "saved": True,
+            "relationName": relationName,
+            "creatorProtocolId": str(
+                creatorProtocolId
+            ),
+            "parentObjectId": int(
+                parentObject["objectId"]
+            ),
+            "parentRuntimeObjectId": int(
+                parentRuntimeObjectId
+            ),
+            "parentOutputName": parentObject.get(
+                "outputName"
+            ),
+            "childObjectId": int(
+                childObject["objectId"]
+            ),
+            "childRuntimeObjectId": int(
+                childRuntimeObjectId
+            ),
+            "childOutputName": childObject.get(
+                "outputName"
+            ),
+        }
+
+    def _deleteImportedOutputRelationsForCreatorRows(
+            self,
+            mapper,
+            projectId: int,
+            creatorProtocolDbId: int,
+            creatorProtocolId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete both relation representations.
+
+        The caller owns the transaction.
+        """
+        legacyCursor = mapper.db.execute(
+            """
+            DELETE FROM scipion_relations
+             WHERE "projectId" = %s
+               AND "creatorObjId" = %s
+            """,
+            (
+                int(projectId),
+                int(creatorProtocolId),
+            ),
+            commit=False,
+        )
+
+        legacyRelationsDeleted = int(
+            getattr(
+                legacyCursor,
+                "rowcount",
+                0,
             )
+            or 0
+        )
+
+        canonicalCursor = mapper.db.execute(
+            """
+            DELETE FROM scipion_object_relations
+             WHERE "projectId" = %s
+               AND metadata ->> 'creatorProtocolDbId' = %s
+            """,
+            (
+                int(projectId),
+                str(
+                    int(
+                        creatorProtocolDbId
+                    )
+                ),
+            ),
+            commit=False,
+        )
+
+        canonicalRelationsDeleted = int(
+            getattr(
+                canonicalCursor,
+                "rowcount",
+                0,
+            )
+            or 0
+        )
 
         return {
             "legacyRelationsDeleted": (
