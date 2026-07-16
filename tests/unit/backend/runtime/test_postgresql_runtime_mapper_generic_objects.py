@@ -1349,26 +1349,44 @@ def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
     assert ownerProtocol.outputObject is targetObject
     assert ownerProtocol.mock_calls == []
 
-def test_DeleteDoesNotPartiallyDeletePostgresqlSetRoot():
+
+def test_DeleteRejectsPersistedPostgresqlSetWithoutPartialDelete():
     mapper = buildRuntimeMapper(
         []
     )
 
     mapper.writeFallbackMapper = Mock()
 
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = {
+        "runtimeObjectId": 700,
+        "setId": 10,
+    }
+
     runtimeSet = FakeComposite()
     runtimeSet.setObjId(700)
 
     mapper._isSetLike = lambda obj: obj is runtimeSet
 
-    mapper.delete(
-        runtimeSet
+    try:
+        mapper.delete(runtimeSet)
+    except NotImplementedError as error:
+        assert str(error) == (
+            "PostgreSQL delete is not implemented "
+            "for persisted runtime Set objects."
+        )
+    else:
+        raise AssertionError(
+            "Expected persisted PostgreSQL Set deletion "
+            "to raise NotImplementedError"
+        )
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.assert_called_once_with(
+        mapper=mapper,
+        projectId=7,
+        runtimeObjectId=700,
     )
 
-    mapper.writeFallbackMapper.delete.assert_called_once_with(
-        runtimeSet
-    )
-
+    mapper.writeFallbackMapper.delete.assert_not_called()
     assert mapper.objectMapper.deleteCalls == []
 
 
@@ -1388,5 +1406,50 @@ def test_DeleteIgnoresUnstoredGenericObject():
     mapper.writeFallbackMapper.delete.assert_not_called()
     assert mapper.objectMapper.deleteCalls == []
 
+
+def test_DeleteUsesFallbackForNonPersistedSet():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = None
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    mapper.delete(
+        runtimeSet
+    )
+
+    mapper.writeFallbackMapper.delete.assert_called_once_with(
+        runtimeSet
+    )
+
+    assert mapper.objectMapper.deleteCalls == []
+
+
+def test_DeleteDoesNotPartiallyDeleteUnsupportedObject():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    unsupportedObject = Mock()
+    unsupportedObject.getObjId.return_value = 700
+
+    mapper._isSetLike = lambda obj: False
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = None
+
+    mapper.delete(
+        unsupportedObject
+    )
+
+    mapper.writeFallbackMapper.delete.assert_not_called()
+    assert mapper.objectMapper.deleteCalls == []
 
 

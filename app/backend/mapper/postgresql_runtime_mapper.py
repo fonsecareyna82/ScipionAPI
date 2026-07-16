@@ -3413,21 +3413,24 @@ class PostgresqlRuntimeMapper(Mapper):
         if objId is None:
             return
 
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.delete(obj)
+        persistedSet = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
+            mapper=self,
+            projectId=self.projectId,
+            runtimeObjectId=objId,
+        )
+
+        if persistedSet is not None:
+            raise NotImplementedError(
+                "PostgreSQL delete is not implemented "
+                "for persisted runtime Set objects."
+            )
 
         if (
                 isinstance(obj, ScipionSet)
                 or self._isSetLike(obj)
         ):
-            logger.debug(
-                "Skipping PostgreSQL Set deletion until native "
-                "runtime Set delete is implemented. "
-                "projectId=%s runtimeObjectId=%s className=%s",
-                self.projectId,
-                objId,
-                self._getClassName(obj),
-            )
+            if self.writeFallbackMapper is not None:
+                self.writeFallbackMapper.delete(obj)
 
             return
 
@@ -3442,6 +3445,9 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             return
+
+        if self.writeFallbackMapper is not None:
+            self.writeFallbackMapper.delete(obj)
 
         deleteResult = self.objectMapper.deleteStoredObjectSubtreesByScipionObjId(
             projectId=self.projectId,
