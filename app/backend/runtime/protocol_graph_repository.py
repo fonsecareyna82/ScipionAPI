@@ -1899,6 +1899,7 @@ class ProtocolGraphRepository:
                     "childExtended"
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     int(projectId),
@@ -1925,6 +1926,7 @@ class ProtocolGraphRepository:
                     metadata
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     int(projectId),
@@ -1979,6 +1981,15 @@ class ProtocolGraphRepository:
                 commit=False,
             )
 
+            legacyRelationsDeleted = int(
+                getattr(
+                    legacyCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            )
+
             canonicalCursor = mapper.db.execute(
                 """
                 DELETE FROM scipion_object_relations
@@ -1987,16 +1998,29 @@ class ProtocolGraphRepository:
                 """,
                 (
                     int(projectId),
-                    str(int(creatorProtocolDbId)),
+                    str(
+                        int(
+                            creatorProtocolDbId
+                        )
+                    ),
                 ),
                 commit=False,
             )
 
+            canonicalRelationsDeleted = int(
+                getattr(
+                    canonicalCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            )
+
         return {
-            "legacyRelationsDeleted": int(
-                getattr(legacyCursor, "rowcount", 0) or 0
+            "legacyRelationsDeleted": (
+                legacyRelationsDeleted
             ),
-            "canonicalRelationsDeleted": int(
-                getattr(canonicalCursor, "rowcount", 0) or 0
+            "canonicalRelationsDeleted": (
+                canonicalRelationsDeleted
             ),
         }

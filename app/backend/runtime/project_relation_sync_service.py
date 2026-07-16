@@ -37,6 +37,50 @@ logger = logging.getLogger(__name__)
 class RuntimeProjectRelationSyncService:
     """Migrate original Scipion project relations into PostgreSQL."""
 
+    @staticmethod
+    def _buildRelationIdentity(
+            relationName,
+            creatorProtocolId,
+            parentRuntimeObjectId,
+            childRuntimeObjectId,
+            parentExtended=None,
+            childExtended=None,
+    ):
+        """
+        Build the logical PostgreSQL identity of one runtime relation.
+
+        SQLite relation ids are deliberately excluded because rerunning or
+        continuing a protocol may create a new SQLite row for an already
+        existing logical relation.
+        """
+        def normalize(value):
+            return (
+                ""
+                if value is None
+                else str(value)
+            )
+
+        return (
+            normalize(
+                relationName
+            ),
+            normalize(
+                creatorProtocolId
+            ),
+            normalize(
+                parentRuntimeObjectId
+            ),
+            normalize(
+                childRuntimeObjectId
+            ),
+            normalize(
+                parentExtended
+            ),
+            normalize(
+                childExtended
+            ),
+        )
+
     def collectProtocolRelations(
             self,
             protocolCandidates,
@@ -52,16 +96,6 @@ class RuntimeProjectRelationSyncService:
         relationKeys = set()
         sources = []
         errors = []
-
-        relationFields = (
-            "id",
-            "parent_id",
-            "name",
-            "object_parent_id",
-            "object_child_id",
-            "object_parent_extended",
-            "object_child_extended",
-        )
 
         for sourceName, protocol in protocolCandidates:
             if protocol is None:
@@ -88,9 +122,25 @@ class RuntimeProjectRelationSyncService:
                     })
                     continue
 
-                relationKey = tuple(
-                    relation.get(fieldName)
-                    for fieldName in relationFields
+                relationKey = self._buildRelationIdentity(
+                    relationName=relation.get(
+                        "name"
+                    ),
+                    creatorProtocolId=relation.get(
+                        "parent_id"
+                    ),
+                    parentRuntimeObjectId=relation.get(
+                        "object_parent_id"
+                    ),
+                    childRuntimeObjectId=relation.get(
+                        "object_child_id"
+                    ),
+                    parentExtended=relation.get(
+                        "object_parent_extended"
+                    ),
+                    childExtended=relation.get(
+                        "object_child_extended"
+                    ),
                 )
 
                 if relationKey in relationKeys:
@@ -188,29 +238,36 @@ class RuntimeProjectRelationSyncService:
                         ),
                     }
 
-                    relationKey = (
-                        relationItem["relationId"],
-                        relationItem["relationName"],
-                        relationItem["creatorProtocolId"],
-                        relationItem["parentRuntimeObjectId"],
-                        relationItem["childRuntimeObjectId"],
-                        relationItem["parentExtended"],
-                        relationItem["childExtended"],
+                    relationItem["creatorProtocolId"] = int(relationItem["creatorProtocolId"])
+                    relationItem["parentRuntimeObjectId"] = int(relationItem["parentRuntimeObjectId"])
+                    relationItem["childRuntimeObjectId"] = int(relationItem["childRuntimeObjectId"])
+
+                    relationKey = self._buildRelationIdentity(
+                        relationName=relationItem[
+                            "relationName"
+                        ],
+                        creatorProtocolId=relationItem[
+                            "creatorProtocolId"
+                        ],
+                        parentRuntimeObjectId=relationItem[
+                            "parentRuntimeObjectId"
+                        ],
+                        childRuntimeObjectId=relationItem[
+                            "childRuntimeObjectId"
+                        ],
+                        parentExtended=relationItem[
+                            "parentExtended"
+                        ],
+                        childExtended=relationItem[
+                            "childExtended"
+                        ],
                     )
 
                     if relationKey in relationKeys:
                         continue
 
-                    relationKeys.add(relationKey)
-
-                    relationItem["creatorProtocolId"] = int(
-                        relationItem["creatorProtocolId"]
-                    )
-                    relationItem["parentRuntimeObjectId"] = int(
-                        relationItem["parentRuntimeObjectId"]
-                    )
-                    relationItem["childRuntimeObjectId"] = int(
-                        relationItem["childRuntimeObjectId"]
+                    relationKeys.add(
+                        relationKey
                     )
 
                     declared.append(relationItem)
