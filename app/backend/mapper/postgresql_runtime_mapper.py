@@ -3413,6 +3413,11 @@ class PostgresqlRuntimeMapper(Mapper):
         if objId is None:
             return
 
+        isSetObject = (
+                isinstance(obj, ScipionSet)
+                or self._isSetLike(obj)
+        )
+
         persistedSet = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
             mapper=self,
             projectId=self.projectId,
@@ -3420,15 +3425,71 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         if persistedSet is not None:
-            raise NotImplementedError(
-                "PostgreSQL delete is not implemented "
-                "for persisted runtime Set objects."
+            if not isSetObject:
+                raise TypeError(
+                    "Runtime object %s resolves to a PostgreSQL Set, "
+                    "but the supplied object class is %s."
+                    % (
+                        objId,
+                        self._getClassName(obj),
+                    )
+                )
+
+            setId = self._toOptionalInt(
+                persistedSet.get("setId")
             )
 
-        if (
-                isinstance(obj, ScipionSet)
-                or self._isSetLike(obj)
-        ):
+            objectId = self._toOptionalInt(
+                persistedSet.get("objectId")
+            )
+
+            if setId is None or objectId is None:
+                raise RuntimeError(
+                    "Persisted PostgreSQL Set %s does not expose "
+                    "its set or canonical object identity."
+                    % objId
+                )
+
+            if self.writeFallbackMapper is not None:
+                self.writeFallbackMapper.delete(obj)
+
+            deleteResult = self.setMapper.deleteStoredSetOutput(
+                projectId=self.projectId,
+                setId=setId,
+                objectId=objectId,
+                runtimeObjectId=objId,
+            )
+
+            self.runtimeSetFactory.evictRuntimeSet(
+                projectId=self.projectId,
+                runtimeObjectId=objId,
+                runtimeSet=obj,
+            )
+
+            logger.debug(
+                "Deleted PostgreSQL runtime Set. "
+                "projectId=%s runtimeObjectId=%s "
+                "deletedSets=%s deletedObjects=%s "
+                "deletedRelations=%s",
+                self.projectId,
+                objId,
+                deleteResult.get(
+                    "deletedSetsCount",
+                    0,
+                ),
+                deleteResult.get(
+                    "deletedObjectsCount",
+                    0,
+                ),
+                deleteResult.get(
+                    "deletedRelationsCount",
+                    0,
+                ),
+            )
+
+            return
+
+        if isSetObject:
             if self.writeFallbackMapper is not None:
                 self.writeFallbackMapper.delete(obj)
 

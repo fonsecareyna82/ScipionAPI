@@ -215,6 +215,14 @@ def buildRuntimeMapper(
         deleteResult=deleteResult,
     )
 
+    mapper.setMapper = Mock()
+
+    mapper.setMapper.deleteStoredSetOutput.return_value = {
+        "deletedSetsCount": 1,
+        "deletedObjectsCount": 1,
+        "deletedRelationsCount": 2,
+    }
+
     def failIfRuntimeContextIsAttached(obj):
         raise AssertionError(
             "Generic PostgreSQL objects must remain detached"
@@ -1350,7 +1358,7 @@ def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
     assert ownerProtocol.mock_calls == []
 
 
-def test_DeleteRejectsPersistedPostgresqlSetWithoutPartialDelete():
+def test_DeleteRemovesPersistedPostgresqlSetWithoutMutatingOwner():
     mapper = buildRuntimeMapper(
         []
     )
@@ -1358,36 +1366,47 @@ def test_DeleteRejectsPersistedPostgresqlSetWithoutPartialDelete():
     mapper.writeFallbackMapper = Mock()
 
     mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = {
-        "runtimeObjectId": 700,
         "setId": 10,
+        "objectId": 900,
+        "runtimeObjectId": 700,
+        "outputName": "outputSet",
     }
 
     runtimeSet = FakeComposite()
     runtimeSet.setObjId(700)
 
+    ownerProtocol = Mock()
+    ownerProtocol.outputSet = runtimeSet
+    runtimeSet._objParent = ownerProtocol
+
     mapper._isSetLike = lambda obj: obj is runtimeSet
 
-    try:
-        mapper.delete(runtimeSet)
-    except NotImplementedError as error:
-        assert str(error) == (
-            "PostgreSQL delete is not implemented "
-            "for persisted runtime Set objects."
-        )
-    else:
-        raise AssertionError(
-            "Expected persisted PostgreSQL Set deletion "
-            "to raise NotImplementedError"
-        )
+    mapper.delete(
+        runtimeSet
+    )
 
-    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.assert_called_once_with(
-        mapper=mapper,
+    mapper.writeFallbackMapper.delete.assert_called_once_with(
+        runtimeSet
+    )
+
+    mapper.setMapper.deleteStoredSetOutput.assert_called_once_with(
         projectId=7,
+        setId=10,
+        objectId=900,
         runtimeObjectId=700,
     )
 
-    mapper.writeFallbackMapper.delete.assert_not_called()
+    mapper.runtimeSetFactory.evictRuntimeSet.assert_called_once_with(
+        projectId=7,
+        runtimeObjectId=700,
+        runtimeSet=runtimeSet,
+    )
+
     assert mapper.objectMapper.deleteCalls == []
+
+    assert runtimeSet._objParent is ownerProtocol
+    assert ownerProtocol.outputSet is runtimeSet
+    assert ownerProtocol.mock_calls == []
 
 
 def test_DeleteIgnoresUnstoredGenericObject():
@@ -1451,5 +1470,41 @@ def test_DeleteDoesNotPartiallyDeleteUnsupportedObject():
 
     mapper.writeFallbackMapper.delete.assert_not_called()
     assert mapper.objectMapper.deleteCalls == []
+
+def test_DeleteRejectsPersistedSetWithoutCanonicalIdentity():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = {
+        "setId": 10,
+        "objectId": None,
+        "runtimeObjectId": 700,
+    }
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    try:
+        mapper.delete(runtimeSet)
+    except RuntimeError as error:
+        assert str(error) == (
+            "Persisted PostgreSQL Set 700 does not expose "
+            "its set or canonical object identity."
+        )
+    else:
+        raise AssertionError(
+            "Expected incomplete persisted Set identity "
+            "to raise RuntimeError"
+        )
+
+    mapper.writeFallbackMapper.delete.assert_not_called()
+    mapper.setMapper.deleteStoredSetOutput.assert_not_called()
+    mapper.runtimeSetFactory.evictRuntimeSet.assert_not_called()
+
 
 

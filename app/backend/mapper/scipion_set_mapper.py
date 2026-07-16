@@ -284,6 +284,131 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (projectId, protocolDbId),
         )
 
+    def deleteStoredSetOutput(
+            self,
+            projectId: int,
+            setId: int,
+            objectId: int,
+            runtimeObjectId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete one complete PostgreSQL Set representation.
+
+        The scipion_sets row is deleted first so all dependent Set tables
+        disappear through their foreign-key cascades. The compatibility
+        runtime relations and canonical scipion_objects root are then removed
+        in the same transaction.
+        """
+        projectId = int(projectId)
+        setId = int(setId)
+        objectId = int(objectId)
+        runtimeObjectId = int(runtimeObjectId)
+
+        result = {
+            "deletedSetsCount": 0,
+            "deletedObjectsCount": 0,
+            "deletedRelationsCount": 0,
+        }
+
+        with self.db.transaction():
+            deletedSet = self.db.fetchOne(
+                """
+                DELETE FROM scipion_sets
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "objectId" = %s
+                RETURNING id, "objectId"
+                """,
+                (
+                    setId,
+                    projectId,
+                    objectId,
+                ),
+            )
+
+            if deletedSet is None:
+                return result
+
+            result["deletedSetsCount"] = 1
+
+            sharedSet = self.db.fetchOne(
+                """
+                SELECT id
+                  FROM scipion_sets
+                 WHERE "objectId" = %s
+                 LIMIT 1
+                """,
+                (
+                    objectId,
+                ),
+            )
+
+            if sharedSet is not None:
+                raise RuntimeError(
+                    "Cannot delete PostgreSQL Set %s because "
+                    "canonical object %s is still referenced "
+                    "by Set %s."
+                    % (
+                        setId,
+                        objectId,
+                        sharedSet.get("id"),
+                    )
+                )
+
+            relationsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_relations
+                 WHERE "projectId" = %s
+                   AND (
+                        "creatorObjId" = %s
+                        OR "parentObjId" = %s
+                        OR "childObjId" = %s
+                   )
+                """,
+                (
+                    projectId,
+                    runtimeObjectId,
+                    runtimeObjectId,
+                    runtimeObjectId,
+                ),
+                commit=False,
+            )
+
+            result["deletedRelationsCount"] = int(
+                relationsCursor.rowcount or 0
+            )
+
+            objectsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_objects
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "scipionObjId" = %s
+                """,
+                (
+                    objectId,
+                    projectId,
+                    runtimeObjectId,
+                ),
+                commit=False,
+            )
+
+            result["deletedObjectsCount"] = int(
+                objectsCursor.rowcount or 0
+            )
+
+            if result["deletedObjectsCount"] != 1:
+                raise RuntimeError(
+                    "Could not delete canonical PostgreSQL object %s "
+                    "for runtime Set %s."
+                    % (
+                        objectId,
+                        runtimeObjectId,
+                    )
+                )
+
+        return result
+
     def getStoredSetColumns(self, setId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
