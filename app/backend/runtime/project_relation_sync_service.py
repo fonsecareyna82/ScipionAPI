@@ -288,91 +288,125 @@ class RuntimeProjectRelationSyncService:
             # If PostgreSQL does not contain all required outputs yet, preserve
             # the previous relations and retry on the next synchronization.
             unresolvedRelations = []
+            preparedRelations = []
 
             for relationItem in protocolRelations:
-                parentObject = repository.getPersistedOutputObjectByRuntimeId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    runtimeObjectId=relationItem[
-                        "parentRuntimeObjectId"
-                    ],
-                    extended=relationItem["parentExtended"],
+                parentObject = (
+                    repository
+                    .getPersistedOutputObjectByRuntimeId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        runtimeObjectId=relationItem[
+                            "parentRuntimeObjectId"
+                        ],
+                        extended=relationItem[
+                            "parentExtended"
+                        ],
+                    )
                 )
 
                 if parentObject is None:
                     unresolvedRelations.append({
                         **relationItem,
-                        "reason": "parent_output_not_found",
+                        "reason": (
+                            "parent_output_not_found"
+                        ),
                     })
+
                     continue
 
-                childObject = repository.getPersistedOutputObjectByRuntimeId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    runtimeObjectId=relationItem[
-                        "childRuntimeObjectId"
-                    ],
-                    extended=relationItem["childExtended"],
+                childObject = (
+                    repository
+                    .getPersistedOutputObjectByRuntimeId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        runtimeObjectId=relationItem[
+                            "childRuntimeObjectId"
+                        ],
+                        extended=relationItem[
+                            "childExtended"
+                        ],
+                    )
                 )
 
                 if childObject is None:
                     unresolvedRelations.append({
                         **relationItem,
-                        "reason": "child_output_not_found",
+                        "reason": (
+                            "child_output_not_found"
+                        ),
                     })
 
-            if unresolvedRelations:
-                missing.extend(unresolvedRelations)
-                continue
+                    continue
 
+                preparedRelations.append({
+                    **relationItem,
+                    "parentObject": parentObject,
+                    "childObject": childObject,
+                    "metadata": {
+                        "source": (
+                            "project_relation_sync"
+                        ),
+                        "sqliteRelationId": (
+                            relationItem[
+                                "relationId"
+                            ]
+                        ),
+                    },
+                })
+
+            if unresolvedRelations:
+                missing.extend(
+                    unresolvedRelations
+                )
+
+                continue
             try:
-                cleanupReport = (
-                    repository.deleteImportedOutputRelationsForCreator(
+                replaceReport = (
+                    repository
+                    .replaceImportedOutputRelationsForCreator(
                         mapper=mapper,
                         projectId=projectId,
-                        creatorProtocolDbId=int(protocolDbId),
-                        creatorProtocolId=int(protocolId),
+                        creatorProtocolDbId=int(
+                            protocolDbId
+                        ),
+                        creatorProtocolId=int(
+                            protocolId
+                        ),
+                        relations=preparedRelations,
                     )
                 )
 
                 cleanupItems.append({
                     "protocolId": protocolIdText,
-                    "protocolDbId": int(protocolDbId),
-                    **cleanupReport,
+                    "protocolDbId": int(
+                        protocolDbId
+                    ),
+                    **replaceReport.get(
+                        "cleanup",
+                        {},
+                    ),
                 })
 
-                for relationItem in protocolRelations:
-                    result = repository.insertImportedOutputRelation(
-                        mapper=mapper,
-                        projectId=projectId,
-                        creatorProtocolDbId=int(protocolDbId),
-                        creatorProtocolId=int(
-                            relationItem["creatorProtocolId"]
-                        ),
-                        relationName=relationItem["relationName"],
-                        parentRuntimeObjectId=relationItem[
-                            "parentRuntimeObjectId"
-                        ],
-                        childRuntimeObjectId=relationItem[
-                            "childRuntimeObjectId"
-                        ],
-                        parentExtended=relationItem["parentExtended"],
-                        childExtended=relationItem["childExtended"],
-                        metadata={
-                            "source": "project_relation_sync",
-                            "sqliteRelationId": relationItem[
-                                "relationId"
-                            ],
-                        },
+                persisted.extend(
+                    replaceReport.get(
+                        "relations",
+                        [],
                     )
+                )
 
-                    if result.get("saved"):
-                        persisted.append(result)
-                    else:
-                        missing.append({
-                            **relationItem,
-                            "reason": result.get("reason"),
-                        })
+            except Exception as error:
+                errors.append({
+                    "protocolId": protocolIdText,
+                    "error": str(error),
+                })
+
+                logger.exception(
+                    "Failed to synchronize project relations. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolIdText,
+                )
 
             except Exception as error:
                 errors.append({
