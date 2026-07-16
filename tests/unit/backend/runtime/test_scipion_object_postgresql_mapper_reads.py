@@ -23,17 +23,48 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from contextlib import contextmanager
+
 from app.backend.mapper.scipion_object_mapper import (
     ScipionObjectPostgresqlMapper,
 )
 
 
 class FakeDatabase:
-    def __init__(self, rows=None):
+    def __init__(
+            self,
+            rows=None,
+            row=None,
+    ):
         self.rows = list(
             rows or []
         )
+
+        self.row = row
         self.calls = []
+        self.transactionCalls = 0
+
+    @contextmanager
+    def transaction(self):
+        self.transactionCalls += 1
+        yield self
+
+    def fetchOne(
+            self,
+            query,
+            values,
+    ):
+        self.calls.append({
+            "query": query,
+            "values": values,
+        })
+
+        if self.row is None:
+            return None
+
+        return dict(
+            self.row
+        )
 
     def fetchAll(
             self,
@@ -193,4 +224,92 @@ def test_ListCanonicalStoredObjectRowsCanReturnAllClasses():
     assert (
         'AND canonical."className" = %s'
         not in call["query"]
+    )
+
+
+def test_DeleteStoredObjectSubtreesUsesRecursiveSafeDelete():
+    database = FakeDatabase(
+        row={
+            "deletedObjectsCount": 3,
+            "deletedRelationsCount": 2,
+        },
+    )
+
+    mapper = ScipionObjectPostgresqlMapper(
+        database
+    )
+
+    result = mapper.deleteStoredObjectSubtreesByScipionObjId(
+        projectId=7,
+        scipionObjId=700,
+    )
+
+    assert result == {
+        "deletedObjectsCount": 3,
+        "deletedRelationsCount": 2,
+    }
+
+    assert database.transactionCalls == 1
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+
+    assert call["values"] == (
+        7,
+        700,
+        7,
+        7,
+        7,
+    )
+
+    assert (
+        "WITH RECURSIVE selected_roots"
+        in call["query"]
+    )
+
+    assert (
+        'child."parentObjectId" = object_tree.id'
+        in call["query"]
+    )
+
+    assert (
+        call["query"].count(
+            'FROM scipion_sets stored_set'
+        )
+        == 2
+    )
+
+    assert (
+        'stored_set."objectId" = object_row.id'
+        in call["query"]
+    )
+
+    assert (
+        'stored_set."objectId" = child.id'
+        in call["query"]
+    )
+
+    assert (
+        "DELETE FROM scipion_relations"
+        in call["query"]
+    )
+
+    assert (
+        'relation_row."creatorObjId"'
+        in call["query"]
+    )
+
+    assert (
+        'relation_row."parentObjId"'
+        in call["query"]
+    )
+
+    assert (
+        'relation_row."childObjId"'
+        in call["query"]
+    )
+
+    assert (
+        "DELETE FROM scipion_objects"
+        in call["query"]
     )
