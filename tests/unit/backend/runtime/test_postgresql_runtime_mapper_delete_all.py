@@ -55,6 +55,7 @@ class FakeDatabase:
 
         self.calls = []
         self.transactionCalls = 0
+        self.cursor = FakeCursor()
 
     @contextmanager
     def transaction(self):
@@ -131,14 +132,18 @@ class FakeDatabase:
             if normalizedQuery.startswith(
                     queryPrefix
             ):
-                return FakeCursor(
+                self.cursor.rowcount = (
                     self.rowCounts.get(
                         countName,
                         0,
                     )
                 )
 
-        return FakeCursor()
+                return self.cursor
+
+        self.cursor.rowcount = 1
+
+        return self.cursor
 
 
 def buildRuntimeMapper():
@@ -392,6 +397,90 @@ def test_DeleteAllRejectsReadOnlyFallbackBeforeDeletingAnything():
     mapper.runtimeSetFactory.clearCaches.assert_not_called()
 
     assert 101 in mapper._runtimeProtocolsById
+    assert mapper._sqliteProtocolMirrorIds == {
+        101,
+    }
+
+
+def test_DeleteAllRejectsDifferentFallbackMappersBeforeDeletingAnything():
+    mapper = buildRuntimeMapper()
+
+    readFallbackMapper = Mock()
+    writeFallbackMapper = Mock()
+
+    readFallbackMapper.objDict = {
+        1: object(),
+    }
+
+    readFallbackMapper.updateDict = {
+        1: object(),
+    }
+
+    readFallbackMapper.updatePendingPointers = [
+        object(),
+    ]
+
+    writeFallbackMapper.objDict = {
+        2: object(),
+    }
+
+    writeFallbackMapper.updateDict = {
+        2: object(),
+    }
+
+    writeFallbackMapper.updatePendingPointers = [
+        object(),
+    ]
+
+    mapper.readFallbackMapper = (
+        readFallbackMapper
+    )
+
+    mapper.writeFallbackMapper = (
+        writeFallbackMapper
+    )
+
+    cachedProtocol = object()
+
+    mapper._runtimeProtocolsById = {
+        101: cachedProtocol,
+    }
+
+    mapper._sqliteProtocolMirrorIds = {
+        101,
+    }
+
+    try:
+        mapper.deleteAll()
+    except RuntimeError as error:
+        assert str(error) == (
+            "PostgreSQL deleteAll cannot run when read and "
+            "write fallbacks use different mapper instances."
+        )
+    else:
+        raise AssertionError(
+            "Expected different fallback mapper instances "
+            "to raise RuntimeError"
+        )
+
+    readFallbackMapper.deleteAll.assert_not_called()
+    writeFallbackMapper.deleteAll.assert_not_called()
+
+    mapper.flatMapper.deleteProjectRuntimeData.assert_not_called()
+    mapper.runtimeSetFactory.clearCaches.assert_not_called()
+
+    assert readFallbackMapper.objDict != {}
+    assert readFallbackMapper.updateDict != {}
+    assert readFallbackMapper.updatePendingPointers != []
+
+    assert writeFallbackMapper.objDict != {}
+    assert writeFallbackMapper.updateDict != {}
+    assert writeFallbackMapper.updatePendingPointers != []
+
+    assert mapper._runtimeProtocolsById == {
+        101: cachedProtocol,
+    }
+
     assert mapper._sqliteProtocolMirrorIds == {
         101,
     }

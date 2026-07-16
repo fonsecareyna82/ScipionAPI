@@ -3443,6 +3443,17 @@ class PostgresqlRuntimeMapper(Mapper):
                 "fallback unless a write fallback is also configured."
             )
 
+        if (
+                self.readFallbackMapper is not None
+                and self.writeFallbackMapper is not None
+                and self.readFallbackMapper
+                is not self.writeFallbackMapper
+        ):
+            raise RuntimeError(
+                "PostgreSQL deleteAll cannot run when read and "
+                "write fallbacks use different mapper instances."
+            )
+
         if self.writeFallbackMapper is not None:
             self.writeFallbackMapper.deleteAll()
 

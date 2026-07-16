@@ -1043,6 +1043,15 @@ class PostgresqlFlatMapper(Mapper):
                 commit=False,
             )
 
+            deletedRelationsCount = int(
+                getattr(
+                    relationsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            )
+
             setsCursor = self.db.execute(
                 """
                 DELETE FROM scipion_sets
@@ -1052,6 +1061,15 @@ class PostgresqlFlatMapper(Mapper):
                     projectId,
                 ),
                 commit=False,
+            )
+
+            deletedSetsCount = int(
+                getattr(
+                    setsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
             )
 
             objectsCursor = self.db.execute(
@@ -1065,6 +1083,15 @@ class PostgresqlFlatMapper(Mapper):
                 commit=False,
             )
 
+            deletedObjectsCount = int(
+                getattr(
+                    objectsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            )
+
             protocolsCursor = self.db.execute(
                 """
                 DELETE FROM protocols
@@ -1074,6 +1101,15 @@ class PostgresqlFlatMapper(Mapper):
                     projectId,
                 ),
                 commit=False,
+            )
+
+            deletedProtocolsCount = int(
+                getattr(
+                    protocolsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
             )
 
             self.db.execute(
@@ -1095,37 +1131,17 @@ class PostgresqlFlatMapper(Mapper):
             )
 
         return {
-            "deletedRelationsCount": int(
-                getattr(
-                    relationsCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
+            "deletedRelationsCount": (
+                deletedRelationsCount
             ),
-            "deletedSetsCount": int(
-                getattr(
-                    setsCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
+            "deletedSetsCount": (
+                deletedSetsCount
             ),
-            "deletedObjectsCount": int(
-                getattr(
-                    objectsCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
+            "deletedObjectsCount": (
+                deletedObjectsCount
             ),
-            "deletedProtocolsCount": int(
-                getattr(
-                    protocolsCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
+            "deletedProtocolsCount": (
+                deletedProtocolsCount
             ),
         }
 
