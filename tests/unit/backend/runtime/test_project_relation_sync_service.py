@@ -282,21 +282,18 @@ class FakeCursor:
 
 class FakeTransaction:
     def __enter__(self):
-        self.snapshot = {
-            "rows": list(
-                self.db.rows
-            ),
-            "relationsSynchronized": (
-                self.db.relationsSynchronized
-            ),
-        }
-
-        self.db.transactionCalls += 1
-
         return self
 
-    def __exit__(self, excType, excValue, traceback):
+    def __exit__(
+            self,
+            exceptionType,
+            exceptionValue,
+            traceback,
+    ):
         return False
+
+    def transaction(self):
+        return FakeTransaction()
 
 
 class FakeDb:
@@ -329,14 +326,22 @@ class FakeDb:
 
 
 class AtomicRelationTransaction:
-    def __init__(self, db):
+    def __init__(
+            self,
+            db,
+    ):
         self.db = db
         self.snapshot = None
 
     def __enter__(self):
-        self.snapshot = list(
-            self.db.rows
-        )
+        self.snapshot = {
+            "rows": list(
+                self.db.rows
+            ),
+            "relationsSynchronized": (
+                self.db.relationsSynchronized
+            ),
+        }
 
         self.db.transactionCalls += 1
 

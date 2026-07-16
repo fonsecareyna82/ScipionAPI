@@ -4265,9 +4265,6 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
-        if postgresqlRelations:
-            return postgresqlRelations
-
         if self.readFallbackMapper is None:
             return postgresqlRelations
 
@@ -4285,11 +4282,11 @@ class PostgresqlRuntimeMapper(Mapper):
             "getRelationsByCreator",
             creatorId=creatorId,
             reason=(
-                "snapshot_not_synchronized"
+                "merge_unsynchronized_snapshot"
             ),
         )
 
-        return (
+        compatibilityRelations = (
             self
             ._selectCompatibilityRelationsFromReadFallback(
                 creatorObj=creatorObj,
@@ -4298,6 +4295,11 @@ class PostgresqlRuntimeMapper(Mapper):
                     creatorId: False,
                 },
             )
+        )
+
+        return self._mergeRuntimeRelationRows(
+            postgresqlRelations,
+            compatibilityRelations,
         )
 
     def getRelationsByName(
