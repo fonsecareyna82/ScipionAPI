@@ -210,6 +210,115 @@ class PostgresqlRuntimeSetFactory:
                     exc_info=True,
                 )
 
+    def evictRuntimeSet(
+            self,
+            projectId: int,
+            runtimeObjectId: int,
+            runtimeSet=None,
+    ):
+        """
+        Remove one runtime Set and its item-pointer cache entries.
+
+        Cached protocols and unrelated runtime Sets must remain untouched.
+        """
+        projectId = int(projectId)
+        runtimeObjectId = int(runtimeObjectId)
+
+        targetIdentity = (
+            projectId,
+            runtimeObjectId,
+        )
+
+        cachedRuntimeSet = self._runtimeSetsByIdentity.pop(
+            targetIdentity,
+            None,
+        )
+
+        runtimeSetsToClose = []
+        seenRuntimeSets = set()
+
+        for candidate in (
+                cachedRuntimeSet,
+                runtimeSet,
+        ):
+            if candidate is None:
+                continue
+
+            candidateIdentity = id(
+                candidate
+            )
+
+            if candidateIdentity in seenRuntimeSets:
+                continue
+
+            seenRuntimeSets.add(
+                candidateIdentity
+            )
+
+            runtimeSetsToClose.append(
+                candidate
+            )
+
+        if seenRuntimeSets:
+            for identity, candidate in list(
+                    self._runtimeSetsByIdentity.items()
+            ):
+                if id(candidate) not in seenRuntimeSets:
+                    continue
+
+                self._runtimeSetsByIdentity.pop(
+                    identity,
+                    None,
+                )
+
+        for pointerKey in list(
+                self._resolvedPointerTargets
+        ):
+            if pointerKey[:2] != targetIdentity:
+                continue
+
+            self._resolvedPointerTargets.pop(
+                pointerKey,
+                None,
+            )
+
+        for pointerKey in list(
+                self._resolvingPointerTargets
+        ):
+            if pointerKey[:2] != targetIdentity:
+                continue
+
+            self._resolvingPointerTargets.discard(
+                pointerKey
+            )
+
+        for runtimeSetToClose in runtimeSetsToClose:
+            close = getattr(
+                runtimeSetToClose,
+                "close",
+                None,
+            )
+
+            if not callable(close):
+                continue
+
+            try:
+                close()
+            except Exception:
+                logger.debug(
+                    "Could not close evicted PostgreSQL runtime Set. "
+                    "projectId=%s runtimeObjectId=%s",
+                    projectId,
+                    runtimeObjectId,
+                    exc_info=True,
+                )
+
+        return (
+            cachedRuntimeSet
+            if cachedRuntimeSet is not None
+            else runtimeSet
+        )
+
     def build(
             self,
             db,
