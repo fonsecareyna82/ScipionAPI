@@ -229,18 +229,30 @@ class FakeTransaction:
 class FakeDb:
     def __init__(self):
         self.calls = []
+        self.cursor = FakeCursor(
+            0
+        )
 
     def transaction(self):
         return FakeTransaction()
 
-    def execute(self, query, params, commit=True):
+    def execute(
+            self,
+            query,
+            params,
+            commit=True,
+    ):
         self.calls.append({
             "query": query,
             "params": params,
             "commit": commit,
         })
 
-        return FakeCursor(len(self.calls))
+        self.cursor.rowcount = len(
+            self.calls
+        )
+
+        return self.cursor
 
 
 def test_DeleteImportedOutputRelationsClearsBothRepresentations():
@@ -372,3 +384,175 @@ def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
     assert report["relationMissing"] == []
     assert report["relationErrors"] == []
     assert len(repository.insertCalls) == 1
+
+
+def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
+    runtimeRelation = {
+        **buildRelation(),
+        "id": 7,
+        "object_child_extended": None,
+    }
+
+    fallbackRelation = {
+        **runtimeRelation,
+        "id": 8,
+        "object_child_extended": "",
+    }
+
+    service = RuntimeProjectRelationSyncService()
+
+    result = service.collectProtocolRelations([
+        (
+            "runtime_db",
+            FakeProtocol([
+                runtimeRelation,
+            ]),
+        ),
+        (
+            "readFallbackMapper",
+            FakeProtocol([
+                fallbackRelation,
+            ]),
+        ),
+    ])
+
+    assert result["relations"] == [
+        runtimeRelation,
+    ]
+
+    assert result["sources"] == [
+        {
+            "source": "runtime_db",
+            "relations": 1,
+        },
+    ]
+
+    assert result["errors"] == []
+
+
+def test_SyncProjectRelationsDeduplicatesLogicalRelationWithDifferentIds(
+        monkeypatch,
+):
+    repository = FakeRepository({
+        101: {
+            "objectId": 1001,
+            "protocolDbId": 200,
+            "protocolId": "20",
+            "outputName": "outputParticles",
+        },
+        202: {
+            "objectId": 2002,
+            "protocolDbId": 300,
+            "protocolId": "30",
+            "outputName": "outputClasses",
+        },
+    })
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "ProtocolGraphRepository",
+        lambda: repository,
+    )
+
+    firstRelation = {
+        **buildRelation(),
+        "id": 7,
+        "object_child_extended": None,
+    }
+
+    duplicatedRelation = {
+        **firstRelation,
+        "id": 8,
+        "object_child_extended": "",
+    }
+
+    report = RuntimeProjectRelationSyncService().syncProjectRelations(
+        mapper=SimpleNamespace(),
+        projectId=4,
+        protocolsByScipionId={
+            "20": FakeProtocol([
+                firstRelation,
+                duplicatedRelation,
+            ]),
+        },
+        protocolDbIdByScipionId={
+            "20": 200,
+        },
+    )
+
+    assert report["relationsDeclared"] == 1
+    assert report["relations"] == 1
+    assert report["relationErrors"] == []
+    assert report["complete"] is True
+
+    assert len(
+        repository.insertCalls
+    ) == 1
+
+    assert repository.insertCalls[0][
+        "metadata"
+    ] == {
+        "source": "project_relation_sync",
+        "sqliteRelationId": 7,
+    }
+
+
+def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
+    db = FakeDb()
+    mapper = SimpleNamespace(
+        db=db
+    )
+
+    repository = ProtocolGraphRepository()
+
+    persistedObjects = {
+        101: {
+            "objectId": 1001,
+            "protocolDbId": 200,
+            "protocolId": "20",
+            "outputName": "outputParticles",
+        },
+        202: {
+            "objectId": 2002,
+            "protocolDbId": 300,
+            "protocolId": "30",
+            "outputName": "outputClasses",
+        },
+    }
+
+    repository.getPersistedOutputObjectByRuntimeId = (
+        lambda **kwargs: persistedObjects.get(
+            int(
+                kwargs["runtimeObjectId"]
+            )
+        )
+    )
+
+    result = repository.insertImportedOutputRelation(
+        mapper=mapper,
+        projectId=4,
+        creatorProtocolDbId=200,
+        creatorProtocolId=20,
+        relationName="relation_datasource",
+        parentRuntimeObjectId=101,
+        childRuntimeObjectId=202,
+        parentExtended="TiltSeries",
+        childExtended=None,
+        metadata={
+            "source": "test",
+        },
+    )
+
+    assert result["saved"] is True
+    assert len(db.calls) == 2
+
+    assert (
+        "ON CONFLICT DO NOTHING"
+        in db.calls[0]["query"]
+    )
+
+    assert (
+        "ON CONFLICT DO NOTHING"
+        in db.calls[1]["query"]
+    )
+
