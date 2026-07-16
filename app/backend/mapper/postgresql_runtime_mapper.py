@@ -409,6 +409,48 @@ class PostgresqlRuntimeMapper(Mapper):
         self._runtimeProtocolsById.clear()
         self._sqliteProtocolMirrorIds.clear()
 
+    @staticmethod
+    def _clearFallbackMapperCaches(
+            *fallbackMappers,
+    ) -> None:
+        seenMappers = set()
+
+        for fallbackMapper in fallbackMappers:
+            if fallbackMapper is None:
+                continue
+
+            mapperIdentity = id(
+                fallbackMapper
+            )
+
+            if mapperIdentity in seenMappers:
+                continue
+
+            seenMappers.add(
+                mapperIdentity
+            )
+
+            for attributeName in (
+                    "objDict",
+                    "updateDict",
+                    "updatePendingPointers",
+            ):
+                cache = getattr(
+                    fallbackMapper,
+                    attributeName,
+                    None,
+                )
+
+                if isinstance(
+                        cache,
+                        (
+                                dict,
+                                list,
+                                set,
+                        ),
+                ):
+                    cache.clear()
+
     # ---------------------------------------------------------------------
     # Generic Mapper API
     # ---------------------------------------------------------------------
@@ -3389,6 +3431,56 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return self._selectRelationObjectById(
             parentId
+        )
+
+    def deleteAll(self):
+        if (
+                self.readFallbackMapper is not None
+                and self.writeFallbackMapper is None
+        ):
+            raise RuntimeError(
+                "PostgreSQL deleteAll cannot run with a read "
+                "fallback unless a write fallback is also configured."
+            )
+
+        if self.writeFallbackMapper is not None:
+            self.writeFallbackMapper.deleteAll()
+
+        self._clearFallbackMapperCaches(
+            self.readFallbackMapper,
+            self.writeFallbackMapper,
+        )
+
+        deleteResult = self.flatMapper.deleteProjectRuntimeData(
+            self.projectId
+        )
+
+        self.runtimeSetFactory.clearCaches()
+        self._runtimeProtocolsById.clear()
+        self._sqliteProtocolMirrorIds.clear()
+
+        logger.debug(
+            "Deleted all PostgreSQL runtime objects. "
+            "projectId=%s deletedProtocols=%s "
+            "deletedSets=%s deletedObjects=%s "
+            "deletedRelations=%s",
+            self.projectId,
+            deleteResult.get(
+                "deletedProtocolsCount",
+                0,
+            ),
+            deleteResult.get(
+                "deletedSetsCount",
+                0,
+            ),
+            deleteResult.get(
+                "deletedObjectsCount",
+                0,
+            ),
+            deleteResult.get(
+                "deletedRelationsCount",
+                0,
+            ),
         )
 
     def delete(self, obj):
