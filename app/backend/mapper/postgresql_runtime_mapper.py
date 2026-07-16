@@ -698,11 +698,15 @@ class PostgresqlRuntimeMapper(Mapper):
         self.store(obj)
 
     def updateFrom(self, obj):
+        if self._updateGenericObjectFromPostgresql(obj):
+            return None
+
         if self.readFallbackMapper is None:
             raise NotImplementedError(
-                "PostgreSQL updateFrom is not implemented yet. "
-                "Use readFallbackMapper during the migration phase."
+                "PostgreSQL updateFrom is only implemented "
+                "for supported generic runtime objects."
             )
+
         self._recordReadFallback(
             "updateFrom",
             objectId=self._getObjId(obj),
@@ -710,6 +714,282 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         return self.readFallbackMapper.updateFrom(obj)
+
+    def _updateGenericObjectFromPostgresql(self, obj):
+        if obj is None:
+            return False
+
+        objectClass = obj.__class__
+
+        if not self._isSupportedGenericRuntimeObjectClass(
+                objectClass
+        ):
+            return False
+
+        if self._call(obj, "isPointer", False):
+            return False
+
+        runtimeObjectId = self._toOptionalInt(
+            self._getObjId(obj)
+        )
+
+        if runtimeObjectId is None:
+            return False
+
+        storedObject = self._selectGenericObjectByIdFromPostgresql(
+            runtimeObjectId
+        )
+
+        if storedObject is None:
+            return False
+
+        return self._copyGenericObjectStateFromPostgresql(
+            targetObject=obj,
+            storedObject=storedObject,
+            preserveParentObject=True,
+        )
+
+    def _copyGenericObjectStateFromPostgresql(
+            self,
+            targetObject,
+            storedObject,
+            preserveParentObject=False,
+    ):
+        parentObject = getattr(
+            targetObject,
+            "_objParent",
+            None,
+        )
+
+        storedObjectId = self._getObjId(
+            storedObject
+        )
+
+        if storedObjectId is not None:
+            self._setObjId(
+                targetObject,
+                storedObjectId,
+            )
+
+        storedObjectName = str(
+            getattr(
+                storedObject,
+                "_objName",
+                "",
+            )
+            or ""
+        )
+
+        if storedObjectName:
+            self._setObjName(
+                targetObject,
+                storedObjectName,
+            )
+
+        storedParentId = self._call(
+            storedObject,
+            "getObjParentId",
+            getattr(
+                storedObject,
+                "_objParentId",
+                None,
+            ),
+        )
+
+        if storedParentId is not None:
+            self._setObjParentId(
+                targetObject,
+                storedParentId,
+            )
+
+        valueSetter = getattr(
+            targetObject,
+            "set",
+            None,
+        )
+
+        if not callable(valueSetter):
+            return False
+
+        storedValue = self._call(
+            storedObject,
+            "getObjValue",
+            None,
+        )
+
+        try:
+            valueSetter(storedValue)
+        except Exception:
+            logger.debug(
+                "Could not update generic object value "
+                "from PostgreSQL. projectId=%s "
+                "runtimeObjectId=%s className=%s",
+                self.projectId,
+                storedObjectId,
+                self._getClassName(storedObject),
+                exc_info=True,
+            )
+            return False
+
+        self._copyGenericObjectMetadataFromPostgresql(
+            targetObject,
+            storedObject,
+        )
+
+        attributesGetter = getattr(
+            storedObject,
+            "getAttributesToStore",
+            None,
+        )
+
+        storedAttributes = []
+
+        if callable(attributesGetter):
+            try:
+                storedAttributes = list(
+                    attributesGetter() or []
+                )
+            except Exception:
+                return False
+
+        for attributeName, storedChild in storedAttributes:
+            attributeName = str(attributeName)
+
+            targetChild = getattr(
+                targetObject,
+                attributeName,
+                None,
+            )
+
+            if self._canReuseGenericObjectForUpdate(
+                    targetChild,
+                    storedChild,
+            ):
+                if not self._copyGenericObjectStateFromPostgresql(
+                        targetObject=targetChild,
+                        storedObject=storedChild,
+                ):
+                    return False
+            else:
+                targetChild = storedChild
+
+                setattr(
+                    targetObject,
+                    attributeName,
+                    targetChild,
+                )
+
+            targetChild._objParent = targetObject
+
+            targetObjectId = self._getObjId(
+                targetObject
+            )
+
+            if targetObjectId is not None:
+                self._setObjParentId(
+                    targetChild,
+                    targetObjectId,
+                )
+
+        if preserveParentObject:
+            targetObject._objParent = parentObject
+
+        return True
+
+    def _copyGenericObjectMetadataFromPostgresql(
+            self,
+            targetObject,
+            storedObject,
+    ):
+        label = self._call(
+            storedObject,
+            "getObjLabel",
+            getattr(
+                storedObject,
+                "_objLabel",
+                "",
+            ),
+        )
+
+        labelSetter = getattr(
+            targetObject,
+            "setObjLabel",
+            None,
+        )
+
+        if callable(labelSetter):
+            labelSetter(label or "")
+        else:
+            targetObject._objLabel = label or ""
+
+        comment = self._call(
+            storedObject,
+            "getObjComment",
+            getattr(
+                storedObject,
+                "_objComment",
+                "",
+            ),
+        )
+
+        commentSetter = getattr(
+            targetObject,
+            "setObjComment",
+            None,
+        )
+
+        if callable(commentSetter):
+            commentSetter(comment or "")
+        else:
+            targetObject._objComment = comment or ""
+
+        creation = self._call(
+            storedObject,
+            "getObjCreation",
+            getattr(
+                storedObject,
+                "_objCreation",
+                None,
+            ),
+        )
+
+        creationSetter = getattr(
+            targetObject,
+            "setObjCreation",
+            None,
+        )
+
+        if callable(creationSetter):
+            creationSetter(creation)
+        else:
+            targetObject._objCreation = creation
+
+    def _canReuseGenericObjectForUpdate(
+            self,
+            targetObject,
+            storedObject,
+    ):
+        if not isinstance(
+                targetObject,
+                ScipionObject,
+        ):
+            return False
+
+        if not isinstance(
+                storedObject,
+                ScipionObject,
+        ):
+            return False
+
+        targetClassName = self._getSelectByStoredClassName(
+            targetObject
+        )
+
+        storedClassName = self._getSelectByStoredClassName(
+            storedObject
+        )
+
+        return targetClassName == storedClassName
 
     def selectById(
             self,
