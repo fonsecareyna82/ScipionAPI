@@ -1157,3 +1157,72 @@ def test_ClearCachesClosesSetsOnceAndReleasesRuntimeObjects():
 
     assert firstSet.closeCalls == 1
     assert secondSet.closeCalls == 1
+
+
+def test_EvictRuntimeSetOnlyReleasesTargetIdentity():
+    class FakeRuntimeSet:
+        def __init__(self):
+            self.closeCalls = 0
+
+        def close(self):
+            self.closeCalls += 1
+
+    targetSet = FakeRuntimeSet()
+    otherSet = FakeRuntimeSet()
+
+    factory = PostgresqlRuntimeSetFactory()
+
+    factory._runtimeSetsByIdentity = {
+        (4, 300): targetSet,
+        (4, 301): otherSet,
+        (4, 999): targetSet,
+    }
+
+    protocol = object()
+
+    factory._runtimeProtocolsByIdentity = {
+        (4, 100): protocol,
+    }
+
+    targetPointer = object()
+    otherPointer = object()
+    otherProjectPointer = object()
+
+    factory._resolvedPointerTargets = {
+        (4, 300, 7): targetPointer,
+        (4, 301, 8): otherPointer,
+        (5, 300, 9): otherProjectPointer,
+    }
+
+    factory._resolvingPointerTargets = {
+        (4, 300, 10),
+        (4, 301, 11),
+    }
+
+    result = factory.evictRuntimeSet(
+        projectId=4,
+        runtimeObjectId=300,
+        runtimeSet=targetSet,
+    )
+
+    assert result is targetSet
+
+    assert targetSet.closeCalls == 1
+    assert otherSet.closeCalls == 0
+
+    assert factory._runtimeSetsByIdentity == {
+        (4, 301): otherSet,
+    }
+
+    assert factory._runtimeProtocolsByIdentity == {
+        (4, 100): protocol,
+    }
+
+    assert factory._resolvedPointerTargets == {
+        (4, 301, 8): otherPointer,
+        (5, 300, 9): otherProjectPointer,
+    }
+
+    assert factory._resolvingPointerTargets == {
+        (4, 301, 11),
+    }
