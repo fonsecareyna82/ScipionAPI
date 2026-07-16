@@ -967,6 +967,40 @@ class ProjectService:
 
         return self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
+    def _refreshPostgresqlRuntimeProtocolForResume(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Any]:
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if scipionProtocolId is None:
+            raise RuntimeError(
+                "Cannot refresh protocol runtime state: "
+                "Scipion protocol id could not be resolved."
+            )
+
+        refresher = getattr(
+            self.currentProject,
+            "refreshProtocolFromRuntimeDbForResume",
+            None,
+        )
+
+        if not callable(refresher):
+            raise RuntimeError(
+                "Current PostgreSQL project does not support "
+                "runtime protocol refresh before resume."
+            )
+
+        return refresher(
+            int(scipionProtocolId)
+        )
+
     def _tryGetScipionProtocolForRuntime(
             self,
             mapper,
@@ -5409,6 +5443,9 @@ class ProjectService:
                 self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
             ),
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            refreshPostgresqlRuntimeProtocolForResumeCallback=(
+                self._refreshPostgresqlRuntimeProtocolForResume
+            ),
         )
 
     def findViewersWeb(self, protocol):

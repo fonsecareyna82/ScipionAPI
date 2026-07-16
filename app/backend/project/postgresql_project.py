@@ -579,6 +579,209 @@ class PostgresqlProject(ScipionProject):
             # Scipion's native stop operation raises an exception.
             self.mapper = originalMapper
 
+    def refreshProtocolFromRuntimeDbForResume(
+            self,
+            protocolId: int,
+    ) -> Dict[str, Any]:
+        """
+        Refresh the SQLite compatibility protocol from logs/run.db.
+
+        This must happen before applying edited launch parameters. It preserves
+        Scipion's native resume state so finished and unchanged steps can be
+        detected through logs/steps.sqlite.
+
+        PostgreSQL is not written here. The normal save/launch flow persists
+        the refreshed protocol afterwards.
+        """
+        protocolId = int(protocolId)
+
+        if not self.usingPostgresqlRuntimeMapper():
+            return {
+                "protocolId": protocolId,
+                "refreshed": False,
+                "reason": "legacy_project",
+            }
+
+        runtimeMapper = self.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "Cannot refresh protocol runtime state: "
+                "PostgreSQL runtime mapper is not available."
+            )
+
+        writeFallbackMapper = getattr(
+            runtimeMapper,
+            "writeFallbackMapper",
+            None,
+        )
+
+        if writeFallbackMapper is None:
+            raise RuntimeError(
+                "Cannot refresh protocol runtime state: "
+                "SQLite write fallback mapper is not available."
+            )
+
+        sqliteProtocol = writeFallbackMapper.selectById(
+            protocolId
+        )
+
+        if sqliteProtocol is None:
+            raise RuntimeError(
+                "Protocol %s was not found in the SQLite "
+                "compatibility database."
+                % protocolId
+            )
+
+        runDbPath = self._resolveProtocolRuntimeDbPath(
+            sqliteProtocol
+        )
+
+        if not os.path.exists(runDbPath):
+            sqliteProtocol.setMapper(
+                runtimeMapper
+            )
+
+            sqliteProtocol.setProject(
+                self
+            )
+
+            runtimeMapper._runtimeProtocolsById[
+                protocolId
+            ] = sqliteProtocol
+
+            runtimeMapper._sqliteProtocolMirrorIds.add(
+                protocolId
+            )
+
+            return {
+                "protocolId": protocolId,
+                "refreshed": False,
+                "reason": "runtime_db_not_found",
+                "runDbPath": runDbPath,
+            }
+
+        originalMapper = self.mapper
+        updateResult = None
+
+        try:
+            # ScipionProject._updateProtocol() must operate through the
+            # classic SQLite mapper. Using PostgresqlRuntimeMapper here
+            # would persist a partially copied runtime protocol.
+            self.mapper = writeFallbackMapper
+
+            sqliteProtocol.setMapper(
+                writeFallbackMapper
+            )
+
+            sqliteProtocol.setProject(
+                self
+            )
+
+            updateResult = ScipionProject._updateProtocol(
+                self,
+                sqliteProtocol,
+            )
+
+            writeFallbackMapper.commit()
+
+        finally:
+            self.mapper = originalMapper
+
+            sqliteProtocol.setMapper(
+                runtimeMapper
+            )
+
+            sqliteProtocol.setProject(
+                self
+            )
+
+        # Replace any PostgreSQL-built or stale cached instance with the
+        # fully hydrated SQLite compatibility protocol.
+        runtimeMapper._runtimeProtocolsById[
+            protocolId
+        ] = sqliteProtocol
+
+        runtimeMapper._sqliteProtocolMirrorIds.add(
+            protocolId
+        )
+
+        logger.info(
+            "Refreshed PostgreSQL runtime protocol from run.db "
+            "before resume. projectId=%s protocolId=%s "
+            "runDbPath=%s updateResult=%s",
+            self.postgresqlProjectId,
+            protocolId,
+            runDbPath,
+            updateResult,
+        )
+
+        return {
+            "protocolId": protocolId,
+            "refreshed": True,
+            "runDbPath": runDbPath,
+            "updateResult": updateResult,
+        }
+
+    def _resolveProtocolRuntimeDbPath(
+            self,
+            protocol,
+    ) -> str:
+        runDbPath = getattr(
+            protocol,
+            "getDbPath",
+            lambda: None,
+        )()
+
+        if runDbPath and os.path.isabs(
+                str(runDbPath)
+        ):
+            return os.path.abspath(
+                str(runDbPath)
+            )
+
+        workingDir = getattr(
+            protocol,
+            "getWorkingDir",
+            lambda: None,
+        )()
+
+        if workingDir:
+            workingDir = str(
+                workingDir
+            )
+
+            if not os.path.isabs(
+                    workingDir
+            ):
+                workingDir = os.path.join(
+                    self.path,
+                    workingDir,
+                )
+
+            return os.path.abspath(
+                os.path.join(
+                    workingDir,
+                    "logs",
+                    os.path.basename(
+                        str(
+                            runDbPath
+                            or "run.db"
+                        )
+                    ),
+                )
+            )
+
+        return os.path.abspath(
+            os.path.join(
+                self.path,
+                str(
+                    runDbPath
+                    or ""
+                ),
+            )
+        )
+
     def _storeProtocol(self, protocol):
         """
         Store protocol through the PostgreSQL runtime mapper and make sure the
