@@ -3942,7 +3942,202 @@ class PostgresqlRuntimeMapper(Mapper):
             tuple(values),
         )
 
-    def getRelationsByCreator(self, creatorObj):
+    def _isRelationCreatorOwnedByPostgresql(
+            self,
+            creatorId,
+    ) -> bool:
+        """
+        Return whether PostgreSQL owns the runtime relation creator.
+
+        An empty PostgreSQL relation snapshot is authoritative when its
+        creator is already persisted as a protocol or generic object.
+        """
+        creatorId = self._toOptionalInt(
+            creatorId
+        )
+
+        if creatorId is None:
+            return False
+
+        row = self.db.fetchOne(
+            """
+            SELECT 1 AS owned
+             WHERE EXISTS (
+                    SELECT 1
+                      FROM protocols p
+                     WHERE p."projectId" = %s
+                       AND p."protocolId" = %s
+                   )
+                OR EXISTS (
+                    SELECT 1
+                      FROM scipion_objects o
+                     WHERE o."projectId" = %s
+                       AND o."scipionObjId" = %s
+                   )
+             LIMIT 1
+            """,
+            (
+                self.projectId,
+                str(
+                    creatorId
+                ),
+                self.projectId,
+                creatorId,
+            ),
+        )
+
+        return row is not None
+
+    def _selectCompatibilityRelationsFromReadFallback(
+            self,
+            *,
+            creatorObj=None,
+            creatorId=None,
+            relationName=None,
+            parentId=None,
+            childId=None,
+    ):
+        """
+        Read only relations still owned exclusively by SQLite.
+
+        Relations whose creator already exists in PostgreSQL are discarded,
+        even when the corresponding PostgreSQL snapshot is empty.
+        """
+        if self.readFallbackMapper is None:
+            return []
+
+        creatorId = self._toOptionalInt(
+            creatorId
+        )
+
+        parentId = self._toOptionalInt(
+            parentId
+        )
+
+        childId = self._toOptionalInt(
+            childId
+        )
+
+        if creatorObj is not None:
+            rawRelations = (
+                self.readFallbackMapper
+                .getRelationsByCreator(
+                    creatorObj
+                )
+            )
+        elif relationName is not None:
+            rawRelations = (
+                self.readFallbackMapper
+                .getRelationsByName(
+                    relationName
+                )
+            )
+        else:
+            return []
+
+        compatibleRelations = []
+        creatorOwnership = {}
+
+        for rawRelation in rawRelations or []:
+            relation = dict(
+                rawRelation
+            )
+
+            relationCreatorId = (
+                self._toOptionalInt(
+                    relation.get(
+                        "parent_id"
+                    )
+                )
+            )
+
+            if (
+                    relationCreatorId is None
+                    and creatorId is not None
+            ):
+                relationCreatorId = creatorId
+                relation["parent_id"] = creatorId
+
+            if (
+                    creatorId is not None
+                    and relationCreatorId
+                    != creatorId
+            ):
+                continue
+
+            if (
+                    relationName is not None
+                    and str(
+                relation.get(
+                    "name"
+                )
+                or ""
+            )
+                    != str(
+                relationName
+            )
+            ):
+                continue
+
+            relationParentId = (
+                self._toOptionalInt(
+                    relation.get(
+                        "object_parent_id"
+                    )
+                )
+            )
+
+            if (
+                    parentId is not None
+                    and relationParentId
+                    != parentId
+            ):
+                continue
+
+            relationChildId = (
+                self._toOptionalInt(
+                    relation.get(
+                        "object_child_id"
+                    )
+                )
+            )
+
+            if (
+                    childId is not None
+                    and relationChildId
+                    != childId
+            ):
+                continue
+
+            if relationCreatorId is not None:
+                if (
+                        relationCreatorId
+                        not in creatorOwnership
+                ):
+                    creatorOwnership[
+                        relationCreatorId
+                    ] = (
+                        self
+                        ._isRelationCreatorOwnedByPostgresql(
+                            relationCreatorId
+                        )
+                    )
+
+                if creatorOwnership[
+                    relationCreatorId
+                ]:
+                    continue
+
+            compatibleRelations.append(
+                relation
+            )
+
+        return compatibleRelations
+
+    def getRelationsByCreator(
+            self,
+            creatorObj,
+    ):
         creatorId = self._requireObjId(
             creatorObj
         )
@@ -3954,23 +4149,34 @@ class PostgresqlRuntimeMapper(Mapper):
         if relations:
             return relations
 
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getRelationsByCreator",
+        if self.readFallbackMapper is None:
+            return relations
+
+        if self._isRelationCreatorOwnedByPostgresql(
+                creatorId
+        ):
+            return relations
+
+        self._recordReadFallback(
+            "getRelationsByCreator",
+            creatorId=creatorId,
+            reason=(
+                "creator_not_postgresql_owned"
+            ),
+        )
+
+        return (
+            self
+            ._selectCompatibilityRelationsFromReadFallback(
+                creatorObj=creatorObj,
                 creatorId=creatorId,
-                reason="postgresql_empty",
             )
+        )
 
-            return (
-                self.readFallbackMapper
-                .getRelationsByCreator(
-                    creatorObj
-                )
-            )
-
-        return relations
-
-    def getRelationsByName(self, relationName):
+    def getRelationsByName(
+            self,
+            relationName,
+    ):
         relations = self._selectPostgresqlRelations(
             relationName=relationName,
         )
@@ -3978,21 +4184,23 @@ class PostgresqlRuntimeMapper(Mapper):
         if relations:
             return relations
 
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getRelationsByName",
+        if self.readFallbackMapper is None:
+            return relations
+
+        self._recordReadFallback(
+            "getRelationsByName",
+            relationName=relationName,
+            reason=(
+                "postgresql_empty_compatibility_filter"
+            ),
+        )
+
+        return (
+            self
+            ._selectCompatibilityRelationsFromReadFallback(
                 relationName=relationName,
-                reason="postgresql_empty",
             )
-
-            return (
-                self.readFallbackMapper
-                .getRelationsByName(
-                    relationName
-                )
-            )
-
-        return relations
+        )
 
     def _selectRelationObjectById(self, objId):
         """
@@ -4029,7 +4237,11 @@ class PostgresqlRuntimeMapper(Mapper):
             auditOperation="relationObject.selectById",
         )
 
-    def getRelationChilds(self, relName, parentObj):
+    def getRelationChilds(
+            self,
+            relName,
+            parentObj,
+    ):
         parentId = self._requireObjId(
             parentObj
         )
@@ -4039,33 +4251,42 @@ class PostgresqlRuntimeMapper(Mapper):
             parentId=parentId,
         )
 
-        if relations:
-            return [
-                self._selectRelationObjectById(
-                    row["object_child_id"]
-                )
-                for row in relations
-            ]
-
-        if self.readFallbackMapper is not None:
+        if (
+                not relations
+                and self.readFallbackMapper
+                is not None
+        ):
             self._recordReadFallback(
                 "getRelationChilds",
                 relationName=relName,
                 parentId=parentId,
-                reason="postgresql_empty",
+                reason=(
+                    "postgresql_empty_compatibility_filter"
+                ),
             )
 
-            return (
-                self.readFallbackMapper
-                .getRelationChilds(
-                    relName,
-                    parentObj,
+            relations = (
+                self
+                ._selectCompatibilityRelationsFromReadFallback(
+                    relationName=relName,
+                    parentId=parentId,
                 )
             )
 
-        return []
+        return [
+            self._selectRelationObjectById(
+                row[
+                    "object_child_id"
+                ]
+            )
+            for row in relations
+        ]
 
-    def getRelationParents(self, relName, childObj):
+    def getRelationParents(
+            self,
+            relName,
+            childObj,
+    ):
         childId = self._requireObjId(
             childObj
         )
@@ -4075,31 +4296,36 @@ class PostgresqlRuntimeMapper(Mapper):
             childId=childId,
         )
 
-        if relations:
-            return [
-                self._selectRelationObjectById(
-                    row["object_parent_id"]
-                )
-                for row in relations
-            ]
-
-        if self.readFallbackMapper is not None:
+        if (
+                not relations
+                and self.readFallbackMapper
+                is not None
+        ):
             self._recordReadFallback(
                 "getRelationParents",
                 relationName=relName,
                 childId=childId,
-                reason="postgresql_empty",
+                reason=(
+                    "postgresql_empty_compatibility_filter"
+                ),
             )
 
-            return (
-                self.readFallbackMapper
-                .getRelationParents(
-                    relName,
-                    childObj,
+            relations = (
+                self
+                ._selectCompatibilityRelationsFromReadFallback(
+                    relationName=relName,
+                    childId=childId,
                 )
             )
 
-        return []
+        return [
+            self._selectRelationObjectById(
+                row[
+                    "object_parent_id"
+                ]
+            )
+            for row in relations
+        ]
 
     # ---------------------------------------------------------------------
     # PostgreSQL persistence helpers
