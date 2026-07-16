@@ -292,9 +292,6 @@ class FakeTransaction:
     ):
         return False
 
-    def transaction(self):
-        return FakeTransaction()
-
 
 class FakeDb:
     def __init__(self):
