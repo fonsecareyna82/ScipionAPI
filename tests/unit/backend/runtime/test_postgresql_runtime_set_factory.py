@@ -1226,3 +1226,143 @@ def test_EvictRuntimeSetOnlyReleasesTargetIdentity():
     assert factory._resolvingPointerTargets == {
         (4, 301, 11),
     }
+
+
+def test_BuildCanRefreshExistingRuntimeSetWithoutCaching():
+    parent = FakeParent()
+
+    parent.setObjId(
+        5
+    )
+
+    db = FakeDb()
+
+    factory = PostgresqlRuntimeSetFactory()
+
+    outputInfo = {
+        "setId": 31,
+        "projectId": 4,
+        "objectId": 900,
+        "runtimeObjectId": 44,
+        "className": "ExampleSet",
+        "itemClassName": "ExampleItem",
+        "itemsCount": 1,
+        "properties": {
+            "_samplingRate": 1.5,
+            "_streamState": (
+                Set.STREAM_CLOSED
+            ),
+        },
+    }
+
+    runtimeSet = factory.build(
+        db=db,
+        parent=parent,
+        outputName="outputParticles",
+        outputInfo=outputInfo,
+        classes={
+            "ExampleSet": ExampleSet,
+            "ExampleItem": ExampleItem,
+        },
+        cache=False,
+    )
+
+    assert (
+        factory._getCachedRuntimeSet(
+            projectId=4,
+            runtimeObjectId=44,
+        )
+        is None
+    )
+
+    runtimeSet._samplingRate.set(
+        9.5
+    )
+
+    outputInfo["properties"][
+        "_samplingRate"
+    ] = 2.5
+
+    refreshedSet = factory.build(
+        db=db,
+        parent=parent,
+        outputName="outputParticles",
+        outputInfo=outputInfo,
+        classes={
+            "ExampleSet": ExampleSet,
+            "ExampleItem": ExampleItem,
+        },
+        runtimeSet=runtimeSet,
+        cache=False,
+    )
+
+    assert refreshedSet is runtimeSet
+    assert runtimeSet.getSamplingRate() == 2.5
+
+    assert (
+        factory._getCachedRuntimeSet(
+            projectId=4,
+            runtimeObjectId=44,
+        )
+        is None
+    )
+
+
+def test_ClearRuntimeSetPointerCacheKeepsOtherSets():
+    factory = PostgresqlRuntimeSetFactory()
+
+    firstPointerKey = (
+        4,
+        44,
+        7,
+    )
+
+    secondPointerKey = (
+        4,
+        55,
+        8,
+    )
+
+    factory._resolvedPointerTargets[
+        firstPointerKey
+    ] = object()
+
+    secondTarget = object()
+
+    factory._resolvedPointerTargets[
+        secondPointerKey
+    ] = secondTarget
+
+    factory._resolvingPointerTargets.add(
+        firstPointerKey
+    )
+
+    factory._resolvingPointerTargets.add(
+        secondPointerKey
+    )
+
+    factory.clearRuntimeSetPointerCache(
+        projectId=4,
+        runtimeObjectId=44,
+    )
+
+    assert firstPointerKey not in (
+        factory._resolvedPointerTargets
+    )
+
+    assert firstPointerKey not in (
+        factory._resolvingPointerTargets
+    )
+
+    assert (
+        factory._resolvedPointerTargets[
+            secondPointerKey
+        ]
+        is secondTarget
+    )
+
+    assert secondPointerKey in (
+        factory._resolvingPointerTargets
+    )
+
+

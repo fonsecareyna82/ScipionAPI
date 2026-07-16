@@ -740,22 +740,523 @@ class PostgresqlRuntimeMapper(Mapper):
         self.store(obj)
 
     def updateFrom(self, obj):
-        if self._updateGenericObjectFromPostgresql(obj):
+        if self._updateProtocolFromPostgresql(
+                obj
+        ):
+            return None
+
+        if self._updateSetFromPostgresql(
+                obj
+        ):
+            return None
+
+        if self._updateGenericObjectFromPostgresql(
+                obj
+        ):
             return None
 
         if self.readFallbackMapper is None:
             raise NotImplementedError(
                 "PostgreSQL updateFrom is only implemented "
-                "for supported generic runtime objects."
+                "for protocols, PostgreSQL runtime Sets "
+                "and supported generic runtime objects."
             )
 
         self._recordReadFallback(
             "updateFrom",
-            objectId=self._getObjId(obj),
-            objectClass=self._getClassName(obj),
+            objectId=self._getObjId(
+                obj
+            ),
+            objectClass=self._getClassName(
+                obj
+            ),
         )
 
-        return self.readFallbackMapper.updateFrom(obj)
+        return self.readFallbackMapper.updateFrom(
+            obj
+        )
+
+    def _updateProtocolFromPostgresql(
+            self,
+            protocol,
+    ) -> bool:
+        if not isinstance(
+                protocol,
+                Protocol,
+        ):
+            return False
+
+        protocolId = self._toOptionalInt(
+            self._getObjId(
+                protocol
+            )
+        )
+
+        if protocolId is None:
+            return False
+
+        row = (
+            self.flatMapper
+            .getProjectProtocolByProtocolId(
+                self.projectId,
+                protocolId,
+            )
+        )
+
+        if not row:
+            return False
+
+        storedClassName = str(
+            row.get(
+                "protocolClassName"
+            )
+            or ""
+        ).strip()
+
+        storedClass = (
+            self._resolveProtocolClass(
+                storedClassName
+            )
+            if storedClassName
+            else None
+        )
+
+        if (
+                storedClass is not None
+                and not isinstance(
+            protocol,
+            storedClass,
+        )
+        ):
+            raise TypeError(
+                "Runtime object %s resolves to PostgreSQL "
+                "protocol class %s, but the supplied object "
+                "class is %s."
+                % (
+                    protocolId,
+                    storedClassName,
+                    self._getClassName(
+                        protocol
+                    ),
+                )
+            )
+
+        stateSnapshot = (
+            self._captureRuntimeObjectState(
+                protocol
+            )
+        )
+
+        try:
+            if (
+                    protocolId
+                    in self._sqliteProtocolMirrorIds
+            ):
+                refreshedProtocol = (
+                    self
+                    ._refreshSqliteProtocolMirrorFromPostgresqlRow(
+                        protocol,
+                        row,
+                    )
+                )
+
+            else:
+                refreshedProtocol = (
+                    self
+                    ._refreshProtocolFromPostgresqlRow(
+                        protocol,
+                        row,
+                    )
+                )
+
+            if refreshedProtocol is not protocol:
+                raise RuntimeError(
+                    "PostgreSQL protocol updateFrom "
+                    "replaced protocol identity %s."
+                    % protocolId
+                )
+
+        except Exception:
+            self._restoreRuntimeObjectState(
+                protocol,
+                stateSnapshot,
+            )
+
+            raise
+
+        self._runtimeProtocolsById[
+            protocolId
+        ] = protocol
+
+        return True
+
+    def _updateSetFromPostgresql(
+            self,
+            runtimeSet,
+    ) -> bool:
+        if not (
+                isinstance(
+                    runtimeSet,
+                    ScipionSet,
+                )
+                or self._isSetLike(
+            runtimeSet
+        )
+        ):
+            return False
+
+        runtimeObjectId = self._toOptionalInt(
+            self._getObjId(
+                runtimeSet
+            )
+        )
+
+        if runtimeObjectId is None:
+            return False
+
+        setMatcher = getattr(
+            self.runtimeSetFactory,
+            "_isMatchingRuntimeSet",
+            None,
+        )
+
+        if (
+                not callable(setMatcher)
+                or not setMatcher(
+            runtimeSet=runtimeSet,
+            runtimeObjectId=(
+                    runtimeObjectId
+            ),
+        )
+        ):
+            return False
+
+        outputInfo = (
+            self.protocolGraphRepository
+            .getPersistedSetOutputRowByRuntimeObjectId(
+                mapper=self,
+                projectId=self.projectId,
+                runtimeObjectId=(
+                    runtimeObjectId
+                ),
+            )
+        )
+
+        if not outputInfo:
+            return False
+
+        protocolId = self._toOptionalInt(
+            outputInfo.get(
+                "protocolId"
+            )
+        )
+
+        outputName = str(
+            outputInfo.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        if (
+                protocolId is None
+                or not outputName
+        ):
+            return False
+
+        parentProtocol = getattr(
+            runtimeSet,
+            "_objParent",
+            None,
+        )
+
+        parentProtocolId = (
+            self._toOptionalInt(
+                self._getObjId(
+                    parentProtocol
+                )
+            )
+        )
+
+        if parentProtocolId != protocolId:
+            parentProtocol = (
+                self.selectRuntimeProtocolById(
+                    protocolId,
+                    refreshCached=False,
+                )
+            )
+
+        if parentProtocol is None:
+            return False
+
+        stateSnapshot = (
+            self._captureRuntimeObjectState(
+                runtimeSet
+            )
+        )
+
+        previousMapper = getattr(
+            runtimeSet,
+            "_mapper",
+            None,
+        )
+
+        try:
+            refreshedSet = (
+                self.runtimeSetFactory.build(
+                    db=self.db,
+                    parent=parentProtocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    classes=getattr(
+                        self,
+                        "dictClasses",
+                        None,
+                    ),
+                    runtimeSet=runtimeSet,
+                    cache=False,
+                )
+            )
+
+            if refreshedSet is not runtimeSet:
+                raise RuntimeError(
+                    "PostgreSQL Set updateFrom "
+                    "replaced runtime Set identity %s."
+                    % runtimeObjectId
+                )
+
+        except Exception:
+            failedMapper = getattr(
+                runtimeSet,
+                "_mapper",
+                None,
+            )
+
+            if (
+                    failedMapper is not None
+                    and failedMapper
+                    is not previousMapper
+            ):
+                close = getattr(
+                    failedMapper,
+                    "close",
+                    None,
+                )
+
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug(
+                            "Could not close failed "
+                            "PostgreSQL Set mapper.",
+                            exc_info=True,
+                        )
+
+            self._restoreRuntimeObjectState(
+                runtimeSet,
+                stateSnapshot,
+            )
+
+            raise
+
+        refreshedMapper = getattr(
+            runtimeSet,
+            "_mapper",
+            None,
+        )
+
+        if (
+                previousMapper is not None
+                and previousMapper
+                is not refreshedMapper
+        ):
+            close = getattr(
+                previousMapper,
+                "close",
+                None,
+            )
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug(
+                        "Could not close previous "
+                        "PostgreSQL Set mapper.",
+                        exc_info=True,
+                    )
+
+        clearPointerCache = getattr(
+            self.runtimeSetFactory,
+            "clearRuntimeSetPointerCache",
+            None,
+        )
+
+        if callable(clearPointerCache):
+            clearPointerCache(
+                projectId=self.projectId,
+                runtimeObjectId=(
+                    runtimeObjectId
+                ),
+            )
+
+        self.runtimeSetFactory._cacheRuntimeSet(
+            runtimeSet
+        )
+
+        return True
+
+    def _captureRuntimeObjectState(
+            self,
+            obj,
+    ):
+        """
+        Capture object attributes and mutable Scipion scalar values.
+
+        The shallow attribute dictionary preserves mapper/project identities.
+        Scalar values are stored separately because set() may mutate an object
+        already referenced by the shallow snapshot.
+        """
+        snapshot = {
+            "attributes": dict(
+                getattr(
+                    obj,
+                    "__dict__",
+                    {},
+                )
+            ),
+            "settableValues": [],
+        }
+
+        visited = set()
+
+        def captureValue(
+                candidate,
+        ):
+            if candidate is None:
+                return
+
+            candidateIdentity = id(
+                candidate
+            )
+
+            if candidateIdentity in visited:
+                return
+
+            visited.add(
+                candidateIdentity
+            )
+
+            getter = getattr(
+                candidate,
+                "get",
+                None,
+            )
+
+            setter = getattr(
+                candidate,
+                "set",
+                None,
+            )
+
+            if (
+                    callable(getter)
+                    and callable(setter)
+            ):
+                try:
+                    value = getter()
+                except TypeError:
+                    try:
+                        value = getter(
+                            None
+                        )
+                    except Exception:
+                        value = None
+                except Exception:
+                    value = None
+
+                snapshot[
+                    "settableValues"
+                ].append(
+                    (
+                        candidate,
+                        value,
+                    )
+                )
+
+            attributesGetter = getattr(
+                candidate,
+                "getAttributesToStore",
+                None,
+            )
+
+            if not callable(
+                    attributesGetter
+            ):
+                return
+
+            try:
+                attributes = list(
+                    attributesGetter()
+                    or []
+                )
+            except Exception:
+                return
+
+            for _, child in attributes:
+                captureValue(
+                    child
+                )
+
+        captureValue(
+            obj
+        )
+
+        return snapshot
+
+    def _restoreRuntimeObjectState(
+            self,
+            obj,
+            snapshot,
+    ) -> None:
+        attributes = dict(
+            snapshot.get(
+                "attributes",
+                {},
+            )
+        )
+
+        obj.__dict__.clear()
+        obj.__dict__.update(
+            attributes
+        )
+
+        for candidate, value in reversed(
+                snapshot.get(
+                    "settableValues",
+                    [],
+                )
+        ):
+            setter = getattr(
+                candidate,
+                "set",
+                None,
+            )
+
+            if not callable(setter):
+                continue
+
+            try:
+                setter(
+                    value
+                )
+            except Exception:
+                logger.debug(
+                    "Could not restore runtime object "
+                    "value after failed updateFrom.",
+                    exc_info=True,
+                )
 
     def _updateGenericObjectFromPostgresql(self, obj):
         if obj is None:

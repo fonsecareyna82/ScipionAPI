@@ -23,6 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+
+from unittest.mock import Mock
+
 from pyworkflow.object import (
     Object,
     Set,
@@ -112,6 +116,7 @@ class FakeRuntimeSetFactory:
         self.cacheWrites = []
         self.matchCalls = []
         self.buildCalls = []
+        self.pointerCacheClearCalls = []
 
     def _getCachedRuntimeSet(
             self,
@@ -159,10 +164,41 @@ class FakeRuntimeSetFactory:
             **kwargs,
     ):
         self.buildCalls.append(
-            dict(kwargs)
+            dict(
+                kwargs
+            )
         )
 
+        existingRuntimeSet = (
+            kwargs.get(
+                "runtimeSet"
+            )
+        )
+
+        if existingRuntimeSet is not None:
+            existingRuntimeSet.runtimeMarker = (
+                "refreshed"
+            )
+
+            existingRuntimeSet._mapper = (
+                Mock()
+            )
+
+            return existingRuntimeSet
+
         return self.runtimeSet
+
+    def clearRuntimeSetPointerCache(
+            self,
+            projectId,
+            runtimeObjectId,
+    ):
+        self.pointerCacheClearCalls.append(
+            (
+                projectId,
+                runtimeObjectId,
+            )
+        )
 
 
 def buildMapper():
@@ -363,3 +399,238 @@ def test_SelectByIdKeepsProtocolPrecedence():
     assert mapper.selectById(
         200
     ) is protocol
+
+
+def test_UpdateFromRefreshesPostgresqlRuntimeSetWithoutFallback():
+    mapper = buildMapper()
+
+    parentProtocol = Object()
+
+    parentProtocol.setObjId(
+        200
+    )
+
+    runtimeSet = ExampleSet()
+
+    runtimeSet.setObjId(
+        300
+    )
+
+    runtimeSet.runtimeMarker = "stale"
+    runtimeSet._objParent = None
+
+    previousMapper = Mock()
+    runtimeSet._mapper = previousMapper
+
+    repository = FakeProtocolGraphRepository(
+        outputInfo=buildOutputInfo()
+    )
+
+    factory = FakeRuntimeSetFactory(
+        cachedSet=runtimeSet
+    )
+
+    selectedProtocols = []
+
+    def selectRuntimeProtocol(
+            protocolId,
+            refreshCached=True,
+    ):
+        selectedProtocols.append(
+            (
+                protocolId,
+                refreshCached,
+            )
+        )
+
+        return parentProtocol
+
+    mapper.protocolGraphRepository = (
+        repository
+    )
+
+    mapper.runtimeSetFactory = factory
+
+    mapper.selectRuntimeProtocolById = (
+        selectRuntimeProtocol
+    )
+
+    mapper.readFallbackMapper = Mock()
+    mapper._recordReadFallback = Mock()
+
+    result = mapper.updateFrom(
+        runtimeSet
+    )
+
+    assert result is None
+
+    assert runtimeSet.runtimeMarker == (
+        "refreshed"
+    )
+
+    assert selectedProtocols == [
+        (
+            200,
+            False,
+        ),
+    ]
+
+    assert previousMapper.close.call_count == 1
+
+    assert factory.cacheWrites == [
+        runtimeSet,
+    ]
+
+    assert (
+        factory.pointerCacheClearCalls
+        == [
+            (
+                4,
+                300,
+            )
+        ]
+    )
+
+    buildCall = factory.buildCalls[0]
+
+    assert buildCall[
+        "runtimeSet"
+    ] is runtimeSet
+
+    assert buildCall[
+        "cache"
+    ] is False
+
+    assert buildCall[
+        "parent"
+    ] is parentProtocol
+
+    mapper.readFallbackMapper.updateFrom.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
+
+
+def test_UpdateFromSetDoesNotRefreshExistingParentProtocol():
+    mapper = buildMapper()
+
+    parentProtocol = Object()
+
+    parentProtocol.setObjId(
+        200
+    )
+
+    runtimeSet = ExampleSet()
+
+    runtimeSet.setObjId(
+        300
+    )
+
+    runtimeSet._objParent = (
+        parentProtocol
+    )
+
+    runtimeSet._mapper = Mock()
+
+    mapper.protocolGraphRepository = (
+        FakeProtocolGraphRepository(
+            outputInfo=buildOutputInfo()
+        )
+    )
+
+    mapper.runtimeSetFactory = (
+        FakeRuntimeSetFactory(
+            cachedSet=runtimeSet
+        )
+    )
+
+    mapper.selectRuntimeProtocolById = Mock(
+        side_effect=AssertionError(
+            "Existing parent protocol "
+            "must not be refreshed"
+        )
+    )
+
+    mapper.updateFrom(
+        runtimeSet
+    )
+
+    mapper.selectRuntimeProtocolById.assert_not_called()
+
+
+def test_UpdateFromSetRestoresStateWhenRefreshFails():
+    mapper = buildMapper()
+
+    parentProtocol = Object()
+
+    parentProtocol.setObjId(
+        200
+    )
+
+    runtimeSet = ExampleSet()
+
+    runtimeSet.setObjId(
+        300
+    )
+
+    runtimeSet._objParent = (
+        parentProtocol
+    )
+
+    runtimeSet.runtimeMarker = "before"
+
+    previousMapper = Mock()
+    runtimeSet._mapper = previousMapper
+
+    failedMapper = Mock()
+
+    factory = FakeRuntimeSetFactory(
+        cachedSet=runtimeSet
+    )
+
+    def failBuild(
+            **kwargs,
+    ):
+        runtimeSet.runtimeMarker = (
+            "partial"
+        )
+
+        runtimeSet._mapper = (
+            failedMapper
+        )
+
+        raise RuntimeError(
+            "forced set refresh failure"
+        )
+
+    factory.build = failBuild
+
+    mapper.protocolGraphRepository = (
+        FakeProtocolGraphRepository(
+            outputInfo=buildOutputInfo()
+        )
+    )
+
+    mapper.runtimeSetFactory = factory
+
+    with pytest.raises(
+            RuntimeError,
+            match=(
+                "forced set refresh failure"
+            ),
+    ):
+        mapper.updateFrom(
+            runtimeSet
+        )
+
+    assert runtimeSet.runtimeMarker == (
+        "before"
+    )
+
+    assert runtimeSet._mapper is (
+        previousMapper
+    )
+
+    assert failedMapper.close.call_count == 1
+    assert previousMapper.close.call_count == 0
+
+    assert factory.cacheWrites == []
+
