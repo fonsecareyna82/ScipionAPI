@@ -218,3 +218,35 @@ def test_DeleteStoredSetOutputRejectsSharedCanonicalRoot():
         )
 
     assert len(database.calls) == 2
+
+
+
+def test_DeleteStoredSetOutputRejectsMissingStoredSet():
+    database = FakeDatabase(
+        deletedSet=None,
+    )
+
+    mapper = ScipionSetPostgresqlMapper(
+        database
+    )
+
+    try:
+        mapper.deleteStoredSetOutput(
+            projectId=7,
+            setId=31,
+            objectId=900,
+            runtimeObjectId=700,
+        )
+    except RuntimeError as error:
+        assert str(error) == (
+            "Could not delete PostgreSQL Set 31 "
+            "with canonical object 900."
+        )
+    else:
+        raise AssertionError(
+            "Expected missing PostgreSQL Set deletion "
+            "to raise RuntimeError"
+        )
+
+    assert database.transactionCalls == 1
+    assert len(database.calls) == 1

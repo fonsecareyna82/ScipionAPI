@@ -327,7 +327,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
 
             if deletedSet is None:
-                return result
+                raise RuntimeError(
+                    "Could not delete PostgreSQL Set %s "
+                    "with canonical object %s."
+                    % (
+                        setId,
+                        objectId,
+                    )
+                )
 
             result["deletedSetsCount"] = 1
 
