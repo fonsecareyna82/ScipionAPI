@@ -319,6 +319,42 @@ class PostgresqlRuntimeSetFactory:
             else runtimeSet
         )
 
+    def clearRuntimeSetPointerCache(
+            self,
+            projectId: int,
+            runtimeObjectId: int,
+    ) -> None:
+        """
+        Clear item-pointer resolutions owned by one runtime Set.
+
+        The runtime Set itself remains cached and open.
+        """
+        targetIdentity = (
+            int(projectId),
+            int(runtimeObjectId),
+        )
+
+        for pointerKey in list(
+                self._resolvedPointerTargets
+        ):
+            if pointerKey[:2] != targetIdentity:
+                continue
+
+            self._resolvedPointerTargets.pop(
+                pointerKey,
+                None,
+            )
+
+        for pointerKey in list(
+                self._resolvingPointerTargets
+        ):
+            if pointerKey[:2] != targetIdentity:
+                continue
+
+            self._resolvingPointerTargets.discard(
+                pointerKey
+            )
+
     def build(
             self,
             db,
@@ -326,6 +362,8 @@ class PostgresqlRuntimeSetFactory:
             outputName: str,
             outputInfo: Dict[str, Any],
             classes: Optional[Dict[str, Type]] = None,
+            runtimeSet=None,
+            cache: bool = True,
     ):
         if db is None:
             raise ValueError("db is required")
@@ -385,7 +423,38 @@ class PostgresqlRuntimeSetFactory:
             nativeSetClass
         )
 
-        runtimeSet = runtimeSetClass()
+        if runtimeSet is None:
+            runtimeSet = runtimeSetClass()
+
+        else:
+            if not isinstance(
+                    runtimeSet,
+                    nativeSetClass,
+            ):
+                raise TypeError(
+                    "Cannot refresh PostgreSQL runtime Set %s "
+                    "using persisted class %s."
+                    % (
+                        runtimeSet.__class__.__name__,
+                        nativeSetClass.__name__,
+                    )
+                )
+
+            runtimeChecker = getattr(
+                runtimeSet,
+                "isPostgresqlRuntimeOutput",
+                None,
+            )
+
+            if (
+                    not callable(runtimeChecker)
+                    or not runtimeChecker()
+            ):
+                raise TypeError(
+                    "Existing Set %s is not a PostgreSQL "
+                    "runtime output."
+                    % runtimeSet.__class__.__name__
+                )
 
         self._configureRuntimeSetCompatibility(
             runtimeSet=runtimeSet,
@@ -524,9 +593,10 @@ class PostgresqlRuntimeSetFactory:
 
         runtimeSet.load()
 
-        self._cacheRuntimeSet(
-            runtimeSet
-        )
+        if cache:
+            self._cacheRuntimeSet(
+                runtimeSet
+            )
 
         return runtimeSet
 

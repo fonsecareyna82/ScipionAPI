@@ -1286,7 +1286,8 @@ def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():
     except NotImplementedError as error:
         assert str(error) == (
             "PostgreSQL updateFrom is only implemented "
-            "for supported generic runtime objects."
+            "for protocols, PostgreSQL runtime Sets "
+            "and supported generic runtime objects."
         )
     else:
         raise AssertionError(
