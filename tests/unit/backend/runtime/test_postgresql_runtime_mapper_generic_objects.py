@@ -1127,4 +1127,122 @@ def test_SelectByMergePreservesRuntimeObjectIdOrder():
     )
 
 
+def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    mapper.readFallbackMapper = Mock()
+    mapper._recordReadFallback = Mock()
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+    targetObject.setObjName("staleOutput")
+    targetObject.setObjLabel("Stale label")
+    targetObject.setObjComment("Stale comment")
+    targetObject.title.set("Stale title")
+    targetObject.count.set(99)
+
+    titleBeforeUpdate = targetObject.title
+    countBeforeUpdate = targetObject.count
+
+    ownerProtocol = Mock()
+    targetObject._objParent = ownerProtocol
+
+    result = mapper.updateFrom(
+        targetObject
+    )
+
+    assert result is None
+
+    assert targetObject.getObjId() == 700
+    assert targetObject.getObjName() == "outputObject"
+    assert targetObject.getObjParentId() == 101
+    assert targetObject.getObjLabel() == "Output label"
+    assert targetObject.getObjComment() == "Output comment"
+    assert targetObject.getObjCreation() == (
+        "2026-07-15 12:30:45.123456"
+    )
+
+    assert targetObject.title is titleBeforeUpdate
+    assert targetObject.title.get() == "PostgreSQL object"
+    assert targetObject.title.getObjId() == 701
+    assert targetObject.title.getObjParentId() == 700
+    assert targetObject.title._objParent is targetObject
+
+    assert targetObject.count is countBeforeUpdate
+    assert targetObject.count.get() == 5
+    assert targetObject.count.getObjId() == 702
+    assert targetObject.count.getObjParentId() == 700
+    assert targetObject.count._objParent is targetObject
+
+    assert targetObject._objParent is ownerProtocol
+    assert ownerProtocol.mock_calls == []
+
+    mapper.readFallbackMapper.updateFrom.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_UpdateFromUsesFallbackWhenGenericObjectIsNotInPostgresql():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    fallbackResult = object()
+
+    mapper.readFallbackMapper = Mock()
+    mapper.readFallbackMapper.updateFrom.return_value = (
+        fallbackResult
+    )
+
+    mapper._recordReadFallback = Mock()
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    result = mapper.updateFrom(
+        targetObject
+    )
+
+    assert result is fallbackResult
+
+    mapper._recordReadFallback.assert_called_once_with(
+        "updateFrom",
+        objectId=700,
+        objectClass="FakeComposite",
+    )
+
+    mapper.readFallbackMapper.updateFrom.assert_called_once_with(
+        targetObject
+    )
+
+
+def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    try:
+        mapper.updateFrom(targetObject)
+    except NotImplementedError as error:
+        assert str(error) == (
+            "PostgreSQL updateFrom is only implemented "
+            "for supported generic runtime objects."
+        )
+    else:
+        raise AssertionError(
+            "Expected updateFrom to raise NotImplementedError"
+        )
+
+
 
