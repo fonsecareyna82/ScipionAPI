@@ -136,6 +136,17 @@ class PostgresqlRuntimeMapper(Mapper):
         "on",
     }
 
+    SELECT_BY_FIELDS = frozenset({
+        "id",
+        "parent_id",
+        "name",
+        "classname",
+        "value",
+        "label",
+        "comment",
+        "creation",
+    })
+
     def _initializeFallbackAudit(self):
         auditValue = os.environ.get(
             self.FALLBACK_AUDIT_ENV,
@@ -1977,10 +1988,17 @@ class PostgresqlRuntimeMapper(Mapper):
             fallbackObjects,
         )
 
-    def selectBy(self, iterate=False, objectFilter=None, **args):
+    def selectBy(
+            self,
+            iterate=False,
+            objectFilter=None,
+            **args,
+    ):
         if objectFilter is not None and not callable(objectFilter):
             if self.readFallbackMapper is None:
-                raise TypeError("objectFilter must be callable or None")
+                raise TypeError(
+                    "objectFilter must be callable or None"
+                )
 
             return self._selectByFromReadFallback(
                 iterate=iterate,
@@ -1994,7 +2012,10 @@ class PostgresqlRuntimeMapper(Mapper):
             if creationTime is not None:
                 result = [creationTime]
 
-                if objectFilter is not None and not objectFilter(creationTime):
+                if (
+                        objectFilter is not None
+                        and not objectFilter(creationTime)
+                ):
                     result = []
 
                 return iter(result) if iterate else result
@@ -2002,10 +2023,431 @@ class PostgresqlRuntimeMapper(Mapper):
             if self.readFallbackMapper is None:
                 return iter(()) if iterate else []
 
-        return self._selectByFromReadFallback(
-            iterate=iterate,
-            objectFilter=objectFilter,
-            **args,
+        unsupportedFields = (
+                set(args)
+                - self.SELECT_BY_FIELDS
+        )
+
+        if unsupportedFields:
+            return self._selectByFromReadFallback(
+                iterate=iterate,
+                objectFilter=objectFilter,
+                **args,
+            )
+
+        if any(
+                value is None
+                for value in args.values()
+        ):
+            if self.readFallbackMapper is not None:
+                return self._selectByFromReadFallback(
+                    iterate=iterate,
+                    objectFilter=objectFilter,
+                    **args,
+                )
+
+            return iter(()) if iterate else []
+
+        if "id" in args:
+            runtimeObjectId = self._toOptionalInt(
+                args.get("id")
+            )
+
+            if runtimeObjectId is None:
+                if self.readFallbackMapper is not None:
+                    return self._selectByFromReadFallback(
+                        iterate=iterate,
+                        objectFilter=objectFilter,
+                        **args,
+                    )
+
+                return iter(()) if iterate else []
+
+            runtimeObject = self._selectPostgresqlObjectForSelectById(
+                runtimeObjectId
+            )
+
+            if runtimeObject is not None:
+                result = []
+
+                if self._matchesSelectByQuery(
+                        runtimeObject,
+                        args,
+                ):
+                    if (
+                            objectFilter is None
+                            or objectFilter(runtimeObject)
+                    ):
+                        result.append(runtimeObject)
+
+                return iter(result) if iterate else result
+
+            if self.readFallbackMapper is not None:
+                return self._selectByFromReadFallback(
+                    iterate=iterate,
+                    objectFilter=objectFilter,
+                    **args,
+                )
+
+            return iter(()) if iterate else []
+
+        postgresqlObjects = (
+            self._selectAllPostgresqlObjectsForSelectBy()
+        )
+
+        result = []
+
+        for obj in postgresqlObjects:
+            if not self._matchesSelectByQuery(
+                    obj,
+                    args,
+            ):
+                continue
+
+            if (
+                    objectFilter is not None
+                    and not objectFilter(obj)
+            ):
+                continue
+
+            result.append(obj)
+
+        if self.readFallbackMapper is not None:
+            self._recordReadFallback(
+                "selectBy.compatibilityMerge",
+                query=args,
+                objectFilter=objectFilter,
+            )
+
+            fallbackResult = self.readFallbackMapper.selectBy(
+                iterate=False,
+                objectFilter=objectFilter,
+                **args,
+            )
+
+            fallbackObjects = self._attachRuntimeContextList(
+                fallbackResult
+            )
+
+            result = self._mergeSelectByResults(
+                postgresqlObjects=result,
+                fallbackObjects=fallbackObjects,
+                ownedPostgresqlObjects=postgresqlObjects,
+            )
+
+        return iter(result) if iterate else result
+
+    def _selectPostgresqlObjectForSelectById(
+            self,
+            runtimeObjectId,
+    ):
+        obj = self._selectProtocolByIdFromPostgresql(
+            runtimeObjectId
+        )
+
+        if obj is not None:
+            return obj
+
+        obj = self._selectSetByIdFromPostgresql(
+            runtimeObjectId,
+            refreshParentProtocol=False,
+        )
+
+        if obj is not None:
+            return obj
+
+        return self._selectGenericObjectByIdFromPostgresql(
+            runtimeObjectId
+        )
+
+    def _selectAllPostgresqlObjectsForSelectBy(self):
+        result = []
+
+        for row in self.flatMapper.getProtocols(self.projectId) or []:
+            protocolId = self._toOptionalInt(
+                row.get("protocolId")
+            )
+
+            if protocolId is None:
+                continue
+
+            protocol = self._runtimeProtocolsById.get(
+                protocolId
+            )
+
+            if protocol is None:
+                protocol = self._buildProtocolFromPostgresqlRow(
+                    row
+                )
+
+            if protocol is not None:
+                result.append(protocol)
+
+        setRows = self.protocolGraphRepository.listPersistedSetOutputRows(
+            mapper=self,
+            projectId=self.projectId,
+        )
+
+        for row in setRows:
+            runtimeObjectId = self._toOptionalInt(
+                row.get("runtimeObjectId")
+            )
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeSet = self._selectSetByIdFromPostgresql(
+                runtimeObjectId,
+                refreshParentProtocol=False,
+            )
+
+            if runtimeSet is not None:
+                result.append(runtimeSet)
+
+        result.extend(
+            self._selectAllGenericObjectsFromPostgresql()
+        )
+
+        creationTime = self._selectProjectCreationTimeFromPostgresql()
+
+        if creationTime is not None:
+            result.append(creationTime)
+
+        result = self._mergeRuntimeClassResults(
+            result,
+            [],
+        )
+
+        return sorted(
+            result,
+            key=self._getSelectBySortKey,
+        )
+
+    def _getSelectBySortKey(self, obj):
+        objectName = self._getSelectByStoredName(obj)
+
+        if objectName == PROJECT_CREATION_TIME:
+            return 0, 0
+
+        objId = self._getObjId(obj)
+
+        if objId is not None:
+            return 1, objId
+
+        return 2, 0
+
+    def _matchesSelectByQuery(
+            self,
+            obj,
+            query,
+    ):
+        for fieldName, expectedValue in query.items():
+            actualValue = self._getSelectByFieldValue(
+                obj,
+                fieldName,
+            )
+
+            if not self._selectByValuesMatch(
+                    fieldName,
+                    actualValue,
+                    expectedValue,
+            ):
+                return False
+
+        return True
+
+    def _getSelectByFieldValue(
+            self,
+            obj,
+            fieldName,
+    ):
+        if fieldName == "id":
+            return self._getObjId(obj)
+
+        if fieldName == "parent_id":
+            parentId = self._call(
+                obj,
+                "getObjParentId",
+                getattr(obj, "_objParentId", None),
+            )
+
+            return self._toOptionalInt(parentId)
+
+        if fieldName == "name":
+            return self._getSelectByStoredName(obj)
+
+        if fieldName == "classname":
+            return self._getSelectByStoredClassName(obj)
+
+        if fieldName == "value":
+            value = self._call(
+                obj,
+                "getObjValue",
+                None,
+            )
+
+            if self._call(obj, "isPointer", False):
+                targetId = self._getObjId(value)
+
+                if targetId is not None:
+                    return targetId
+
+            return self._scalarValue(value)
+
+        if fieldName == "label":
+            value = self._call(
+                obj,
+                "getObjLabel",
+                getattr(obj, "_objLabel", ""),
+            )
+
+            return self._scalarValue(value)
+
+        if fieldName == "comment":
+            value = self._call(
+                obj,
+                "getObjComment",
+                getattr(obj, "_objComment", ""),
+            )
+
+            return self._scalarValue(value)
+
+        if fieldName == "creation":
+            value = self._call(
+                obj,
+                "getObjCreation",
+                getattr(obj, "_objCreation", None),
+            )
+
+            return self._scalarValue(value)
+
+        return None
+
+    @staticmethod
+    def _getSelectByStoredName(obj):
+        return str(
+            getattr(obj, "_objName", "")
+            or ""
+        )
+
+    def _getSelectByStoredClassName(self, obj):
+        try:
+            className = Mapper.getObjectPersistingClassName(
+                obj
+            )
+        except Exception:
+            className = self._getClassName(obj)
+
+        return str(className or "")
+
+    def _selectByValuesMatch(
+            self,
+            fieldName,
+            actualValue,
+            expectedValue,
+    ):
+        if (
+                actualValue is None
+                or expectedValue is None
+        ):
+            return False
+
+        if fieldName in {
+            "id",
+            "parent_id",
+        }:
+            actualId = self._toOptionalInt(actualValue)
+            expectedId = self._toOptionalInt(expectedValue)
+
+            return (
+                    actualId is not None
+                    and expectedId is not None
+                    and actualId == expectedId
+            )
+
+        if (
+                fieldName == "classname"
+                and isinstance(expectedValue, type)
+        ):
+            expectedValue = expectedValue.__name__
+
+        if fieldName == "creation":
+            actualValue = self._normalizeSelectByCreationValue(
+                actualValue
+            )
+
+            expectedValue = self._normalizeSelectByCreationValue(
+                expectedValue
+            )
+
+        return str(actualValue) == str(expectedValue)
+
+    def _normalizeSelectByCreationValue(self, value):
+        if isinstance(value, datetime):
+            return self._formatProjectCreationTime(value)
+
+        return str(value)
+
+    def _mergeSelectByResults(
+            self,
+            postgresqlObjects,
+            fallbackObjects,
+            ownedPostgresqlObjects,
+    ):
+        ownedIds = set()
+        ownedObjectsWithoutId = set()
+
+        for obj in ownedPostgresqlObjects:
+            objId = self._getObjId(obj)
+
+            if objId is not None:
+                ownedIds.add(str(objId))
+                continue
+
+            identity = self._getSelectByObjectWithoutIdIdentity(
+                obj
+            )
+
+            if identity is not None:
+                ownedObjectsWithoutId.add(identity)
+
+        compatibleFallbackObjects = []
+
+        for obj in fallbackObjects:
+            objId = self._getObjId(obj)
+
+            if (
+                    objId is not None
+                    and str(objId) in ownedIds
+            ):
+                continue
+
+            identity = self._getSelectByObjectWithoutIdIdentity(
+                obj
+            )
+
+            if (
+                    identity is not None
+                    and identity in ownedObjectsWithoutId
+            ):
+                continue
+
+            compatibleFallbackObjects.append(obj)
+
+        return self._mergeRuntimeClassResults(
+            postgresqlObjects,
+            compatibleFallbackObjects,
+        )
+
+    def _getSelectByObjectWithoutIdIdentity(self, obj):
+        objectName = self._getSelectByStoredName(obj)
+
+        if not objectName:
+            return None
+
+        return (
+            self._getSelectByStoredClassName(obj),
+            objectName,
         )
 
     def _selectByFromReadFallback(
@@ -2016,8 +2458,9 @@ class PostgresqlRuntimeMapper(Mapper):
     ):
         if self.readFallbackMapper is None:
             raise NotImplementedError(
-                "PostgreSQL selectBy is only implemented "
-                "for project CreationTime."
+                "PostgreSQL selectBy does not support "
+                "the requested query fields: %s"
+                % sorted(args)
             )
 
         self._recordReadFallback(
