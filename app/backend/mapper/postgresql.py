@@ -1000,6 +1000,135 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cursor.rowcount > 0
 
+    def deleteProjectRuntimeData(
+            self,
+            projectId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete every runtime Mapper object owned by one project.
+
+        The project row, shares, protocol tag definitions and global object
+        type schemas are deliberately preserved.
+        """
+        projectId = int(projectId)
+
+        with self.db.transaction():
+            projectRow = self.db.fetchOne(
+                """
+                SELECT id
+                  FROM projects
+                 WHERE id = %s
+                 FOR UPDATE
+                """,
+                (
+                    projectId,
+                ),
+            )
+
+            if projectRow is None:
+                raise RuntimeError(
+                    "Cannot delete runtime data because "
+                    "PostgreSQL project %s does not exist."
+                    % projectId
+                )
+
+            relationsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_relations
+                 WHERE "projectId" = %s
+                """,
+                (
+                    projectId,
+                ),
+                commit=False,
+            )
+
+            setsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_sets
+                 WHERE "projectId" = %s
+                """,
+                (
+                    projectId,
+                ),
+                commit=False,
+            )
+
+            objectsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_objects
+                 WHERE "projectId" = %s
+                """,
+                (
+                    projectId,
+                ),
+                commit=False,
+            )
+
+            protocolsCursor = self.db.execute(
+                """
+                DELETE FROM protocols
+                 WHERE "projectId" = %s
+                """,
+                (
+                    projectId,
+                ),
+                commit=False,
+            )
+
+            self.db.execute(
+                """
+                INSERT INTO project_object_id_counters (
+                    "projectId",
+                    "nextObjectId"
+                )
+                VALUES (%s, 1)
+                ON CONFLICT ("projectId")
+                DO UPDATE SET
+                    "nextObjectId" = 1,
+                    "updatedAt" = NOW()
+                """,
+                (
+                    projectId,
+                ),
+                commit=False,
+            )
+
+        return {
+            "deletedRelationsCount": int(
+                getattr(
+                    relationsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            ),
+            "deletedSetsCount": int(
+                getattr(
+                    setsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            ),
+            "deletedObjectsCount": int(
+                getattr(
+                    objectsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            ),
+            "deletedProtocolsCount": int(
+                getattr(
+                    protocolsCursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            ),
+        }
+
     def getProjectSharedUsers(self, projectId: int) -> List[int]:
         """Return the list of userIds with whom the given project is shared."""
         rows = self.db.fetchAll(
