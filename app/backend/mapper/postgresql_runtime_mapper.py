@@ -3392,24 +3392,76 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
     def delete(self, obj):
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.delete(obj)
-
-        if isinstance(obj, Protocol):
-            self.flatMapper.deleteProtocol(self.projectId, [obj])
+        if obj is None:
             return
 
-        objId = self._getObjId(obj)
+        if isinstance(obj, Protocol):
+            if self.writeFallbackMapper is not None:
+                self.writeFallbackMapper.delete(obj)
+
+            self.flatMapper.deleteProtocol(
+                self.projectId,
+                [obj],
+            )
+
+            return
+
+        objId = self._toOptionalInt(
+            self._getObjId(obj)
+        )
+
         if objId is None:
             return
 
-        self.db.execute(
-            """
-            DELETE FROM scipion_objects
-             WHERE "projectId" = %s
-               AND "scipionObjId" = %s
-            """,
-            (self.projectId, int(objId)),
+        if self.writeFallbackMapper is not None:
+            self.writeFallbackMapper.delete(obj)
+
+        if (
+                isinstance(obj, ScipionSet)
+                or self._isSetLike(obj)
+        ):
+            logger.debug(
+                "Skipping PostgreSQL Set deletion until native "
+                "runtime Set delete is implemented. "
+                "projectId=%s runtimeObjectId=%s className=%s",
+                self.projectId,
+                objId,
+                self._getClassName(obj),
+            )
+
+            return
+
+        if not isinstance(obj, ScipionObject):
+            logger.debug(
+                "PostgresqlRuntimeMapper.delete skipped "
+                "unsupported object. projectId=%s "
+                "runtimeObjectId=%s className=%s",
+                self.projectId,
+                objId,
+                self._getClassName(obj),
+            )
+
+            return
+
+        deleteResult = self.objectMapper.deleteStoredObjectSubtreesByScipionObjId(
+            projectId=self.projectId,
+            scipionObjId=objId,
+        )
+
+        logger.debug(
+            "Deleted PostgreSQL generic object tree. "
+            "projectId=%s runtimeObjectId=%s "
+            "deletedObjects=%s deletedRelations=%s",
+            self.projectId,
+            objId,
+            deleteResult.get(
+                "deletedObjectsCount",
+                0,
+            ),
+            deleteResult.get(
+                "deletedRelationsCount",
+                0,
+            ),
         )
 
     # ---------------------------------------------------------------------

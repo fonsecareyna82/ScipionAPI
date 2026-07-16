@@ -51,11 +51,27 @@ class FakeDerivedComposite(FakeComposite):
 
 
 class FakeObjectMapper:
-    def __init__(self, rows=None, classRows=None):
+    def __init__(
+            self,
+            rows=None,
+            classRows=None,
+            deleteResult=None,
+    ):
         self.rows = list(rows or [])
         self.classRows = list(classRows or [])
         self.calls = []
         self.classCalls = []
+        self.deleteCalls = []
+
+        if deleteResult is None:
+            deleteResult = {
+                "deletedObjectsCount": 0,
+                "deletedRelationsCount": 0,
+            }
+
+        self.deleteResult = dict(
+            deleteResult
+        )
 
     def getStoredObjectSubtreeByScipionObjId(
             self,
@@ -80,6 +96,20 @@ class FakeObjectMapper:
         ))
 
         return list(self.classRows)
+
+    def deleteStoredObjectSubtreesByScipionObjId(
+            self,
+            projectId,
+            scipionObjId,
+    ):
+        self.deleteCalls.append((
+            projectId,
+            scipionObjId,
+        ))
+
+        return dict(
+            self.deleteResult
+        )
 
 
 def buildRows():
@@ -146,7 +176,11 @@ def buildRows():
     ]
 
 
-def buildRuntimeMapper(rows, classRows=None):
+def buildRuntimeMapper(
+        rows,
+        classRows=None,
+        deleteResult=None,
+):
     mapper = PostgresqlRuntimeMapper.__new__(
         PostgresqlRuntimeMapper
     )
@@ -154,6 +188,7 @@ def buildRuntimeMapper(rows, classRows=None):
     mapper.projectId = 7
     mapper.project = None
     mapper.readFallbackMapper = None
+    mapper.writeFallbackMapper = None
     mapper.flatMapper = Mock()
     mapper.flatMapper.getProtocols.return_value = []
     mapper.flatMapper.getProjectRuntimeMetadata.return_value = None
@@ -177,6 +212,7 @@ def buildRuntimeMapper(rows, classRows=None):
     mapper.objectMapper = FakeObjectMapper(
         rows=rows,
         classRows=classRows,
+        deleteResult=deleteResult,
     )
 
     def failIfRuntimeContextIsAttached(obj):
@@ -1275,4 +1311,82 @@ def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
 
     mapper.readFallbackMapper.updateFrom.assert_not_called()
     mapper._recordReadFallback.assert_not_called()
+
+def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        deleteResult={
+            "deletedObjectsCount": 3,
+            "deletedRelationsCount": 2,
+        },
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    ownerProtocol = Mock()
+    ownerProtocol.outputObject = targetObject
+    targetObject._objParent = ownerProtocol
+
+    mapper.delete(
+        targetObject
+    )
+
+    mapper.writeFallbackMapper.delete.assert_called_once_with(
+        targetObject
+    )
+
+    assert mapper.objectMapper.deleteCalls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+    assert targetObject._objParent is ownerProtocol
+    assert ownerProtocol.outputObject is targetObject
+    assert ownerProtocol.mock_calls == []
+
+def test_DeleteDoesNotPartiallyDeletePostgresqlSetRoot():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    mapper.delete(
+        runtimeSet
+    )
+
+    mapper.writeFallbackMapper.delete.assert_called_once_with(
+        runtimeSet
+    )
+
+    assert mapper.objectMapper.deleteCalls == []
+
+
+def test_DeleteIgnoresUnstoredGenericObject():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    targetObject = FakeComposite()
+
+    mapper.delete(
+        targetObject
+    )
+
+    mapper.writeFallbackMapper.delete.assert_not_called()
+    assert mapper.objectMapper.deleteCalls == []
+
+
 

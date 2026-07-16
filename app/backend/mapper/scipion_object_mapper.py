@@ -393,6 +393,127 @@ class ScipionObjectPostgresqlMapper:
             (projectId, protocolDbId),
         )
 
+    def deleteStoredObjectSubtreesByScipionObjId(
+            self,
+            projectId: int,
+            scipionObjId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete every generic object subtree whose root uses the supplied
+        Scipion runtime object id.
+
+        Stored Set roots are deliberately excluded. Deleting a Set root from
+        scipion_objects would leave scipion_sets.objectId set to NULL instead
+        of removing the complete PostgreSQL Set representation.
+
+        Descendants are selected recursively. Compatibility runtime relations
+        involving any deleted node are removed explicitly, while canonical
+        scipion_object_relations rows are removed through foreign-key cascades.
+        """
+        projectId = int(projectId)
+        scipionObjId = int(scipionObjId)
+
+        with self.db.transaction():
+            result = self.db.fetchOne(
+                """
+                WITH RECURSIVE selected_roots AS (
+                    SELECT
+                        object_row.id,
+                        object_row."scipionObjId"
+                      FROM scipion_objects object_row
+                     WHERE object_row."projectId" = %s
+                       AND object_row."scipionObjId" = %s
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM scipion_sets stored_set
+                             WHERE stored_set."objectId" = object_row.id
+                       )
+                ),
+                object_tree AS (
+                    SELECT
+                        selected_roots.id,
+                        selected_roots."scipionObjId"
+                      FROM selected_roots
+
+                    UNION
+
+                    SELECT
+                        child.id,
+                        child."scipionObjId"
+                      FROM scipion_objects child
+                      JOIN object_tree
+                        ON child."parentObjectId" = object_tree.id
+                     WHERE child."projectId" = %s
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM scipion_sets stored_set
+                             WHERE stored_set."objectId" = child.id
+                       )
+                ),
+                runtime_ids AS (
+                    SELECT DISTINCT
+                        "scipionObjId" AS "runtimeObjectId"
+                      FROM object_tree
+                     WHERE "scipionObjId" IS NOT NULL
+                ),
+                deleted_runtime_relations AS (
+                    DELETE FROM scipion_relations relation_row
+                     WHERE relation_row."projectId" = %s
+                       AND (
+                            relation_row."creatorObjId" IN (
+                                SELECT "runtimeObjectId"
+                                  FROM runtime_ids
+                            )
+                            OR relation_row."parentObjId" IN (
+                                SELECT "runtimeObjectId"
+                                  FROM runtime_ids
+                            )
+                            OR relation_row."childObjId" IN (
+                                SELECT "runtimeObjectId"
+                                  FROM runtime_ids
+                            )
+                       )
+                    RETURNING relation_row.id
+                ),
+                deleted_objects AS (
+                    DELETE FROM scipion_objects object_row
+                     WHERE object_row."projectId" = %s
+                       AND object_row.id IN (
+                            SELECT id
+                              FROM object_tree
+                       )
+                    RETURNING object_row.id
+                )
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                          FROM deleted_objects
+                    )::integer AS "deletedObjectsCount",
+                    (
+                        SELECT COUNT(*)
+                          FROM deleted_runtime_relations
+                    )::integer AS "deletedRelationsCount"
+                """,
+                (
+                    projectId,
+                    scipionObjId,
+                    projectId,
+                    projectId,
+                    projectId,
+                ),
+            )
+
+        result = result or {}
+
+        return {
+            "deletedObjectsCount": int(
+                result.get("deletedObjectsCount") or 0
+            ),
+            "deletedRelationsCount": int(
+                result.get("deletedRelationsCount") or 0
+            ),
+        }
+
     def _deleteStoredSetForOutput(
             self,
             projectId: int,
