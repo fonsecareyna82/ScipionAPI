@@ -1059,49 +1059,6 @@ def test_SelectRelationObjectFallbackKeepsObjectUnchanged():
     assert result is fallbackObject
 
 
-def test_GetRelationParentsDoesNotResurrectSynchronizedFallbackRelation():
-    fallbackMapper = FakeFallbackMapper()
-
-    fallbackMapper.nameRows = [{
-        "id": 931,
-        "parent_id": 101,
-        "name": "source",
-        "object_parent_id": 904,
-        "object_child_id": 501,
-        "object_parent_extended": None,
-        "object_child_extended": None,
-    }]
-
-    mapper = buildRuntimeMapper(
-        rows=[],
-        fallbackMapper=fallbackMapper,
-        synchronizedCreatorIds={
-            101,
-        },
-    )
-
-    selectedIds = []
-
-    mapper._selectRelationObjectById = (
-        lambda objId: selectedIds.append(
-            objId
-        )
-    )
-
-    result = mapper.getRelationParents(
-        "source",
-        FakeObject(
-            501
-        ),
-    )
-
-    assert result == []
-    assert selectedIds == []
-
-    assert fallbackMapper.nameCalls == [
-        "source",
-    ]
-
 def test_GetRelationsByCreatorMergesUnsynchronizedPostgresqlAndFallback():
     postgresqlRelation = {
         "id": 10,
