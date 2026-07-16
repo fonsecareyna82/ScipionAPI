@@ -394,20 +394,6 @@ class RuntimeProjectRelationSyncService:
                         [],
                     )
                 )
-
-            except Exception as error:
-                errors.append({
-                    "protocolId": protocolIdText,
-                    "error": str(error),
-                })
-
-                logger.exception(
-                    "Failed to synchronize project relations. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    protocolIdText,
-                )
-
             except Exception as error:
                 errors.append({
                     "protocolId": protocolIdText,
