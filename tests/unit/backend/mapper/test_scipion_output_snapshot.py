@@ -33,6 +33,7 @@ from app.backend.mapper.scipion_object_mapper import (
 )
 from app.backend.mapper.scipion_set_mapper import (
     NESTED_LOGICAL_TABLES_VERSION,
+    SET_PROPERTIES_VERSION,
     ScipionSetPostgresqlMapper,
 )
 
@@ -213,6 +214,7 @@ class SnapshotSetMapper(ScipionSetPostgresqlMapper):
             self,
             firstItem,
             itemSchema,
+            scipionSet=None,
     ) -> str:
         return "Particle"
 
@@ -845,6 +847,9 @@ def test_SetSyncIsNotSkippedWithoutSourceMTime():
             "nestedTablesVersion": (
                 NESTED_LOGICAL_TABLES_VERSION
             ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
+            ),
             "itemsCount": 3,
             "maxItemId": 3,
         },
@@ -880,6 +885,9 @@ def test_SetSyncUsesSourceMTimeAsStableSkipSignal(
             "incremental": True,
             "nestedTablesVersion": (
                 NESTED_LOGICAL_TABLES_VERSION
+            ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
             ),
             "itemsCount": 3,
             "maxItemId": 3,

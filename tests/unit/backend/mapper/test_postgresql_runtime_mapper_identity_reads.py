@@ -449,7 +449,7 @@ def test_GetParentResolvesRuntimeParentIdBeforeFallback():
 
     selectedIds = []
 
-    def selectById(
+    def selectRelationObjectById(
             objId,
     ):
         selectedIds.append(
@@ -461,7 +461,9 @@ def test_GetParentResolvesRuntimeParentIdBeforeFallback():
 
         return None
 
-    mapper.selectById = selectById
+    mapper._selectRelationObjectById = (
+        selectRelationObjectById
+    )
 
     assert mapper.getParent(
         item

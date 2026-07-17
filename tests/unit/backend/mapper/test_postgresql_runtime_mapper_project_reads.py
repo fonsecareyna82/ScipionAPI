@@ -40,6 +40,7 @@ class FakeDb:
     def __init__(self, projectRow=None):
         self.projectRow = projectRow
         self.calls = []
+        self.fetchAllCalls = []
 
     def fetchOne(self, query, params=None):
         normalizedQuery = " ".join(str(query).split())
@@ -53,6 +54,22 @@ class FakeDb:
             return self.projectRow
 
         return None
+
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        self.fetchAllCalls.append({
+            "query": " ".join(
+                str(
+                    query
+                ).split()
+            ),
+            "params": params,
+        })
+
+        return []
 
 
 class FakeFallbackMapper:
@@ -207,7 +224,7 @@ def test_SelectByReturnsEmptyCreationTimeWithoutFallback():
     assert result == []
 
 
-def test_SelectByDelegatesOtherQueriesToFallback():
+def test_SelectByUsesFallbackWhenPostgresqlHasNoMatchingObject():
     legacyObject = String("legacy")
     fallback = FakeFallbackMapper([legacyObject])
 
@@ -227,7 +244,7 @@ def test_SelectByDelegatesOtherQueriesToFallback():
         legacyObject,
     ]
 
-    assert db.calls == []
+    assert db.fetchAllCalls
 
     assert fallback.calls == [{
         "iterate": False,
