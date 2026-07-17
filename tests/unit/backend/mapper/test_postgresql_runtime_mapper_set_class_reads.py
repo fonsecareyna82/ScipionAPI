@@ -42,7 +42,7 @@ class ExampleChildSet(ExampleSet):
     pass
 
 
-class ExampleObject(Object):
+class UnsupportedObject:
     pass
 
 
@@ -126,7 +126,7 @@ def buildMapper(fallback=None):
             "ExampleItem": ExampleItem,
             "ExampleSet": ExampleSet,
             "ExampleChildSet": ExampleChildSet,
-            "ExampleObject": ExampleObject,
+            "UnsupportedObject": UnsupportedObject,
         },
         readFallbackMapper=fallback,
     )
@@ -293,21 +293,33 @@ def test_SelectByClassReturnsIteratorWhenRequested():
     assert list(result) == [runtimeSet]
 
 
-def test_SelectByClassDelegatesNonSetClassesToFallback():
-    legacyObject = ExampleObject()
-    legacyObject.setObjId(500)
+def test_SelectByClassDelegatesUnsupportedClassesToFallback():
+    legacyObject = UnsupportedObject()
 
-    fallback = FakeFallbackMapper([legacyObject])
-    mapper = buildMapper(fallback=fallback)
+    fallback = FakeFallbackMapper([
+        legacyObject,
+    ])
 
-    mapper.protocolGraphRepository = FakeRepository(fail=True)
+    mapper = buildMapper(
+        fallback=fallback
+    )
 
-    result = mapper.selectByClass("ExampleObject")
+    mapper.protocolGraphRepository = (
+        FakeRepository(
+            fail=True
+        )
+    )
 
-    assert result == [legacyObject]
+    result = mapper.selectByClass(
+        "UnsupportedObject"
+    )
+
+    assert result == [
+        legacyObject,
+    ]
 
     assert fallback.calls == [{
-        "className": "ExampleObject",
+        "className": "UnsupportedObject",
         "includeSubclasses": True,
         "iterate": False,
         "objectFilter": None,
