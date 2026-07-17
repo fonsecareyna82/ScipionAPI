@@ -168,6 +168,11 @@ class ProtocolContextService:
             protocolFormSerializer
             .serializeProtocolInputs(
                 protocol=protocol,
+                mapper=mapper,
+                projectId=projectId,
+                usingPostgresqlRuntime=usingPostgresqlRuntime,
+                getScipionObjectIdCallback=getScipionObjectIdCallback,
+                resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
                 splitPointerValueCallback=splitPointerValueCallback,
             )
         )
