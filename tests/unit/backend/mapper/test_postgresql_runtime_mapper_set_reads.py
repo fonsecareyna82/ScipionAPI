@@ -247,10 +247,18 @@ def test_SelectSetByIdBuildsSetWithoutMutatingParentOutput():
         runtimeSet=runtimeSet
     )
 
-    selectedProtocolIds = []
+    selectedProtocolCalls = []
 
-    def selectRuntimeProtocol(protocolId):
-        selectedProtocolIds.append(protocolId)
+    def selectRuntimeProtocol(
+            protocolId,
+            refreshCached=True,
+    ):
+        selectedProtocolCalls.append(
+            (
+                protocolId,
+                refreshCached,
+            )
+        )
 
         if protocolId == 200:
             return parentProtocol
@@ -276,7 +284,12 @@ def test_SelectSetByIdBuildsSetWithoutMutatingParentOutput():
         "runtimeObjectId": 300,
     }]
 
-    assert selectedProtocolIds == [200]
+    assert selectedProtocolCalls == [
+        (
+            200,
+            True,
+        ),
+    ]
 
     assert factory.cacheLookups == [
         (4, 300),
