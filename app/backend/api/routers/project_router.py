@@ -954,7 +954,7 @@ def deleteProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1034,7 +1034,7 @@ def restartProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
+                usePostgresqlRuntimeWriteFallback=True,
             )
 
             if refreshedProject:
