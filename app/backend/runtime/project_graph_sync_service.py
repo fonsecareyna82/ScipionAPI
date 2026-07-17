@@ -296,6 +296,8 @@ class RuntimeProjectGraphSyncService:
         relationReport = {
             "relationsDeclared": 0,
             "relations": 0,
+            "relationsStale": 0,
+            "staleRelations": [],
             "relationMissing": [],
             "relationErrors": [],
             "complete": True,
@@ -378,6 +380,8 @@ class RuntimeProjectGraphSyncService:
             "complete": not fatalErrors,
             "relationsDeclared": relationReport["relationsDeclared"],
             "relations": relationReport["relations"],
+            "relationsStale": int(relationReport.get("relationsStale", 0,) or 0),
+            "staleRelations": (relationReport.get("staleRelations") or []),
             "relationMissing": relationReport["relationMissing"],
             "relationErrors": relationReport["relationErrors"],
         }

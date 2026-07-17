@@ -44,6 +44,63 @@ class FakeProtocol:
         return list(self.relations)
 
 
+class FakeOutput:
+    def __init__(
+            self,
+            objectId,
+    ):
+        self.objectId = objectId
+
+    def getObjId(self):
+        return self.objectId
+
+
+class FinalOutputProtocol(FakeProtocol):
+    def __init__(
+            self,
+            relations,
+            outputs,
+    ):
+        super().__init__(
+            relations
+        )
+
+        self.outputs = list(
+            outputs
+        )
+
+    def isFinished(self):
+        return True
+
+    def iterOutputAttributes(self):
+        return list(
+            self.outputs
+        )
+
+def buildOutputObject(
+        objectId,
+        protocolDbId=200,
+        protocolId="20",
+        outputName=None,
+):
+    return {
+        "objectId": int(
+            objectId
+        ) + 10000,
+        "protocolDbId": (
+            protocolDbId
+        ),
+        "protocolId": str(
+            protocolId
+        ),
+        "outputName": (
+            outputName
+            or "output%s"
+            % objectId
+        ),
+    }
+
+
 class FakeRepository:
     def __init__(self, persistedObjects):
         self.persistedObjects = persistedObjects
@@ -1077,6 +1134,341 @@ def test_ReplaceImportedOutputRelationsRollsBackWhenMarkerCannotBeStored():
         call["commit"] is False
         for call in db.calls
     )
+
+
+def test_SyncProjectRelationsPrunesDeletedOutputGenerations(
+        monkeypatch,
+):
+    oldRelations = [
+        {
+            "id": 1,
+            "parent_id": 20,
+            "name": "relation_transform",
+            "object_parent_id": 10,
+            "object_child_id": 101,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 2,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 10,
+            "object_child_id": 101,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 3,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 10,
+            "object_child_id": 102,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 4,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 101,
+            "object_child_id": 103,
+            "object_parent_extended": None,
+            "object_child_extended": None,
+        },
+        {
+            "id": 5,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 102,
+            "object_child_id": 104,
+            "object_parent_extended": None,
+            "object_child_extended": None,
+        },
+    ]
+
+    currentRelations = [
+        {
+            "id": 6,
+            "parent_id": 20,
+            "name": "relation_transform",
+            "object_parent_id": 10,
+            "object_child_id": 301,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 7,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 10,
+            "object_child_id": 301,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 8,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 10,
+            "object_child_id": 302,
+            "object_parent_extended": (
+                "outputTiltSeries"
+            ),
+            "object_child_extended": None,
+        },
+        {
+            "id": 9,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 301,
+            "object_child_id": 303,
+            "object_parent_extended": None,
+            "object_child_extended": None,
+        },
+        {
+            "id": 10,
+            "parent_id": 20,
+            "name": "relation_datasource",
+            "object_parent_id": 302,
+            "object_child_id": 304,
+            "object_parent_extended": None,
+            "object_child_extended": None,
+        },
+    ]
+
+    persistedObjects = {
+        objectId: buildOutputObject(
+            objectId
+        )
+        for objectId in (
+            10,
+            101,
+            102,
+            103,
+            104,
+            301,
+            302,
+            303,
+            304,
+        )
+    }
+
+    repository = FakeRepository(
+        persistedObjects
+    )
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "ProtocolGraphRepository",
+        lambda: repository,
+    )
+
+    protocol = FinalOutputProtocol(
+        relations=(
+            oldRelations
+            + currentRelations
+        ),
+        outputs=[
+            (
+                "outputTiltSeries",
+                FakeOutput(
+                    301
+                ),
+            ),
+            (
+                "outputCTFTomoSeries",
+                FakeOutput(
+                    302
+                ),
+            ),
+            (
+                "outputTomograms",
+                FakeOutput(
+                    303
+                ),
+            ),
+            (
+                "outputCoordinates",
+                FakeOutput(
+                    304
+                ),
+            ),
+        ],
+    )
+
+    report = (
+        RuntimeProjectRelationSyncService()
+        .syncProjectRelations(
+            mapper=SimpleNamespace(),
+            projectId=4,
+            protocolsByScipionId={
+                "20": protocol,
+            },
+            protocolDbIdByScipionId={
+                "20": 200,
+            },
+        )
+    )
+
+    assert report[
+        "relationsDeclared"
+    ] == 10
+
+    assert report[
+        "relationsStale"
+    ] == 5
+
+    assert [
+        relation[
+            "relationId"
+        ]
+        for relation in report[
+            "staleRelations"
+        ]
+    ] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+
+    assert report[
+        "relations"
+    ] == 5
+
+    assert report[
+        "relationMissing"
+    ] == []
+
+    assert report[
+        "relationErrors"
+    ] == []
+
+    assert report[
+        "complete"
+    ] is True
+
+    persistedRelationIds = [
+        call[
+            "metadata"
+        ][
+            "sqliteRelationId"
+        ]
+        for call in repository.insertCalls
+    ]
+
+    assert persistedRelationIds == [
+        6,
+        7,
+        8,
+        9,
+        10,
+    ]
+
+
+def test_SyncProjectRelationsKeepsMissingCurrentOutputFatal(
+        monkeypatch,
+):
+    relation = {
+        "id": 7,
+        "parent_id": 20,
+        "name": "relation_datasource",
+        "object_parent_id": 10,
+        "object_child_id": 301,
+        "object_parent_extended": (
+            "outputTiltSeries"
+        ),
+        "object_child_extended": None,
+    }
+
+    repository = FakeRepository({
+        10: buildOutputObject(
+            10
+        ),
+    })
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "ProtocolGraphRepository",
+        lambda: repository,
+    )
+
+    protocol = FinalOutputProtocol(
+        relations=[
+            relation,
+        ],
+        outputs=[
+            (
+                "outputTomograms",
+                FakeOutput(
+                    301
+                ),
+            ),
+        ],
+    )
+
+    report = (
+        RuntimeProjectRelationSyncService()
+        .syncProjectRelations(
+            mapper=SimpleNamespace(),
+            projectId=4,
+            protocolsByScipionId={
+                "20": protocol,
+            },
+            protocolDbIdByScipionId={
+                "20": 200,
+            },
+        )
+    )
+
+    assert report[
+        "relationsStale"
+    ] == 0
+
+    assert report[
+        "relations"
+    ] == 0
+
+    assert report[
+        "relationMissing"
+    ] == [{
+        "relationId": 7,
+        "relationName": (
+            "relation_datasource"
+        ),
+        "creatorProtocolId": 20,
+        "parentRuntimeObjectId": 10,
+        "childRuntimeObjectId": 301,
+        "parentExtended": (
+            "outputTiltSeries"
+        ),
+        "childExtended": None,
+        "reason": (
+            "child_output_not_found"
+        ),
+    }]
+
+    assert report[
+        "complete"
+    ] is False
+
+    assert repository.cleanupCalls == []
+    assert repository.insertCalls == []
+
+
+
 
 
 
