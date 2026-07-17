@@ -1034,7 +1034,7 @@ def restartProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
