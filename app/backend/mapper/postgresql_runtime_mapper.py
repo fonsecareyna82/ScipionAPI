@@ -63,7 +63,7 @@ from app.backend.runtime.protocol_status_sync_service import (
 
 logger = logging.getLogger(__name__)
 
-SQLITE_EXECUTION_CHILD_ID_START = 1_000_000
+SQLITE_EXECUTION_CHILD_ID_START = 1_000_000_000
 
 
 class PostgresqlRuntimeMapper(Mapper):
@@ -754,10 +754,6 @@ class PostgresqlRuntimeMapper(Mapper):
             writeFallbackMapper
         )
 
-        objIdBeforeStore = self._getObjId(
-            protocol
-        )
-
         identitySnapshot = (
             self
             ._captureRuntimeObjectTreeIdentity(
@@ -783,11 +779,6 @@ class PostgresqlRuntimeMapper(Mapper):
             self._clearFallbackMapperCaches(
                 writeFallbackMapper
             )
-
-        # Force a fresh reconstruction from the SQLite row.
-        self._clearFallbackMapperCaches(
-            writeFallbackMapper
-        )
 
         mirroredProtocol = (
             writeFallbackMapper.selectById(
