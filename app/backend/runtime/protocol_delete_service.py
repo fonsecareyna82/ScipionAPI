@@ -423,8 +423,6 @@ class RuntimeProtocolDeleteService:
                         },
                     )
 
-            currentProjectDeleteProtocolCallback(*protList)
-
             if usingPostgresqlRuntime:
                 return self.executePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
@@ -436,7 +434,8 @@ class RuntimeProtocolDeleteService:
                     deleteValidationInfo=deleteValidationInfo,
                 )
 
-            mapperDeleteProtocolCallback(projectId, protList)
+            currentProjectDeleteProtocolCallback(*protList)
+            mapperDeleteProtocolCallback(projectId, protList,)
 
             syncInfo = syncProjectProtocolsAndDependenciesCallback(
                 mapper,
