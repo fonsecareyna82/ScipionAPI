@@ -231,6 +231,27 @@ class ProjectService:
 
         return isinstance(getattr(project, "mapper", None), PostgresqlRuntimeMapper)
 
+    @staticmethod
+    def _shouldEnablePostgresqlReadFallback() -> bool:
+        """
+        Return whether the temporary project.sqlite read fallback is enabled.
+
+        PostgreSQL is the default and authoritative project runtime storage.
+        This switch exists only as a temporary diagnostic escape hatch while
+        unsupported mapper operations are identified and migrated.
+        """
+        value = os.environ.get(
+            "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+            "",
+        )
+
+        return str(value).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
     def _shouldUsePostgresqlRuntimeProject(self, explicit: bool = False) -> bool:
         if explicit:
             return True
@@ -242,7 +263,7 @@ class ProjectService:
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
-            enableReadFallback: bool = True,
+            enableReadFallback: Optional[bool] = None,
             enableWriteFallback: bool = False,
     ) -> None:
         """
@@ -252,6 +273,11 @@ class ProjectService:
         This keeps Scipion paths/settings/hosts but makes Project.mapper and
         Protocol.mapper delegate writes to PostgreSQL.
         """
+        if enableReadFallback is None:
+            enableReadFallback = (
+                self._shouldEnablePostgresqlReadFallback()
+            )
+
         currentProject = getattr(self, "currentProject", None)
         if currentProject is None:
             raise HTTPException(
@@ -2462,7 +2488,6 @@ class ProjectService:
                 self._replaceCurrentProjectWithPostgresqlProject(
                     mapper=mapper,
                     projectId=projectId,
-                    enableReadFallback=True,
                     enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
 
@@ -2487,7 +2512,6 @@ class ProjectService:
                 self._replaceCurrentProjectWithPostgresqlProject(
                     mapper=mapper,
                     projectId=projectId,
-                    enableReadFallback=True,
                     enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
 
@@ -2654,15 +2678,17 @@ class ProjectService:
             dbProj["name"]
         )
 
+        enableReadFallback = (
+            self._shouldEnablePostgresqlReadFallback()
+        )
+
         postgresqlProject = PostgresqlProject(
             domain=pyworkflow.Config.getDomain(),
             path=projectPath,
             projectId=projectId,
             flatMapper=mapper,
-            enableReadFallback=True,
-            enableWriteFallback=(
-                enableWriteFallback
-            ),
+            enableReadFallback=enableReadFallback,
+            enableWriteFallback=enableWriteFallback,
         )
 
         try:
@@ -2690,9 +2716,10 @@ class ProjectService:
 
         logger.info(
             "Loaded lightweight PostgreSQL runtime mutation context. "
-            "projectId=%s path=%s writeFallback=%s",
+            "projectId=%s path=%s readFallback=%s writeFallback=%s",
             projectId,
             projectPath,
+            enableReadFallback,
             enableWriteFallback,
         )
 

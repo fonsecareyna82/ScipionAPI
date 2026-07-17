@@ -50,8 +50,11 @@ class PostgresqlProject(ScipionProject):
     hosts and protocol setup logic, but replaces Project.mapper with a
     PostgresqlRuntimeMapper.
 
-    During the migration phase, reads can still fallback to the legacy
-    SqliteMapper. Writes go to PostgreSQL.
+    Reads are PostgreSQL-only by default.
+
+    A legacy SqliteMapper fallback can still be enabled explicitly while
+    diagnosing incomplete PostgreSQL mapper operations. Runtime execution
+    databases remain independent from this project-level read fallback.
     """
 
     def __init__(
@@ -60,7 +63,7 @@ class PostgresqlProject(ScipionProject):
             path: str,
             projectId: int,
             flatMapper: PostgresqlFlatMapper,
-            enableReadFallback: bool = True,
+            enableReadFallback: bool = False,
             enableWriteFallback: bool = False,
     ):
         super().__init__(domain, path)
@@ -106,7 +109,24 @@ class PostgresqlProject(ScipionProject):
             label="read",
         )
 
-        writeFallbackMapper = readFallbackMapper if self.enableWriteFallback else None
+        # Read and write compatibility are independent.
+        #
+        # Disabling the project.sqlite read fallback must not disable the
+        # temporary SQLite write mirror required by Scipion's native runner.
+        #
+        # When reads are enabled, reuse the same mapper to avoid opening two
+        # SQLite connections to project.sqlite.
+        writeFallbackMapper = None
+
+        if self.enableWriteFallback:
+            if readFallbackMapper is not None:
+                writeFallbackMapper = readFallbackMapper
+            else:
+                writeFallbackMapper = self._createFallbackMapper(
+                    sqlitePath=sqlitePath,
+                    enabled=True,
+                    label="write",
+                )
 
         self._readFallbackMapper = readFallbackMapper
         self._writeFallbackMapper = writeFallbackMapper
