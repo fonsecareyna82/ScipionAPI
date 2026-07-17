@@ -29,6 +29,9 @@ from typing import Any, Dict
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+from app.backend.runtime.protocol_output_persistence_service import (
+    RuntimeProtocolOutputPersistenceService,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +83,313 @@ class RuntimeProjectRelationSyncService:
                 childExtended
             ),
         )
+
+    @staticmethod
+    def _toOptionalInt(
+            value,
+    ):
+        if value in (
+                None,
+                "",
+        ):
+            return None
+
+        try:
+            return int(
+                value
+            )
+        except Exception:
+            pass
+
+        try:
+            return int(
+                float(
+                    value
+                )
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalizeRelationExtended(
+            value,
+    ) -> str:
+        """
+        Normalize an extended path to its root output name.
+
+        Examples:
+            outputParticles
+            outputParticles._samplingRate
+
+        Both resolve to outputParticles.
+        """
+        valueText = str(
+            value or ""
+        ).strip()
+
+        if not valueText:
+            return ""
+
+        return valueText.split(
+            ".",
+            1,
+        )[0]
+
+    @classmethod
+    def _buildRelationEndpointIdentity(
+            cls,
+            runtimeObjectId,
+            extended=None,
+    ):
+        runtimeObjectId = cls._toOptionalInt(
+            runtimeObjectId
+        )
+
+        if runtimeObjectId is None:
+            return None
+
+        return (
+            runtimeObjectId,
+            cls._normalizeRelationExtended(
+                extended
+            ),
+        )
+
+    @classmethod
+    def _relationEndpointMatchesCurrentOutput(
+            cls,
+            endpoint,
+            currentOutputEndpoints,
+    ) -> bool:
+        if endpoint is None:
+            return False
+
+        if endpoint in currentOutputEndpoints:
+            return True
+
+        runtimeObjectId, extended = endpoint
+
+        # A relation may point to an attribute beneath a current root
+        # output. In that case the current output endpoint is stored
+        # without an extended path.
+        if extended:
+            return (
+                runtimeObjectId,
+                "",
+            ) in currentOutputEndpoints
+
+        return False
+
+    def _collectAuthoritativeCurrentOutputEndpoints(
+            self,
+            protocol,
+            protocolId,
+    ):
+        """
+        Return the current persistable output identities when the protocol
+        exposes a final output snapshot.
+
+        None means that stale-relation pruning must not be performed. This
+        deliberately preserves the old strict behavior for running protocols,
+        incomplete protocols and compatibility objects whose outputs cannot be
+        inspected safely.
+        """
+        outputPersistenceService = (
+            RuntimeProtocolOutputPersistenceService()
+        )
+
+        if not (
+                outputPersistenceService
+                .shouldReconcileMissingProtocolOutputs(
+                    protocol
+                )
+        ):
+            return None
+
+        protocolId = self._toOptionalInt(
+            protocolId
+        )
+
+        if protocolId is None:
+            return None
+
+        try:
+            outputAttributes = list(
+                protocol.iterOutputAttributes()
+            )
+        except Exception:
+            return None
+
+        currentOutputEndpoints = set()
+
+        for outputItem in outputAttributes:
+            outputName = None
+            outputObject = outputItem
+
+            if (
+                    isinstance(
+                        outputItem,
+                        (
+                            tuple,
+                            list,
+                        ),
+                    )
+                    and len(
+                        outputItem
+                    ) >= 2
+            ):
+                outputName = outputItem[0]
+                outputObject = outputItem[1]
+
+            if outputObject is None:
+                continue
+
+            try:
+                isPersistableOutput = (
+                    outputPersistenceService
+                    .isScipionSetLikeOutput(
+                        outputObject
+                    )
+                    or outputPersistenceService
+                    .isPersistableNonSetOutput(
+                        outputObject
+                    )
+                )
+            except Exception:
+                isPersistableOutput = False
+
+            if not isPersistableOutput:
+                continue
+
+            outputObjectId = self._toOptionalInt(
+                outputPersistenceService
+                .getScipionObjectId(
+                    outputObject
+                )
+            )
+
+            if outputObjectId is not None:
+                currentOutputEndpoints.add((
+                    outputObjectId,
+                    "",
+                ))
+
+            outputName = (
+                self
+                ._normalizeRelationExtended(
+                    outputName
+                )
+            )
+
+            if outputName:
+                # Some Scipion relations represent an output as:
+                # protocolId + outputName
+                currentOutputEndpoints.add((
+                    protocolId,
+                    outputName,
+                ))
+
+        # An empty or unreadable output collection is not sufficient evidence
+        # for deleting relation history. Preserve strict legacy behavior.
+        if not currentOutputEndpoints:
+            return None
+
+        return currentOutputEndpoints
+
+    def _filterRelationsForCurrentOutputs(
+            self,
+            protocol,
+            protocolId,
+            relations,
+    ) -> Dict[str, Any]:
+        """
+        Remove relation rows that belong exclusively to deleted/replaced
+        output generations.
+
+        A relation remains active when at least one endpoint references a
+        current protocol output. We do not activate the opposite endpoint:
+        doing so would traverse through a common input and resurrect every
+        historical output generation connected to that input.
+        """
+        relations = list(
+            relations or []
+        )
+
+        currentOutputEndpoints = (
+            self
+            ._collectAuthoritativeCurrentOutputEndpoints(
+                protocol=protocol,
+                protocolId=protocolId,
+            )
+        )
+
+        if currentOutputEndpoints is None:
+            return {
+                "relations": relations,
+                "staleRelations": [],
+                "pruned": False,
+            }
+
+        activeRelations = []
+        staleRelations = []
+
+        for relation in relations:
+            parentEndpoint = (
+                self
+                ._buildRelationEndpointIdentity(
+                    relation.get(
+                        "parentRuntimeObjectId"
+                    ),
+                    relation.get(
+                        "parentExtended"
+                    ),
+                )
+            )
+
+            childEndpoint = (
+                self
+                ._buildRelationEndpointIdentity(
+                    relation.get(
+                        "childRuntimeObjectId"
+                    ),
+                    relation.get(
+                        "childExtended"
+                    ),
+                )
+            )
+
+            referencesCurrentOutput = (
+                self
+                ._relationEndpointMatchesCurrentOutput(
+                    parentEndpoint,
+                    currentOutputEndpoints,
+                )
+                or self
+                ._relationEndpointMatchesCurrentOutput(
+                    childEndpoint,
+                    currentOutputEndpoints,
+                )
+            )
+
+            if referencesCurrentOutput:
+                activeRelations.append(
+                    relation
+                )
+
+                continue
+
+            staleRelations.append({
+                **relation,
+                "reason": (
+                    "not_referenced_by_current_outputs"
+                ),
+            })
+
+        return {
+            "relations": activeRelations,
+            "staleRelations": staleRelations,
+            "pruned": True,
+        }
 
     def collectProtocolRelations(
             self,
@@ -178,6 +488,7 @@ class RuntimeProjectRelationSyncService:
         missing = []
         errors = []
         cleanupItems = []
+        stale = []
 
         for protocolId, protocol in protocolsByScipionId.items():
             protocolIdText = str(protocolId)
@@ -283,6 +594,27 @@ class RuntimeProjectRelationSyncService:
             if relationBuildErrors:
                 errors.extend(relationBuildErrors)
                 continue
+
+            relationFilterReport = (
+                self
+                ._filterRelationsForCurrentOutputs(
+                    protocol=protocol,
+                    protocolId=protocolId,
+                    relations=protocolRelations,
+                )
+            )
+
+            protocolRelations = (
+                relationFilterReport[
+                    "relations"
+                ]
+            )
+
+            stale.extend(
+                relationFilterReport[
+                    "staleRelations"
+                ]
+            )
 
             # Resolve every object before deleting the previous snapshot.
             # If PostgreSQL does not contain all required outputs yet, preserve
@@ -410,6 +742,8 @@ class RuntimeProjectRelationSyncService:
         return {
             "relationsDeclared": len(declared),
             "relations": len(persisted),
+            "relationsStale": len(stale),
+            "staleRelations": stale,
             "relationMissing": missing,
             "relationErrors": errors,
             "cleanup": cleanupItems,
