@@ -34,6 +34,7 @@ from pyworkflow.protocol.params import (
     PointerParam,
     RelationParam,
 )
+from pyworkflow.protocol import MODE_RESTART
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
@@ -260,6 +261,8 @@ class RuntimeProtocolDuplicateService:
                     detail=saveErrors,
                 )
 
+            newProtocol.setSaved()
+            newProtocol.runMode.set(MODE_RESTART)
             duplicatedProtocolId = getScipionObjectIdCallback(newProtocol)
 
             duplicatedProtocolDbId = resolvePostgresqlProtocolDbIdCallback(

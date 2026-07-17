@@ -54,6 +54,13 @@ class RuntimeProtocolSaveService:
         "numberOfThreads",
     ]
 
+    nonFormParamNames = set(protectedParams) | {
+        "expertLevel",
+        "_scipionWebRuntime",
+        "_queueName",
+        "_queueParams",
+    }
+
     def saveProtocol(
             self,
             *,
@@ -228,6 +235,9 @@ class RuntimeProtocolSaveService:
         errorList: List[str] = []
 
         for key, value in params.items():
+            if key in self.nonFormParamNames:
+                continue
+
             param = protocol.getParam(key)
 
             if param is None:
