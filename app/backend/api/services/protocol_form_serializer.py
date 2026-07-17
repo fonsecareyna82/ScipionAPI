@@ -151,26 +151,11 @@ class ProtocolFormSerializer:
                                 )
                             )
 
-                            if protocolDbId is not None:
-                                protocolGraphRepository = (
-                                    ProtocolGraphRepository()
-                                )
+                            paramDict["readOnly"] = True
 
-                                valueList = (
-                                    protocolGraphRepository
-                                    .loadInputRefPointerValues(
-                                        mapper=mapper,
-                                        projectId=projectId,
-                                        protocolDbId=protocolDbId,
-                                        inputName=paramName,
-                                    )
-                                )
-
-                                paramDict["readOnly"] = True
-
-                                # PostgreSQL is authoritative,
-                                # including an empty pointer list.
-                                return paramDict, valueList
+                            # PostgreSQL is authoritative,
+                            # including an empty pointer list.
+                            return paramDict, valueList
 
                     for pointer in protVar:
                         value = None
@@ -793,14 +778,9 @@ class ProtocolFormSerializer:
                     ProtocolGraphRepository()
                 )
 
-                inputRefs = (
-                    protocolGraphRepository
-                    .loadInputRefsForProtocolCopy(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolDbId=protocolDbId,
-                    )
-                )
+                inputRefs = protocolGraphRepository.loadInputRefsForProtocolCopy(mapper=mapper,
+                                                                                 projectId=projectId,
+                                                                                 protocolDbId=protocolDbId,)
 
                 for inputRef in inputRefs:
                     inputName = str(
@@ -817,14 +797,7 @@ class ProtocolFormSerializer:
                         or ""
                     ).strip()
 
-                    if (
-                            not inputName
-                            or parentProtocolId in (
-                            None,
-                            "",
-                    )
-                            or not parentOutputName
-                    ):
+                    if not inputName or parentProtocolId in (None, "",) or not parentOutputName:
                         continue
 
                     try:
