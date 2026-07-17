@@ -33,6 +33,7 @@ from app.backend.runtime.project_relation_sync_service import (
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+from pyworkflow.object import Object as ScipionObject
 
 
 class FakeProtocol:
@@ -44,15 +45,10 @@ class FakeProtocol:
         return list(self.relations)
 
 
-class FakeOutput:
-    def __init__(
-            self,
-            objectId,
-    ):
-        self.objectId = objectId
-
-    def getObjId(self):
-        return self.objectId
+class FakeOutput(ScipionObject):
+    def __init__(self, objectId):
+        super().__init__()
+        self.setObjId(objectId)
 
 
 class FinalOutputProtocol(FakeProtocol):
