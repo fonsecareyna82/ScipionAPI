@@ -81,6 +81,16 @@ class RuntimeProtocolSaveService:
         params = params or {}
         errorList: List[str] = []
 
+        if currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Protocol runtime project context is not loaded. "
+                    "PostgreSQL protocol mutations must load a "
+                    "PostgresqlProject before saving."
+                ),
+            )
+
         protocol = self._createOrLoadProtocol(
             mapper=mapper,
             projectId=projectId,
