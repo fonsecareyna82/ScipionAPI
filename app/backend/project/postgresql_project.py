@@ -817,6 +817,91 @@ class PostgresqlProject(ScipionProject):
             "updateResult": updateResult,
         }
 
+    def cleanupProtocolExecutionMirrors(self, protocolIds):
+        protocolIds = [
+            int(protocolId)
+            for protocolId in protocolIds or []
+            if protocolId not in (None, "",)
+        ]
+
+        report = {
+            "requestedProtocolIds": protocolIds,
+            "deletedProtocolIds": [],
+            "missingProtocolIds": [],
+            "errors": [],
+        }
+
+        if not protocolIds:
+            return report
+
+        sqlitePath = self._normalizeSqlitePath(PROJECT_DBNAME)
+
+        if not sqlitePath or not os.path.exists(sqlitePath):
+            report["missingDatabase"] = True
+            return report
+
+        sqliteMapper = None
+
+        try:
+            sqliteMapper = ScipionProject.createMapper(
+                self,
+                sqlitePath,
+            )
+
+            for protocolId in protocolIds:
+                mirroredProtocol = sqliteMapper.selectById(
+                    protocolId
+                )
+
+                if mirroredProtocol is None:
+                    report["missingProtocolIds"].append(
+                        protocolId
+                    )
+                    continue
+
+                sqliteMapper.delete(
+                    mirroredProtocol
+                )
+
+                report["deletedProtocolIds"].append(
+                    protocolId
+                )
+
+            sqliteMapper.commit()
+
+        except Exception as error:
+            logger.warning(
+                "Could not clean deleted protocols from SQLite execution mirror. "
+                "projectId=%s protocolIds=%s error=%s",
+                self.postgresqlProjectId,
+                protocolIds,
+                error,
+                exc_info=True,
+            )
+
+            report["errors"].append(
+                str(error)
+            )
+
+        finally:
+            if sqliteMapper is not None:
+                try:
+                    sqliteMapper.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close SQLite execution cleanup mapper.",
+                        exc_info=True,
+                    )
+
+        runtimeMapper = self.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is not None:
+            runtimeMapper.evictRuntimeProtocols(
+                protocolIds
+            )
+
+        return report
+
     def _resolveProtocolRuntimeDbPath(
             self,
             protocol,

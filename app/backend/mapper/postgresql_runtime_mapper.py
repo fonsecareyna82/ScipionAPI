@@ -698,6 +698,33 @@ class PostgresqlRuntimeMapper(Mapper):
                 protocol
             )
 
+    def evictRuntimeProtocols(self, protocolIds):
+        evictedProtocolIds = []
+
+        for protocolId in protocolIds or []:
+            try:
+                protocolId = int(protocolId)
+            except Exception:
+                continue
+
+            self._runtimeProtocolsById.pop(
+                protocolId,
+                None,
+            )
+
+            self._sqliteProtocolMirrorIds.discard(
+                protocolId
+            )
+
+            evictedProtocolIds.append(
+                protocolId
+            )
+
+        return {
+            "evictedProtocolIds": evictedProtocolIds,
+            "count": len(evictedProtocolIds),
+        }
+
     def _existsInWriteFallback(self, objId) -> bool:
         if self.writeFallbackMapper is None or objId is None:
             return False
