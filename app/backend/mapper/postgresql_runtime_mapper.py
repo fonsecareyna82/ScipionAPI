@@ -63,6 +63,8 @@ from app.backend.runtime.protocol_status_sync_service import (
 
 logger = logging.getLogger(__name__)
 
+SQLITE_EXECUTION_CHILD_ID_START = 1_000_000
+
 
 class PostgresqlRuntimeMapper(Mapper):
     """
@@ -455,118 +457,186 @@ class PostgresqlRuntimeMapper(Mapper):
     # Generic Mapper API
     # ---------------------------------------------------------------------
 
-    def _storeProtocolInWriteFallback(self, protocol: Protocol) -> None:
+    def _storeProtocolInWriteFallback(
+            self,
+            protocol: Protocol,
+    ) -> bool:
         """
-        Store a protocol root in the SQLite write fallback without creating orphan
-        children.
+        Ensure that the protocol root exists in the temporary SQLite
+        execution mirror preserving its PostgreSQL object id.
 
-        In PostgreSQL runtime mode, _ensureObjId() assigns the protocol id before the
-        SQLite fallback sees the object. SqliteMapper.store() interprets "has objId"
-        as "already exists" and calls updateTo(), which can insert children like
-        175.status,  and calls updateTo(), which can insert children like
-        175.status, 175.inputSet, etc. without inserting the root object 175.
-
-        For protocols, check whether the root exists in the fallback mapper. If it
-        does not exist, force insert().
+        SqliteObjectsDb.insertObject() cannot be used here because it always
+        allocates its own AUTOINCREMENT id. The protocol root must be inserted
+        explicitly, while internal SQLite child objects use a separate high
+        id range.
         """
-        protocolId = self._getObjId(protocol)
+        writeFallbackMapper = self.writeFallbackMapper
+
+        if writeFallbackMapper is None:
+            raise RuntimeError(
+                "SQLite write fallback mapper is not available."
+            )
+
+        protocolId = self._getObjId(
+            protocol
+        )
 
         if protocolId is None:
-            raise RuntimeError("Cannot insert SQLite fallback root without protocol id")
+            raise RuntimeError(
+                "Cannot materialize protocol SQLite root without id."
+            )
 
         protocolId = int(protocolId)
 
-        db = getattr(self.writeFallbackMapper, "db", None)
+        db = getattr(
+            writeFallbackMapper,
+            "db",
+            None,
+        )
 
         if db is None:
-            raise RuntimeError("SQLite fallback mapper does not expose db")
-
-        objName = None
-
-        try:
-            objName = protocol.getObjName()
-        except Exception:
-            objName = None
-
-        if not objName:
-            try:
-                objName = protocol.strId()
-            except Exception:
-                objName = str(protocolId)
-
-        className = self._getClassName(protocol)
-
-        label = None
-        comment = None
-        creation = None
-
-        try:
-            label = protocol.getObjLabel()
-        except Exception:
-            label = None
-
-        try:
-            comment = protocol.getObjComment()
-        except Exception:
-            comment = None
-
-        try:
-            creation = protocol.getObjCreation()
-        except Exception:
-            creation = None
-
-        insertObject = getattr(db, "insertObject", None)
-
-        if not callable(insertObject):
             raise RuntimeError(
-                "SQLite fallback db does not expose insertObject; "
-                "cannot safely insert protocol root preserving id %s"
-                % protocolId
+                "SQLite write fallback mapper does not expose db."
             )
 
+        expectedClassName = (
+            Mapper.getObjectPersistingClassName(
+                protocol
+            )
+        )
+
+        existingRow = db.selectObjectById(
+            protocolId
+        )
+
+        if existingRow is not None:
+            existingClassName = str(
+                existingRow["classname"]
+                or ""
+            )
+
+            existingParentId = existingRow[
+                "parent_id"
+            ]
+
+            if (
+                    existingParentId is not None
+                    or existingClassName
+                    != str(expectedClassName)
+            ):
+                raise RuntimeError(
+                    "SQLite execution id collision for protocol %s: "
+                    "expected root class %s, found class %s "
+                    "with parentId=%s."
+                    % (
+                        protocolId,
+                        expectedClassName,
+                        existingClassName,
+                        existingParentId,
+                    )
+                )
+
+            return False
+
+        # Keep SQLite-generated child ids away from PostgreSQL-owned ids.
+        db.executeCommand(
+            """
+            UPDATE sqlite_sequence
+               SET seq = CASE
+                         WHEN seq < ? THEN ?
+                         ELSE seq
+                         END
+             WHERE name = 'Objects'
+            """,
+            (
+                SQLITE_EXECUTION_CHILD_ID_START,
+                SQLITE_EXECUTION_CHILD_ID_START,
+            ),
+        )
+
+        if int(
+                getattr(
+                    db.cursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+        ) == 0:
+            db.executeCommand(
+                """
+                INSERT INTO sqlite_sequence (
+                    name,
+                    seq
+                )
+                VALUES ('Objects', ?)
+                """,
+                (
+                    SQLITE_EXECUTION_CHILD_ID_START,
+                ),
+            )
+
+        objName = str(
+            getattr(
+                protocol,
+                "_objName",
+                "",
+            )
+            or ""
+        )
+
+        objLabel = getattr(
+            protocol,
+            "_objLabel",
+            None,
+        )
+
+        objComment = getattr(
+            protocol,
+            "_objComment",
+            None,
+        )
+
+        db.executeCommand(
+            """
+            INSERT INTO Objects (
+                id,
+                parent_id,
+                name,
+                classname,
+                value,
+                label,
+                comment,
+                creation
+            )
+            VALUES (
+                ?,
+                NULL,
+                ?,
+                ?,
+                NULL,
+                ?,
+                ?,
+                datetime('now')
+            )
+            """,
+            (
+                protocolId,
+                objName,
+                str(expectedClassName),
+                objLabel,
+                objComment,
+            ),
+        )
+
         logger.info(
-            "Inserting missing protocol root in SQLite fallback preserving id. "
+            "Inserted protocol root in SQLite execution mirror. "
             "projectId=%s protocolId=%s className=%s",
             self.projectId,
             protocolId,
-            className,
+            expectedClassName,
         )
 
-        # Different Scipion/pyworkflow versions expose different insertObject
-        # signatures. Use only the positional arguments accepted by the bound method.
-        # In your current version it expects 6 args, not 8.
-        try:
-            import inspect
-
-            parameters = [
-                p
-                for p in inspect.signature(insertObject).parameters.values()
-                if p.kind in (
-                    p.POSITIONAL_ONLY,
-                    p.POSITIONAL_OR_KEYWORD,
-                )
-            ]
-
-            argCount = len(parameters)
-
-        except Exception:
-            # Current pyworkflow version from the traceback:
-            # insertObject() takes 7 positional arguments including self,
-            # so the bound method accepts 6 arguments.
-            argCount = 6
-
-        baseArgs = [
-            protocolId,
-            None,  # parentId
-            objName,
-            className,
-            None,  # value
-            label,
-            comment,
-            creation,
-        ]
-
-        insertObject(*baseArgs[:argCount])
+        return True
 
     def store(self, obj):
         if obj is None:
@@ -597,71 +667,36 @@ class PostgresqlRuntimeMapper(Mapper):
             type(obj),
         )
 
-    def _storeRuntimeProtocol(self, protocol: Protocol) -> None:
+    def _storeRuntimeProtocol(
+            self,
+            protocol: Protocol,
+    ) -> None:
         """
-        Store a protocol in PostgreSQL runtime mode while keeping the SQLite
-        execution mirror usable.
+        Store a protocol using PostgreSQL as the authoritative runtime
+        persistence.
 
-        Important:
-          - New protocols must let SQLite assign the Scipion objId first.
-            The classic runner still loads protocols from SQLite.
-          - PostgreSQL then stores that same objId as protocols."protocolId".
-          - Existing PostgreSQL protocols are mirrored to SQLite only if the root
-            already exists there. We do not manually fabricate SQLite rows.
+        PostgreSQL always allocates and owns the protocol id. When the
+        temporary SQLite execution mirror is enabled, it receives an exact
+        copy preserving that PostgreSQL id.
         """
-        protocolId = self._getObjId(protocol)
+        protocolId = self._ensureObjId(
+            protocol
+        )
+
+        if protocolId is None:
+            raise RuntimeError(
+                "Cannot store PostgreSQL runtime protocol without id."
+            )
+
+        # PostgreSQL is written first and remains authoritative.
+        self._storeProtocol(
+            protocol
+        )
 
         if self.writeFallbackMapper is not None:
-            if protocolId is None:
-                # New protocol:
-                # Let SQLite do the normal Scipion insert and assign objId.
-                # Do NOT call _ensureObjId before this.
-                self.writeFallbackMapper.store(protocol)
-                protocolId = self._getObjId(protocol)
-
-                logger.info(
-                    "SQLite fallback assigned protocol id for new runtime protocol. "
-                    "projectId=%s protocolId=%s class=%s",
-                    self.projectId,
-                    protocolId,
-                    self._getClassName(protocol),
-                )
-
-            elif self._existsInWriteFallback(protocolId):
-                # Existing protocol already mirrored in SQLite.
-                # Safe to update it there.
-                objIdBeforeStore = self._getObjId(protocol)
-
-                self.writeFallbackMapper.store(protocol)
-
-                objIdAfterStore = self._getObjId(protocol)
-
-                if str(objIdAfterStore) != str(objIdBeforeStore):
-                    try:
-                        self._setObjId(protocol, int(objIdBeforeStore))
-                    except Exception:
-                        pass
-
-                    raise RuntimeError(
-                        "SQLite fallback changed protocol id from %s to %s. "
-                        "This would create a duplicated protocol node."
-                        % (objIdBeforeStore, objIdAfterStore)
-                    )
-
-            else:
-                # Existing PG protocol not present in SQLite.
-                # Do not call SQLite store(), because it would update children and
-                # create orphan rows like 175.status without root 175.
-                logger.warning(
-                    "Skipping SQLite fallback protocol update because root is missing. "
-                    "projectId=%s protocolId=%s class=%s",
-                    self.projectId,
-                    protocolId,
-                    self._getClassName(protocol),
-                )
-
-        self._ensureObjId(protocol)
-        self._storeProtocol(protocol)
+            self.ensureProtocolWriteFallbackMirror(
+                protocol
+            )
 
     def _existsInWriteFallback(self, objId) -> bool:
         if self.writeFallbackMapper is None or objId is None:
@@ -677,13 +712,140 @@ class PostgresqlRuntimeMapper(Mapper):
         except Exception:
             return False
 
+    def ensureProtocolWriteFallbackMirror(
+            self,
+            protocol: Protocol,
+    ) -> Dict[str, Any]:
+        """
+        Materialize a PostgreSQL runtime protocol in the temporary SQLite
+        execution mirror.
+
+        PostgreSQL owns the protocol identity. SQLite preserves that root id
+        and allocates only internal child ids from its reserved high range.
+        """
+        writeFallbackMapper = self.writeFallbackMapper
+
+        if writeFallbackMapper is None:
+            raise RuntimeError(
+                "Cannot materialize protocol SQLite execution mirror: "
+                "write fallback mapper is not available."
+            )
+
+        protocolId = self._ensureObjId(
+            protocol
+        )
+
+        if protocolId is None:
+            raise RuntimeError(
+                "Cannot materialize protocol SQLite execution mirror "
+                "without protocol id."
+            )
+
+        protocolId = int(protocolId)
+
+        rootCreated = self._storeProtocolInWriteFallback(
+            protocol
+        )
+
+        # Remove any object previously cached under this id. A stale cache
+        # could otherwise return a String or another compatibility object
+        # even after the database row has been corrected.
+        self._clearFallbackMapperCaches(
+            writeFallbackMapper
+        )
+
+        objIdBeforeStore = self._getObjId(
+            protocol
+        )
+
+        identitySnapshot = (
+            self
+            ._captureRuntimeObjectTreeIdentity(
+                protocol
+            )
+        )
+
+        try:
+            writeFallbackMapper.store(
+                protocol
+            )
+
+            writeFallbackMapper.commit()
+
+        finally:
+            # SQLite is allowed to assign internal compatibility ids,
+            # but those ids must never leak back into the authoritative
+            # PostgreSQL runtime object.
+            self._restoreRuntimeObjectTreeIdentity(
+                identitySnapshot
+            )
+
+            self._clearFallbackMapperCaches(
+                writeFallbackMapper
+            )
+
+        # Force a fresh reconstruction from the SQLite row.
+        self._clearFallbackMapperCaches(
+            writeFallbackMapper
+        )
+
+        mirroredProtocol = (
+            writeFallbackMapper.selectById(
+                protocolId
+            )
+        )
+
+        if mirroredProtocol is None:
+            raise RuntimeError(
+                "Protocol %s was not found in the SQLite "
+                "execution mirror after materialization."
+                % protocolId
+            )
+
+        if not isinstance(
+                mirroredProtocol,
+                Protocol,
+        ):
+            raise RuntimeError(
+                "Invalid SQLite execution mirror for protocol %s: "
+                "expected Protocol, found %s."
+                % (
+                    protocolId,
+                    mirroredProtocol.__class__.__name__,
+                )
+            )
+
+        self._sqliteProtocolMirrorIds.add(
+            protocolId
+        )
+
+        report = {
+            "protocolId": protocolId,
+            "created": bool(rootCreated),
+            "updated": not bool(rootCreated),
+            "mirrorClassName": (
+                mirroredProtocol
+                .__class__
+                .__name__
+            ),
+        }
+
+        logger.info(
+            "Ensured protocol SQLite execution mirror. "
+            "projectId=%s report=%s",
+            self.projectId,
+            report,
+        )
+
+        return report
+
     def insert(self, obj):
         if obj is None:
             return
 
         if isinstance(obj, Protocol):
-            # Do not pre-allocate PostgreSQL ids for new protocols here.
-            # SQLite fallback must assign the execution id first.
+            # PostgreSQL allocates the protocol id. The optional SQLite
+            # execution mirror must preserve that same identity.
             self._storeRuntimeProtocol(obj)
             return
 
@@ -5175,32 +5337,162 @@ class PostgresqlRuntimeMapper(Mapper):
     # Small utilities
     # ---------------------------------------------------------------------
 
-    def _ensureObjId(self, obj) -> Optional[int]:
+    def _ensureObjId(
+            self,
+            obj,
+    ) -> Optional[int]:
         """
-        Ensure Scipion object has an _objId.
+        Ensure that a runtime object has an id.
 
-        SqliteMapper.insert assigns _objId automatically. If this mapper is used
-        as Project.mapper, PostgreSQL must do the same.
+        Protocols and non-protocol runtime objects use independent
+        PostgreSQL id namespaces.
         """
         if obj is None:
             return None
 
-        objId = self._getObjId(obj)
+        objId = self._getObjId(
+            obj
+        )
+
         if objId is not None:
-            return objId
+            return int(objId)
 
-        allocator = getattr(self.flatMapper, "allocateProjectObjectId", None)
+        if isinstance(
+                obj,
+                Protocol,
+        ):
+            allocatorName = (
+                "allocateProjectProtocolId"
+            )
+        else:
+            allocatorName = (
+                "allocateProjectObjectId"
+            )
+
+        allocator = getattr(
+            self.flatMapper,
+            allocatorName,
+            None,
+        )
+
         if not callable(allocator):
-            raise RuntimeError("PostgresqlFlatMapper does not provide allocateProjectObjectId")
+            raise RuntimeError(
+                "PostgresqlFlatMapper does not provide %s."
+                % allocatorName
+            )
 
-        objId = int(allocator(self.projectId))
+        objId = int(
+            allocator(
+                self.projectId
+            )
+        )
 
         try:
-            self._setObjId(obj, objId)
+            self._setObjId(
+                obj,
+                objId,
+            )
         except Exception as exc:
-            raise RuntimeError("Could not assign _objId=%s to %s" % (objId, obj)) from exc
+            raise RuntimeError(
+                "Could not assign _objId=%s to %s."
+                % (
+                    objId,
+                    obj,
+                )
+            ) from exc
 
         return objId
+
+    def _captureRuntimeObjectTreeIdentity(
+            self,
+            obj,
+    ):
+        snapshot = []
+        visited = set()
+
+        def visit(candidate):
+            if candidate is None:
+                return
+
+            candidateIdentity = id(
+                candidate
+            )
+
+            if candidateIdentity in visited:
+                return
+
+            visited.add(
+                candidateIdentity
+            )
+
+            snapshot.append({
+                "object": candidate,
+                "objId": getattr(
+                    candidate,
+                    "_objId",
+                    None,
+                ),
+                "objParentId": getattr(
+                    candidate,
+                    "_objParentId",
+                    None,
+                ),
+                "objName": getattr(
+                    candidate,
+                    "_objName",
+                    "",
+                ),
+            })
+
+            attributesGetter = getattr(
+                candidate,
+                "getAttributesToStore",
+                None,
+            )
+
+            if not callable(attributesGetter):
+                return
+
+            try:
+                attributes = list(
+                    attributesGetter()
+                    or []
+                )
+            except Exception:
+                return
+
+            for _, child in attributes:
+                visit(
+                    child
+                )
+
+        visit(
+            obj
+        )
+
+        return snapshot
+
+    def _restoreRuntimeObjectTreeIdentity(
+            self,
+            snapshot,
+    ) -> None:
+        for item in reversed(
+                snapshot
+                or []
+        ):
+            candidate = item["object"]
+
+            candidate._objId = item[
+                "objId"
+            ]
+
+            candidate._objParentId = item[
+                "objParentId"
+            ]
+
+            candidate._objName = item[
+                "objName"
+            ]
 
     def _getNamePrefix(self, obj) -> str:
         objName = str(getattr(obj, "_objName", "") or "")

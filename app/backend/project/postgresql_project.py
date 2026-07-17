@@ -35,6 +35,7 @@ from pyworkflow.protocol.constants import (
     STATUS_SAVED,
     STATUS_SCHEDULED,
 )
+from pyworkflow.protocol.protocol import Protocol
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
@@ -604,14 +605,12 @@ class PostgresqlProject(ScipionProject):
             protocolId: int,
     ) -> Dict[str, Any]:
         """
-        Refresh the SQLite compatibility protocol from logs/run.db.
+        Refresh a previously launched protocol from its run.db before resume.
 
-        This must happen before applying edited launch parameters. It preserves
-        Scipion's native resume state so finished and unchanged steps can be
-        detected through logs/steps.sqlite.
-
-        PostgreSQL is not written here. The normal save/launch flow persists
-        the refreshed protocol afterwards.
+        For a first launch there is no run.db yet. In that case this method must
+        not materialize the SQLite execution mirror. The mirror will be created
+        later by RuntimeProtocolLaunchService, after launch parameters and input
+        pointers have been fully restored.
         """
         protocolId = int(protocolId)
 
@@ -642,36 +641,41 @@ class PostgresqlProject(ScipionProject):
                 "SQLite write fallback mapper is not available."
             )
 
-        sqliteProtocol = writeFallbackMapper.selectById(
-            protocolId
+        # Resolve the authoritative PostgreSQL protocol first.
+        #
+        # Do not create the SQLite mirror yet: at this point input pointers may
+        # still contain their serialized PostgreSQL representation.
+        postgresqlProtocol = (
+            runtimeMapper.selectRuntimeProtocolById(
+                protocolId,
+                refreshCached=False,
+            )
         )
 
-        if sqliteProtocol is None:
+        if postgresqlProtocol is None:
             raise RuntimeError(
-                "Protocol %s was not found in the SQLite "
-                "compatibility database."
+                "Protocol %s was not found in PostgreSQL runtime."
                 % protocolId
             )
 
         runDbPath = self._resolveProtocolRuntimeDbPath(
-            sqliteProtocol
+            postgresqlProtocol
         )
 
+        # First launch:
+        # no run.db exists, so there is nothing to refresh.
+        #
+        # Most importantly, do not call
+        # ensureProtocolWriteFallbackMirror() here. The launch service will call
+        # it later after saveProtocolCallback() and pointer preparation.
         if not os.path.exists(runDbPath):
-            sqliteProtocol.setMapper(
-                runtimeMapper
-            )
-
-            sqliteProtocol.setProject(
-                self
-            )
-
-            runtimeMapper._runtimeProtocolsById[
-                protocolId
-            ] = sqliteProtocol
-
-            runtimeMapper._sqliteProtocolMirrorIds.add(
-                protocolId
+            logger.info(
+                "Skipping runtime DB refresh for first protocol launch. "
+                "SQLite execution mirror will be created after pointer "
+                "preparation. projectId=%s protocolId=%s runDbPath=%s",
+                self.postgresqlProjectId,
+                protocolId,
+                runDbPath,
             )
 
             return {
@@ -679,15 +683,85 @@ class PostgresqlProject(ScipionProject):
                 "refreshed": False,
                 "reason": "runtime_db_not_found",
                 "runDbPath": runDbPath,
+                "sqliteMirrorDeferred": True,
             }
+
+        # From here onward this is a real resume. A protocol with a run.db should
+        # normally already have its persistent SQLite execution mirror.
+        sqliteProtocol = writeFallbackMapper.selectById(
+            protocolId
+        )
+
+        if sqliteProtocol is None:
+            # Compatibility fallback for a missing execution mirror.
+            ensureMirror = getattr(
+                runtimeMapper,
+                "ensureProtocolWriteFallbackMirror",
+                None,
+            )
+
+            if not callable(ensureMirror):
+                raise RuntimeError(
+                    "Protocol %s has a run.db but its SQLite execution "
+                    "mirror is missing."
+                    % protocolId
+                )
+
+            mirrorReport = ensureMirror(
+                postgresqlProtocol
+            )
+
+            writeFallbackMapper.commit()
+
+            clearCaches = getattr(
+                runtimeMapper,
+                "_clearFallbackMapperCaches",
+                None,
+            )
+
+            if callable(clearCaches):
+                clearCaches(
+                    writeFallbackMapper
+                )
+
+            sqliteProtocol = writeFallbackMapper.selectById(
+                protocolId
+            )
+
+            logger.info(
+                "Materialized missing SQLite execution mirror before resume. "
+                "projectId=%s protocolId=%s report=%s",
+                self.postgresqlProjectId,
+                protocolId,
+                mirrorReport,
+            )
+
+        if sqliteProtocol is None:
+            raise RuntimeError(
+                "Protocol %s was not found in the SQLite execution "
+                "mirror after materialization."
+                % protocolId
+            )
+
+        if not isinstance(
+                sqliteProtocol,
+                Protocol,
+        ):
+            raise RuntimeError(
+                "Invalid SQLite execution mirror for protocol %s: "
+                "expected Protocol, found %s."
+                % (
+                    protocolId,
+                    sqliteProtocol.__class__.__name__,
+                )
+            )
 
         originalMapper = self.mapper
         updateResult = None
 
         try:
-            # ScipionProject._updateProtocol() must operate through the
-            # classic SQLite mapper. Using PostgresqlRuntimeMapper here
-            # would persist a partially copied runtime protocol.
+            # Native Scipion refresh must operate through the SQLite execution
+            # mapper because run.db and steps.sqlite belong to that runtime.
             self.mapper = writeFallbackMapper
 
             sqliteProtocol.setMapper(
@@ -716,8 +790,8 @@ class PostgresqlProject(ScipionProject):
                 self
             )
 
-        # Replace any PostgreSQL-built or stale cached instance with the
-        # fully hydrated SQLite compatibility protocol.
+        # For a real resume, use the fully hydrated SQLite protocol, which
+        # contains the native runtime/step state recovered from run.db.
         runtimeMapper._runtimeProtocolsById[
             protocolId
         ] = sqliteProtocol

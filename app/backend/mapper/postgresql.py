@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Iterator, Tuple
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
+POSTGRESQL_PROTOCOL_ID_START = 2
+POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
 
 def _toJsonParam(value: Any) -> Any:
     # toJsonParam
@@ -113,11 +115,30 @@ class PostgresqlFlatMapper(Mapper):
         self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS project_object_id_counters (
-                "projectId" INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-                "nextObjectId" INTEGER NOT NULL DEFAULT 1,
-                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                "projectId" INTEGER PRIMARY KEY
+                    REFERENCES projects(id)
+                    ON DELETE CASCADE,
+
+                "nextObjectId" INTEGER NOT NULL
+                    DEFAULT 1000000,
+
+                "nextProtocolId" INTEGER NOT NULL
+                    DEFAULT 2,
+
+                "createdAt" TIMESTAMPTZ NOT NULL
+                    DEFAULT NOW(),
+
+                "updatedAt" TIMESTAMPTZ NOT NULL
+                    DEFAULT NOW()
             );
+
+            ALTER TABLE project_object_id_counters
+                ADD COLUMN IF NOT EXISTS "nextProtocolId"
+                INTEGER NOT NULL DEFAULT 2;
+
+            ALTER TABLE project_object_id_counters
+                ALTER COLUMN "nextObjectId"
+                SET DEFAULT 1000000;
             """
         )
 
@@ -1121,16 +1142,20 @@ class PostgresqlFlatMapper(Mapper):
                 """
                 INSERT INTO project_object_id_counters (
                     "projectId",
-                    "nextObjectId"
+                    "nextObjectId",
+                    "nextProtocolId"
                 )
-                VALUES (%s, 1)
+                VALUES (%s, %s, %s)
                 ON CONFLICT ("projectId")
                 DO UPDATE SET
-                    "nextObjectId" = 1,
+                    "nextObjectId" = EXCLUDED."nextObjectId",
+                    "nextProtocolId" = EXCLUDED."nextProtocolId",
                     "updatedAt" = NOW()
                 """,
                 (
                     projectId,
+                    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+                    POSTGRESQL_PROTOCOL_ID_START,
                 ),
                 commit=False,
             )
@@ -1202,46 +1227,141 @@ class PostgresqlFlatMapper(Mapper):
             tuple(params),
         )
 
-    def allocateProjectObjectId(self, projectId: int) -> int:
+    def allocateProjectProtocolId(
+            self,
+            projectId: int,
+    ) -> int:
         """
-        Allocate a Scipion-like object id for a project.
+        Allocate a sequential protocol id for one project.
 
-        This is needed when PostgreSQL acts as the runtime mapper and Scipion
-        creates new Protocol/Object instances without an _objId yet.
+        Protocol ids use their own namespace and are never affected by
+        Scipion objects, parameters, outputs or SQLite mirror children.
         """
         projectId = int(projectId)
 
         with self.db.transaction():
             maxRow = self.db.fetchOne(
                 """
-                SELECT COALESCE(MAX(value), 0)::integer AS value
-                  FROM (
-                        SELECT ("protocolId")::integer AS value
-                          FROM protocols
-                         WHERE "projectId" = %s
-                           AND "protocolId" ~ '^[0-9]+$'
-
-                        UNION ALL
-
-                        SELECT "scipionObjId"::integer AS value
-                          FROM scipion_objects
-                         WHERE "projectId" = %s
-                           AND "scipionObjId" IS NOT NULL
-                  ) AS ids
+                SELECT COALESCE(
+                           MAX(("protocolId")::integer),
+                           1
+                       ) AS value
+                  FROM protocols
+                 WHERE "projectId" = %s
+                   AND "protocolId" ~ '^[0-9]+$'
                 """,
-                (projectId, projectId),
+                (
+                    projectId,
+                ),
             )
 
-            existingMax = int((maxRow or {}).get("value") or 0)
-            nextCandidate = existingMax + 1
+            existingMax = int(
+                (maxRow or {}).get("value")
+                or 1
+            )
+
+            nextCandidate = max(
+                existingMax + 1,
+                POSTGRESQL_PROTOCOL_ID_START,
+            )
 
             self.db.execute(
                 """
                 INSERT INTO project_object_id_counters (
                     "projectId",
-                    "nextObjectId"
+                    "nextObjectId",
+                    "nextProtocolId"
                 )
-                VALUES (%s, %s)
+                VALUES (%s, %s, %s)
+                ON CONFLICT ("projectId")
+                DO UPDATE SET
+                    "nextProtocolId" = GREATEST(
+                        project_object_id_counters."nextProtocolId",
+                        EXCLUDED."nextProtocolId"
+                    ),
+                    "updatedAt" = NOW()
+                """,
+                (
+                    projectId,
+                    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+                    nextCandidate,
+                ),
+                commit=False,
+            )
+
+            row = self.db.fetchOne(
+                """
+                UPDATE project_object_id_counters
+                   SET "nextProtocolId" =
+                           "nextProtocolId" + 1,
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                 RETURNING
+                       "nextProtocolId" - 1
+                       AS "protocolId"
+                """,
+                (
+                    projectId,
+                ),
+            )
+
+        if not row or row.get("protocolId") is None:
+            raise RuntimeError(
+                "Could not allocate protocol id "
+                "for project %s."
+                % projectId
+            )
+
+        return int(
+            row["protocolId"]
+        )
+
+    def allocateProjectObjectId(
+            self,
+            projectId: int,
+    ) -> int:
+        """
+        Allocate an id for a non-protocol Scipion runtime object.
+
+        Runtime objects intentionally use a namespace separate from
+        protocol ids.
+        """
+        projectId = int(projectId)
+
+        with self.db.transaction():
+            maxRow = self.db.fetchOne(
+                """
+                SELECT COALESCE(
+                           MAX("scipionObjId"),
+                           0
+                       )::integer AS value
+                  FROM scipion_objects
+                 WHERE "projectId" = %s
+                   AND "scipionObjId" IS NOT NULL
+                """,
+                (
+                    projectId,
+                ),
+            )
+
+            existingMax = int(
+                (maxRow or {}).get("value")
+                or 0
+            )
+
+            nextCandidate = max(
+                existingMax + 1,
+                POSTGRESQL_RUNTIME_OBJECT_ID_START,
+            )
+
+            self.db.execute(
+                """
+                INSERT INTO project_object_id_counters (
+                    "projectId",
+                    "nextObjectId",
+                    "nextProtocolId"
+                )
+                VALUES (%s, %s, %s)
                 ON CONFLICT ("projectId")
                 DO UPDATE SET
                     "nextObjectId" = GREATEST(
@@ -1250,27 +1370,40 @@ class PostgresqlFlatMapper(Mapper):
                     ),
                     "updatedAt" = NOW()
                 """,
-                (projectId, nextCandidate),
+                (
+                    projectId,
+                    nextCandidate,
+                    POSTGRESQL_PROTOCOL_ID_START,
+                ),
                 commit=False,
             )
 
             row = self.db.fetchOne(
                 """
                 UPDATE project_object_id_counters
-                   SET "nextObjectId" = "nextObjectId" + 1,
+                   SET "nextObjectId" =
+                           "nextObjectId" + 1,
                        "updatedAt" = NOW()
                  WHERE "projectId" = %s
-                 RETURNING "nextObjectId" - 1 AS "objectId"
+                 RETURNING
+                       "nextObjectId" - 1
+                       AS "objectId"
                 """,
-                (projectId,),
+                (
+                    projectId,
+                ),
             )
 
         if not row or row.get("objectId") is None:
             raise RuntimeError(
-                "Could not allocate Scipion object id for project %s" % projectId
+                "Could not allocate Scipion object id "
+                "for project %s."
+                % projectId
             )
 
-        return int(row["objectId"])
+        return int(
+            row["objectId"]
+        )
 
     # -----------------------------
     # Protocol Methods

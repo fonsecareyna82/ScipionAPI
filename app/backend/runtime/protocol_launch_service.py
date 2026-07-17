@@ -518,26 +518,99 @@ class RuntimeProtocolLaunchService:
             protocol,
             protocolId,
             projectId: int,
-    ) -> None:
+    ) -> Dict[str, Any]:
         runtimeMapper = None
 
         try:
-            runtimeMapper = currentProject.getPostgresqlRuntimeMapper()
+            runtimeMapper = (
+                currentProject
+                .getPostgresqlRuntimeMapper()
+            )
         except Exception:
             runtimeMapper = None
 
-        protocolRuntimeId = getattr(protocol, "getObjId", lambda: protocolId)()
-
-        if runtimeMapper is not None and not runtimeMapper._existsInWriteFallback(protocolRuntimeId):
+        if runtimeMapper is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=(
-                        "Protocol %s exists in PostgreSQL but not in the SQLite execution DB. "
-                        "It was probably saved without PostgreSQL runtime write fallback enabled. "
-                        "Delete/recreate or resave it after enabling write fallback."
+                    "PostgreSQL runtime mapper is not available "
+                    "while preparing protocol execution."
+                ),
+            )
+
+        ensureMirror = getattr(
+            runtimeMapper,
+            "ensureProtocolWriteFallbackMirror",
+            None,
+        )
+
+        if not callable(ensureMirror):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "PostgreSQL runtime mapper cannot materialize "
+                    "the SQLite execution mirror."
+                ),
+            )
+
+        try:
+            report = ensureMirror(
+                protocol
+            )
+
+            writeFallbackMapper = getattr(
+                runtimeMapper,
+                "writeFallbackMapper",
+                None,
+            )
+
+            if writeFallbackMapper is not None:
+                writeFallbackMapper.commit()
+
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                        "Could not materialize protocol %s in the "
+                        "SQLite execution mirror: %s"
+                        % (
+                            getattr(
+                                protocol,
+                                "getObjId",
+                                lambda: protocolId,
+                            )(),
+                            exc,
+                        )
+                ),
+            ) from exc
+
+        protocolRuntimeId = getattr(
+            protocol,
+            "getObjId",
+            lambda: protocolId,
+        )()
+
+        if not runtimeMapper._existsInWriteFallback(
+                protocolRuntimeId
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                        "Protocol %s was not found in the SQLite "
+                        "execution mirror after materialization."
                         % protocolRuntimeId
                 ),
             )
+
+        logger.info(
+            "Prepared protocol SQLite execution mirror. "
+            "projectId=%s protocolId=%s report=%s",
+            projectId,
+            protocolRuntimeId,
+            report,
+        )
+
+        return report
 
     def _syncPostgresqlRuntimeAfterLaunch(
             self,
