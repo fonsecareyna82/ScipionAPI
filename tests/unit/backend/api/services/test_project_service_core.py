@@ -279,3 +279,167 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
     resolved = projectService._getGlobalFsBrowserRoot()
 
     assert resolved == browserRoot.resolve()
+
+
+def test_PostgresqlReadFallbackIsDisabledByDefault(
+        projectServiceModule,
+        monkeypatch,
+):
+    monkeypatch.delenv(
+        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+        raising=False,
+    )
+
+    assert (
+        projectServiceModule.ProjectService
+        ._shouldEnablePostgresqlReadFallback()
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "1",
+        "true",
+        "TRUE",
+        " yes ",
+        "on",
+    ],
+)
+def test_PostgresqlReadFallbackCanBeEnabledExplicitly(
+        projectServiceModule,
+        monkeypatch,
+        value,
+):
+    monkeypatch.setenv(
+        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+        value,
+    )
+
+    assert (
+        projectServiceModule.ProjectService
+        ._shouldEnablePostgresqlReadFallback()
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+        "whatever",
+    ],
+)
+def test_PostgresqlReadFallbackRejectsFalseValues(
+        projectServiceModule,
+        monkeypatch,
+        value,
+):
+    monkeypatch.setenv(
+        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+        value,
+    )
+
+    assert (
+        projectServiceModule.ProjectService
+        ._shouldEnablePostgresqlReadFallback()
+        is False
+    )
+
+
+def test_LoadPostgresqlRuntimeProjectForMutationDisablesReadFallbackByDefault(
+        projectService,
+        projectServiceModule,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = tmp_path / "runtime-project"
+    projectPath.mkdir()
+
+    captured = {}
+
+    class FakePostgresqlProject:
+        def __init__(
+                self,
+                domain,
+                path,
+                projectId,
+                flatMapper,
+                enableReadFallback,
+                enableWriteFallback,
+        ):
+            captured.update({
+                "domain": domain,
+                "path": path,
+                "projectId": projectId,
+                "flatMapper": flatMapper,
+                "enableReadFallback": enableReadFallback,
+                "enableWriteFallback": enableWriteFallback,
+            })
+
+        def load(self, chdir=False):
+            captured["loadChdir"] = chdir
+
+        def closeMapper(self):
+            captured["closed"] = True
+
+    monkeypatch.delenv(
+        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "PostgresqlProject",
+        FakePostgresqlProject,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule.pyworkflow.Config,
+        "getDomain",
+        lambda: "test-domain",
+    )
+
+    projectService.getProjectDbRow = lambda **kwargs: {
+        "id": 7,
+        "name": str(projectPath),
+    }
+
+    mapper = object()
+
+    result = (
+        projectService
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=7,
+            currentUser={"id": 3},
+            enableWriteFallback=True,
+        )
+    )
+
+    assert result == {
+        "id": 7,
+        "name": str(projectPath),
+    }
+
+    assert captured == {
+        "domain": "test-domain",
+        "path": str(projectPath),
+        "projectId": 7,
+        "flatMapper": mapper,
+        "enableReadFallback": False,
+        "enableWriteFallback": True,
+        "loadChdir": True,
+    }
+
+    assert (
+        projectService.currentProject.__class__
+        is FakePostgresqlProject
+    )
+
+
