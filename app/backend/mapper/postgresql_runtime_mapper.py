@@ -3900,8 +3900,8 @@ class PostgresqlRuntimeMapper(Mapper):
         Return the direct parent without refreshing or reattaching it.
 
         Native PostgreSQL objects may already carry their parent through
-        _objParent. Otherwise, resolve it by id through the same read-only
-        path used by relation reads.
+        _objParent. Otherwise, resolve the runtime parent id PostgreSQL-first
+        and use the SQLite compatibility mapper only as the final fallback.
         """
         if obj is None:
             return None
@@ -3927,11 +3927,27 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
-        if parentId is None:
+        if parentId is not None:
+            parent = self._selectRelationObjectById(
+                parentId
+            )
+
+            if parent is not None:
+                return parent
+
+        if self.readFallbackMapper is None:
             return None
 
-        return self._selectRelationObjectById(
-            parentId
+        self._recordReadFallback(
+            "getParent",
+            objectId=self._getObjId(
+                obj
+            ),
+            parentId=parentId,
+        )
+
+        return self.readFallbackMapper.getParent(
+            obj
         )
 
     def deleteAll(self):

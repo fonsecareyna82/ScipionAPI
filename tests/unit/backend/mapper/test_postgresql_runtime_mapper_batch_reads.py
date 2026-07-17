@@ -42,7 +42,24 @@ class OtherProtocol(Protocol):
 
 
 class FakeDb:
-    pass
+    def __init__(self):
+        self.fetchAllCalls = []
+
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        self.fetchAllCalls.append({
+            "query": " ".join(
+                str(
+                    query
+                ).split()
+            ),
+            "params": params,
+        })
+
+        return []
 
 
 class FakeFlatMapper:
