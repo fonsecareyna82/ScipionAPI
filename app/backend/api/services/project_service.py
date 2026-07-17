@@ -5702,6 +5702,7 @@ class ProjectService:
             syncProjectProtocolsAndDependenciesCallback=(
                 self.syncProjectProtocolsAndDependencies
             ),
+            cleanupExecutionMirrorsCallback=self.currentProject.cleanupProtocolExecutionMirrors,
         )
 
     def _syncPostgresqlRuntimeProtocolsAfterMutation(

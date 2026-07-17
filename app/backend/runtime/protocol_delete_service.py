@@ -333,6 +333,7 @@ class RuntimeProtocolDeleteService:
             currentProjectDeleteProtocolCallback,
             mapperDeleteProtocolCallback,
             syncProjectProtocolsAndDependenciesCallback,
+            cleanupExecutionMirrorsCallback=None,
     ):
         try:
             protList = []
@@ -424,7 +425,7 @@ class RuntimeProtocolDeleteService:
                     )
 
             if usingPostgresqlRuntime:
-                return self.executePostgresqlRuntimeProtocolDelete(
+                result = self.executePostgresqlRuntimeProtocolDelete(
                     mapper=mapper,
                     projectId=projectId,
                     protocols=protList,
@@ -433,6 +434,24 @@ class RuntimeProtocolDeleteService:
                     protocolGraphRepository=protocolGraphRepository,
                     deleteValidationInfo=deleteValidationInfo,
                 )
+
+                mirrorCleanup = None
+
+                if cleanupExecutionMirrorsCallback is not None:
+                    try:
+                        mirrorCleanup = cleanupExecutionMirrorsCallback(
+                            selectedProtocolIds
+                        )
+                    except Exception as error:
+                        mirrorCleanup = {
+                            "requestedProtocolIds": selectedProtocolIds,
+                            "deletedProtocolIds": [],
+                            "errors": [str(error)],
+                        }
+
+                result["executionMirrorCleanup"] = mirrorCleanup
+
+                return result
 
             currentProjectDeleteProtocolCallback(*protList)
             mapperDeleteProtocolCallback(projectId, protList,)
