@@ -505,39 +505,6 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
-        existingRow = db.selectObjectById(
-            protocolId
-        )
-
-        if existingRow is not None:
-            existingClassName = str(
-                existingRow["classname"]
-                or ""
-            )
-
-            existingParentId = existingRow[
-                "parent_id"
-            ]
-
-            if (
-                    existingParentId is not None
-                    or existingClassName
-                    != str(expectedClassName)
-            ):
-                raise RuntimeError(
-                    "SQLite execution id collision for protocol %s: "
-                    "expected root class %s, found class %s "
-                    "with parentId=%s."
-                    % (
-                        protocolId,
-                        expectedClassName,
-                        existingClassName,
-                        existingParentId,
-                    )
-                )
-
-            return False
-
         # Keep SQLite-generated child ids away from PostgreSQL-owned ids.
         db.executeCommand(
             """
@@ -574,6 +541,39 @@ class PostgresqlRuntimeMapper(Mapper):
                     SQLITE_EXECUTION_CHILD_ID_START,
                 ),
             )
+
+        existingRow = db.selectObjectById(
+            protocolId
+        )
+
+        if existingRow is not None:
+            existingClassName = str(
+                existingRow["classname"]
+                or ""
+            )
+
+            existingParentId = existingRow[
+                "parent_id"
+            ]
+
+            if (
+                    existingParentId is not None
+                    or existingClassName
+                    != str(expectedClassName)
+            ):
+                raise RuntimeError(
+                    "SQLite execution id collision for protocol %s: "
+                    "expected root class %s, found class %s "
+                    "with parentId=%s."
+                    % (
+                        protocolId,
+                        expectedClassName,
+                        existingClassName,
+                        existingParentId,
+                    )
+                )
+
+            return False
 
         objName = str(
             getattr(
