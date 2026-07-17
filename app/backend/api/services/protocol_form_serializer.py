@@ -151,9 +151,25 @@ class ProtocolFormSerializer:
                                 )
                             )
 
-                            if valueList:
+                            if protocolDbId is not None:
+                                protocolGraphRepository = (
+                                    ProtocolGraphRepository()
+                                )
+
+                                valueList = (
+                                    protocolGraphRepository
+                                    .loadInputRefPointerValues(
+                                        mapper=mapper,
+                                        projectId=projectId,
+                                        protocolDbId=protocolDbId,
+                                        inputName=paramName,
+                                    )
+                                )
+
                                 paramDict["readOnly"] = True
 
+                                # PostgreSQL is authoritative,
+                                # including an empty pointer list.
                                 return paramDict, valueList
 
                     for pointer in protVar:
@@ -253,26 +269,26 @@ class ProtocolFormSerializer:
                             )
                         )
 
-                        if pointerValueInfo:
-                            parentId = pointerValueInfo.get(
-                                "parentId"
+                        paramDict["readOnly"] = True
+
+                        if not pointerValueInfo:
+                            return paramDict, None
+
+                        parentId = pointerValueInfo.get(
+                            "parentId"
+                        )
+                        paramValue = pointerValueInfo.get(
+                            "value"
+                        )
+
+                        try:
+                            paramDict["parentId"] = int(
+                                parentId
                             )
-                            paramValue = pointerValueInfo.get(
-                                "value"
-                            )
+                        except Exception:
+                            paramDict["parentId"] = parentId
 
-                            try:
-                                paramDict["parentId"] = int(
-                                    parentId
-                                )
-                            except Exception:
-                                paramDict["parentId"] = (
-                                    parentId
-                                )
-
-                            paramDict["readOnly"] = True
-
-                            return paramDict, paramValue
+                        return paramDict, paramValue
 
                     try:
                         targetObj = (
@@ -739,6 +755,11 @@ class ProtocolFormSerializer:
             self,
             *,
             protocol,
+            mapper=None,
+            projectId=None,
+            usingPostgresqlRuntime: bool = False,
+            getScipionObjectIdCallback: Callable = None,
+            resolvePostgresqlProtocolDbIdCallback: Callable = None,
             splitPointerValueCallback: Callable,
     ) -> List[Dict[str, Any]]:
         """
@@ -748,6 +769,95 @@ class ProtocolFormSerializer:
         protocols, parent protocols, outputs or persisted input references.
         """
         inputs = []
+        if (
+                usingPostgresqlRuntime
+                and mapper is not None
+                and projectId is not None
+                and getScipionObjectIdCallback is not None
+                and resolvePostgresqlProtocolDbIdCallback is not None
+        ):
+            protocolId = getScipionObjectIdCallback(
+                protocol
+            )
+
+            protocolDbId = (
+                resolvePostgresqlProtocolDbIdCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            if protocolDbId is not None:
+                protocolGraphRepository = (
+                    ProtocolGraphRepository()
+                )
+
+                inputRefs = (
+                    protocolGraphRepository
+                    .loadInputRefsForProtocolCopy(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolDbId=protocolDbId,
+                    )
+                )
+
+                for inputRef in inputRefs:
+                    inputName = str(
+                        inputRef.get("inputName")
+                        or ""
+                    ).strip()
+
+                    parentProtocolId = inputRef.get(
+                        "parentProtocolId"
+                    )
+
+                    parentOutputName = str(
+                        inputRef.get("parentOutputName")
+                        or ""
+                    ).strip()
+
+                    if (
+                            not inputName
+                            or parentProtocolId in (
+                            None,
+                            "",
+                    )
+                            or not parentOutputName
+                    ):
+                        continue
+
+                    try:
+                        normalizedParentId = int(
+                            parentProtocolId
+                        )
+                    except Exception:
+                        normalizedParentId = (
+                            parentProtocolId
+                        )
+
+                    pointerValue = "%s.%s" % (
+                        normalizedParentId,
+                        parentOutputName,
+                    )
+
+                    inputs.append({
+                        "inputName": inputName,
+                        "paramClass": "PointerParam",
+                        "pointerClass": (
+                                inputRef.get(
+                                    "objectClassName"
+                                )
+                                or ""
+                        ),
+                        "info": pointerValue,
+                        "value": pointerValue,
+                        "parentId": normalizedParentId,
+                    })
+
+                # PostgreSQL is authoritative.
+                # An empty list means the protocol has no inputs.
+                return inputs
 
         for key, attr in protocol.iterInputAttributes():
             inputData = {
