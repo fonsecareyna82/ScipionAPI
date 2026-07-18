@@ -1034,7 +1034,7 @@ def restartProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1122,7 +1122,7 @@ def continueProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1207,7 +1207,7 @@ def resetProtocolFrom(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1296,7 +1296,7 @@ def stopProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=True,
+                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
