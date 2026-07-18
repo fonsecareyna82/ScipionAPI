@@ -29,7 +29,7 @@ import os
 import time
 from typing import Any, Callable, Dict, Optional
 
-from pyworkflow.protocol import STATUS_NEW
+from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED
 from pyworkflow.protocol.protocol import getProtocolFromDb
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,35 @@ class RuntimeProtocolStatusSyncService:
             0.0,
             float(elapsedSeconds or 0.0),
         )
+
+    def markProtocolAborted(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Any]:
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot mark runtime protocol as aborted: "
+                "protocol row not found. "
+                f"projectId={projectId} "
+                f"protocolId={protocolId}"
+            )
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "status": STATUS_ABORTED,
+        })
+
+        return {
+            "protocolId": str(protocolId),
+            "status": STATUS_ABORTED,
+        }
 
     def markProtocolLaunched(
             self,

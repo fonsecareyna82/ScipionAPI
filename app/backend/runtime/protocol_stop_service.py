@@ -379,6 +379,27 @@ class RuntimeProtocolStopService:
                     )
                 )
 
+            postgresqlStatusReports = []
+
+            if runtimeElapsedService is not None:
+                for protocol in resolvedProtocols:
+                    protocolRuntimeId = getattr(
+                        protocol,
+                        "getObjId",
+                        lambda: None,
+                    )()
+
+                    if protocolRuntimeId in (None, ""):
+                        continue
+
+                    postgresqlStatusReports.append(
+                        runtimeElapsedService.markProtocolAborted(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolRuntimeId,
+                        )
+                    )
+
             elapsedTimingReports = []
 
             for protocol in resolvedProtocols:
@@ -444,6 +465,7 @@ class RuntimeProtocolStopService:
                 postgresqlPointerRestore=pointerRestoreInfo,
                 postgresqlRuntimeStop=True,
                 postgresqlRuntimeSync=postgresqlSync,
+                postgresqlRuntimeStatus=postgresqlStatusReports,
                 scheduledStopped=scheduledStopped,
                 nativeStopped=nativeStopped,
                 postgresqlRuntimeElapsed=(
