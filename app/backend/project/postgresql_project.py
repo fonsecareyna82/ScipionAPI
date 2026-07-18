@@ -542,11 +542,23 @@ class PostgresqlProject(ScipionProject):
             None,
         )
 
+        ownsWriteFallbackMapper = False
+
         if writeFallbackMapper is None:
-            raise RuntimeError(
-                "Cannot stop PostgreSQL runtime protocol: "
-                "SQLite write fallback mapper is not available"
+            sqlitePath = self._normalizeSqlitePath(PROJECT_DBNAME)
+
+            if not sqlitePath or not os.path.exists(sqlitePath):
+                raise RuntimeError(
+                    "Cannot stop PostgreSQL runtime protocol: "
+                    "SQLite execution mirror database is not available"
+                )
+
+            writeFallbackMapper = ScipionProject.createMapper(
+                self,
+                sqlitePath,
             )
+
+            ownsWriteFallbackMapper = True
 
         protocolId = getattr(
             protocol,
@@ -555,6 +567,9 @@ class PostgresqlProject(ScipionProject):
         )()
 
         if protocolId in (None, ""):
+            if ownsWriteFallbackMapper:
+                writeFallbackMapper.close()
+
             raise RuntimeError(
                 "Cannot stop PostgreSQL runtime protocol without protocol id"
             )
@@ -564,6 +579,9 @@ class PostgresqlProject(ScipionProject):
         )
 
         if sqliteProtocol is None:
+            if ownsWriteFallbackMapper:
+                writeFallbackMapper.close()
+
             raise RuntimeError(
                 "Protocol %s was not found in the SQLite compatibility database"
                 % protocolId
@@ -573,19 +591,18 @@ class PostgresqlProject(ScipionProject):
 
         try:
             logger.info(
-                "Stopping PostgreSQL runtime protocol through SQLite "
+                "Stopping PostgreSQL runtime protocol through isolated SQLite "
                 "compatibility mapper. projectId=%s protocolId=%s",
                 self.postgresqlProjectId,
                 protocolId,
             )
 
-            # Project._updateProtocol() uses self.mapper directly.
-            # It must temporarily see the classic project.sqlite mapper.
             self.mapper = writeFallbackMapper
 
             sqliteProtocol.setMapper(
                 writeFallbackMapper
             )
+
             sqliteProtocol.setProject(
                 self
             )
@@ -596,9 +613,16 @@ class PostgresqlProject(ScipionProject):
             )
 
         finally:
-            # Restore PostgreSQL as the authoritative project mapper even if
-            # Scipion's native stop operation raises an exception.
             self.mapper = originalMapper
+
+            if ownsWriteFallbackMapper:
+                try:
+                    writeFallbackMapper.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close isolated SQLite stop mapper.",
+                        exc_info=True,
+                    )
 
     def refreshProtocolFromRuntimeDbForResume(
             self,
