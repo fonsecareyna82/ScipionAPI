@@ -1266,7 +1266,7 @@ def stopProtocol(
         checkPid=False,
         loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
         usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
-        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeWriteFallback=False,
     )
     if not project:
         return JSONResponse(
