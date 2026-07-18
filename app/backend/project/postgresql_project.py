@@ -834,6 +834,13 @@ class PostgresqlProject(ScipionProject):
         if not protocolIds:
             return report
 
+        runtimeMapper = self.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is not None:
+            runtimeMapper.evictRuntimeProtocols(
+                protocolIds
+            )
+
         sqlitePath = self._normalizeSqlitePath(PROJECT_DBNAME)
 
         if not sqlitePath or not os.path.exists(sqlitePath):
@@ -892,13 +899,6 @@ class PostgresqlProject(ScipionProject):
                         "Could not close SQLite execution cleanup mapper.",
                         exc_info=True,
                     )
-
-        runtimeMapper = self.getPostgresqlRuntimeMapper()
-
-        if runtimeMapper is not None:
-            runtimeMapper.evictRuntimeProtocols(
-                protocolIds
-            )
 
         return report
 
