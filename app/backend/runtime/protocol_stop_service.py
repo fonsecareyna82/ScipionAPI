@@ -210,6 +210,7 @@ class RuntimeProtocolStopService:
         try:
             scheduledStopped = []
             nativeStopped = []
+            missingExecutionMirrors = []
 
             runtimeElapsedService = (
                 RuntimeProtocolStatusSyncService()
@@ -320,9 +321,40 @@ class RuntimeProtocolStopService:
                     protocolToStop
                 )
 
-                currentProject.stopProtocol(
-                    protocolToStop
-                )
+                missingExecutionMirror = False
+                nativeStopError = None
+
+                try:
+                    currentProject.stopProtocol(
+                        protocolToStop
+                    )
+
+                except RuntimeError as error:
+                    errorText = str(error)
+
+                    missingExecutionMirror = (
+                            usingPostgresqlRuntime
+                            and (
+                                    "was not found in the SQLite "
+                                    "compatibility database"
+                                    in errorText
+                            )
+                    )
+
+                    if not missingExecutionMirror:
+                        raise
+
+                    nativeStopError = errorText
+
+                    logger.warning(
+                        "Protocol execution mirror was missing "
+                        "during stop. Falling back to process "
+                        "termination and PostgreSQL aborted state. "
+                        "projectId=%s protocolId=%s error=%s",
+                        projectId,
+                        protocolRuntimeId,
+                        errorText,
+                    )
 
                 if (
                         runtimeElapsedService
@@ -334,6 +366,8 @@ class RuntimeProtocolStopService:
                         str(protocolRuntimeId)
                     ] = time.time()
 
+                pidKilled = False
+
                 if (
                         usingPostgresqlRuntime
                         and pidBeforeStop
@@ -341,6 +375,10 @@ class RuntimeProtocolStopService:
                 ):
                     killed = self._killPid(
                         pidBeforeStop
+                    )
+
+                    pidKilled = bool(
+                        killed
                     )
 
                     if not killed:
@@ -357,6 +395,17 @@ class RuntimeProtocolStopService:
                                 )
                             ),
                         )
+
+                    if missingExecutionMirror:
+                        missingExecutionMirrors.append({
+                            "protocolId": str(
+                                protocolRuntimeId
+                            ),
+                            "error": nativeStopError,
+                            "pid": pidBeforeStop,
+                            "pidKilled": pidKilled,
+                            "nativeStopSkipped": True,
+                        })
 
                 if isScheduledProtocol:
                     scheduledStopped.append(
@@ -471,6 +520,8 @@ class RuntimeProtocolStopService:
                 postgresqlRuntimeElapsed=(
                     elapsedTimingReports
                 ),
+                missingExecutionMirrors=missingExecutionMirrors,
+                degradedStop=bool(missingExecutionMirrors),
             )
 
         except Exception as exc:
