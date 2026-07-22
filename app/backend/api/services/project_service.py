@@ -1448,7 +1448,7 @@ class ProjectService:
             "complete": True,
         }
 
-        if shouldRegisterOutputs and syncRelations:
+        if syncRelations:
             try:
                 relationSyncService = (
                     RuntimeProjectRelationSyncService()
@@ -1637,6 +1637,237 @@ class ProjectService:
             syncResult["protocolContext"] = protocolContext
 
         return syncResult
+
+    def backfillPostgresqlProjectRelations(
+            self,
+            mapper,
+            projectId: int,
+    ) -> Dict[str, Any]:
+        """
+        Backfill PostgreSQL relation tables from runtime DBs and the
+        isolated project.sqlite compatibility database.
+
+        Protocol dependencies and input refs are not modified.
+        """
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            raise RuntimeError(
+                "No current PostgreSQL project loaded"
+            )
+
+        projectPath = self._getCurrentProjectPath()
+
+        if not projectPath:
+            raise RuntimeError(
+                "Could not resolve current project path"
+            )
+
+        sqliteProject = None
+        protocolsByScipionId = {}
+        protocolDbIdByScipionId = {}
+        relationsByScipionId = {}
+
+        collectionSources = []
+        collectionErrors = []
+        missingProtocols = []
+
+        relationSyncService = (
+            RuntimeProjectRelationSyncService()
+        )
+
+        try:
+            sqliteProject = ScipionProject(
+                Config.getDomain(),
+                projectPath,
+            )
+
+            sqliteProject.load(
+                dbPath=sqliteProject.getDbPath()
+            )
+
+            for sqliteProtocol in (
+                    sqliteProject.getRuns()
+                    or []
+            ):
+                protocolId = (
+                    self._getScipionObjectId(
+                        sqliteProtocol
+                    )
+                )
+
+                if protocolId in (None, ""):
+                    continue
+
+                protocolDbId = (
+                    self
+                    ._resolvePostgresqlProtocolDbId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+
+                if protocolDbId is None:
+                    missingProtocols.append({
+                        "protocolId": str(
+                            protocolId
+                        ),
+                        "reason": (
+                            "protocol_not_found_in_postgresql"
+                        ),
+                    })
+                    continue
+
+                runtimeProtocol = None
+
+                try:
+                    runtimeProtocol = (
+                        self._loadProtocolFromRuntimeDb(
+                            protocolId=protocolId,
+                            protocol=sqliteProtocol,
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not load runtime protocol "
+                        "during relation backfill. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        protocolId,
+                        exc_info=True,
+                    )
+
+                protocolForSync = (
+                    runtimeProtocol
+                    or sqliteProtocol
+                )
+
+                relationSnapshot = (
+                    relationSyncService
+                    .collectProtocolRelations([
+                        (
+                            "runtime_db",
+                            runtimeProtocol,
+                        ),
+                        (
+                            "project_sqlite",
+                            sqliteProtocol,
+                        ),
+                    ])
+                )
+
+                snapshotRelations = (
+                    relationSnapshot.get(
+                        "relations"
+                    )
+                    or []
+                )
+
+                snapshotErrors = (
+                    relationSnapshot.get(
+                        "errors"
+                    )
+                    or []
+                )
+
+                collectionSources.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "sources": (
+                        relationSnapshot.get(
+                            "sources"
+                        )
+                        or []
+                    ),
+                    "relations": len(
+                        snapshotRelations
+                    ),
+                })
+
+                if snapshotErrors:
+                    collectionErrors.extend([
+                        {
+                            "protocolId": str(
+                                protocolId
+                            ),
+                            **error,
+                        }
+                        for error in snapshotErrors
+                    ])
+
+                if (
+                        snapshotErrors
+                        and not snapshotRelations
+                ):
+                    # Do not replace an existing PostgreSQL
+                    # relation snapshot with an unreadable one.
+                    continue
+
+                protocolIdText = str(
+                    protocolId
+                )
+
+                protocolsByScipionId[
+                    protocolIdText
+                ] = protocolForSync
+
+                protocolDbIdByScipionId[
+                    protocolIdText
+                ] = int(protocolDbId)
+
+                relationsByScipionId[
+                    protocolIdText
+                ] = snapshotRelations
+
+            relationReport = (
+                relationSyncService
+                .syncProjectRelations(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolsByScipionId=(
+                        protocolsByScipionId
+                    ),
+                    protocolDbIdByScipionId=(
+                        protocolDbIdByScipionId
+                    ),
+                    relationsByScipionId=(
+                        relationsByScipionId
+                    ),
+                )
+            )
+
+            return {
+                **relationReport,
+                "protocolsChecked": len(
+                    protocolDbIdByScipionId
+                ),
+                "collectionSources": (
+                    collectionSources
+                ),
+                "collectionErrors": (
+                    collectionErrors
+                ),
+                "missingProtocols": (
+                    missingProtocols
+                ),
+            }
+
+        finally:
+            if sqliteProject is not None:
+                try:
+                    sqliteProject.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close isolated SQLite "
+                        "project after relation backfill.",
+                        exc_info=True,
+                    )
 
     def _buildPostgresqlRuntimeArtifactReport(
             self,
@@ -5711,6 +5942,7 @@ class ProjectService:
             projectId: int,
             protocols,
             registerOutputs: bool = False,
+            syncRelations: bool = False,
     ) -> Dict[str, Any]:
         reports = []
         errors = []
@@ -5729,6 +5961,7 @@ class ProjectService:
                     projectId=projectId,
                     protocolId=protocolId,
                     registerOutputs=registerOutputs,
+                    syncRelations=syncRelations,
                 )
 
                 reports.append(report)
