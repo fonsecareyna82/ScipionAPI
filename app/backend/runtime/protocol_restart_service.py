@@ -103,6 +103,22 @@ class RuntimeProtocolRestartService:
             workflowProtocolList
         )
 
+        workflowProtocolsById = {}
+
+        for workflowProtocol in workflowProtocols:
+            workflowProtocolId = getattr(
+                workflowProtocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if workflowProtocolId in (None, ""):
+                continue
+
+            workflowProtocolsById[
+                str(workflowProtocolId)
+            ] = workflowProtocol
+
         pointerRestoreInfo = None
 
         if usingPostgresqlRuntime:
@@ -113,6 +129,7 @@ class RuntimeProtocolRestartService:
                     protocols=workflowProtocols,
                     prepareOutputsForLaunch=True,
                     allowMissingParentOutputs=True,
+                    parentProtocolsById=workflowProtocolsById,
                 )
             )
 
