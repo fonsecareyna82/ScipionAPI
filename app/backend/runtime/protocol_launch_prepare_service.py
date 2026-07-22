@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol.params import MultiPointerParam
@@ -46,6 +46,9 @@ class RuntimeProtocolLaunchPrepareService:
             getProtocolIdCallback: Callable,
             getParentProtocolCallback: Callable,
             allowMissingParentOutputs: bool = False,
+            parentProtocolsById: Optional[
+                Dict[str, Any]
+            ] = None,
     ) -> Dict[str, Any]:
         """
         Restore child protocol pointers from PostgreSQL input references.
@@ -105,6 +108,44 @@ class RuntimeProtocolLaunchPrepareService:
         errors = []
         multiPointerLists = {}
 
+        def resolveParentProtocol(
+                parentProtocolId,
+        ):
+            parentProtocol = None
+            parentScipionProtocolId = (
+                protocolIdentityResolver
+                .resolveScipionProtocolId(
+                    parentProtocolId
+                )
+            )
+
+            if parentProtocolsById:
+                parentProtocol = (
+                    parentProtocolsById.get(
+                        str(
+                            parentScipionProtocolId
+                        )
+                    )
+                    or parentProtocolsById.get(
+                        parentScipionProtocolId
+                    )
+                )
+
+            if parentProtocol is None:
+                (
+                    parentScipionProtocolId,
+                    parentProtocol,
+                ) = getParentProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentId=parentProtocolId,
+                )
+
+            return (
+                parentScipionProtocolId,
+                parentProtocol,
+            )
+
         for row in rows or []:
             inputName = str(row.get("inputName") or "").strip()
             parentOutputName = str(
@@ -152,10 +193,8 @@ class RuntimeProtocolLaunchPrepareService:
 
             try:
                 parentScipionProtocolId, parentProtocol = (
-                    getParentProtocolCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        parentId=parentProtocolId,
+                    resolveParentProtocol(
+                        parentProtocolId
                     )
                 )
 

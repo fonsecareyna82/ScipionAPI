@@ -5237,6 +5237,9 @@ class ProjectService:
             projectId: int,
             protocol,
             allowMissingParentOutputs: bool = False,
+            parentProtocolsById: Optional[
+                Dict[str, Any]
+            ] = None,
     ) -> Dict[str, Any]:
         runtimeProtocolLaunchPrepareService = RuntimeProtocolLaunchPrepareService()
 
@@ -5245,6 +5248,7 @@ class ProjectService:
             projectId=projectId,
             protocol=protocol,
             allowMissingParentOutputs=allowMissingParentOutputs,
+            parentProtocolsById=parentProtocolsById,
             getProtocolIdCallback=self._getScipionObjectId,
             getParentProtocolCallback=self._getParentProtocolForPointer,
         )
@@ -5912,11 +5916,19 @@ class ProjectService:
                     })
 
                 if prepareOutputsForLaunch:
-                    prepareReport = self._preparePostgresqlRuntimePointerOutputsForLaunch(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocol,
-                        allowMissingParentOutputs=allowMissingParentOutputs,
+                    prepareReport = (
+                        self
+                        ._preparePostgresqlRuntimePointerOutputsForLaunch(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocol=protocol,
+                            allowMissingParentOutputs=(
+                                allowMissingParentOutputs
+                            ),
+                            parentProtocolsById=(
+                                parentProtocolsById
+                            ),
+                        )
                     )
 
                     protocolReport["prepareOutputs"] = prepareReport
