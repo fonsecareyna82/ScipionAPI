@@ -47,6 +47,7 @@ class RuntimeProtocolRestartService:
             getPostgresqlRuntimeSubworkflowCallback: Callable,
             workflowProtocolMapToProtocolsCallback: Callable,
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
+            preparePostgresqlExecutionMirrorsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
@@ -122,6 +123,33 @@ class RuntimeProtocolRestartService:
                         "Failed to restore PostgreSQL runtime pointers "
                         "before restart-all: %s"
                         % pointerRestoreInfo.get("errors")
+                    ),
+                )
+
+        executionMirrorPrepareInfo = None
+
+        if usingPostgresqlRuntime:
+            executionMirrorPrepareInfo = (
+                preparePostgresqlExecutionMirrorsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=workflowProtocols,
+                )
+            )
+
+            if executionMirrorPrepareInfo.get(
+                    "errors"
+            ):
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail=(
+                            "Failed to prepare SQLite execution "
+                            "mirrors before restart-all: %s"
+                            % executionMirrorPrepareInfo.get(
+                        "errors"
+                    )
                     ),
                 )
 
@@ -208,6 +236,7 @@ class RuntimeProtocolRestartService:
             postgresqlCleanup=cleanupInfo,
             postgresqlInputRefCleanup=refCleanupInfo,
             postgresqlPointerRestore=pointerRestoreInfo,
+            postgresqlExecutionMirrors=executionMirrorPrepareInfo,
             postgresqlRuntimeRestart=True,
             postgresqlRuntimeSync=postgresqlSync,
         )
