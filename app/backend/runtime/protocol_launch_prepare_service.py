@@ -114,11 +114,28 @@ class RuntimeProtocolLaunchPrepareService:
             parentProtocolId = row.get("parentProtocolId")
             parentProtocolDbId = row.get("parentProtocolDbId")
 
+            if not inputName:
+                continue
+
             if (
-                    not inputName
-                    or not parentOutputName
+                    not parentOutputName
                     or parentProtocolId in (None, "")
             ):
+                errors.append({
+                    "inputName": inputName,
+                    "itemIndex": row.get(
+                        "itemIndex"
+                    ),
+                    "parentProtocolDbId": row.get(
+                        "parentProtocolDbId"
+                    ),
+                    "parentProtocolId": parentProtocolId,
+                    "parentOutputName": parentOutputName,
+                    "error": (
+                        "Invalid PostgreSQL input reference"
+                    ),
+                })
+
                 continue
 
             itemReport = {
