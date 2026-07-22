@@ -782,12 +782,9 @@ class RuntimeProjectRelationSyncService:
             for relationItem in protocolRelations:
                 parentObject = (
                     repository
-                    .resolvePersistedRelationEndpoint(
+                    .getPersistedOutputObjectByRuntimeId(
                         mapper=mapper,
                         projectId=projectId,
-                        creatorProtocolDbId=int(
-                            protocolDbId
-                        ),
                         runtimeObjectId=relationItem[
                             "parentRuntimeObjectId"
                         ],
@@ -809,12 +806,9 @@ class RuntimeProjectRelationSyncService:
 
                 childObject = (
                     repository
-                    .resolvePersistedRelationEndpoint(
+                    .getPersistedOutputObjectByRuntimeId(
                         mapper=mapper,
                         projectId=projectId,
-                        creatorProtocolDbId=int(
-                            protocolDbId
-                        ),
                         runtimeObjectId=relationItem[
                             "childRuntimeObjectId"
                         ],
@@ -834,60 +828,20 @@ class RuntimeProjectRelationSyncService:
 
                     continue
 
-                resolvedParentRuntimeObjectId = (
-                    self._toOptionalInt(
-                        parentObject.get(
-                            "runtimeObjectId"
-                        )
-                    )
-                    or relationItem[
-                        "parentRuntimeObjectId"
-                    ]
-                )
-
-                resolvedChildRuntimeObjectId = (
-                    self._toOptionalInt(
-                        childObject.get(
-                            "runtimeObjectId"
-                        )
-                    )
-                    or relationItem[
-                        "childRuntimeObjectId"
-                    ]
-                )
-
-                relationMetadata = {
-                    "source": (
-                        "project_relation_sync"
-                    ),
-                    "sqliteRelationId": (
-                        relationItem[
-                            "relationId"
-                        ]
-                    ),
-                    "originalParentRuntimeObjectId": (
-                        relationItem[
-                            "parentRuntimeObjectId"
-                        ]
-                    ),
-                    "originalChildRuntimeObjectId": (
-                        relationItem[
-                            "childRuntimeObjectId"
-                        ]
-                    ),
-                }
-
                 preparedRelations.append({
                     **relationItem,
-                    "parentRuntimeObjectId": (
-                        resolvedParentRuntimeObjectId
-                    ),
-                    "childRuntimeObjectId": (
-                        resolvedChildRuntimeObjectId
-                    ),
                     "parentObject": parentObject,
                     "childObject": childObject,
-                    "metadata": relationMetadata,
+                    "metadata": {
+                        "source": (
+                            "project_relation_sync"
+                        ),
+                        "sqliteRelationId": (
+                            relationItem[
+                                "relationId"
+                            ]
+                        ),
+                    },
                 })
 
             if unresolvedRelations:
