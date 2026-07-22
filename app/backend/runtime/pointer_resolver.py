@@ -444,7 +444,10 @@ class RuntimePointerResolver:
             SELECT
                 r."inputName",
                 r."itemIndex",
-                parent."protocolId" AS "parentProtocolId",
+                COALESCE(
+                    parent."protocolId",
+                    r."parentProtocolId"
+                ) AS "parentProtocolId",
                 r."parentOutputName"
               FROM protocol_input_refs r
          LEFT JOIN protocols parent

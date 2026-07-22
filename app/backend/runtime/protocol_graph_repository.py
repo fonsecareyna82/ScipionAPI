@@ -1080,7 +1080,10 @@ class ProtocolGraphRepository:
         rows = mapper.db.fetchAll(
             """
             SELECT
-                parent."protocolId" AS "parentProtocolId",
+                COALESCE(
+                    parent."protocolId",
+                    r."parentProtocolId"
+                ) AS "parentProtocolId",
                 r."parentOutputName"
               FROM protocol_input_refs r
          LEFT JOIN protocols parent
@@ -1123,7 +1126,10 @@ class ProtocolGraphRepository:
                 r."inputName",
                 r."itemIndex",
                 r."parentProtocolDbId",
-                parent."protocolId" AS "parentProtocolId",
+                COALESCE(
+                    parent."protocolId",
+                    r."parentProtocolId"
+                ) AS "parentProtocolId",
                 r."parentOutputName",
                 r."objectClassName",
                 r."objectId"
