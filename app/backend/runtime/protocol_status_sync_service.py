@@ -748,6 +748,12 @@ class RuntimeProtocolStatusSyncService:
             )
         )
 
+        relationsSynchronized = bool(
+            row.get(
+                "relationsSynchronized"
+            )
+        )
+
         transitionedToTerminal = (
                 previousStatusText
                 in self.ACTIVE_STATUS_TEXTS
@@ -756,11 +762,12 @@ class RuntimeProtocolStatusSyncService:
         )
 
         needsFinalSync = (
-                transitionedToTerminal
-                or (
-                        runtimeStatusText
-                        in self.TERMINAL_STATUS_TEXTS
-                        and finalSyncPending
+                runtimeStatusText
+                in self.TERMINAL_STATUS_TEXTS
+                and (
+                        transitionedToTerminal
+                        or finalSyncPending
+                        or not relationsSynchronized
                 )
         )
 
@@ -781,6 +788,44 @@ class RuntimeProtocolStatusSyncService:
                     projectId=projectId,
                     protocolId=protocolId,
                 )
+
+                if not syncedRow:
+                    raise RuntimeError(
+                        "Protocol disappeared after final "
+                        "PostgreSQL runtime sync. "
+                        "projectId=%s protocolId=%s"
+                        % (
+                            projectId,
+                            protocolId,
+                        )
+                    )
+
+                if not bool(
+                        syncedRow.get(
+                            "relationsSynchronized"
+                        )
+                ):
+                    raise RuntimeError(
+                        "Final PostgreSQL relation sync "
+                        "was incomplete. "
+                        "projectId=%s protocolId=%s "
+                        "relationMissing=%s "
+                        "relationErrors=%s "
+                        "relationSourceErrors=%s"
+                        % (
+                            projectId,
+                            protocolId,
+                            outputSync.get(
+                                "relationMissing"
+                            ),
+                            outputSync.get(
+                                "relationErrors"
+                            ),
+                            outputSync.get(
+                                "relationSourceErrors"
+                            ),
+                        )
+                    )
 
                 if syncedRow:
                     syncedParams = self.mergeRuntimeMetadata(
@@ -968,7 +1013,11 @@ class RuntimeProtocolStatusSyncService:
                             'interactive'
                         )
                         AND (
-                            (params::jsonb -> %s) IS NULL
+                            COALESCE(
+                                "relationsSynchronized",
+                                FALSE
+                            ) = FALSE
+                            OR (params::jsonb -> %s) IS NULL
                             OR (
                                 params::jsonb
                                 -> %s

@@ -1775,6 +1775,7 @@ class PostgresqlFlatMapper(Mapper):
                 params,
                 "parentIds",
                 "childIds",
+                "relationsSynchronized",
                 "createdAt",
                 "updatedAt"
               FROM protocols
