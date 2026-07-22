@@ -1002,24 +1002,16 @@ def restartProtocolAll(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = service.loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            enableWriteFallback=True,
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
-        )
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False if usePostgresqlRuntimeProject else True,
+        checkPid=False,
+        loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1101,24 +1093,16 @@ def continueProtocolAll(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = service.loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            enableWriteFallback=True,
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
-        )
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False if usePostgresqlRuntimeProject else True,
+        checkPid=False,
+        loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1193,24 +1177,16 @@ def resetProtocolFrom(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = service.loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            enableWriteFallback=True,
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
-        )
+    project = service.getProjectById(
+        mapper,
+        projectId,
+        currentUser,
+        refresh=False if usePostgresqlRuntimeProject else True,
+        checkPid=False,
+        loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
+        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
