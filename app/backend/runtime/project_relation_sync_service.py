@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import os
 import logging
 from typing import Any, Dict
 
@@ -32,6 +33,8 @@ from app.backend.runtime.protocol_graph_repository import (
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
+from pyworkflow import PROJECT_DBNAME
+from pyworkflow.project import Project as ScipionProject
 
 
 logger = logging.getLogger(__name__)
@@ -390,6 +393,160 @@ class RuntimeProjectRelationSyncService:
             "staleRelations": staleRelations,
             "pruned": True,
         }
+
+    def collectRuntimeProtocolRelations(
+            self,
+            currentProject,
+            protocolId,
+            runtimeProtocol,
+    ) -> Dict[str, Any]:
+        """
+        Collect runtime relations from run.db and project.sqlite.
+
+        project.sqlite is opened temporarily when the PostgreSQL runtime
+        project does not keep a persistent SQLite fallback mapper.
+        """
+        if currentProject is None:
+            raise RuntimeError(
+                "Cannot collect runtime relations without current project"
+            )
+
+        protocolCandidates = [
+            (
+                "runtime_db",
+                runtimeProtocol,
+            ),
+        ]
+
+        isolatedMapper = None
+        sqliteProtocolFound = False
+        seenFallbackMappers = set()
+
+        try:
+            runtimeMapper = None
+
+            try:
+                runtimeMapper = (
+                    currentProject
+                    .getPostgresqlRuntimeMapper()
+                )
+            except Exception:
+                runtimeMapper = None
+
+            for fallbackName in (
+                    "readFallbackMapper",
+                    "writeFallbackMapper",
+            ):
+                fallbackMapper = getattr(
+                    runtimeMapper,
+                    fallbackName,
+                    None,
+                )
+
+                if fallbackMapper is None:
+                    continue
+
+                fallbackIdentity = id(
+                    fallbackMapper
+                )
+
+                if (
+                        fallbackIdentity
+                        in seenFallbackMappers
+                ):
+                    continue
+
+                seenFallbackMappers.add(
+                    fallbackIdentity
+                )
+
+                selectById = getattr(
+                    fallbackMapper,
+                    "selectById",
+                    None,
+                )
+
+                if not callable(selectById):
+                    continue
+
+                try:
+                    fallbackProtocol = selectById(
+                        int(protocolId)
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not load protocol %s from "
+                        "SQLite %s mapper.",
+                        protocolId,
+                        fallbackName,
+                        exc_info=True,
+                    )
+                    continue
+
+                if fallbackProtocol is None:
+                    continue
+
+                fallbackProtocol.setMapper(
+                    fallbackMapper
+                )
+
+                protocolCandidates.append((
+                    fallbackName,
+                    fallbackProtocol,
+                ))
+
+                sqliteProtocolFound = True
+
+            if not sqliteProtocolFound:
+                projectPath = str(
+                    currentProject.getPath()
+                )
+
+                sqlitePath = os.path.abspath(
+                    os.path.join(
+                        projectPath,
+                        PROJECT_DBNAME,
+                    )
+                )
+
+                if os.path.exists(sqlitePath):
+                    isolatedMapper = (
+                        ScipionProject.createMapper(
+                            currentProject,
+                            sqlitePath,
+                        )
+                    )
+
+                    sqliteProtocol = (
+                        isolatedMapper.selectById(
+                            int(protocolId)
+                        )
+                    )
+
+                    if sqliteProtocol is not None:
+                        sqliteProtocol.setMapper(
+                            isolatedMapper
+                        )
+
+                        protocolCandidates.append((
+                            "project_sqlite_isolated",
+                            sqliteProtocol,
+                        ))
+
+            return self.collectProtocolRelations(
+                protocolCandidates
+            )
+
+        finally:
+            if isolatedMapper is not None:
+                try:
+                    isolatedMapper.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close isolated SQLite "
+                        "relation mapper.",
+                        exc_info=True,
+                    )
 
     def collectProtocolRelations(
             self,
