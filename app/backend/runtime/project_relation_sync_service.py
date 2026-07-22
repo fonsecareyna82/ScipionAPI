@@ -292,6 +292,188 @@ class RuntimeProjectRelationSyncService:
                         exc_info=True,
                     )
 
+    @staticmethod
+    def _callOptionalGetter(
+            obj,
+            getterName: str,
+    ):
+        if obj is None:
+            return None
+
+        getter = getattr(
+            obj,
+            getterName,
+            None,
+        )
+
+        if not callable(getter):
+            return None
+
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _describeRuntimeRelationEndpoint(
+            self,
+            protocol,
+            runtimeObjectId,
+            extended=None,
+    ):
+        """
+        Resolve a SQLite-local relation endpoint while its mapper is open.
+
+        Relation object ids from run.db/project.sqlite are local persistence
+        ids. The stable identity is the producer protocol id plus output name.
+        """
+        runtimeObjectId = self._toOptionalInt(
+            runtimeObjectId
+        )
+
+        if runtimeObjectId is None:
+            return None
+
+        extendedOutputName = (
+            self
+            ._normalizeRelationExtended(
+                extended
+            )
+        )
+
+        protocolMapper = getattr(
+            protocol,
+            "mapper",
+            None,
+        )
+
+        endpointObject = None
+
+        selectById = getattr(
+            protocolMapper,
+            "selectById",
+            None,
+        )
+
+        if callable(selectById):
+            try:
+                endpointObject = selectById(
+                    runtimeObjectId
+                )
+            except Exception:
+                logger.debug(
+                    "Could not resolve runtime relation "
+                    "endpoint %s from SQLite.",
+                    runtimeObjectId,
+                    exc_info=True,
+                )
+
+        # Some Scipion relations represent an endpoint as:
+        # protocolId + extended output path.
+        if endpointObject is None:
+            if extendedOutputName:
+                return {
+                    "runtimeObjectId": runtimeObjectId,
+                    "producerProtocolId": runtimeObjectId,
+                    "outputName": extendedOutputName,
+                    "className": None,
+                }
+
+            return None
+
+        producerProtocolId = self._toOptionalInt(
+            self._callOptionalGetter(
+                endpointObject,
+                "getObjParentId",
+            )
+        )
+
+        if producerProtocolId is None:
+            producerProtocolId = self._toOptionalInt(
+                getattr(
+                    endpointObject,
+                    "_objParentId",
+                    None,
+                )
+            )
+
+        objectName = self._callOptionalGetter(
+            endpointObject,
+            "getObjName",
+        )
+
+        if objectName in (None, ""):
+            objectName = getattr(
+                endpointObject,
+                "_objName",
+                None,
+            )
+
+        objectName = str(
+            objectName or ""
+        ).strip()
+
+        outputName = ""
+
+        if producerProtocolId is not None:
+            expectedPrefix = "%s." % (
+                producerProtocolId,
+            )
+
+            if objectName.startswith(
+                    expectedPrefix
+            ):
+                outputName = objectName[
+                    len(expectedPrefix):
+                ]
+
+        if not outputName and extendedOutputName:
+            outputName = extendedOutputName
+
+        if (
+                not outputName
+                and "." in objectName
+        ):
+            possibleProtocolId, possibleOutputName = (
+                objectName.split(
+                    ".",
+                    1,
+                )
+            )
+
+            if self._toOptionalInt(
+                    possibleProtocolId
+            ) is not None:
+                producerProtocolId = (
+                    self._toOptionalInt(
+                        possibleProtocolId
+                    )
+                )
+                outputName = (
+                    possibleOutputName
+                )
+
+        if not outputName:
+            outputName = objectName
+
+        if (
+                producerProtocolId is None
+                or not outputName
+        ):
+            return None
+
+        return {
+            "runtimeObjectId": runtimeObjectId,
+            "producerProtocolId": (
+                producerProtocolId
+            ),
+            "outputName": outputName,
+            "className": (
+                endpointObject
+                .__class__
+                .__name__
+            ),
+        }
+
     def collectProtocolRelations(
             self,
             protocolCandidates,
@@ -326,6 +508,36 @@ class RuntimeProjectRelationSyncService:
             for rawRelation in sourceRelations:
                 try:
                     relation = dict(rawRelation)
+
+                    relation[
+                        "_parentEndpoint"
+                    ] = (
+                        self
+                        ._describeRuntimeRelationEndpoint(
+                            protocol=protocol,
+                            runtimeObjectId=relation.get(
+                                "object_parent_id"
+                            ),
+                            extended=relation.get(
+                                "object_parent_extended"
+                            ),
+                        )
+                    )
+
+                    relation[
+                        "_childEndpoint"
+                    ] = (
+                        self
+                        ._describeRuntimeRelationEndpoint(
+                            protocol=protocol,
+                            runtimeObjectId=relation.get(
+                                "object_child_id"
+                            ),
+                            extended=relation.get(
+                                "object_child_extended"
+                            ),
+                        )
+                    )
                 except Exception as error:
                     errors.append({
                         "source": sourceName,
@@ -373,6 +585,72 @@ class RuntimeProjectRelationSyncService:
             "sources": sources,
             "errors": errors,
         }
+
+    def _resolvePersistedRelationEndpoint(
+            self,
+            repository,
+            mapper,
+            projectId: int,
+            runtimeObjectId,
+            extended=None,
+            endpoint=None,
+    ):
+        """
+        Prefer producer protocol + output name.
+
+        The runtime object id belongs to SQLite and is only used as
+        compatibility fallback when no semantic endpoint is available.
+        """
+        endpoint = (
+            endpoint
+            if isinstance(
+                endpoint,
+                dict,
+            )
+            else {}
+        )
+
+        producerProtocolId = (
+            self._toOptionalInt(
+                endpoint.get(
+                    "producerProtocolId"
+                )
+            )
+        )
+
+        outputName = str(
+            endpoint.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        if (
+                producerProtocolId is not None
+                and outputName
+        ):
+            persistedObject = (
+                repository
+                .getPersistedOutputObjectByProtocolOutput(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=producerProtocolId,
+                    outputName=outputName,
+                )
+            )
+
+            if persistedObject is not None:
+                return persistedObject
+
+        return (
+            repository
+            .getPersistedOutputObjectByRuntimeId(
+                mapper=mapper,
+                projectId=projectId,
+                runtimeObjectId=runtimeObjectId,
+                extended=extended,
+            )
+        )
 
     def syncProjectRelations(
             self,
@@ -449,6 +727,12 @@ class RuntimeProjectRelationSyncService:
                         "childExtended": relation.get(
                             "object_child_extended"
                         ),
+                        "parentEndpoint": relation.get(
+                            "_parentEndpoint"
+                        ),
+                        "childEndpoint": relation.get(
+                            "_childEndpoint"
+                        ),
                     }
 
                     relationItem["creatorProtocolId"] = int(relationItem["creatorProtocolId"])
@@ -505,8 +789,9 @@ class RuntimeProjectRelationSyncService:
 
             for relationItem in protocolRelations:
                 parentObject = (
-                    repository
-                    .getPersistedOutputObjectByRuntimeId(
+                    self
+                    ._resolvePersistedRelationEndpoint(
+                        repository=repository,
                         mapper=mapper,
                         projectId=projectId,
                         runtimeObjectId=relationItem[
@@ -515,6 +800,9 @@ class RuntimeProjectRelationSyncService:
                         extended=relationItem[
                             "parentExtended"
                         ],
+                        endpoint=relationItem.get(
+                            "parentEndpoint"
+                        ),
                     )
                 )
 
@@ -529,8 +817,9 @@ class RuntimeProjectRelationSyncService:
                     continue
 
                 childObject = (
-                    repository
-                    .getPersistedOutputObjectByRuntimeId(
+                    self
+                    ._resolvePersistedRelationEndpoint(
+                        repository=repository,
                         mapper=mapper,
                         projectId=projectId,
                         runtimeObjectId=relationItem[
@@ -539,6 +828,9 @@ class RuntimeProjectRelationSyncService:
                         extended=relationItem[
                             "childExtended"
                         ],
+                        endpoint=relationItem.get(
+                            "childEndpoint"
+                        ),
                     )
                 )
 
@@ -566,6 +858,11 @@ class RuntimeProjectRelationSyncService:
                             ]
                         ),
                     },
+                    "parentRuntimeObjectId":
+                        relationItem["parentRuntimeObjectId"],
+
+                    "childRuntimeObjectId":
+                        relationItem["childRuntimeObjectId"],
                 })
 
             if unresolvedRelations:

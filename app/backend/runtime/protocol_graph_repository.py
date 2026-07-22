@@ -1824,6 +1824,92 @@ class ProtocolGraphRepository:
 
         return result
 
+    def getPersistedOutputObjectByProtocolOutput(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a persisted output using its stable Scipion identity:
+        producer protocol id plus output name.
+        """
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        if not outputName:
+            return None
+
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                o.id AS "objectId",
+                o."projectId",
+                o."protocolDbId",
+                p."protocolId",
+                o."scipionObjId"
+                    AS "runtimeObjectId",
+                o."parentObjectId",
+                o.name,
+                o.path,
+                o."className",
+                s.id AS "setId",
+                COALESCE(
+                    s."outputName",
+                    o.path,
+                    o.name
+                ) AS "outputName"
+              FROM protocols p
+              JOIN scipion_objects o
+                ON o."projectId" = p."projectId"
+               AND o."protocolDbId" = p.id
+               AND o."parentObjectId" IS NULL
+         LEFT JOIN scipion_sets s
+                ON s."projectId" = o."projectId"
+               AND s."objectId" = o.id
+             WHERE p."projectId" = %s
+               AND p."protocolId" = %s
+               AND (
+                    s."outputName" = %s
+                    OR o.path = %s
+                    OR o.name = %s
+                    OR o.name = (
+                        p."protocolId"
+                        || '.'
+                        || %s
+                    )
+               )
+             ORDER BY
+                CASE
+                    WHEN s."outputName" = %s
+                    THEN 0
+                    WHEN o.path = %s
+                    THEN 1
+                    ELSE 2
+                END,
+                o.id DESC
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                str(protocolId),
+                outputName,
+                outputName,
+                outputName,
+                outputName,
+                outputName,
+                outputName,
+            ),
+        )
+
+        return (
+            dict(row)
+            if row
+            else None
+        )
+
     def insertImportedOutputRelation(
             self,
             mapper,
