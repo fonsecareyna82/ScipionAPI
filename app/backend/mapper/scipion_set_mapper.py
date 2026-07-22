@@ -86,36 +86,194 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             existingProperties = self._normalizeProperties(existingSet.get("properties"))
             if (
                     self.hasStoredSetTables(existingSetId)
-                    and self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime)
+                    and self._shouldSkipSetSync(
+                        existingProperties,
+                        itemsCountHint,
+                        maxItemIdHint,
+                        sourceMTime,
+                    )
             ):
-                skippedProperties = dict(existingProperties)
-                skippedProperties["lastCheckedAt"] = syncTimestamp
-                skippedProperties["lastSkipReason"] = "unchanged_signature"
-                skippedProperties["skippedLastSync"] = True
-                skippedProperties["incremental"] = True
-                skippedProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
-                skippedProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
+                runtimeObjectId = self._getSourceObjId(
+                    scipionSet
+                )
+
+                existingObjectId = self._toOptionalInt(
+                    existingSet.get(
+                        "objectId"
+                    )
+                )
+
+                if runtimeObjectId is None:
+                    raise RuntimeError(
+                        "Cannot refresh skipped PostgreSQL Set "
+                        "without runtime object id. "
+                        "projectId=%s protocolDbId=%s "
+                        "outputName=%s"
+                        % (
+                            projectId,
+                            protocolDbId,
+                            outputName,
+                        )
+                    )
+
+                if existingObjectId is None:
+                    raise RuntimeError(
+                        "Existing PostgreSQL Set does not expose "
+                        "its canonical root object. "
+                        "projectId=%s protocolDbId=%s "
+                        "outputName=%s setId=%s"
+                        % (
+                            projectId,
+                            protocolDbId,
+                            outputName,
+                            existingSetId,
+                        )
+                    )
+
+                skippedProperties = dict(
+                    existingProperties
+                )
+
+                skippedProperties[
+                    "lastCheckedAt"
+                ] = syncTimestamp
+
+                skippedProperties[
+                    "lastSkipReason"
+                ] = "unchanged_signature"
+
+                skippedProperties[
+                    "skippedLastSync"
+                ] = True
+
+                skippedProperties[
+                    "incremental"
+                ] = True
+
+                skippedProperties[
+                    "nestedTablesVersion"
+                ] = NESTED_LOGICAL_TABLES_VERSION
+
+                skippedProperties[
+                    "setPropertiesVersion"
+                ] = SET_PROPERTIES_VERSION
+
                 if sourceMTime is not None:
-                    skippedProperties["sourceMTime"] = sourceMTime
+                    skippedProperties[
+                        "sourceMTime"
+                    ] = sourceMTime
 
                 with self.db.transaction():
-                    self._updateSetProperties(int(existingSet["id"]), skippedProperties)
-                    self._upsertSetProperties(int(existingSet["id"]), skippedProperties)
+                    identityCursor = self.db.execute(
+                        """
+                        UPDATE scipion_objects
+                           SET "scipionObjId" = %s,
+                               "className" = %s,
+                               "updatedAt" = NOW()
+                         WHERE id = %s
+                           AND "projectId" = %s
+                           AND "protocolDbId" = %s
+                        """,
+                        (
+                            int(runtimeObjectId),
+                            (
+                                self._getClassName(
+                                    scipionSet
+                                )
+                                or scipionSet
+                                .__class__
+                                .__name__
+                            ),
+                            int(existingObjectId),
+                            int(projectId),
+                            int(protocolDbId),
+                        ),
+                        commit=False,
+                    )
+
+                    if int(
+                            identityCursor.rowcount
+                            or 0
+                    ) != 1:
+                        raise RuntimeError(
+                            "Could not refresh PostgreSQL Set "
+                            "root identity. "
+                            "projectId=%s protocolDbId=%s "
+                            "outputName=%s objectId=%s "
+                            "runtimeObjectId=%s"
+                            % (
+                                projectId,
+                                protocolDbId,
+                                outputName,
+                                existingObjectId,
+                                runtimeObjectId,
+                            )
+                        )
+
+                    self._updateSetProperties(
+                        existingSetId,
+                        skippedProperties,
+                    )
+
+                    self._upsertSetProperties(
+                        existingSetId,
+                        skippedProperties,
+                    )
 
                 return {
-                    "setId": int(existingSet["id"]),
-                    "rootObjectId": existingSet.get("objectId"),
+                    "setId": int(
+                        existingSet["id"]
+                    ),
+                    "rootObjectId": (
+                        existingObjectId
+                    ),
+                    "runtimeObjectId": int(
+                        runtimeObjectId
+                    ),
                     "projectId": projectId,
                     "protocolDbId": protocolDbId,
                     "outputName": outputName,
-                    "setClassName": existingSet.get("setClassName"),
-                    "itemClassName": existingSet.get("itemClassName"),
-                    "columnsCount": self._toOptionalInt(existingProperties.get("columnsCount")),
-                    "itemsCount": self._toOptionalInt(existingProperties.get("itemsCount")),
-                    "maxItemId": self._toOptionalInt(existingProperties.get("maxItemId")),
-                    "lastSyncAt": existingProperties.get("lastSyncAt"),
-                    "lastCheckedAt": syncTimestamp,
+                    "setClassName": (
+                        existingSet.get(
+                            "setClassName"
+                        )
+                    ),
+                    "itemClassName": (
+                        existingSet.get(
+                            "itemClassName"
+                        )
+                    ),
+                    "columnsCount": (
+                        self._toOptionalInt(
+                            existingProperties.get(
+                                "columnsCount"
+                            )
+                        )
+                    ),
+                    "itemsCount": (
+                        self._toOptionalInt(
+                            existingProperties.get(
+                                "itemsCount"
+                            )
+                        )
+                    ),
+                    "maxItemId": (
+                        self._toOptionalInt(
+                            existingProperties.get(
+                                "maxItemId"
+                            )
+                        )
+                    ),
+                    "lastSyncAt": (
+                        existingProperties.get(
+                            "lastSyncAt"
+                        )
+                    ),
+                    "lastCheckedAt": (
+                        syncTimestamp
+                    ),
                     "skipped": True,
+                    "identityRefreshed": True,
                 }
 
         if registerType:
