@@ -267,37 +267,45 @@ class RuntimeProtocolLaunchPrepareService:
                     preparedItems.append(itemReport)
                     continue
 
-                pointer = getattr(protocol, inputName, None)
+                pointer = Pointer(
+                    parentProtocol,
+                    extended=parentOutputName,
+                )
 
-                if (
-                        pointer is None
-                        or isinstance(pointer, str)
-                        or not hasattr(pointer, "set")
-                ):
-                    pointer = Pointer(
-                        parentProtocol,
-                        extended=parentOutputName,
-                    )
-                else:
-                    pointer.set(parentProtocol)
-                    pointer.setExtended(parentOutputName)
-
-                # This is the only runtime object mutation performed here:
-                # the input Pointer belongs to the child protocol.
-                setattr(protocol, inputName, pointer)
+                # Always replace the child runtime attribute with a fresh
+                # Pointer. PostgreSQL input refs are the source of truth.
+                setattr(
+                    protocol,
+                    inputName,
+                    pointer,
+                )
 
                 pointerValue = "%s.%s" % (
                     str(parentScipionProtocolId),
                     parentOutputName,
                 )
 
-                try:
-                    param.default.set(pointerValue)
-                    itemReport["paramDefaultUpdated"] = pointerValue
-                except Exception as defaultError:
-                    itemReport["paramDefaultUpdateError"] = str(
-                        defaultError
+                pointerTarget = pointer.getObjValue()
+
+                if (
+                        pointerTarget is None
+                        or isinstance(pointerTarget, str)
+                ):
+                    raise RuntimeError(
+                        "Could not restore runtime Pointer object. "
+                        "protocolId=%s inputName=%s value=%s"
+                        % (
+                            protocolId,
+                            inputName,
+                            pointerValue,
+                        )
                     )
+
+                itemReport[
+                    "paramDefaultUpdateSkipped"
+                ] = (
+                    "postgresql_input_refs_are_authoritative"
+                )
 
                 itemReport["pointerReset"] = True
                 itemReport["pointerValue"] = pointerValue
