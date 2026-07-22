@@ -125,6 +125,22 @@ class RuntimeProtocolContinueService:
                 workflowProtocolList
             )
 
+            workflowProtocolsById = {}
+
+            for workflowProtocol in workflowProtocols:
+                workflowProtocolId = getattr(
+                    workflowProtocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                if workflowProtocolId in (None, ""):
+                    continue
+
+                workflowProtocolsById[
+                    str(workflowProtocolId)
+                ] = workflowProtocol
+
             for cachedProtocol in workflowProtocols:
                 cachedProtocolId = getattr(
                     cachedProtocol,
