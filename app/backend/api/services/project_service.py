@@ -5994,6 +5994,226 @@ class ProjectService:
             "errors": errors,
         }
 
+    def _preparePostgresqlRuntimeExecutionMirrors(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+    ) -> Dict[str, Any]:
+        """
+        Validate runtime protocol objects and materialize their SQLite
+        execution mirrors before a destructive workflow mutation.
+
+        No PostgreSQL outputs or references are modified here.
+        """
+        reports = []
+        errors = []
+        createdProtocolIds = []
+        cleanupReport = None
+
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            return {
+                "reports": [],
+                "errors": [{
+                    "error": (
+                        "No current PostgreSQL "
+                        "runtime project loaded"
+                    ),
+                }],
+                "createdProtocolIds": [],
+                "cleanup": None,
+            }
+
+        try:
+            runtimeMapper = (
+                currentProject
+                .getPostgresqlRuntimeMapper()
+            )
+        except Exception:
+            runtimeMapper = None
+
+        if runtimeMapper is None:
+            return {
+                "reports": [],
+                "errors": [{
+                    "error": (
+                        "PostgreSQL runtime mapper "
+                        "is not available"
+                    ),
+                }],
+                "createdProtocolIds": [],
+                "cleanup": None,
+            }
+
+        writeFallbackMapper = getattr(
+            runtimeMapper,
+            "writeFallbackMapper",
+            None,
+        )
+
+        if writeFallbackMapper is None:
+            return {
+                "reports": [],
+                "errors": [{
+                    "error": (
+                        "SQLite execution mapper "
+                        "is not available"
+                    ),
+                }],
+                "createdProtocolIds": [],
+                "cleanup": None,
+            }
+
+        ensureMirror = getattr(
+            runtimeMapper,
+            "ensureProtocolWriteFallbackMirror",
+            None,
+        )
+
+        if not callable(ensureMirror):
+            return {
+                "reports": [],
+                "errors": [{
+                    "error": (
+                        "Runtime mapper does not support "
+                        "execution mirror materialization"
+                    ),
+                }],
+                "createdProtocolIds": [],
+                "cleanup": None,
+            }
+
+        duplicateService = (
+            RuntimeProtocolDuplicateService()
+        )
+
+        for protocol in protocols or []:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if protocolId in (None, ""):
+                errors.append({
+                    "protocolId": None,
+                    "error": (
+                        "Protocol without runtime id"
+                    ),
+                })
+                break
+
+            validation = (
+                duplicateService
+                .validateProtocolPointerTargetsForPersistence(
+                    protocol
+                )
+            )
+
+            if validation.get("errors"):
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": (
+                        "Protocol contains unresolved "
+                        "pointer targets"
+                    ),
+                    "validation": validation,
+                })
+                break
+
+            existedBefore = (
+                runtimeMapper
+                ._existsInWriteFallback(
+                    protocolId
+                )
+            )
+
+            try:
+                mirrorReport = ensureMirror(
+                    protocol
+                )
+
+                reports.append({
+                    **mirrorReport,
+                    "existedBefore": bool(
+                        existedBefore
+                    ),
+                })
+
+                if (
+                        mirrorReport.get("created")
+                        and not existedBefore
+                ):
+                    createdProtocolIds.append(
+                        int(protocolId)
+                    )
+
+            except Exception as error:
+                logger.exception(
+                    "Failed to prepare SQLite execution "
+                    "mirror before runtime mutation. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                if not existedBefore:
+                    createdProtocolIds.append(
+                        int(protocolId)
+                    )
+
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": str(error),
+                })
+                break
+
+        if errors and createdProtocolIds:
+            cleanupExecutionMirrors = getattr(
+                currentProject,
+                "cleanupProtocolExecutionMirrors",
+                None,
+            )
+
+            if callable(
+                    cleanupExecutionMirrors
+            ):
+                try:
+                    cleanupReport = (
+                        cleanupExecutionMirrors(
+                            createdProtocolIds
+                        )
+                    )
+                except Exception as cleanupError:
+                    logger.exception(
+                        "Could not rollback newly created "
+                        "SQLite execution mirrors. "
+                        "projectId=%s protocolIds=%s",
+                        projectId,
+                        createdProtocolIds,
+                    )
+
+                    cleanupReport = {
+                        "errors": [
+                            str(cleanupError)
+                        ],
+                    }
+
+        return {
+            "reports": reports,
+            "errors": errors,
+            "createdProtocolIds": (
+                createdProtocolIds
+            ),
+            "cleanup": cleanupReport,
+        }
+
     def _workflowProtocolMapToProtocols(self, workflowProtocolMap) -> List[Any]:
         if not workflowProtocolMap:
             return []
@@ -6026,6 +6246,7 @@ class ProjectService:
             getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
             workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
             restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
+            preparePostgresqlExecutionMirrorsCallback=self._preparePostgresqlRuntimeExecutionMirrors,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,

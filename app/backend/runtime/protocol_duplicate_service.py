@@ -34,6 +34,7 @@ from pyworkflow.protocol.params import (
     PointerParam,
     RelationParam,
 )
+from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import MODE_RESTART
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
@@ -492,6 +493,208 @@ class RuntimeProtocolDuplicateService:
 
         return None
 
+    def sanitizeProtocolPointerTargetsForPersistence(
+            self,
+            protocol,
+    ) -> Dict[str, Any]:
+        """
+        Clear textual Pointer targets before persisting a protocol through
+        Scipion's SQLite mapper.
+
+        PostgreSQL may temporarily represent pointer values as strings such as:
+
+            8.outputTiltSeries
+
+        SQLite expects Pointer.getObjValue() to return a Scipion object.
+        """
+        cleared = []
+        errors = []
+        visited = set()
+
+        def visit(obj, path=""):
+            if obj is None:
+                return
+
+            objectIdentity = id(obj)
+
+            if objectIdentity in visited:
+                return
+
+            visited.add(objectIdentity)
+
+            try:
+                attributes = list(
+                    obj.getAttributesToStore()
+                )
+            except Exception:
+                attributes = []
+
+            for attributeName, attribute in attributes:
+                if attribute is None:
+                    continue
+
+                attributePath = (
+                    "%s.%s" % (path, attributeName)
+                    if path
+                    else str(attributeName)
+                )
+
+                try:
+                    isPointer = bool(
+                        attribute.isPointer()
+                    )
+                except Exception:
+                    isPointer = False
+
+                if isPointer:
+                    try:
+                        pointerValue = (
+                            attribute.getObjValue()
+                        )
+                    except Exception as error:
+                        errors.append({
+                            "path": attributePath,
+                            "error": str(error),
+                        })
+                        continue
+
+                    if isinstance(pointerValue, str):
+                        try:
+                            attribute.set(None)
+
+                            cleared.append({
+                                "path": attributePath,
+                                "value": pointerValue,
+                            })
+
+                        except Exception as error:
+                            errors.append({
+                                "path": attributePath,
+                                "value": pointerValue,
+                                "error": str(error),
+                            })
+
+                    continue
+
+                visit(
+                    attribute,
+                    attributePath,
+                )
+
+        visit(protocol)
+
+        return {
+            "cleared": cleared,
+            "errors": errors,
+        }
+
+    def validateProtocolPointerTargetsForPersistence(
+            self,
+            protocol,
+    ) -> Dict[str, Any]:
+        """
+        Verify that every non-empty Pointer target is a Scipion object.
+
+        This validation must run before project.sqlite is modified.
+        """
+        errors = []
+        visited = set()
+
+        def visit(obj, path=""):
+            if obj is None:
+                return
+
+            objectIdentity = id(obj)
+
+            if objectIdentity in visited:
+                return
+
+            visited.add(objectIdentity)
+
+            try:
+                attributes = list(
+                    obj.getAttributesToStore()
+                )
+            except Exception:
+                attributes = []
+
+            for attributeName, attribute in attributes:
+                if attribute is None:
+                    continue
+
+                attributePath = (
+                    "%s.%s" % (path, attributeName)
+                    if path
+                    else str(attributeName)
+                )
+
+                try:
+                    isPointer = bool(
+                        attribute.isPointer()
+                    )
+                except Exception:
+                    isPointer = False
+
+                if isPointer:
+                    try:
+                        hasValue = bool(
+                            attribute.hasValue()
+                        )
+                    except Exception:
+                        hasValue = False
+
+                    if not hasValue:
+                        continue
+
+                    try:
+                        pointerValue = (
+                            attribute.getObjValue()
+                        )
+                    except Exception as error:
+                        errors.append({
+                            "path": attributePath,
+                            "error": str(error),
+                        })
+                        continue
+
+                    if pointerValue is None:
+                        continue
+
+                    hasObjId = getattr(
+                        pointerValue,
+                        "hasObjId",
+                        None,
+                    )
+
+                    if not callable(hasObjId):
+                        errors.append({
+                            "path": attributePath,
+                            "value": str(pointerValue),
+                            "valueClass": (
+                                pointerValue
+                                .__class__
+                                .__name__
+                            ),
+                            "error": (
+                                "Pointer target is not a "
+                                "Scipion object"
+                            ),
+                        })
+
+                    continue
+
+                visit(
+                    attribute,
+                    attributePath,
+                )
+
+        visit(protocol)
+
+        return {
+            "valid": not errors,
+            "errors": errors,
+        }
+
     def buildDuplicatedProtocolParams(
             self,
             sourceProtocol,
@@ -788,10 +991,13 @@ class RuntimeProtocolDuplicateService:
             parentProtocolsById: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Restore PointerParam/MultiPointerParam attributes from protocol_input_refs
-        before storing a duplicated protocol through Scipion's runtime mapper.
+        Restore PointerParam/MultiPointerParam attributes from
+        protocol_input_refs before storing a protocol through Scipion's
+        runtime mapper.
         """
-        protocolId = self._getScipionObjectId(protocol)
+        protocolId = self._getScipionObjectId(
+            protocol
+        )
 
         if protocolId is None:
             return {
@@ -801,13 +1007,18 @@ class RuntimeProtocolDuplicateService:
                 "reason": "protocol_without_id",
             }
 
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
+        protocolIdentityResolver = (
+            ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+            )
         )
 
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            protocolId,
+        protocolDbId = (
+            protocolIdentityResolver
+            .resolvePostgresqlProtocolDbId(
+                protocolId,
+            )
         )
 
         if protocolDbId is None:
@@ -816,79 +1027,208 @@ class RuntimeProtocolDuplicateService:
                 "protocolDbId": None,
                 "restored": 0,
                 "skipped": True,
-                "reason": "protocol_not_found_in_postgresql",
+                "reason": (
+                    "protocol_not_found_in_postgresql"
+                ),
             }
 
-        protocolGraphRepository = ProtocolGraphRepository()
-        selfInputRefs = protocolGraphRepository.loadSelfInputRefs(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
+        protocolGraphRepository = (
+            ProtocolGraphRepository()
+        )
+
+        selfInputRefs = (
+            protocolGraphRepository
+            .loadSelfInputRefs(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+            )
         )
 
         if selfInputRefs:
             raise ValueError(
-                "Protocol %s has PostgreSQL runtime self input refs: %s"
-                % (protocolId, selfInputRefs)
+                "Protocol %s has PostgreSQL runtime "
+                "self input refs: %s"
+                % (
+                    protocolId,
+                    selfInputRefs,
+                )
             )
 
-        pointerResolver = RuntimePointerResolver()
+        inputNames = []
 
-        refsByInputName = pointerResolver.loadInputRefsByInputName(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
+        try:
+            for inputName, _attribute in (
+                    protocol.iterInputAttributes()
+            ):
+                if (
+                        inputName
+                        and inputName not in inputNames
+                ):
+                    inputNames.append(
+                        inputName
+                    )
+
+        except Exception:
+            pass
+
+        sanitization = (
+            self
+            .sanitizeProtocolPointerTargetsForPersistence(
+                protocol
+            )
         )
 
-        restored = []
-        errors = []
+        pointerResolver = (
+            RuntimePointerResolver()
+        )
 
-        def resolveParentProtocol(parentProtocolId):
-            parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
+        refsByInputName = (
+            pointerResolver
+            .loadInputRefsByInputName(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+            )
+        )
+
+        for inputName in refsByInputName:
+            if inputName not in inputNames:
+                inputNames.append(
+                    inputName
+                )
+
+        restored = []
+        clearedInputs = []
+        errors = list(
+            sanitization.get("errors")
+            or []
+        )
+
+        def resolveParentProtocol(
                 parentProtocolId,
+        ):
+            parentScipionProtocolId = (
+                protocolIdentityResolver
+                .resolveScipionProtocolId(
+                    parentProtocolId,
+                )
             )
 
             parentProtocol = None
 
             if parentProtocolsById:
                 parentProtocol = (
-                        parentProtocolsById.get(str(parentScipionProtocolId))
-                        or parentProtocolsById.get(parentScipionProtocolId)
+                    parentProtocolsById.get(
+                        str(
+                            parentScipionProtocolId
+                        )
+                    )
+                    or parentProtocolsById.get(
+                        parentScipionProtocolId
+                    )
                 )
 
             if parentProtocol is None:
-                parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
+                (
+                    parentScipionProtocolId,
+                    parentProtocol,
+                ) = getParentProtocolCallback(
                     mapper=mapper,
                     projectId=projectId,
                     parentId=parentProtocolId,
                 )
 
-            return parentScipionProtocolId, parentProtocol
+            return (
+                parentScipionProtocolId,
+                parentProtocol,
+            )
 
-        for inputName, inputRefs in refsByInputName.items():
+        for inputName in inputNames:
             try:
-                param = protocol.getParam(inputName)
+                param = protocol.getParam(
+                    inputName
+                )
             except Exception:
                 param = None
 
-            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+            if not isinstance(
+                    param,
+                    (
+                        PointerParam,
+                        MultiPointerParam,
+                        RelationParam,
+                    ),
+            ):
+                continue
+
+            inputRefs = (
+                refsByInputName.get(
+                    inputName
+                )
+                or []
+            )
+
+            if not inputRefs:
+                try:
+                    if isinstance(
+                            param,
+                            MultiPointerParam,
+                    ):
+                        setattr(
+                            protocol,
+                            inputName,
+                            PointerList(),
+                        )
+                    else:
+                        setattr(
+                            protocol,
+                            inputName,
+                            Pointer(),
+                        )
+
+                    clearedInputs.append(
+                        inputName
+                    )
+
+                except Exception as error:
+                    errors.append({
+                        "inputName": inputName,
+                        "error": str(error),
+                    })
+
                 continue
 
             try:
-                restoreReport = pointerResolver.restorePointerAttributeFromInputRefs(
-                    protocol=protocol,
-                    inputName=inputName,
-                    inputRefs=inputRefs,
-                    isMultiPointer=isinstance(param, MultiPointerParam),
-                    resolveParentProtocolCallback=resolveParentProtocol,
+                restoreReport = (
+                    pointerResolver
+                    .restorePointerAttributeFromInputRefs(
+                        protocol=protocol,
+                        inputName=inputName,
+                        inputRefs=inputRefs,
+                        isMultiPointer=isinstance(
+                            param,
+                            MultiPointerParam,
+                        ),
+                        resolveParentProtocolCallback=(
+                            resolveParentProtocol
+                        ),
+                    )
                 )
 
-                restored.extend(restoreReport.get("restored") or [])
+                restored.extend(
+                    restoreReport.get(
+                        "restored"
+                    )
+                    or []
+                )
 
-            except Exception as e:
+            except Exception as error:
                 logger.exception(
-                    "Failed to restore PostgreSQL pointer input before protocol copy. "
-                    "projectId=%s protocolId=%s inputName=%s",
+                    "Failed to restore PostgreSQL pointer "
+                    "input before protocol persistence. "
+                    "projectId=%s protocolId=%s "
+                    "inputName=%s",
                     projectId,
                     protocolId,
                     inputName,
@@ -896,20 +1236,48 @@ class RuntimeProtocolDuplicateService:
 
                 errors.append({
                     "inputName": inputName,
-                    "error": str(e),
+                    "error": str(error),
                 })
+
+        validation = (
+            self
+            .validateProtocolPointerTargetsForPersistence(
+                protocol
+            )
+        )
+
+        for validationError in (
+                validation.get("errors")
+                or []
+        ):
+            errors.append({
+                "inputName": validationError.get(
+                    "path"
+                ),
+                "error": (
+                    "Unresolved pointer target: %s"
+                    % validationError
+                ),
+            })
 
         report = {
             "protocolId": str(protocolId),
             "protocolDbId": int(protocolDbId),
             "restored": len(restored),
             "items": restored,
+            "clearedInputs": clearedInputs,
+            "sanitizedPointers": (
+                sanitization.get("cleared")
+                or []
+            ),
+            "validation": validation,
             "errors": errors,
             "skipped": False,
         }
 
         logger.info(
-            "Restored PostgreSQL pointer inputs before protocol copy. "
+            "Restored PostgreSQL pointer inputs before "
+            "protocol persistence. "
             "projectId=%s protocolId=%s report=%s",
             projectId,
             protocolId,
