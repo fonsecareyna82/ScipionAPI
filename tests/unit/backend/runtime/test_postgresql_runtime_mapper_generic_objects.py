@@ -916,6 +916,31 @@ def test_SelectByMatchesGenericPostgresqlScalarValue():
     assert result[0].get() == "PostgreSQL value"
 
 
+def test_DeduplicateRuntimeObjectsKeepsFirstObjectForEachRuntimeId():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    firstObject = FakeComposite()
+    firstObject.setObjId(700)
+
+    duplicatedObject = FakeComposite()
+    duplicatedObject.setObjId(700)
+
+    objectWithoutId = FakeComposite()
+
+    result = mapper._deduplicateRuntimeObjects([
+        firstObject,
+        duplicatedObject,
+        objectWithoutId,
+    ])
+
+    assert result == [
+        firstObject,
+        objectWithoutId,
+    ]
+
+
 def test_SelectByUsesGenericPostgresqlRuntimeIdWithoutFallback():
     mapper = buildRuntimeMapper(
         buildRows()
