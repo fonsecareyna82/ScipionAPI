@@ -660,7 +660,7 @@ def test_GenericObjectClassRowsIncludeRegisteredSubclasses():
     ]
 
 
-def test_SelectByClassMergesGenericPostgresqlAndFallbackObjects():
+def test_SelectByClassDoesNotMergeGenericFallbackObjects():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -672,19 +672,14 @@ def test_SelectByClassMergesGenericPostgresqlAndFallbackObjects():
         classRows=classRows,
     )
 
-    postgresqlDuplicate = FakeComposite()
-    postgresqlDuplicate.setObjId(700)
-
     fallbackOnly = FakeComposite()
     fallbackOnly.setObjId(900)
 
     mapper.readFallbackMapper = Mock()
     mapper.readFallbackMapper.selectByClass.return_value = [
-        postgresqlDuplicate,
         fallbackOnly,
     ]
 
-    mapper._attachRuntimeContext = lambda obj: obj
     mapper._recordReadFallback = Mock()
 
     result = mapper.selectByClass(
@@ -697,22 +692,10 @@ def test_SelectByClassMergesGenericPostgresqlAndFallbackObjects():
         for obj in result
     ] == [
         700,
-        900,
     ]
 
-    mapper._recordReadFallback.assert_called_once_with(
-        "selectByClass.genericCompatibilityMerge",
-        className=FakeComposite,
-        includeSubclasses=False,
-        objectFilter=None,
-    )
-
-    mapper.readFallbackMapper.selectByClass.assert_called_once_with(
-        FakeComposite,
-        includeSubclasses=False,
-        iterate=False,
-        objectFilter=None,
-    )
+    mapper.readFallbackMapper.selectByClass.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
 
 def test_SelectAllBatchIncludesGenericPostgresqlObjects():
@@ -753,7 +736,7 @@ def test_SelectAllBatchIncludesGenericPostgresqlObjects():
     mapper.flatMapper.getProtocols.assert_called_once_with(7)
 
 
-def test_SelectAllBatchMergesGenericAndFallbackObjectsByRuntimeId():
+def test_SelectAllBatchDoesNotMergeGenericFallbackObjects():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -765,59 +748,36 @@ def test_SelectAllBatchMergesGenericAndFallbackObjectsByRuntimeId():
         classRows=classRows,
     )
 
-    fallbackDuplicate = FakeComposite()
-    fallbackDuplicate.setObjId(700)
-
-    fallbackStaleClass = String()
-    fallbackStaleClass.set("Fallback string")
-    fallbackStaleClass.setObjId(700)
-
     fallbackOnly = FakeComposite()
     fallbackOnly.setObjId(900)
 
     mapper.readFallbackMapper = Mock()
     mapper.readFallbackMapper.selectAllBatch.return_value = [
-        fallbackDuplicate,
-        fallbackStaleClass,
         fallbackOnly,
     ]
 
-    mapper._attachRuntimeContext = lambda obj: obj
     mapper._recordReadFallback = Mock()
 
     result = mapper.selectAllBatch()
 
     assert [
-        (
-            obj.getClassName(),
-            obj.getObjId(),
-        )
+        obj.getObjId()
         for obj in result
     ] == [
-        (
-            "FakeComposite",
-            700,
-        ),
-        (
-            "FakeComposite",
-            900,
-        ),
+        700,
     ]
 
-    assert result[0] is not fallbackDuplicate
-    assert result[0].title.get() == "PostgreSQL object"
-    assert result[0] is not fallbackDuplicate
-    assert result[0] is not fallbackStaleClass
-    assert result[1] is fallbackOnly
-
-    mapper._recordReadFallback.assert_called_once_with(
-        "selectAllBatch.compatibilityMerge",
-        objectFilter=None,
+    assert isinstance(
+        result[0],
+        FakeComposite,
     )
 
-    mapper.readFallbackMapper.selectAllBatch.assert_called_once_with(
-        objectFilter=None,
+    assert result[0].title.get() == (
+        "PostgreSQL object"
     )
+
+    mapper.readFallbackMapper.selectAllBatch.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
 
 def test_SelectAllExcludesProtocolOwnedGenericObjects():
@@ -987,7 +947,7 @@ def test_SelectByUsesGenericPostgresqlRuntimeIdWithoutFallback():
     mapper._recordReadFallback.assert_not_called()
 
 
-def test_SelectBySuppressesStaleFallbackForPostgresqlOwnedId():
+def test_SelectByDoesNotMergeFallbackObjects():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -999,42 +959,24 @@ def test_SelectBySuppressesStaleFallbackForPostgresqlOwnedId():
         classRows=classRows,
     )
 
-    fallbackStaleClass = String()
-    fallbackStaleClass.setObjId(700)
-
     fallbackOnly = String()
     fallbackOnly.setObjId(900)
 
     mapper.readFallbackMapper = Mock()
     mapper.readFallbackMapper.selectBy.return_value = [
-        fallbackStaleClass,
         fallbackOnly,
     ]
 
-    mapper._attachRuntimeContext = lambda obj: obj
     mapper._recordReadFallback = Mock()
 
     result = mapper.selectBy(
         classname="String",
     )
 
-    assert len(result) == 1
-    assert result[0] is fallbackOnly
-    assert result[0].getObjId() == 900
+    assert result == []
 
-    mapper._recordReadFallback.assert_called_once_with(
-        "selectBy.compatibilityMerge",
-        query={
-            "classname": "String",
-        },
-        objectFilter=None,
-    )
-
-    mapper.readFallbackMapper.selectBy.assert_called_once_with(
-        iterate=False,
-        objectFilter=None,
-        classname="String",
-    )
+    mapper.readFallbackMapper.selectBy.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
 
 def test_SelectByReturnsIteratorAndAppliesObjectFilter():
@@ -1128,7 +1070,7 @@ def test_SelectByCollectorDoesNotRefreshCachedProtocolsOrSetParents():
     mapper._buildProtocolFromPostgresqlRow.assert_not_called()
 
 
-def test_SelectByMergePreservesRuntimeObjectIdOrder():
+def test_SelectByReturnsOnlyPostgresqlObjectsInRuntimeIdOrder():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -1140,15 +1082,7 @@ def test_SelectByMergePreservesRuntimeObjectIdOrder():
         classRows=classRows,
     )
 
-    fallbackOnly = FakeComposite()
-    fallbackOnly.setObjId(100)
-
     mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.selectBy.return_value = [
-        fallbackOnly,
-    ]
-
-    mapper._attachRuntimeContext = lambda obj: obj
     mapper._recordReadFallback = Mock()
 
     result = mapper.selectBy()
@@ -1157,18 +1091,20 @@ def test_SelectByMergePreservesRuntimeObjectIdOrder():
         obj.getObjId()
         for obj in result
     ] == [
-        100,
         700,
     ]
 
-    assert result[0] is fallbackOnly
-    assert isinstance(result[1], FakeComposite)
-    assert result[1].title.get() == "PostgreSQL object"
-
-    mapper.readFallbackMapper.selectBy.assert_called_once_with(
-        iterate=False,
-        objectFilter=None,
+    assert isinstance(
+        result[0],
+        FakeComposite,
     )
+
+    assert result[0].title.get() == (
+        "PostgreSQL object"
+    )
+
+    mapper.readFallbackMapper.selectBy.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
 
 def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():

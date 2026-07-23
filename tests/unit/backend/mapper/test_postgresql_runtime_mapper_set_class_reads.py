@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
 from pyworkflow.object import Object, Set
 
 from app.backend.mapper.postgresql_runtime_mapper import (
@@ -218,32 +219,43 @@ def test_SelectByClassSupportsExactSetClass():
     }]
 
 
-def test_SelectByClassMergesFallbackWithoutDuplicates():
-    postgresqlSet = buildSet(ExampleSet, 300)
-    duplicatedFallbackSet = buildSet(ExampleSet, 300)
-    legacySet = buildSet(ExampleSet, 400)
+def test_SelectByClassDoesNotMergeSetFallback():
+    postgresqlSet = buildSet(
+        ExampleSet,
+        300,
+    )
+
+    legacySet = buildSet(
+        ExampleSet,
+        400,
+    )
 
     fallback = FakeFallbackMapper([
-        duplicatedFallbackSet,
         legacySet,
     ])
 
-    mapper = buildMapper(fallback=fallback)
-
-    mapper.protocolGraphRepository = FakeRepository([
-        buildRow(300, "ExampleSet"),
-    ])
-
-    mapper._selectSetByIdFromPostgresql = (
-        lambda objectId: postgresqlSet
+    mapper = buildMapper(
+        fallback=fallback
     )
 
-    result = mapper.selectByClass("ExampleSet")
+    mapper.protocolGraphRepository = FakeRepository([
+        buildRow(
+            300,
+            "ExampleSet",
+        ),
+    ])
+
+    mapper._selectSetByIdFromPostgresql = lambda objectId: postgresqlSet
+
+    result = mapper.selectByClass(
+        "ExampleSet"
+    )
 
     assert result == [
         postgresqlSet,
-        legacySet,
     ]
+
+    assert fallback.calls == []
 
 
 def test_SelectByClassAppliesCallableObjectFilter():
@@ -293,35 +305,26 @@ def test_SelectByClassReturnsIteratorWhenRequested():
     assert list(result) == [runtimeSet]
 
 
-def test_SelectByClassDelegatesUnsupportedClassesToFallback():
-    legacyObject = UnsupportedObject()
-
+def test_SelectByClassRejectsUnsupportedClassWithoutFallback():
     fallback = FakeFallbackMapper([
-        legacyObject,
+        UnsupportedObject(),
     ])
 
     mapper = buildMapper(
         fallback=fallback
     )
 
-    mapper.protocolGraphRepository = (
-        FakeRepository(
-            fail=True
+    mapper.protocolGraphRepository = FakeRepository(
+        fail=True
+    )
+
+    with pytest.raises(
+            NotImplementedError,
+            match="PostgreSQL selectByClass does not support class",
+    ):
+        mapper.selectByClass(
+            "UnsupportedObject"
         )
-    )
 
-    result = mapper.selectByClass(
-        "UnsupportedObject"
-    )
-
-    assert result == [
-        legacyObject,
-    ]
-
-    assert fallback.calls == [{
-        "className": "UnsupportedObject",
-        "includeSubclasses": True,
-        "iterate": False,
-        "objectFilter": None,
-    }]
+    assert fallback.calls == []
 
