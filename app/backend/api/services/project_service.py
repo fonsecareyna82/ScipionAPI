@@ -294,7 +294,6 @@ class ProjectService:
             path=projectPath,
             projectId=projectId,
             flatMapper=mapper,
-            enableReadFallback=False,
             enableWriteFallback=enableWriteFallback,
         )
 
@@ -2874,7 +2873,6 @@ class ProjectService:
             path=projectPath,
             projectId=projectId,
             flatMapper=mapper,
-            enableReadFallback=False,
             enableWriteFallback=enableWriteFallback,
         )
 
