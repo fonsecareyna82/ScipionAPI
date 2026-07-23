@@ -71,34 +71,7 @@ class FakeFlatMapper:
         return None
 
 
-class FakeFallbackMapper:
-    def __init__(self, objects=None):
-        self.objects = list(objects or [])
-        self.calls = []
-
-    def selectByClass(
-            self,
-            className,
-            includeSubclasses=True,
-            iterate=False,
-            objectFilter=None,
-    ):
-        self.calls.append({
-            "className": className,
-            "includeSubclasses": includeSubclasses,
-            "iterate": iterate,
-            "objectFilter": objectFilter,
-        })
-
-        result = list(self.objects)
-
-        if callable(objectFilter):
-            result = [obj for obj in result if objectFilter(obj)]
-
-        return iter(result) if iterate else result
-
-
-def buildMapper(rows=None, fallback=None):
+def buildMapper(rows=None):
     return PostgresqlRuntimeMapper(
         flatMapper=FakeFlatMapper(rows),
         projectId=4,
@@ -107,7 +80,6 @@ def buildMapper(rows=None, fallback=None):
             "ExampleChildProtocol": ExampleChildProtocol,
             "OtherProtocol": OtherProtocol,
         },
-        readFallbackMapper=fallback,
     )
 
 
@@ -212,30 +184,18 @@ def test_SelectByClassSupportsGenericProtocolClass():
     ]
 
 
-def test_SelectByClassDoesNotMergeProtocolFallback():
+def test_SelectByClassReturnsOnlyPostgresqlProtocols():
     postgresqlProtocol = buildProtocol(
         ExampleProtocol,
         100,
     )
 
-    legacyProtocol = buildProtocol(
-        ExampleProtocol,
-        200,
-    )
-
-    fallback = FakeFallbackMapper([
-        legacyProtocol,
+    mapper = buildMapper(rows=[
+        buildRow(
+            100,
+            "ExampleProtocol",
+        ),
     ])
-
-    mapper = buildMapper(
-        rows=[
-            buildRow(
-                100,
-                "ExampleProtocol",
-            ),
-        ],
-        fallback=fallback,
-    )
 
     configureProtocolBuilder(
         mapper,
@@ -251,8 +211,6 @@ def test_SelectByClassDoesNotMergeProtocolFallback():
     assert result == [
         postgresqlProtocol,
     ]
-
-    assert fallback.calls == []
 
 
 def test_SelectByClassAppliesProtocolObjectFilter():
@@ -422,7 +380,6 @@ def test_UpdateFromRefreshesProtocolFromPostgresqlWithoutFallback():
         rows=[
             row,
         ],
-        fallback=fallbackMapper,
     )
 
     mapper._recordReadFallback = Mock()

@@ -163,82 +163,17 @@ class FakeRuntimeSetFactory:
         return self.cachedSet
 
 
-class FakeFallbackMapper:
-    def __init__(
-            self,
-            existsResult=False,
-            parent=None,
-            failExists=False,
-            failGetParent=False,
-    ):
-        self.existsResult = bool(
-            existsResult
-        )
 
-        self.parent = parent
-
-        self.failExists = bool(
-            failExists
-        )
-
-        self.failGetParent = bool(
-            failGetParent
-        )
-
-        self.existsCalls = []
-        self.parentCalls = []
-
-    def exists(
-            self,
-            objId,
-    ):
-        if self.failExists:
-            raise AssertionError(
-                "SQLite exists() must not be called"
-            )
-
-        self.existsCalls.append(
-            objId
-        )
-
-        return self.existsResult
-
-    def getParent(
-            self,
-            obj,
-    ):
-        if self.failGetParent:
-            raise AssertionError(
-                "SQLite getParent() must not be called"
-            )
-
-        self.parentCalls.append(
-            obj
-        )
-
-        return self.parent
-
-
-def buildMapper(
-        protocolExists=False,
-        fallbackMapper=None,
-):
-    db = FakeDb(
-        protocolExists=protocolExists
-    )
+def buildMapper(protocolExists=False):
+    db = FakeDb(protocolExists=protocolExists)
 
     mapper = PostgresqlRuntimeMapper(
-        flatMapper=FakeFlatMapper(
-            db
-        ),
+        flatMapper=FakeFlatMapper(db),
         projectId=4,
         dictClasses={
             "ExampleSet": ExampleSet,
             "ExampleItem": ExampleItem,
         },
-        readFallbackMapper=(
-            fallbackMapper
-        ),
     )
 
     return mapper, db
@@ -260,13 +195,9 @@ def buildSetOutputInfo():
 
 
 def test_ExistsReturnsTrueForPostgresqlProtocol():
-    fallback = FakeFallbackMapper(
-        failExists=True
-    )
 
     mapper, _ = buildMapper(
         protocolExists=True,
-        fallbackMapper=fallback,
     )
 
     mapper.runtimeSetFactory = (
@@ -287,13 +218,8 @@ def test_ExistsReturnsTrueForPostgresqlProtocol():
 
 
 def test_ExistsReturnsTrueForCachedPostgresqlSet():
-    fallback = FakeFallbackMapper(
-        failExists=True
-    )
 
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+    mapper, _ = buildMapper()
 
     runtimeSet = ExampleSet()
 
@@ -329,13 +255,7 @@ def test_ExistsReturnsTrueForCachedPostgresqlSet():
 
 
 def test_ExistsReturnsTrueForPersistedPostgresqlSet():
-    fallback = FakeFallbackMapper(
-        failExists=True
-    )
-
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+    mapper, _ = buildMapper()
 
     mapper.runtimeSetFactory = (
         FakeRuntimeSetFactory()
@@ -366,25 +286,18 @@ def test_ExistsReturnsTrueForPersistedPostgresqlSet():
     ]
 
 
-def test_ExistsDoesNotUseReadFallbackForMissingObject():
-    fallback = FakeFallbackMapper(existsResult=True)
-
-    mapper, _ = buildMapper(fallbackMapper=fallback)
+def test_ExistsReturnsFalseForMissingObject():
+    mapper, _ = buildMapper()
     mapper.runtimeSetFactory = FakeRuntimeSetFactory()
-    mapper.protocolGraphRepository = FakeProtocolGraphRepository(outputInfo=None)
+    mapper.protocolGraphRepository = FakeProtocolGraphRepository(
+        outputInfo=None
+    )
 
     assert mapper.exists(999) is False
-    assert fallback.existsCalls == []
 
 
 def test_GetParentReturnsNativeHydratedParent():
-    fallback = FakeFallbackMapper(
-        failGetParent=True
-    )
-
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+    mapper, _ = buildMapper()
 
     parentSet = ExampleSet()
 
@@ -406,14 +319,8 @@ def test_GetParentReturnsNativeHydratedParent():
     ) is parentSet
 
 
-def test_GetParentResolvesRuntimeParentIdBeforeFallback():
-    fallback = FakeFallbackMapper(
-        failGetParent=True
-    )
-
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+def test_GetParentResolvesPostgresqlRuntimeParentId():
+    mapper, _ = buildMapper()
 
     parentSet = ExampleSet()
 
@@ -457,13 +364,8 @@ def test_GetParentResolvesRuntimeParentIdBeforeFallback():
     ]
 
 
-def test_GetParentDoesNotUseReadFallbackWhenParentIsMissing():
-    fallbackParent = Object()
-    fallbackParent.setObjId(400)
-
-    fallback = FakeFallbackMapper(parent=fallbackParent)
-
-    mapper, _ = buildMapper(fallbackMapper=fallback)
+def test_GetParentReturnsNoneWhenParentIsMissing():
+    mapper, _ = buildMapper()
 
     item = ExampleItem()
     item.setObjId(7)
@@ -471,4 +373,3 @@ def test_GetParentDoesNotUseReadFallbackWhenParentIsMissing():
     item._objParentId = None
 
     assert mapper.getParent(item) is None
-    assert fallback.parentCalls == []

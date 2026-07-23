@@ -92,34 +92,7 @@ class FakeRepository:
         return list(self.rows)
 
 
-class FakeFallbackMapper:
-    def __init__(self, objects=None):
-        self.objects = list(objects or [])
-        self.calls = []
-
-    def selectByClass(
-            self,
-            className,
-            includeSubclasses=True,
-            iterate=False,
-            objectFilter=None,
-    ):
-        self.calls.append({
-            "className": className,
-            "includeSubclasses": includeSubclasses,
-            "iterate": iterate,
-            "objectFilter": objectFilter,
-        })
-
-        result = list(self.objects)
-
-        if callable(objectFilter):
-            result = [obj for obj in result if objectFilter(obj)]
-
-        return iter(result) if iterate else result
-
-
-def buildMapper(fallback=None):
+def buildMapper():
     return PostgresqlRuntimeMapper(
         flatMapper=FakeFlatMapper(),
         projectId=4,
@@ -129,7 +102,6 @@ def buildMapper(fallback=None):
             "ExampleChildSet": ExampleChildSet,
             "UnsupportedObject": UnsupportedObject,
         },
-        readFallbackMapper=fallback,
     )
 
 
@@ -219,24 +191,13 @@ def test_SelectByClassSupportsExactSetClass():
     }]
 
 
-def test_SelectByClassDoesNotMergeSetFallback():
+def test_SelectByClassReturnsOnlyPostgresqlSets():
     postgresqlSet = buildSet(
         ExampleSet,
         300,
     )
 
-    legacySet = buildSet(
-        ExampleSet,
-        400,
-    )
-
-    fallback = FakeFallbackMapper([
-        legacySet,
-    ])
-
-    mapper = buildMapper(
-        fallback=fallback
-    )
+    mapper = buildMapper()
 
     mapper.protocolGraphRepository = FakeRepository([
         buildRow(
@@ -245,7 +206,9 @@ def test_SelectByClassDoesNotMergeSetFallback():
         ),
     ])
 
-    mapper._selectSetByIdFromPostgresql = lambda objectId: postgresqlSet
+    mapper._selectSetByIdFromPostgresql = (
+        lambda objectId: postgresqlSet
+    )
 
     result = mapper.selectByClass(
         "ExampleSet"
@@ -254,8 +217,6 @@ def test_SelectByClassDoesNotMergeSetFallback():
     assert result == [
         postgresqlSet,
     ]
-
-    assert fallback.calls == []
 
 
 def test_SelectByClassAppliesCallableObjectFilter():
@@ -305,14 +266,8 @@ def test_SelectByClassReturnsIteratorWhenRequested():
     assert list(result) == [runtimeSet]
 
 
-def test_SelectByClassRejectsUnsupportedClassWithoutFallback():
-    fallback = FakeFallbackMapper([
-        UnsupportedObject(),
-    ])
-
-    mapper = buildMapper(
-        fallback=fallback
-    )
+def test_SelectByClassRejectsUnsupportedClass():
+    mapper = buildMapper()
 
     mapper.protocolGraphRepository = FakeRepository(
         fail=True
@@ -325,6 +280,4 @@ def test_SelectByClassRejectsUnsupportedClassWithoutFallback():
         mapper.selectByClass(
             "UnsupportedObject"
         )
-
-    assert fallback.calls == []
 

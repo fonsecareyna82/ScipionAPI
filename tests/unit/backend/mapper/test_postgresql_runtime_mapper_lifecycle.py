@@ -23,17 +23,11 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
+
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
-
-
-class FakeReadFallbackMapper:
-    def __init__(self):
-        self.closeCalls = 0
-
-    def close(self):
-        self.closeCalls += 1
 
 
 class FakeRuntimeSetFactory:
@@ -44,13 +38,19 @@ class FakeRuntimeSetFactory:
         self.clearCalls += 1
 
 
+def test_ConstructorDoesNotExposeReadFallback():
+    parameters = inspect.signature(
+        PostgresqlRuntimeMapper.__init__
+    ).parameters
+
+    assert "readFallbackMapper" not in parameters
+    assert "writeFallbackMapper" in parameters
+
+
 def test_CloseReleasesRuntimeMapperCaches():
-    readFallbackMapper = FakeReadFallbackMapper()
     runtimeSetFactory = FakeRuntimeSetFactory()
 
     mapper = object.__new__(PostgresqlRuntimeMapper)
-
-    mapper.readFallbackMapper = readFallbackMapper
     mapper.runtimeSetFactory = runtimeSetFactory
 
     mapper._runtimeProtocolsById = {
@@ -64,7 +64,6 @@ def test_CloseReleasesRuntimeMapperCaches():
 
     mapper.close()
 
-    assert readFallbackMapper.closeCalls == 1
     assert runtimeSetFactory.clearCalls == 1
     assert mapper._runtimeProtocolsById == {}
     assert mapper._sqliteProtocolMirrorIds == set()
