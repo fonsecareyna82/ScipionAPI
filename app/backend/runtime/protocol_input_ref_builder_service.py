@@ -23,7 +23,14 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import logging
+
 from typing import Any, Dict, List, Optional
+
+from pyworkflow.protocol.protocol import Protocol
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolInputRefBuilderService:
@@ -90,35 +97,204 @@ class RuntimeProtocolInputRefBuilderService:
             pointer: Any,
             targetObj: Any,
     ) -> Optional[Any]:
-        pointerObj = self.safeCall(pointer, "getObjValue", None)
-        parentProtocolId = self.safeCall(pointerObj, "getObjId", None)
+        """
+        Resolve the producer protocol of a Scipion pointer.
 
-        if parentProtocolId is not None:
-            return parentProtocolId
+        Supported pointer representations:
 
-        parentObj = self.safeCall(targetObj, "getObjParent", None)
-        parentProtocolId = self.safeCall(parentObj, "getObjId", None)
+        - Pointer(parentProtocol, extended="outputName")
+        - Pointer(outputObject)
+        - Pointer(parentProtocol)
+        """
+        pointerObj = self.safeCall(
+            pointer,
+            "getObjValue",
+            None,
+        )
 
-        if parentProtocolId is not None:
-            return parentProtocolId
+        # Pointer directly targeting a protocol.
+        if isinstance(targetObj, Protocol):
+            return self.getScipionObjectId(
+                targetObj
+            )
+
+        # Standard modern pointer:
+        # Pointer(parentProtocol, extended="outputName").
+        if isinstance(pointerObj, Protocol):
+            return self.getScipionObjectId(
+                pointerObj
+            )
+
+        # Legacy/direct pointer to an output object.
+        # The output object id is not the producer protocol id.
+        for candidate in (
+                targetObj,
+                pointerObj,
+        ):
+            if candidate is None:
+                continue
+
+            parentProtocolId = self.safeCall(
+                candidate,
+                "getObjParentId",
+                None,
+            )
+
+            if parentProtocolId not in (
+                    None,
+                    "",
+            ):
+                return parentProtocolId
+
+            parentProtocol = self.safeCall(
+                candidate,
+                "getObjParent",
+                None,
+            )
+
+            parentProtocolId = (
+                self.getScipionObjectId(
+                    parentProtocol
+                )
+            )
+
+            if parentProtocolId not in (
+                    None,
+                    "",
+            ):
+                return parentProtocolId
+
+        # Compatibility fallback for proxy-like protocol objects.
+        extended = self.safeCall(
+            pointer,
+            "getExtended",
+            None,
+        )
+
+        if str(extended or "").strip():
+            parentProtocolId = (
+                self.getScipionObjectId(
+                    pointerObj
+                )
+            )
+
+            if parentProtocolId not in (
+                    None,
+                    "",
+            ):
+                return parentProtocolId
 
         return None
 
-    def getPointerOutputName(self, pointer: Any) -> Optional[str]:
-        outputName = self.safeCall(pointer, "getExtended", None)
+    def getPointerOutputName(
+            self,
+            pointer: Any,
+            targetObj: Any,
+            parentProtocolId: Any,
+    ) -> Optional[str]:
+        """
+        Resolve the pointed protocol output name.
 
-        if outputName is None:
-            return None
+        Modern pointers store it in ``extended``. Direct/legacy pointers
+        store it in the output object's SQLite name.
+        """
+        outputName = self.safeCall(
+            pointer,
+            "getExtended",
+            None,
+        )
 
-        outputNameText = str(outputName).strip()
+        outputNameText = str(
+            outputName or ""
+        ).strip()
 
-        return outputNameText or None
+        if outputNameText:
+            return outputNameText
+
+        pointerObj = self.safeCall(
+            pointer,
+            "getObjValue",
+            None,
+        )
+
+        for candidate in (
+                targetObj,
+                pointerObj,
+        ):
+            if (
+                    candidate is None
+                    or isinstance(candidate, Protocol)
+            ):
+                continue
+
+            objectName = self.safeCall(
+                candidate,
+                "getObjName",
+                None,
+            )
+
+            if objectName in (None, ""):
+                objectName = getattr(
+                    candidate,
+                    "_objName",
+                    None,
+                )
+
+            objectNameText = str(
+                objectName or ""
+            ).strip()
+
+            if not objectNameText:
+                continue
+
+            if parentProtocolId not in (
+                    None,
+                    "",
+            ):
+                expectedPrefix = "%s." % (
+                    parentProtocolId,
+                )
+
+                if objectNameText.startswith(
+                        expectedPrefix
+                ):
+                    resolvedName = objectNameText[
+                                   len(expectedPrefix):
+                                   ].strip()
+
+                    if resolvedName:
+                        return resolvedName
+
+            if "." in objectNameText:
+                possibleParentId, possibleOutputName = (
+                    objectNameText.split(
+                        ".",
+                        1,
+                    )
+                )
+
+                try:
+                    int(possibleParentId)
+                    possibleParentIsProtocolId = True
+                except Exception:
+                    possibleParentIsProtocolId = False
+
+                if (
+                        possibleParentIsProtocolId
+                        and possibleOutputName.strip()
+                ):
+                    return possibleOutputName.strip()
+
+            return objectNameText
+
+        return None
 
     def buildProtocolInputRefsForPostgresql(
             self,
             projectId: int,
             protocol: Any,
             protocolDbIdByScipionId: Dict[str, int],
+            strict: bool = False,
     ) -> List[Dict[str, Any]]:
         protocolId = self.getScipionObjectId(protocol)
 
@@ -175,6 +351,72 @@ class RuntimeProtocolInputRefBuilderService:
                     else None
                 )
 
+                parentOutputName = (
+                    self.getPointerOutputName(
+                        pointer=pointerItem,
+                        targetObj=targetObj,
+                        parentProtocolId=(
+                            parentProtocolId
+                        ),
+                    )
+                )
+
+                missingFields = []
+
+                if parentProtocolId in (
+                        None,
+                        "",
+                ):
+                    missingFields.append(
+                        "parentProtocolId"
+                    )
+
+                if parentProtocolDbId in (
+                        None,
+                        "",
+                ):
+                    missingFields.append(
+                        "parentProtocolDbId"
+                    )
+
+                if not parentOutputName:
+                    missingFields.append(
+                        "parentOutputName"
+                    )
+
+                if missingFields:
+                    message = (
+                        "Could not resolve PostgreSQL protocol "
+                        "input ref. projectId=%s protocolId=%s "
+                        "inputName=%s itemIndex=%s "
+                        "missing=%s targetClass=%s "
+                        "targetObjectId=%s"
+                        % (
+                            projectId,
+                            protocolIdText,
+                            inputNameText,
+                            itemIndex,
+                            missingFields,
+                            self.getScipionClassName(
+                                targetObj
+                            ),
+                            self.getScipionObjectId(
+                                targetObj
+                            ),
+                        )
+                    )
+
+                    if strict:
+                        raise RuntimeError(
+                            message
+                        )
+
+                    logger.warning(
+                        message
+                    )
+
+                    continue
+
                 targetObjectId = self.getScipionObjectId(
                     targetObj
                 )
@@ -187,9 +429,7 @@ class RuntimeProtocolInputRefBuilderService:
                     "itemIndex": int(itemIndex),
                     "parentProtocolDbId": parentProtocolDbId,
                     "parentProtocolId": parentProtocolIdText,
-                    "parentOutputName": self.getPointerOutputName(
-                        pointerItem
-                    ),
+                    "parentOutputName": parentOutputName,
                     "objectClassName": self.getScipionClassName(
                         targetObj
                     ),
