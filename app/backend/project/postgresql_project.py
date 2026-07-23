@@ -502,6 +502,145 @@ class PostgresqlProject(ScipionProject):
             protocolId,
         )
 
+    def resetProtocol(self, protocol):
+        """
+        Reset a PostgreSQL-runtime protocol through its SQLite execution
+        mirror.
+
+        Scipion's native resetProtocol() finishes by calling
+        protocol._store(). That store must use the SQLite execution mapper,
+        not PostgresqlRuntimeMapper.
+        """
+        if not self.usingPostgresqlRuntimeMapper():
+            return super().resetProtocol(
+                protocol
+            )
+
+        runtimeMapper = (
+            self.getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "Cannot reset PostgreSQL runtime protocol: "
+                "runtime mapper is not available"
+            )
+
+        writeFallbackMapper = getattr(
+            runtimeMapper,
+            "writeFallbackMapper",
+            None,
+        )
+
+        ownsWriteFallbackMapper = False
+
+        if writeFallbackMapper is None:
+            sqlitePath = self._normalizeSqlitePath(
+                PROJECT_DBNAME
+            )
+
+            if (
+                    not sqlitePath
+                    or not os.path.exists(sqlitePath)
+            ):
+                raise RuntimeError(
+                    "Cannot reset PostgreSQL runtime protocol: "
+                    "SQLite execution mirror database is not available"
+                )
+
+            writeFallbackMapper = (
+                ScipionProject.createMapper(
+                    self,
+                    sqlitePath,
+                )
+            )
+
+            ownsWriteFallbackMapper = True
+
+        protocolId = getattr(
+            protocol,
+            "getObjId",
+            lambda: None,
+        )()
+
+        if protocolId in (None, ""):
+            if ownsWriteFallbackMapper:
+                writeFallbackMapper.close()
+
+            raise RuntimeError(
+                "Cannot reset PostgreSQL runtime protocol "
+                "without protocol id"
+            )
+
+        protocolId = int(protocolId)
+
+        sqliteProtocol = (
+            writeFallbackMapper.selectById(
+                protocolId
+            )
+        )
+
+        if sqliteProtocol is None:
+            if ownsWriteFallbackMapper:
+                writeFallbackMapper.close()
+
+            raise RuntimeError(
+                "Protocol %s was not found in the "
+                "SQLite execution mirror"
+                % protocolId
+            )
+
+        originalMapper = self.mapper
+
+        try:
+            self.mapper = writeFallbackMapper
+
+            sqliteProtocol.setMapper(
+                writeFallbackMapper
+            )
+
+            sqliteProtocol.setProject(
+                self
+            )
+
+            ScipionProject.resetProtocol(
+                self,
+                sqliteProtocol,
+            )
+
+            writeFallbackMapper.commit()
+
+        finally:
+            self.mapper = originalMapper
+
+            sqliteProtocol.setMapper(
+                runtimeMapper
+            )
+
+            sqliteProtocol.setProject(
+                self
+            )
+
+            if ownsWriteFallbackMapper:
+                try:
+                    writeFallbackMapper.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close isolated SQLite "
+                        "reset mapper.",
+                        exc_info=True,
+                    )
+
+        runtimeMapper._runtimeProtocolsById[
+            protocolId
+        ] = sqliteProtocol
+
+        runtimeMapper._sqliteProtocolMirrorIds.add(
+            protocolId
+        )
+
+        return sqliteProtocol
+
     def stopProtocol(self, protocol):
         """
         Stop a PostgreSQL-runtime protocol through the SQLite compatibility
