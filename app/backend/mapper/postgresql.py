@@ -1293,40 +1293,20 @@ class PostgresqlFlatMapper(Mapper):
             projectId: int,
     ) -> int:
         """
-        Allocate a sequential protocol id for one project.
+        Allocate one compact PostgreSQL-owned protocol id.
 
-        PostgreSQL owns protocol allocation, but imported projects seed
-        this counter above the maximum project.sqlite Objects id because
-        the SQLite execution mirror uses one global object namespace.
+        Protocol ids remain below the PostgreSQL runtime-object
+        namespace. A legacy imported counter that was initialized from
+        MAX(project.sqlite.Objects.id) is automatically rebased.
+
+        SQLite collisions are handled by PostgresqlRuntimeMapper before
+        assigning the candidate to a new protocol.
         """
-        projectId = int(projectId)
+        projectId = int(
+            projectId
+        )
 
         with self.db.transaction():
-            maxRow = self.db.fetchOne(
-                """
-                SELECT COALESCE(
-                           MAX(("protocolId")::integer),
-                           1
-                       ) AS value
-                  FROM protocols
-                 WHERE "projectId" = %s
-                   AND "protocolId" ~ '^[0-9]+$'
-                """,
-                (
-                    projectId,
-                ),
-            )
-
-            existingMax = int(
-                (maxRow or {}).get("value")
-                or 1
-            )
-
-            nextCandidate = max(
-                existingMax + 1,
-                POSTGRESQL_PROTOCOL_ID_START,
-            )
-
             self.db.execute(
                 """
                 INSERT INTO project_object_id_counters (
@@ -1336,46 +1316,135 @@ class PostgresqlFlatMapper(Mapper):
                 )
                 VALUES (%s, %s, %s)
                 ON CONFLICT ("projectId")
-                DO UPDATE SET
-                    "nextProtocolId" = GREATEST(
-                        project_object_id_counters."nextProtocolId",
-                        EXCLUDED."nextProtocolId"
-                    ),
-                    "updatedAt" = NOW()
+                DO NOTHING
                 """,
                 (
                     projectId,
                     POSTGRESQL_RUNTIME_OBJECT_ID_START,
-                    nextCandidate,
+                    POSTGRESQL_PROTOCOL_ID_START,
                 ),
                 commit=False,
             )
 
-            row = self.db.fetchOne(
+            counterRow = self.db.fetchOne(
                 """
-                UPDATE project_object_id_counters
-                   SET "nextProtocolId" =
-                           "nextProtocolId" + 1,
-                       "updatedAt" = NOW()
+                SELECT "nextProtocolId"
+                  FROM project_object_id_counters
                  WHERE "projectId" = %s
-                 RETURNING
-                       "nextProtocolId" - 1
-                       AS "protocolId"
+                   FOR UPDATE
                 """,
                 (
                     projectId,
                 ),
             )
 
-        if not row or row.get("protocolId") is None:
-            raise RuntimeError(
-                "Could not allocate protocol id "
-                "for project %s."
-                % projectId
+            if (
+                    not counterRow
+                    or counterRow.get(
+                "nextProtocolId"
+            ) is None
+            ):
+                raise RuntimeError(
+                    "Could not lock protocol id counter "
+                    "for project %s."
+                    % projectId
+                )
+
+            maxRow = self.db.fetchOne(
+                """
+                SELECT COALESCE(
+                           MAX(
+                               CASE
+                                   WHEN "protocolId"
+                                        ~ '^[0-9]+$'
+                                   THEN
+                                       CASE
+                                           WHEN
+                                               ("protocolId")::numeric
+                                               < %s
+                                           THEN
+                                               ("protocolId")::integer
+                                           ELSE NULL
+                                       END
+                                   ELSE NULL
+                               END
+                           ),
+                           1
+                       ) AS value
+                  FROM protocols
+                 WHERE "projectId" = %s
+                """,
+                (
+                    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+                    projectId,
+                ),
+            )
+
+            existingCompactMax = int(
+                (maxRow or {}).get(
+                    "value"
+                )
+                or 1
+            )
+
+            minimumCandidate = max(
+                existingCompactMax + 1,
+                POSTGRESQL_PROTOCOL_ID_START,
+            )
+
+            storedCandidate = int(
+                counterRow.get(
+                    "nextProtocolId"
+                )
+                or POSTGRESQL_PROTOCOL_ID_START
+            )
+
+            # Previous imports initialized this counter using
+            # MAX(project.sqlite.Objects.id), which could put protocol
+            # ids inside the runtime-object namespace.
+            if (
+                    storedCandidate
+                    >= POSTGRESQL_RUNTIME_OBJECT_ID_START
+            ):
+                protocolId = (
+                    minimumCandidate
+                )
+            else:
+                protocolId = max(
+                    storedCandidate,
+                    minimumCandidate,
+                )
+
+            if (
+                    protocolId
+                    >= POSTGRESQL_RUNTIME_OBJECT_ID_START
+            ):
+                raise RuntimeError(
+                    "Compact protocol id namespace exhausted "
+                    "for project %s. candidate=%s limit=%s"
+                    % (
+                        projectId,
+                        protocolId,
+                        POSTGRESQL_RUNTIME_OBJECT_ID_START,
+                    )
+                )
+
+            self.db.execute(
+                """
+                UPDATE project_object_id_counters
+                   SET "nextProtocolId" = %s,
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                """,
+                (
+                    protocolId + 1,
+                    projectId,
+                ),
+                commit=False,
             )
 
         return int(
-            row["protocolId"]
+            protocolId
         )
 
     def allocateProjectObjectId(

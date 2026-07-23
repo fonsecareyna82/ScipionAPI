@@ -5380,10 +5380,12 @@ class PostgresqlRuntimeMapper(Mapper):
         if objId is not None:
             return int(objId)
 
-        if isinstance(
-                obj,
-                Protocol,
-        ):
+        isProtocol = isinstance(
+            obj,
+            Protocol,
+        )
+
+        if isProtocol:
             allocatorName = (
                 "allocateProjectProtocolId"
             )
@@ -5398,17 +5400,47 @@ class PostgresqlRuntimeMapper(Mapper):
             None,
         )
 
-        if not callable(allocator):
+        if not callable(
+                allocator
+        ):
             raise RuntimeError(
                 "PostgresqlFlatMapper does not provide %s."
                 % allocatorName
             )
 
-        objId = int(
-            allocator(
-                self.projectId
+        skippedSqliteIds = []
+
+        while True:
+            objId = int(
+                allocator(
+                    self.projectId
+                )
             )
-        )
+
+            if not isProtocol:
+                break
+
+            # Imported project.sqlite databases use one global Objects
+            # namespace. A compact protocol candidate can therefore
+            # already belong to an old String, parameter or output.
+            if not self._existsInWriteFallback(
+                    objId
+            ):
+                break
+
+            skippedSqliteIds.append(
+                objId
+            )
+
+        if skippedSqliteIds:
+            logger.info(
+                "Skipped occupied SQLite ids while allocating "
+                "PostgreSQL protocol identity. "
+                "projectId=%s selectedId=%s skippedIds=%s",
+                self.projectId,
+                objId,
+                skippedSqliteIds,
+            )
 
         try:
             self._setObjId(
