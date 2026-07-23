@@ -117,7 +117,11 @@ class RebuildingFallbackMapper:
         return protocol
 
 
-def buildMapper(rows=None, fallback=None):
+def buildMapper(
+        rows=None,
+        fallback=None,
+        writeFallback=None,
+):
     return PostgresqlRuntimeMapper(
         flatMapper=FakeFlatMapper(rows),
         projectId=4,
@@ -126,6 +130,7 @@ def buildMapper(rows=None, fallback=None):
             "OtherProtocol": OtherProtocol,
         },
         readFallbackMapper=fallback,
+        writeFallbackMapper=writeFallback,
     )
 
 
@@ -423,58 +428,118 @@ def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
     }]
 
 
-def test_SelectRuntimeProtocolByIdReusesSqliteMirrorIdentity():
-    fallback = RebuildingFallbackMapper(ExampleProtocol)
+def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
+    readFallback = RebuildingFallbackMapper(
+        OtherProtocol
+    )
+
+    writeFallback = RebuildingFallbackMapper(
+        ExampleProtocol
+    )
 
     mapper = buildMapper(
         rows=[
             buildRow(100),
         ],
-        fallback=fallback,
+        fallback=readFallback,
+        writeFallback=writeFallback,
     )
 
-    firstResult = mapper.selectRuntimeProtocolById(100)
-    secondResult = mapper.selectRuntimeProtocolById(100)
+    firstResult = mapper.selectRuntimeProtocolById(
+        100
+    )
+
+    secondResult = mapper.selectRuntimeProtocolById(
+        100
+    )
 
     assert firstResult is secondResult
-    assert firstResult is fallback.createdProtocols[0]
 
-    # SQLite is consulted only during the first hydration.
-    assert fallback.calls == [100]
-    assert len(fallback.createdProtocols) == 1
+    assert firstResult is (
+        writeFallback.createdProtocols[0]
+    )
 
-    assert mapper._runtimeProtocolsById[100] is firstResult
-    assert mapper._sqliteProtocolMirrorIds == {100}
+    # The SQLite execution mirror is consulted only during the first hydration.
+    assert writeFallback.calls == [
+        100,
+    ]
+
+    assert len(
+        writeFallback.createdProtocols
+    ) == 1
+
+    # The general read fallback must not participate in runtime hydration.
+    assert readFallback.calls == []
+
+    assert mapper._runtimeProtocolsById[
+        100
+    ] is firstResult
+
+    assert mapper._sqliteProtocolMirrorIds == {
+        100,
+    }
 
     assert mapper.flatMapper.byIdCalls == [
-        (4, 100),
-        (4, 100),
+        (
+            4,
+            100,
+        ),
+        (
+            4,
+            100,
+        ),
     ]
 
 
-def test_SelectRuntimeProtocolByIdCachesFallbackOnlyProtocol():
-    fallback = RebuildingFallbackMapper(ExampleProtocol)
+def test_SelectRuntimeProtocolByIdCachesWriteMirrorOnlyProtocol():
+    writeFallback = RebuildingFallbackMapper(
+        ExampleProtocol
+    )
 
     mapper = buildMapper(
         rows=[],
-        fallback=fallback,
+        writeFallback=writeFallback,
     )
 
-    firstResult = mapper.selectRuntimeProtocolById(100)
-    secondResult = mapper.selectRuntimeProtocolById(100)
+    firstResult = mapper.selectRuntimeProtocolById(
+        100
+    )
+
+    secondResult = mapper.selectRuntimeProtocolById(
+        100
+    )
 
     assert firstResult is secondResult
-    assert firstResult is fallback.createdProtocols[0]
 
-    assert fallback.calls == [100]
-    assert len(fallback.createdProtocols) == 1
+    assert firstResult is (
+        writeFallback.createdProtocols[0]
+    )
 
-    assert mapper._runtimeProtocolsById[100] is firstResult
-    assert mapper._sqliteProtocolMirrorIds == {100}
+    assert writeFallback.calls == [
+        100,
+    ]
+
+    assert len(
+        writeFallback.createdProtocols
+    ) == 1
+
+    assert mapper._runtimeProtocolsById[
+        100
+    ] is firstResult
+
+    assert mapper._sqliteProtocolMirrorIds == {
+        100,
+    }
 
     assert mapper.flatMapper.byIdCalls == [
-        (4, 100),
-        (4, 100),
+        (
+            4,
+            100,
+        ),
+        (
+            4,
+            100,
+        ),
     ]
 
 
