@@ -277,7 +277,7 @@ def test_DeleteProjectRuntimeDataRejectsMissingProject():
     assert len(database.calls) == 1
 
 
-def test_DeleteAllClearsFallbackPostgresqlAndRuntimeCaches():
+def test_DeleteAllClearsWriteMirrorPostgresqlAndRuntimeCaches():
     mapper = buildRuntimeMapper()
 
     operations = []
@@ -302,7 +302,6 @@ def test_DeleteAllClearsFallbackPostgresqlAndRuntimeCaches():
         )
     )
 
-    mapper.readFallbackMapper = fallbackMapper
     mapper.writeFallbackMapper = fallbackMapper
 
     mapper.flatMapper.deleteProjectRuntimeData.side_effect = (
@@ -366,126 +365,6 @@ def test_DeleteAllClearsFallbackPostgresqlAndRuntimeCaches():
     assert protocol.mock_calls == []
 
 
-def test_DeleteAllRejectsReadOnlyFallbackBeforeDeletingAnything():
-    mapper = buildRuntimeMapper()
-
-    mapper.readFallbackMapper = Mock()
-    mapper.writeFallbackMapper = None
-
-    mapper._runtimeProtocolsById = {
-        101: object(),
-    }
-
-    mapper._sqliteProtocolMirrorIds = {
-        101,
-    }
-
-    try:
-        mapper.deleteAll()
-    except RuntimeError as error:
-        assert str(error) == (
-            "PostgreSQL deleteAll cannot run with a read "
-            "fallback unless a write fallback is also configured."
-        )
-    else:
-        raise AssertionError(
-            "Expected read-only fallback deleteAll "
-            "to raise RuntimeError"
-        )
-
-    mapper.flatMapper.deleteProjectRuntimeData.assert_not_called()
-    mapper.runtimeSetFactory.clearCaches.assert_not_called()
-
-    assert 101 in mapper._runtimeProtocolsById
-    assert mapper._sqliteProtocolMirrorIds == {
-        101,
-    }
-
-
-def test_DeleteAllRejectsDifferentFallbackMappersBeforeDeletingAnything():
-    mapper = buildRuntimeMapper()
-
-    readFallbackMapper = Mock()
-    writeFallbackMapper = Mock()
-
-    readFallbackMapper.objDict = {
-        1: object(),
-    }
-
-    readFallbackMapper.updateDict = {
-        1: object(),
-    }
-
-    readFallbackMapper.updatePendingPointers = [
-        object(),
-    ]
-
-    writeFallbackMapper.objDict = {
-        2: object(),
-    }
-
-    writeFallbackMapper.updateDict = {
-        2: object(),
-    }
-
-    writeFallbackMapper.updatePendingPointers = [
-        object(),
-    ]
-
-    mapper.readFallbackMapper = (
-        readFallbackMapper
-    )
-
-    mapper.writeFallbackMapper = (
-        writeFallbackMapper
-    )
-
-    cachedProtocol = object()
-
-    mapper._runtimeProtocolsById = {
-        101: cachedProtocol,
-    }
-
-    mapper._sqliteProtocolMirrorIds = {
-        101,
-    }
-
-    try:
-        mapper.deleteAll()
-    except RuntimeError as error:
-        assert str(error) == (
-            "PostgreSQL deleteAll cannot run when read and "
-            "write fallbacks use different mapper instances."
-        )
-    else:
-        raise AssertionError(
-            "Expected different fallback mapper instances "
-            "to raise RuntimeError"
-        )
-
-    readFallbackMapper.deleteAll.assert_not_called()
-    writeFallbackMapper.deleteAll.assert_not_called()
-
-    mapper.flatMapper.deleteProjectRuntimeData.assert_not_called()
-    mapper.runtimeSetFactory.clearCaches.assert_not_called()
-
-    assert readFallbackMapper.objDict != {}
-    assert readFallbackMapper.updateDict != {}
-    assert readFallbackMapper.updatePendingPointers != []
-
-    assert writeFallbackMapper.objDict != {}
-    assert writeFallbackMapper.updateDict != {}
-    assert writeFallbackMapper.updatePendingPointers != []
-
-    assert mapper._runtimeProtocolsById == {
-        101: cachedProtocol,
-    }
-
-    assert mapper._sqliteProtocolMirrorIds == {
-        101,
-    }
-
-
 def test_DeleteAllKeepsPostgresqlCachesWhenStorageDeleteFails():
     mapper = buildRuntimeMapper()
 
@@ -503,7 +382,6 @@ def test_DeleteAllKeepsPostgresqlCachesWhenStorageDeleteFails():
         object(),
     ]
 
-    mapper.readFallbackMapper = fallbackMapper
     mapper.writeFallbackMapper = fallbackMapper
 
     mapper.flatMapper.deleteProjectRuntimeData.side_effect = (
