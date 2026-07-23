@@ -90,7 +90,6 @@ class PostgresqlRuntimeMapper(Mapper):
             flatMapper: PostgresqlFlatMapper,
             projectId: int,
             dictClasses=None,
-            readFallbackMapper=None,
             writeFallbackMapper=None,
             project=None,
     ):
@@ -101,8 +100,7 @@ class PostgresqlRuntimeMapper(Mapper):
         self.projectId = int(projectId)
         self.project = project
 
-        # Temporary bridges while we migrate reads/runtime fully.
-        self.readFallbackMapper = readFallbackMapper
+        # SQLite remains available only as a write and execution mirror.
         self.writeFallbackMapper = writeFallbackMapper
 
         self.objectMapper = (

@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-from pyworkflow.object import String
 from pyworkflow.project.project import PROJECT_CREATION_TIME
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -72,32 +71,7 @@ class FakeDb:
         return []
 
 
-class FakeFallbackMapper:
-    def __init__(self, values=None):
-        self.values = list(values or [])
-        self.calls = []
-
-    def selectBy(
-            self,
-            iterate=False,
-            objectFilter=None,
-            **args,
-    ):
-        self.calls.append({
-            "iterate": iterate,
-            "objectFilter": objectFilter,
-            "args": args,
-        })
-
-        result = list(self.values)
-
-        if callable(objectFilter):
-            result = [obj for obj in result if objectFilter(obj)]
-
-        return iter(result) if iterate else result
-
-
-def buildMapper(projectRow=None, fallback=None):
+def buildMapper(projectRow=None):
     db = FakeDb(projectRow)
     flatMapper = PostgresqlFlatMapper(db)
 
@@ -105,16 +79,9 @@ def buildMapper(projectRow=None, fallback=None):
         flatMapper=flatMapper,
         projectId=4,
         dictClasses={},
-        readFallbackMapper=fallback,
     )
 
     return mapper, db
-
-
-def buildCreationTime(value):
-    creationTime = String(value)
-    creationTime.setName(PROJECT_CREATION_TIME)
-    return creationTime
 
 
 def test_GetProjectRuntimeMetadataNormalizesColumnNames():
@@ -183,29 +150,7 @@ def test_SelectByAppliesCreationTimeObjectFilter():
     assert result == []
 
 
-def test_SelectByDoesNotUseFallbackWhenProjectMetadataIsMissing():
-    legacyCreationTime = buildCreationTime(
-        "2025-06-18 10:20:30.000000"
-    )
-
-    fallback = FakeFallbackMapper([
-        legacyCreationTime,
-    ])
-
-    mapper, _ = buildMapper(
-        projectRow=None,
-        fallback=fallback,
-    )
-
-    result = mapper.selectBy(
-        name=PROJECT_CREATION_TIME
-    )
-
-    assert result == []
-    assert fallback.calls == []
-
-
-def test_SelectByReturnsEmptyCreationTimeWithoutFallback():
+def test_SelectByReturnsEmptyWhenProjectMetadataIsMissing():
     mapper, _ = buildMapper(projectRow=None)
 
     result = mapper.selectBy(
@@ -215,17 +160,11 @@ def test_SelectByReturnsEmptyCreationTimeWithoutFallback():
     assert result == []
 
 
-def test_SelectByDoesNotUseFallbackWhenPostgresqlHasNoMatchingObject():
-    legacyObject = String("legacy")
-    fallback = FakeFallbackMapper([legacyObject])
-
-    mapper, db = buildMapper(
-        projectRow={
-            "id": 4,
-            "createdAt": datetime(2026, 7, 14, 16, 30, 5),
-        },
-        fallback=fallback,
-    )
+def test_SelectByReturnsEmptyWhenPostgresqlHasNoMatchingObject():
+    mapper, db = buildMapper(projectRow={
+        "id": 4,
+        "createdAt": datetime(2026, 7, 14, 16, 30, 5),
+    })
 
     result = mapper.selectBy(
         name="OtherRootObject"
@@ -233,12 +172,10 @@ def test_SelectByDoesNotUseFallbackWhenPostgresqlHasNoMatchingObject():
 
     assert result == []
     assert db.fetchAllCalls
-    assert fallback.calls == []
 
 
-def test_SelectByRejectsInvalidFilterWithoutUsingFallback():
-    fallback = FakeFallbackMapper()
-    mapper, _ = buildMapper(fallback=fallback)
+def test_SelectByRejectsInvalidFilter():
+    mapper, _ = buildMapper()
 
     with pytest.raises(
             TypeError,
@@ -249,12 +186,9 @@ def test_SelectByRejectsInvalidFilterWithoutUsingFallback():
             objectFilter="invalid",
         )
 
-    assert fallback.calls == []
 
-
-def test_SelectByRejectsUnsupportedFieldsWithoutUsingFallback():
-    fallback = FakeFallbackMapper()
-    mapper, _ = buildMapper(fallback=fallback)
+def test_SelectByRejectsUnsupportedFields():
+    mapper, _ = buildMapper()
 
     with pytest.raises(
             NotImplementedError,
@@ -263,7 +197,5 @@ def test_SelectByRejectsUnsupportedFieldsWithoutUsingFallback():
         mapper.selectBy(
             unsupportedField="value"
         )
-
-    assert fallback.calls == []
 
 

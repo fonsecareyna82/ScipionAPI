@@ -25,7 +25,6 @@
 # ******************************************************************************
 import pytest
 
-from pyworkflow.object import Object
 from pyworkflow.protocol.protocol import Protocol
 
 from app.backend.mapper.postgresql_runtime_mapper import (
@@ -83,21 +82,6 @@ class FakeFlatMapper:
         return None
 
 
-class FakeFallbackMapper:
-    def __init__(self, objects=None):
-        self.objects = list(objects or [])
-        self.calls = []
-
-    def selectAllBatch(self, objectFilter=None):
-        self.calls.append(objectFilter)
-        result = list(self.objects)
-
-        if callable(objectFilter):
-            result = [obj for obj in result if objectFilter(obj)]
-
-        return result
-
-
 class RebuildingFallbackMapper:
     def __init__(self, protocolClass):
         self.protocolClass = protocolClass
@@ -119,7 +103,6 @@ class RebuildingFallbackMapper:
 
 def buildMapper(
         rows=None,
-        fallback=None,
         writeFallback=None,
 ):
     return PostgresqlRuntimeMapper(
@@ -129,7 +112,6 @@ def buildMapper(
             "ExampleProtocol": ExampleProtocol,
             "OtherProtocol": OtherProtocol,
         },
-        readFallbackMapper=fallback,
         writeFallbackMapper=writeFallback,
     )
 
@@ -152,27 +134,15 @@ def buildProtocol(protocolClass, protocolId):
     protocol.setObjId(protocolId)
     return protocol
 
+
 def test_SelectAllBatchBuildsOnlyPostgresqlProtocols():
     firstProtocol = buildProtocol(ExampleProtocol, 100)
     secondProtocol = buildProtocol(ExampleProtocol, 101)
 
-    fallbackProtocol = buildProtocol(ExampleProtocol, 100)
-
-    fallbackObject = Object()
-    fallbackObject.setObjId(500)
-
-    fallback = FakeFallbackMapper([
-        fallbackProtocol,
-        fallbackObject,
+    mapper = buildMapper(rows=[
+        buildRow(100),
+        buildRow(101),
     ])
-
-    mapper = buildMapper(
-        rows=[
-            buildRow(100),
-            buildRow(101),
-        ],
-        fallback=fallback,
-    )
 
     protocolsById = {
         100: firstProtocol,
@@ -200,7 +170,6 @@ def test_SelectAllBatchBuildsOnlyPostgresqlProtocols():
         101,
     ]
 
-    assert fallback.calls == []
     assert mapper.flatMapper.calls == [4]
     assert mapper._sqliteProtocolMirrorIds == set()
 
@@ -350,32 +319,17 @@ def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
     }]
 
 
-def test_SelectByIdDoesNotUseReadFallbackForMissingObject():
-    readFallback = RebuildingFallbackMapper(
-        ExampleProtocol
-    )
-
-    mapper = buildMapper(
-        fallback=readFallback
-    )
+def test_SelectByIdReturnsNoneForMissingObject():
+    mapper = buildMapper()
 
     mapper._selectProtocolByIdFromPostgresql = lambda objId: None
     mapper._selectSetByIdFromPostgresql = lambda objId: None
     mapper._selectGenericObjectByIdFromPostgresql = lambda objId: None
 
-    result = mapper.selectById(
-        999
-    )
-
-    assert result is None
-    assert readFallback.calls == []
+    assert mapper.selectById(999) is None
 
 
 def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
-    readFallback = RebuildingFallbackMapper(
-        OtherProtocol
-    )
-
     writeFallback = RebuildingFallbackMapper(
         ExampleProtocol
     )
@@ -384,7 +338,6 @@ def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
         rows=[
             buildRow(100),
         ],
-        fallback=readFallback,
         writeFallback=writeFallback,
     )
 
@@ -410,9 +363,6 @@ def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
     assert len(
         writeFallback.createdProtocols
     ) == 1
-
-    # The general read fallback must not participate in runtime hydration.
-    assert readFallback.calls == []
 
     assert mapper._runtimeProtocolsById[
         100
@@ -502,23 +452,11 @@ def test_GetPostgresqlProtocolLabelsReadsStoredLabelsWithoutBuildingProtocols():
     unlabeledRow = buildRow(102)
     unlabeledRow["params"] = {}
 
-    fallbackProtocol = buildProtocol(
-        ExampleProtocol,
-        100,
-    )
-
-    fallback = FakeFallbackMapper([
-        fallbackProtocol,
+    mapper = buildMapper(rows=[
+        firstRow,
+        secondRow,
+        unlabeledRow,
     ])
-
-    mapper = buildMapper(
-        rows=[
-            firstRow,
-            secondRow,
-            unlabeledRow,
-        ],
-        fallback=fallback,
-    )
 
     def failBuildProtocolFromRow(row):
         raise AssertionError(
@@ -538,4 +476,3 @@ def test_GetPostgresqlProtocolLabelsReadsStoredLabelsWithoutBuildingProtocols():
         4,
     ]
 
-    assert fallback.calls == []
