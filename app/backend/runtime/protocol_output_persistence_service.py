@@ -179,7 +179,22 @@ class RuntimeProtocolOutputPersistenceService:
         fileName = str(fileName)
 
         if os.path.isabs(fileName):
-            return False
+            absoluteFileName = os.path.abspath(
+                fileName
+            )
+
+            if not os.path.isfile(
+                    absoluteFileName
+            ):
+                raise FileNotFoundError(
+                    "Scipion Set database does not exist. "
+                    "absolutePath=%s"
+                    % absoluteFileName
+                )
+
+            scipionSet.load()
+
+            return True
 
         resolvedProjectPaths = (
             self._resolveProtocolProjectPaths(
@@ -324,6 +339,169 @@ class RuntimeProtocolOutputPersistenceService:
         )
 
         return True
+
+    def _getCachedSetItemsCount(
+            self,
+            scipionSet: Any,
+    ) -> Optional[int]:
+        """
+        Read the cached Set size without opening its SQLite mapper.
+        """
+        for methodName in (
+                "getSize",
+                "__len__",
+        ):
+            try:
+                if methodName == "__len__":
+                    value = len(
+                        scipionSet
+                    )
+                else:
+                    method = getattr(
+                        scipionSet,
+                        methodName,
+                        None,
+                    )
+
+                    if not callable(method):
+                        continue
+
+                    value = method()
+
+                if value in (
+                        None,
+                        "",
+                ):
+                    continue
+
+                return int(value)
+
+            except Exception:
+                continue
+
+        return None
+
+    def _storeDetachedSetOutput(
+            self,
+            *,
+            mapper,
+            objectMapper,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            outputObj: Any,
+            projectPaths: Optional[
+                List[str]
+            ],
+            artifactError: Exception,
+    ) -> Dict[str, Any]:
+        """
+        Persist the metadata tree of a Set whose backing SQLite database
+        is no longer available.
+
+        The output remains addressable by protocol + output name and by
+        its original Scipion object id, but its items cannot be migrated.
+        """
+        sourceFileName = self.safeCall(
+            outputObj,
+            "getFileName",
+            None,
+        )
+
+        cachedItemsCount = (
+            self._getCachedSetItemsCount(
+                outputObj
+            )
+        )
+
+        objectMapper.registerObjectTypeFromObject(
+            outputObj,
+            mapperKind="tree",
+            includeProperties=True,
+            includeNestedProperties=True,
+            classSchema={
+                "storage": "detached_set",
+                "artifactMissing": True,
+            },
+        )
+
+        syncInfo = objectMapper.storeObjectTree(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            scipionObj=outputObj,
+            registerType=False,
+            includeNestedProperties=True,
+        )
+
+        rootObjectId = syncInfo.get(
+            "rootObjectId"
+        )
+
+        detachedMetadata = {
+            "mapperKind": "detached_set",
+            "storage": "object_tree",
+            "artifactMissing": True,
+            "artifactFileName": (
+                str(sourceFileName)
+                if sourceFileName
+                else None
+            ),
+            "artifactError": str(
+                artifactError
+            ),
+            "projectPathsChecked": list(
+                projectPaths or []
+            ),
+            "itemsCount": (
+                cachedItemsCount
+            ),
+        }
+
+        if rootObjectId not in (
+                None,
+                "",
+        ):
+            with mapper.db.transaction():
+                mapper.db.execute(
+                    """
+                    UPDATE scipion_objects
+                       SET metadata = (
+                               COALESCE(
+                                   metadata,
+                                   '{}'::jsonb
+                               )
+                               || %s::jsonb
+                           ),
+                           "updatedAt" = NOW()
+                     WHERE id = %s
+                       AND "projectId" = %s
+                       AND "protocolDbId" = %s
+                    """,
+                    (
+                        json.dumps(
+                            detachedMetadata
+                        ),
+                        int(rootObjectId),
+                        int(projectId),
+                        int(protocolDbId),
+                    ),
+                    commit=False,
+                )
+
+        return {
+            **syncInfo,
+            "artifactMissing": True,
+            "artifactFileName": (
+                str(sourceFileName)
+                if sourceFileName
+                else None
+            ),
+            "itemsCount": cachedItemsCount,
+            "projectPathsChecked": list(
+                projectPaths or []
+            ),
+        }
 
     def isPersistableNonSetOutput(self, outputObj: Any) -> bool:
         if outputObj is None:
@@ -1733,6 +1911,7 @@ class RuntimeProtocolOutputPersistenceService:
             projectPaths: Optional[
                 List[str]
             ] = None,
+            allowDetachedSetOutputs: bool = False,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         from app.backend.mapper import (
             ScipionObjectPostgresqlMapper,
@@ -1869,14 +2048,66 @@ class RuntimeProtocolOutputPersistenceService:
                 if self.isScipionSetLikeOutput(
                         outputObj
                 ):
-                    openedSetMapper = (
-                        self
-                        ._openRelativeSetMapperForPersistence(
-                            protocol=protocol,
-                            scipionSet=outputObj,
-                            projectPaths=projectPaths,
+                    openedSetMapper = False
+
+                    try:
+                        openedSetMapper = (
+                            self
+                            ._openRelativeSetMapperForPersistence(
+                                protocol=protocol,
+                                scipionSet=outputObj,
+                                projectPaths=projectPaths,
+                            )
                         )
-                    )
+
+                    except FileNotFoundError as artifactError:
+                        if not allowDetachedSetOutputs:
+                            raise
+
+                        logger.warning(
+                            "Persisting detached Scipion Set because "
+                            "its backing database is missing. "
+                            "projectId=%s protocolId=%s "
+                            "outputName=%s className=%s "
+                            "fileName=%s",
+                            projectId,
+                            protocolId,
+                            outputName,
+                            outputClassName,
+                            self.safeCall(
+                                outputObj,
+                                "getFileName",
+                                None,
+                            ),
+                        )
+
+                        syncInfo = (
+                            self._storeDetachedSetOutput(
+                                mapper=mapper,
+                                objectMapper=objectMapper,
+                                projectId=projectId,
+                                protocolDbId=int(
+                                    protocolDbId
+                                ),
+                                outputName=outputName,
+                                outputObj=outputObj,
+                                projectPaths=projectPaths,
+                                artifactError=artifactError,
+                            )
+                        )
+
+                        persistedOutputs.append({
+                            **(syncInfo or {}),
+                            "outputName": outputName,
+                            "outputClassName": (
+                                outputClassName
+                            ),
+                            "mapperKind": (
+                                "detached_set"
+                            ),
+                        })
+
+                        continue
 
                     try:
                         syncInfo = (

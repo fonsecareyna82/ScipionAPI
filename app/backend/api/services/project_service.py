@@ -1140,6 +1140,7 @@ class ProjectService:
             projectPaths: Optional[
                 Sequence[str]
             ] = None,
+            allowDetachedSetOutputs: bool = False,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         runtimeProtocolOutputPersistenceService = (
             RuntimeProtocolOutputPersistenceService()
@@ -1180,6 +1181,9 @@ class ProjectService:
                     returnReport=returnReport,
                     projectPaths=(
                         resolvedProjectPaths
+                    ),
+                    allowDetachedSetOutputs=(
+                        allowDetachedSetOutputs
                     ),
                 )
             )
@@ -1738,6 +1742,7 @@ class ProjectService:
             outputProjectPaths: Optional[
                 Sequence[str]
             ] = None,
+            allowDetachedSetOutputs: bool = False,
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
@@ -1751,29 +1756,32 @@ class ProjectService:
             self.registerOutput
         )
 
-        if outputProjectPaths:
-            normalizedOutputProjectPaths = []
+        normalizedOutputProjectPaths = []
 
-            for candidatePath in (
-                    outputProjectPaths
+        for candidatePath in (
+                outputProjectPaths or []
+        ):
+            if not candidatePath:
+                continue
+
+            normalizedPath = os.path.abspath(
+                os.path.expanduser(
+                    str(candidatePath)
+                )
+            )
+
+            if (
+                    normalizedPath
+                    not in normalizedOutputProjectPaths
             ):
-                if not candidatePath:
-                    continue
-
-                normalizedPath = os.path.abspath(
-                    os.path.expanduser(
-                        str(candidatePath)
-                    )
+                normalizedOutputProjectPaths.append(
+                    normalizedPath
                 )
 
-                if (
-                        normalizedPath
-                        not in normalizedOutputProjectPaths
-                ):
-                    normalizedOutputProjectPaths.append(
-                        normalizedPath
-                    )
-
+        if (
+                normalizedOutputProjectPaths
+                or allowDetachedSetOutputs
+        ):
             def registerOutputCallback(
                     **kwargs
             ):
@@ -1781,6 +1789,9 @@ class ProjectService:
                     **kwargs,
                     projectPaths=(
                         normalizedOutputProjectPaths
+                    ),
+                    allowDetachedSetOutputs=(
+                        allowDetachedSetOutputs
                     ),
                 )
 
@@ -1921,6 +1932,7 @@ class ProjectService:
                 strict=True,
                 syncRelations=True,
                 outputProjectPaths=outputProjectPaths,
+                allowDetachedSetOutputs=True,
             )
 
             migrationReport[
