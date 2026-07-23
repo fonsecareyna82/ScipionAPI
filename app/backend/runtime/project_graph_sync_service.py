@@ -263,7 +263,10 @@ class RuntimeProjectGraphSyncService:
                 runtimeProtocolInputRefBuilderService.buildProtocolInputRefsForPostgresql(
                     projectId=projectId,
                     protocol=protocol,
-                    protocolDbIdByScipionId=protocolDbIdByScipionId,
+                    protocolDbIdByScipionId=(
+                        protocolDbIdByScipionId
+                    ),
+                    strict=strict,
                 )
             )
 
