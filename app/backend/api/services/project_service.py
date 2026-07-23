@@ -6244,6 +6244,9 @@ class ProjectService:
                 restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
                 syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
                 buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+                refreshPostgresqlRuntimeProtocolForResumeCallback=(
+                    self._refreshPostgresqlRuntimeProtocolForResume
+                ),
             )
         )
 
