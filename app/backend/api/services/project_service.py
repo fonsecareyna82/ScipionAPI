@@ -1287,6 +1287,7 @@ class ProjectService:
             syncRelations: bool = True,
             returnProtocolContext: bool = False,
             protocol=None,
+            authoritativeProtocolState: bool = False,
     ) -> Dict[str, Any]:
         """
         Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
@@ -1302,13 +1303,18 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        protocol = self._loadProtocolFromRuntimeDb(
-            protocolId=scipionProtocolId,
-            protocol=protocol,
-        )
+        if not authoritativeProtocolState:
+            protocol = self._loadProtocolFromRuntimeDb(
+                protocolId=scipionProtocolId,
+                protocol=protocol,
+            )
 
         if protocol is None:
-            protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+            protocol = (
+                self._getScipionProtocolByRuntimeId(
+                    scipionProtocolId
+                )
+            )
 
         protocolContext = self._buildProtocolContext(projectId, protocol, mapper)
 
@@ -1317,16 +1323,43 @@ class ProjectService:
             protocolId=scipionProtocolId,
         )
 
-        storedStatus = storedRow.get("status") if storedRow else None
-        runtimeStatus = protocolContext.get("info", {}).get("status")
-
-        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
-
-        protocolContext["info"]["status"] = runtimeProtocolStatusSyncService.mergeRuntimeProtocolStatus(
-            storedStatus=storedStatus,
-            runtimeStatus=runtimeStatus,
+        storedStatus = (
+            storedRow.get("status")
+            if storedRow
+            else None
         )
-        protocolDbId = mapper.saveProtocol(protocolContext)
+
+        protocolInfo = protocolContext.setdefault(
+            "info",
+            {},
+        )
+
+        runtimeStatus = protocolInfo.get(
+            "status"
+        )
+
+        if authoritativeProtocolState:
+            persistedStatus = runtimeStatus
+        else:
+            runtimeProtocolStatusSyncService = (
+                RuntimeProtocolStatusSyncService()
+            )
+
+            persistedStatus = (
+                runtimeProtocolStatusSyncService
+                .mergeRuntimeProtocolStatus(
+                    storedStatus=storedStatus,
+                    runtimeStatus=runtimeStatus,
+                )
+            )
+
+        protocolInfo["status"] = (
+            persistedStatus
+        )
+
+        protocolDbId = mapper.saveProtocol(
+            protocolContext
+        )
 
         runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
 
@@ -5668,6 +5701,7 @@ class ProjectService:
             protocols,
             registerOutputs: bool = False,
             syncRelations: bool = False,
+            authoritativeProtocolState: bool = False,
     ) -> Dict[str, Any]:
         reports = []
         errors = []
@@ -5675,35 +5709,60 @@ class ProjectService:
         outputsCount = 0
 
         for protocol in protocols or []:
-            protocolId = getattr(protocol, "getObjId", lambda: protocol)()
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: protocol,
+            )()
 
             if protocolId in (None, ""):
                 continue
 
             try:
-                report = self.syncPostgresqlRuntimeProtocol(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                    registerOutputs=registerOutputs,
-                    syncRelations=syncRelations,
+                report = (
+                    self.syncPostgresqlRuntimeProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        registerOutputs=registerOutputs,
+                        syncRelations=syncRelations,
+                        protocol=protocol,
+                        authoritativeProtocolState=(
+                            authoritativeProtocolState
+                        ),
+                    )
                 )
 
                 reports.append(report)
-                protocolsCount += int(report.get("protocols", 0) or 0)
-                outputsCount += int(report.get("outputs", 0) or 0)
 
-            except Exception as e:
+                protocolsCount += int(
+                    report.get(
+                        "protocols",
+                        0,
+                    ) or 0
+                )
+
+                outputsCount += int(
+                    report.get(
+                        "outputs",
+                        0,
+                    ) or 0
+                )
+
+            except Exception as error:
                 logger.exception(
-                    "Failed to sync PostgreSQL runtime protocol after mutation. "
+                    "Failed to sync PostgreSQL runtime "
+                    "protocol after mutation. "
                     "projectId=%s protocolId=%s",
                     projectId,
                     protocolId,
                 )
 
                 errors.append({
-                    "protocolId": str(protocolId),
-                    "error": str(e),
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "error": str(error),
                 })
 
         return {

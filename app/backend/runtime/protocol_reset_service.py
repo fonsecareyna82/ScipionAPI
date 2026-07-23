@@ -204,6 +204,8 @@ class RuntimeProtocolResetService:
                     projectId=projectId,
                     protocols=protocolsAfterReset,
                     registerOutputs=False,
+                    syncRelations=False,
+                    authoritativeProtocolState=True,
                 )
             )
 
