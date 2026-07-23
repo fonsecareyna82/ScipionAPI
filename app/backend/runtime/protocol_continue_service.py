@@ -47,6 +47,7 @@ class RuntimeProtocolContinueService:
             getPostgresqlRuntimeSubworkflowCallback: Callable,
             workflowProtocolMapToProtocolsCallback: Callable,
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
+            preparePostgresqlExecutionMirrorsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
             refreshPostgresqlRuntimeProtocolForResumeCallback: Callable,
@@ -193,6 +194,7 @@ class RuntimeProtocolContinueService:
             )
 
         pointerRestoreInfo = None
+        executionMirrorPrepareInfo = None
 
         if usingPostgresqlRuntime:
             parentProtocolsById = {}
@@ -259,38 +261,25 @@ class RuntimeProtocolContinueService:
                     ),
                 )
 
-            runtimeMapper = None
+            executionMirrorPrepareInfo = preparePostgresqlExecutionMirrorsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protocolsToResume,
+            )
 
-            try:
-                runtimeMapper = (
-                    currentProject.getPostgresqlRuntimeMapper()
-                )
-            except Exception:
-                runtimeMapper = None
-
-            for protocolToResume in protocolsToResume:
-                protocolRuntimeId = getattr(
-                    protocolToResume,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                if (
-                        runtimeMapper is not None
-                        and not runtimeMapper._existsInWriteFallback(
-                            protocolRuntimeId
+            if executionMirrorPrepareInfo.get("errors"):
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail=(
+                        "Failed to prepare SQLite execution "
+                        "mirrors before continue-all: %s"
+                        % executionMirrorPrepareInfo.get(
+                            "errors"
                         )
-                ):
-                    raise HTTPException(
-                        status_code=(
-                            status.HTTP_500_INTERNAL_SERVER_ERROR
-                        ),
-                        detail=(
-                            "Protocol %s exists in PostgreSQL but not "
-                            "in the SQLite execution DB."
-                            % protocolRuntimeId
-                        ),
-                    )
+                    ),
+                )
 
         errorList = []
 
@@ -369,6 +358,7 @@ class RuntimeProtocolContinueService:
             ),
             dependenciesCount=0,
             postgresqlPointerRestore=pointerRestoreInfo,
+            postgresqlExecutionMirrors=executionMirrorPrepareInfo,
             postgresqlRuntimeContinue=True,
             postgresqlRuntimeSync=postgresqlSync,
             postgresqlRuntimeRefresh=runtimeRefreshReports,
