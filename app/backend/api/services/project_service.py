@@ -6301,6 +6301,7 @@ class ProjectService:
                 getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
                 workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
                 restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
+                preparePostgresqlExecutionMirrorsCallback=self._preparePostgresqlRuntimeExecutionMirrors,
                 syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
                 buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
                 refreshPostgresqlRuntimeProtocolForResumeCallback=(
