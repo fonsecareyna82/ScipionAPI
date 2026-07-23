@@ -164,7 +164,7 @@ def test_GetRelationsByNameUsesOnlyPostgresql():
     )
 
 
-def test_GetRelationsByNameDoesNotUseFallbackWhenPostgresqlIsEmpty():
+def test_GetRelationsByNameReturnsEmptyWhenPostgresqlIsEmpty():
 
     mapper = buildRuntimeMapper(
         rows=[],
@@ -306,7 +306,8 @@ def test_GetRelationParentsUsesOnlyPostgresqlRelations():
         in call["query"]
     )
 
-def test_GetRelationChildsDoesNotUseFallbackWhenPostgresqlIsEmpty():
+
+def test_GetRelationChildsReturnsEmptyWhenPostgresqlIsEmpty():
 
     mapper = buildRuntimeMapper(
         rows=[],
@@ -324,7 +325,7 @@ def test_GetRelationChildsDoesNotUseFallbackWhenPostgresqlIsEmpty():
     assert selectedIds == []
 
 
-def test_GetRelationParentsDoesNotUseFallbackWhenPostgresqlIsEmpty():
+def test_GetRelationParentsReturnsEmptyWhenPostgresqlIsEmpty():
 
     mapper = buildRuntimeMapper(
         rows=[],
@@ -444,6 +445,15 @@ def test_SelectRelationSetDisablesParentProtocolRefresh():
         selectSet
     )
 
+    def failIfGenericObjectIsSelected(objId):
+        raise AssertionError(
+            "Generic object lookup must not run after resolving a Set"
+        )
+
+    mapper._selectGenericObjectByIdFromPostgresql = (
+        failIfGenericObjectIsSelected
+    )
+
     result = mapper._selectRelationObjectById(
         301
     )
@@ -463,6 +473,57 @@ def test_SelectRelationSetDisablesParentProtocolRefresh():
             False,
         ),
     ]
+
+
+def test_SelectRelationObjectUsesGenericPostgresqlObject():
+    mapper = buildRuntimeMapper(rows=[])
+
+    protocolCalls = []
+    setCalls = []
+    genericCalls = []
+    genericObject = FakeObject(701)
+
+    def selectProtocol(objId, refreshCached=True):
+        protocolCalls.append((
+            objId,
+            refreshCached,
+        ))
+        return None
+
+    def selectSet(objId, refreshParentProtocol=True):
+        setCalls.append((
+            objId,
+            refreshParentProtocol,
+        ))
+        return None
+
+    def selectGenericObject(objId):
+        genericCalls.append(objId)
+        return genericObject
+
+    mapper._selectProtocolByIdFromPostgresql = selectProtocol
+    mapper._selectSetByIdFromPostgresql = selectSet
+    mapper._selectGenericObjectByIdFromPostgresql = selectGenericObject
+
+    result = mapper._selectRelationObjectById(701)
+
+    assert result is genericObject
+
+    assert protocolCalls == [
+        (
+            701,
+            False,
+        ),
+    ]
+
+    assert setCalls == [
+        (
+            701,
+            False,
+        ),
+    ]
+
+    assert genericCalls == [701]
 
 
 def test_SelectRelationObjectReturnsNoneForMissingObject():
