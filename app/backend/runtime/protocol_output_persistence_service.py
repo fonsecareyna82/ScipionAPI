@@ -68,14 +68,46 @@ class RuntimeProtocolOutputPersistenceService:
 
         return obj.__class__.__name__
 
-    def _resolveProtocolProjectPath(
+    def _resolveProtocolProjectPaths(
             self,
             protocol: Any,
-            projectPath: Optional[str] = None,
-    ) -> Optional[str]:
-        if projectPath:
-            return os.path.abspath(
-                str(projectPath)
+            projectPaths: Optional[
+                List[str]
+            ] = None,
+    ) -> List[str]:
+        result = []
+
+        def addCandidate(value):
+            if not value:
+                return
+
+            normalizedPath = os.path.abspath(
+                os.path.expanduser(
+                    str(value)
+                )
+            )
+
+            if normalizedPath not in result:
+                result.append(
+                    normalizedPath
+                )
+
+        if isinstance(
+                projectPaths,
+                (
+                        str,
+                        os.PathLike,
+                ),
+        ):
+            projectPaths = [
+                str(projectPaths)
+            ]
+
+        for projectPath in (
+                projectPaths or []
+        ):
+            addCandidate(
+                projectPath
             )
 
         project = self.safeCall(
@@ -85,42 +117,38 @@ class RuntimeProtocolOutputPersistenceService:
         )
 
         if project is None:
-            return None
+            return result
 
         for attributeName in (
                 "path",
                 "_path",
         ):
-            value = getattr(
+            addCandidate(
+                getattr(
+                    project,
+                    attributeName,
+                    None,
+                )
+            )
+
+        addCandidate(
+            self.safeCall(
                 project,
-                attributeName,
+                "getPath",
                 None,
             )
-
-            if value:
-                return os.path.abspath(
-                    str(value)
-                )
-
-        value = self.safeCall(
-            project,
-            "getPath",
-            None,
         )
 
-        if value:
-            return os.path.abspath(
-                str(value)
-            )
-
-        return None
+        return result
 
     def _openRelativeSetMapperForPersistence(
             self,
             *,
             protocol: Any,
             scipionSet: Any,
-            projectPath: Optional[str] = None,
+            projectPaths: Optional[
+                List[str]
+            ] = None,
     ) -> bool:
         """
         Open a Scipion Set whose mapper filename is relative to the
@@ -153,17 +181,17 @@ class RuntimeProtocolOutputPersistenceService:
         if os.path.isabs(fileName):
             return False
 
-        resolvedProjectPath = (
-            self._resolveProtocolProjectPath(
+        resolvedProjectPaths = (
+            self._resolveProtocolProjectPaths(
                 protocol=protocol,
-                projectPath=projectPath,
+                projectPaths=projectPaths,
             )
         )
 
-        if not resolvedProjectPath:
+        if not resolvedProjectPaths:
             raise RuntimeError(
                 "Cannot resolve relative Scipion Set path "
-                "without a project root. "
+                "without project roots. "
                 "setClass=%s fileName=%s"
                 % (
                     self.getScipionClassName(
@@ -173,24 +201,49 @@ class RuntimeProtocolOutputPersistenceService:
                 )
             )
 
-        absoluteFileName = os.path.abspath(
-            os.path.join(
-                resolvedProjectPath,
-                fileName,
-            )
-        )
+        absoluteFileName = None
+        resolvedProjectPath = None
+        attemptedPaths = []
 
-        if not os.path.isfile(
-                absoluteFileName
+        for candidateProjectPath in (
+                resolvedProjectPaths
         ):
+            candidateFileName = (
+                os.path.abspath(
+                    os.path.join(
+                        candidateProjectPath,
+                        fileName,
+                    )
+                )
+            )
+
+            attemptedPaths.append(
+                candidateFileName
+            )
+
+            if os.path.isfile(
+                    candidateFileName
+            ):
+                absoluteFileName = (
+                    candidateFileName
+                )
+
+                resolvedProjectPath = (
+                    candidateProjectPath
+                )
+
+                break
+
+        if absoluteFileName is None:
             raise FileNotFoundError(
-                "Scipion Set database does not exist. "
-                "relativePath=%s projectPath=%s "
-                "absolutePath=%s"
+                "Scipion Set database does not exist "
+                "under any project root. "
+                "relativePath=%s projectPaths=%s "
+                "attemptedPaths=%s"
                 % (
                     fileName,
-                    resolvedProjectPath,
-                    absoluteFileName,
+                    resolvedProjectPaths,
+                    attemptedPaths,
                 )
             )
 
@@ -1677,7 +1730,9 @@ class RuntimeProtocolOutputPersistenceService:
             protocol: Any,
             mapper,
             returnReport: bool = False,
-            projectPath: Optional[str] = None,
+            projectPaths: Optional[
+                List[str]
+            ] = None,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         from app.backend.mapper import (
             ScipionObjectPostgresqlMapper,
@@ -1819,7 +1874,7 @@ class RuntimeProtocolOutputPersistenceService:
                         ._openRelativeSetMapperForPersistence(
                             protocol=protocol,
                             scipionSet=outputObj,
-                            projectPath=projectPath,
+                            projectPaths=projectPaths,
                         )
                     )
 

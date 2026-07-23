@@ -1137,8 +1137,38 @@ class ProjectService:
             protocol: Any,
             mapper: PostgresqlFlatMapper,
             returnReport: bool = False,
+            projectPaths: Optional[
+                Sequence[str]
+            ] = None,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+        runtimeProtocolOutputPersistenceService = (
+            RuntimeProtocolOutputPersistenceService()
+        )
+
+        resolvedProjectPaths = []
+
+        for candidatePath in (
+                list(projectPaths or [])
+                + [
+                    self._getCurrentProjectPath()
+                ]
+        ):
+            if not candidatePath:
+                continue
+
+            normalizedPath = os.path.abspath(
+                os.path.expanduser(
+                    str(candidatePath)
+                )
+            )
+
+            if (
+                    normalizedPath
+                    not in resolvedProjectPaths
+            ):
+                resolvedProjectPaths.append(
+                    normalizedPath
+                )
 
         try:
             return (
@@ -1148,12 +1178,17 @@ class ProjectService:
                     protocol=protocol,
                     mapper=mapper,
                     returnReport=returnReport,
-                    projectPath=self._getCurrentProjectPath(),
+                    projectPaths=(
+                        resolvedProjectPaths
+                    ),
                 )
             )
+
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
                 detail=str(exc),
             )
 
@@ -1700,6 +1735,9 @@ class ProjectService:
             checkPid: bool = False,
             strict: bool = False,
             syncRelations: bool = False,
+            outputProjectPaths: Optional[
+                Sequence[str]
+            ] = None,
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
@@ -1709,6 +1747,43 @@ class ProjectService:
 
         runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
 
+        registerOutputCallback = (
+            self.registerOutput
+        )
+
+        if outputProjectPaths:
+            normalizedOutputProjectPaths = []
+
+            for candidatePath in (
+                    outputProjectPaths
+            ):
+                if not candidatePath:
+                    continue
+
+                normalizedPath = os.path.abspath(
+                    os.path.expanduser(
+                        str(candidatePath)
+                    )
+                )
+
+                if (
+                        normalizedPath
+                        not in normalizedOutputProjectPaths
+                ):
+                    normalizedOutputProjectPaths.append(
+                        normalizedPath
+                    )
+
+            def registerOutputCallback(
+                    **kwargs
+            ):
+                return self.registerOutput(
+                    **kwargs,
+                    projectPaths=(
+                        normalizedOutputProjectPaths
+                    ),
+                )
+
         return runtimeProjectGraphSyncService.syncProjectProtocolsAndDependencies(
             mapper=mapper,
             projectId=projectId,
@@ -1716,7 +1791,7 @@ class ProjectService:
             buildProtocolContextCallback=self._buildProtocolContext,
             tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
             getScipionObjectIdCallback=self._getScipionObjectId,
-            registerOutputCallback=self.registerOutput,
+            registerOutputCallback=registerOutputCallback,
             shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
             refresh=refresh,
             checkPid=checkPid,
@@ -1759,6 +1834,7 @@ class ProjectService:
             projectId: int,
             projectPath: str,
             ownerId: int,
+            sourceProjectPath: Optional[str] = None,
     ) -> Dict[str, Any]:
         project = None
 
@@ -1766,6 +1842,31 @@ class ProjectService:
             project = self.loadProjectForThumbnails({
                 "name": projectPath,
             })
+
+            outputProjectPaths = [
+                os.path.abspath(
+                    os.path.expanduser(
+                        str(projectPath)
+                    )
+                )
+            ]
+
+            if sourceProjectPath:
+                normalizedSourceProjectPath = (
+                    os.path.abspath(
+                        os.path.expanduser(
+                            str(sourceProjectPath)
+                        )
+                    )
+                )
+
+                if (
+                        normalizedSourceProjectPath
+                        not in outputProjectPaths
+                ):
+                    outputProjectPaths.append(
+                        normalizedSourceProjectPath
+                    )
 
             sqliteDbPath = os.path.abspath(
                 str(
@@ -1819,6 +1920,7 @@ class ProjectService:
                 checkPid=False,
                 strict=True,
                 syncRelations=True,
+                outputProjectPaths=outputProjectPaths,
             )
 
             migrationReport[
@@ -1832,6 +1934,12 @@ class ProjectService:
                     initializedProtocolIdFloor
                 ),
             }
+
+            migrationReport[
+                "outputProjectPaths"
+            ] = list(
+                outputProjectPaths
+            )
 
             auditService = RuntimeProjectImportAuditService()
 
@@ -2032,10 +2140,13 @@ class ProjectService:
                 statusValue=statusValue,
                 migrateProjectCallback=lambda projectId, projectPath: (
                     self._migrateImportedProjectToPostgresql(
-                        mapper,
-                        projectId,
-                        projectPath,
-                        currentUser["id"],
+                        mapper=mapper,
+                        projectId=projectId,
+                        projectPath=projectPath,
+                        ownerId=currentUser["id"],
+                        sourceProjectPath=str(
+                            sourcePath
+                        ),
                     )
                 ),
             )
