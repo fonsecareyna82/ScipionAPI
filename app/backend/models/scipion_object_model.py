@@ -108,29 +108,6 @@ class ScipionObject(Base):
     )
 
 
-class ScipionObjectRelation(Base):
-    __tablename__ = "scipion_object_relations"
-
-    id = Column(Integer, primary_key=True, index=True)
-    projectId = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    creatorObjectId = Column(Integer, ForeignKey("scipion_objects.id", ondelete="CASCADE"), nullable=False)
-    parentObjectId = Column(Integer, ForeignKey("scipion_objects.id", ondelete="CASCADE"), nullable=False)
-    childObjectId = Column(Integer, ForeignKey("scipion_objects.id", ondelete="CASCADE"), nullable=False)
-    name = Column(Text, nullable=False)
-    parentExtended = Column(Text, nullable=True)
-    childExtended = Column(Text, nullable=True)
-    relationMetadata = Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    creation = Column(DateTime(timezone=True), nullable=True)
-    createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    __table_args__ = (
-        Index("idx_scipion_object_relations_project_name", "projectId", "name"),
-        Index("idx_scipion_object_relations_parent", "parentObjectId"),
-        Index("idx_scipion_object_relations_child", "childObjectId"),
-        Index("idx_scipion_object_relations_metadata_gin", "metadata", postgresql_using="gin"),
-    )
-
-
 class ScipionSet(Base):
     __tablename__ = "scipion_sets"
 
