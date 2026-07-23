@@ -49,6 +49,7 @@ class RuntimeProtocolContinueService:
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
+            refreshPostgresqlRuntimeProtocolForResumeCallback: Callable,
     ) -> Dict[str, Any]:
         """
         Continue the selected protocol subworkflow.
@@ -77,6 +78,46 @@ class RuntimeProtocolContinueService:
                     )
                 )
 
+                runtimeRefreshReports = []
+
+                for workflowProtocol, _level in (
+                        workflowProtocolList.values()
+                ):
+                    workflowProtocolId = getattr(
+                        workflowProtocol,
+                        "getObjId",
+                        lambda: None,
+                    )()
+
+                    if workflowProtocolId in (None, ""):
+                        continue
+
+                    refreshReport = (
+                        refreshPostgresqlRuntimeProtocolForResumeCallback(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=workflowProtocolId,
+                        )
+                    )
+
+                    runtimeRefreshReports.append(
+                        refreshReport
+                    )
+
+                workflowProtocolList = (
+                    getPostgresqlRuntimeSubworkflowCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+
+                protocolsToResume = (
+                    workflowProtocolMapToProtocolsCallback(
+                        workflowProtocolList
+                    )
+                )
+
                 # PostgreSQL currently provides the full downstream workflow.
                 # There is no separate active-protocol collection yet.
                 activeProtocolList = {}
@@ -85,6 +126,7 @@ class RuntimeProtocolContinueService:
                 workflowProtocolList, activeProtocolList = (
                     currentProject._getSubworkflow(protocol)
                 )
+
 
         except Exception as exc:
             logger.exception(
@@ -218,6 +260,11 @@ class RuntimeProtocolContinueService:
 
         errorList = []
 
+        from pyworkflow.protocol import MODE_RESUME
+        for protocolToResume in protocolsToResume:
+            protocolToResume.runMode.set(
+                MODE_RESUME
+            )
         try:
             currentProject._continueWorkflow(
                 errorList,
@@ -277,4 +324,5 @@ class RuntimeProtocolContinueService:
             postgresqlPointerRestore=pointerRestoreInfo,
             postgresqlRuntimeContinue=True,
             postgresqlRuntimeSync=postgresqlSync,
+            postgresqlRuntimeRefresh=runtimeRefreshReports,
         )
