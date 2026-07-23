@@ -4097,9 +4097,10 @@ class PostgresqlRuntimeMapper(Mapper):
         scipion_relations keeps Mapper/Scipion runtime ids.
         scipion_object_relations keeps PostgreSQL scipion_objects.id FKs.
 
-        Not every runtime relation can be canonicalized immediately because some
-        objects may still exist only in the fallback mapper. In that case we keep
-        the compatibility row and skip the canonical row.
+        Not every runtime relation can be canonicalized immediately because one
+        of its objects may not have been persisted in scipion_objects yet. In that
+        case scipion_relations remains authoritative and the canonical dual-write
+        is skipped.
         """
         creatorObjectId = self._resolveCanonicalScipionObjectRowId(creatorId)
         parentObjectId = self._resolveCanonicalScipionObjectRowId(parentId)
@@ -4325,539 +4326,53 @@ class PostgresqlRuntimeMapper(Mapper):
             tuple(values),
         )
 
-    def _isRelationSnapshotSynchronized(
-            self,
-            creatorId,
-    ) -> bool:
+    def getRelationsByCreator(self, creatorObj):
+        creatorId = self._requireObjId(creatorObj)
+        return self._selectPostgresqlRelations(creatorId=creatorId)
+
+    def getRelationsByName(self, relationName):
+        return self._selectPostgresqlRelations(relationName=relationName)
+
+    def _selectRelationObjectById(self, objId):
         """
-        Return whether PostgreSQL contains an authoritative relation snapshot.
-
-        The existence of a protocol row alone is not enough. A snapshot only
-        becomes authoritative after its complete atomic synchronization.
+        Resolve one PostgreSQL relation target without refreshing any owner
+        protocol or modifying its outputs.
         """
-        creatorId = self._toOptionalInt(
-            creatorId
-        )
-
-        if creatorId is None:
-            return False
-
-        row = self.db.fetchOne(
-            """
-            SELECT
-                "relationsSynchronized"
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-             LIMIT 1
-            """,
-            (
-                self.projectId,
-                str(
-                    creatorId
-                ),
-            ),
-        )
-
-        return bool(
-            row
-            and row.get(
-                "relationsSynchronized"
-            )
-        )
-
-    def _buildRuntimeRelationIdentity(
-            self,
-            relation,
-    ):
-        """
-        Build the logical identity used by PostgreSQL relation uniqueness.
-
-        SQLite relation ids are deliberately excluded.
-        """
-        def normalizeId(value):
-            normalizedValue = (
-                self._toOptionalInt(
-                    value
-                )
-            )
-
-            return (
-                ""
-                if normalizedValue is None
-                else str(
-                    normalizedValue
-                )
-            )
-
-        def normalizeText(value):
-            return (
-                ""
-                if value is None
-                else str(
-                    value
-                )
-            )
-
-        return (
-            normalizeText(
-                relation.get(
-                    "name"
-                )
-            ),
-            normalizeId(
-                relation.get(
-                    "parent_id"
-                )
-            ),
-            normalizeId(
-                relation.get(
-                    "object_parent_id"
-                )
-            ),
-            normalizeId(
-                relation.get(
-                    "object_child_id"
-                )
-            ),
-            normalizeText(
-                relation.get(
-                    "object_parent_extended"
-                )
-            ),
-            normalizeText(
-                relation.get(
-                    "object_child_extended"
-                )
-            ),
-        )
-
-    def _mergeRuntimeRelationRows(
-            self,
-            postgresqlRelations,
-            compatibilityRelations,
-    ):
-        """
-        Merge PostgreSQL and compatibility relations.
-
-        PostgreSQL rows are placed first and therefore win whenever both
-        sources expose the same logical relation.
-        """
-        result = []
-        identities = set()
-
-        for relation in (
-                list(
-                    postgresqlRelations
-                    or []
-                )
-                + list(
-                    compatibilityRelations
-                    or []
-                )
-        ):
-            identity = (
-                self
-                ._buildRuntimeRelationIdentity(
-                    relation
-                )
-            )
-
-            if identity in identities:
-                continue
-
-            identities.add(
-                identity
-            )
-
-            result.append(
-                relation
-            )
-
-        return result
-
-    def _selectCompatibilityRelationsFromReadFallback(
-            self,
-            *,
-            creatorObj=None,
-            creatorId=None,
-            relationName=None,
-            parentId=None,
-            childId=None,
-            synchronizationByCreator=None,
-    ):
-        """
-        Read relation rows still owned by the SQLite compatibility mapper.
-
-        A fallback row is discarded only when the corresponding protocol has a
-        successfully synchronized PostgreSQL relation snapshot.
-        """
-        if self.readFallbackMapper is None:
-            return []
-
-        creatorId = self._toOptionalInt(
-            creatorId
-        )
-
-        parentId = self._toOptionalInt(
-            parentId
-        )
-
-        childId = self._toOptionalInt(
-            childId
-        )
-
-        if creatorObj is not None:
-            rawRelations = (
-                self.readFallbackMapper
-                .getRelationsByCreator(
-                    creatorObj
-                )
-            )
-
-        elif relationName is not None:
-            rawRelations = (
-                self.readFallbackMapper
-                .getRelationsByName(
-                    relationName
-                )
-            )
-
-        else:
-            return []
-
-        compatibleRelations = []
-
-        synchronizationByCreator = dict(
-            synchronizationByCreator
-            or {}
-        )
-
-        for rawRelation in rawRelations or []:
-            relation = dict(
-                rawRelation
-            )
-
-            relationCreatorId = (
-                self._toOptionalInt(
-                    relation.get(
-                        "parent_id"
-                    )
-                )
-            )
-
-            if (
-                    relationCreatorId is None
-                    and creatorId is not None
-            ):
-                relationCreatorId = (
-                    creatorId
-                )
-
-                relation[
-                    "parent_id"
-                ] = creatorId
-
-            if (
-                    creatorId is not None
-                    and relationCreatorId
-                    != creatorId
-            ):
-                continue
-
-            if (
-                    relationName is not None
-                    and str(
-                        relation.get(
-                            "name"
-                        )
-                        or ""
-                    )
-                    != str(
-                        relationName
-                    )
-            ):
-                continue
-
-            relationParentId = (
-                self._toOptionalInt(
-                    relation.get(
-                        "object_parent_id"
-                    )
-                )
-            )
-
-            if (
-                    parentId is not None
-                    and relationParentId
-                    != parentId
-            ):
-                continue
-
-            relationChildId = (
-                self._toOptionalInt(
-                    relation.get(
-                        "object_child_id"
-                    )
-                )
-            )
-
-            if (
-                    childId is not None
-                    and relationChildId
-                    != childId
-            ):
-                continue
-
-            if relationCreatorId is not None:
-                if (
-                        relationCreatorId
-                        not in synchronizationByCreator
-                ):
-                    synchronizationByCreator[
-                        relationCreatorId
-                    ] = (
-                        self
-                        ._isRelationSnapshotSynchronized(
-                            relationCreatorId
-                        )
-                    )
-
-                if synchronizationByCreator[
-                        relationCreatorId
-                ]:
-                    continue
-
-            compatibleRelations.append(
-                relation
-            )
-
-        return compatibleRelations
-
-    def getRelationsByCreator(
-            self,
-            creatorObj,
-    ):
-        creatorId = self._requireObjId(
-            creatorObj
-        )
-
-        postgresqlRelations = (
-            self._selectPostgresqlRelations(
-                creatorId=creatorId,
-            )
-        )
-
-        if self.readFallbackMapper is None:
-            return postgresqlRelations
-
-        snapshotSynchronized = (
-            self
-            ._isRelationSnapshotSynchronized(
-                creatorId
-            )
-        )
-
-        if snapshotSynchronized:
-            return postgresqlRelations
-
-        self._recordReadFallback(
-            "getRelationsByCreator",
-            creatorId=creatorId,
-            reason=(
-                "merge_unsynchronized_snapshot"
-            ),
-        )
-
-        compatibilityRelations = (
-            self
-            ._selectCompatibilityRelationsFromReadFallback(
-                creatorObj=creatorObj,
-                creatorId=creatorId,
-                synchronizationByCreator={
-                    creatorId: False,
-                },
-            )
-        )
-
-        return self._mergeRuntimeRelationRows(
-            postgresqlRelations,
-            compatibilityRelations,
-        )
-
-    def getRelationsByName(
-            self,
-            relationName,
-    ):
-        postgresqlRelations = (
-            self._selectPostgresqlRelations(
-                relationName=relationName,
-            )
-        )
-
-        compatibilityRelations = []
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getRelationsByName",
-                relationName=relationName,
-                reason=(
-                    "merge_unsynchronized_snapshots"
-                ),
-            )
-
-            compatibilityRelations = (
-                self
-                ._selectCompatibilityRelationsFromReadFallback(
-                    relationName=relationName,
-                )
-            )
-
-        return self._mergeRuntimeRelationRows(
-            postgresqlRelations,
-            compatibilityRelations,
-        )
-
-    def _selectRelationObjectById(
-            self,
-            objId,
-    ):
-        """
-        Resolve one relation target without refreshing any owner protocol.
-        """
-        obj = (
-            self
-            ._selectProtocolByIdFromPostgresql(
-                objId,
-                refreshCached=False,
-            )
-        )
+        obj = self._selectProtocolByIdFromPostgresql(objId, refreshCached=False)
 
         if obj is not None:
             return obj
 
-        obj = self._selectSetByIdFromPostgresql(
-            objId,
-            refreshParentProtocol=False,
-        )
+        obj = self._selectSetByIdFromPostgresql(objId, refreshParentProtocol=False)
 
         if obj is not None:
             return obj
 
-        obj = (
-            self
-            ._selectGenericObjectByIdFromPostgresql(
-                objId
-            )
-        )
+        return self._selectGenericObjectByIdFromPostgresql(objId)
 
-        if obj is not None:
-            return obj
+    def getRelationChilds(self, relName, parentObj):
+        parentId = self._requireObjId(parentObj)
 
-        return self._selectByIdFromReadFallback(
-            objId,
-            auditOperation=(
-                "relationObject.selectById"
-            ),
-        )
-
-    def getRelationChilds(
-            self,
-            relName,
-            parentObj,
-    ):
-        parentId = self._requireObjId(
-            parentObj
-        )
-
-        postgresqlRelations = (
-            self._selectPostgresqlRelations(
-                relationName=relName,
-                parentId=parentId,
-            )
-        )
-
-        compatibilityRelations = []
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getRelationChilds",
-                relationName=relName,
-                parentId=parentId,
-                reason=(
-                    "merge_unsynchronized_snapshots"
-                ),
-            )
-
-            compatibilityRelations = (
-                self
-                ._selectCompatibilityRelationsFromReadFallback(
-                    relationName=relName,
-                    parentId=parentId,
-                )
-            )
-
-        relations = self._mergeRuntimeRelationRows(
-            postgresqlRelations,
-            compatibilityRelations,
+        relations = self._selectPostgresqlRelations(
+            relationName=relName,
+            parentId=parentId,
         )
 
         return [
-            self._selectRelationObjectById(
-                row[
-                    "object_child_id"
-                ]
-            )
+            self._selectRelationObjectById(row["object_child_id"])
             for row in relations
         ]
 
-    def getRelationParents(
-            self,
-            relName,
-            childObj,
-    ):
-        childId = self._requireObjId(
-            childObj
-        )
+    def getRelationParents(self, relName, childObj):
+        childId = self._requireObjId(childObj)
 
-        postgresqlRelations = (
-            self._selectPostgresqlRelations(
-                relationName=relName,
-                childId=childId,
-            )
-        )
-
-        compatibilityRelations = []
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "getRelationParents",
-                relationName=relName,
-                childId=childId,
-                reason=(
-                    "merge_unsynchronized_snapshots"
-                ),
-            )
-
-            compatibilityRelations = (
-                self
-                ._selectCompatibilityRelationsFromReadFallback(
-                    relationName=relName,
-                    childId=childId,
-                )
-            )
-
-        relations = self._mergeRuntimeRelationRows(
-            postgresqlRelations,
-            compatibilityRelations,
+        relations = self._selectPostgresqlRelations(
+            relationName=relName,
+            childId=childId,
         )
 
         return [
-            self._selectRelationObjectById(
-                row[
-                    "object_parent_id"
-                ]
-            )
+            self._selectRelationObjectById(row["object_parent_id"])
             for row in relations
         ]
 
