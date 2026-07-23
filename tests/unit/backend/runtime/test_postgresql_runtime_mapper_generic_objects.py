@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
 from datetime import datetime
 from unittest.mock import Mock
 
@@ -1175,38 +1176,29 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
     ]
 
 
-def test_UpdateFromUsesFallbackWhenGenericObjectIsNotInPostgresql():
+def test_UpdateFromDoesNotUseFallbackWhenGenericObjectIsNotInPostgresql():
     mapper = buildRuntimeMapper(
         []
     )
 
-    fallbackResult = object()
-
     mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.updateFrom.return_value = (
-        fallbackResult
-    )
-
     mapper._recordReadFallback = Mock()
 
     targetObject = FakeComposite()
-    targetObject.setObjId(700)
-
-    result = mapper.updateFrom(
-        targetObject
+    targetObject.setObjId(
+        700
     )
 
-    assert result is fallbackResult
+    with pytest.raises(
+            NotImplementedError,
+            match="PostgreSQL updateFrom is only implemented",
+    ):
+        mapper.updateFrom(
+            targetObject
+        )
 
-    mapper._recordReadFallback.assert_called_once_with(
-        "updateFrom",
-        objectId=700,
-        objectClass="FakeComposite",
-    )
-
-    mapper.readFallbackMapper.updateFrom.assert_called_once_with(
-        targetObject
-    )
+    mapper.readFallbackMapper.updateFrom.assert_not_called()
+    mapper._recordReadFallback.assert_not_called()
 
 
 def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():

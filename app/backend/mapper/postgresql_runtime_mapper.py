@@ -1070,40 +1070,19 @@ class PostgresqlRuntimeMapper(Mapper):
         self.store(obj)
 
     def updateFrom(self, obj):
-        if self._updateProtocolFromPostgresql(
-                obj
-        ):
+        if self._updateProtocolFromPostgresql(obj):
             return None
 
-        if self._updateSetFromPostgresql(
-                obj
-        ):
+        if self._updateSetFromPostgresql(obj):
             return None
 
-        if self._updateGenericObjectFromPostgresql(
-                obj
-        ):
+        if self._updateGenericObjectFromPostgresql(obj):
             return None
 
-        if self.readFallbackMapper is None:
-            raise NotImplementedError(
-                "PostgreSQL updateFrom is only implemented "
-                "for protocols, PostgreSQL runtime Sets "
-                "and supported generic runtime objects."
-            )
-
-        self._recordReadFallback(
-            "updateFrom",
-            objectId=self._getObjId(
-                obj
-            ),
-            objectClass=self._getClassName(
-                obj
-            ),
-        )
-
-        return self.readFallbackMapper.updateFrom(
-            obj
+        raise NotImplementedError(
+            "PostgreSQL updateFrom is only implemented "
+            "for protocols, PostgreSQL runtime Sets "
+            "and supported generic runtime objects."
         )
 
     def _updateProtocolFromPostgresql(
@@ -1866,41 +1845,18 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return targetClassName == storedClassName
 
-    def selectById(
-            self,
-            objId,
-    ):
-        obj = self._selectProtocolByIdFromPostgresql(
-            objId
-        )
+    def selectById(self, objId):
+        obj = self._selectProtocolByIdFromPostgresql(objId)
 
         if obj is not None:
-            return self._attachRuntimeContext(
-                obj
-            )
+            return self._attachRuntimeContext(obj)
 
-        obj = self._selectSetByIdFromPostgresql(
-            objId
-        )
+        obj = self._selectSetByIdFromPostgresql(objId)
 
         if obj is not None:
             return obj
 
-        obj = self._selectGenericObjectByIdFromPostgresql(objId)
-
-        if obj is not None:
-            return obj
-
-        obj = self._selectByIdFromReadFallback(
-            objId
-        )
-
-        if obj is not None:
-            return self._attachRuntimeContext(
-                obj
-            )
-
-        return None
+        return self._selectGenericObjectByIdFromPostgresql(objId)
 
     def selectRuntimeProtocolById(
             self,
