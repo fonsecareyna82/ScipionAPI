@@ -48,6 +48,8 @@ class RuntimeProtocolContinueService:
             workflowProtocolMapToProtocolsCallback: Callable,
             restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
             preparePostgresqlExecutionMirrorsCallback: Callable,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
             refreshPostgresqlRuntimeProtocolForResumeCallback: Callable,
@@ -59,7 +61,9 @@ class RuntimeProtocolContinueService:
 
         - No parent output is replaced or repaired.
         - No parent protocol is persisted.
-        - No persisted outputs are deleted.
+        - Persisted outputs are preserved for resumed streaming protocols.
+        - Persisted outputs are deleted only for protocols restarted by
+          continue-all.
         - Only input Pointer attributes belonging to resumed protocols
           may be restored.
         """
@@ -351,19 +355,218 @@ class RuntimeProtocolContinueService:
             MODE_RESUME,
         )
 
-        for protocolToContinue in protocolsToResume:
-            if (
-                    protocolToContinue
-                            .worksInStreaming()
-                    and not protocolToContinue.isSaved()
+        restartResetInfo = None
+        restartOutputCleanupInfo = None
+        restartInputRefCleanupInfo = None
+        restartResetSyncInfo = None
+
+        protocolsRestartedByContinue = []
+        restartedProtocolIds = []
+
+        if usingPostgresqlRuntime:
+            for workflowKey, workflowItem in list(
+                    continuedProtocolMap.items()
             ):
-                protocolToContinue.runMode.set(
-                    MODE_RESUME
+                (
+                    protocolToContinue,
+                    protocolLevel,
+                ) = workflowItem
+
+                protocolToContinueId = getattr(
+                    protocolToContinue,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                shouldResume = (
+                    protocolToContinue.worksInStreaming()
+                    and not protocolToContinue.isSaved()
                 )
-            else:
+
+                if shouldResume:
+                    protocolToContinue.runMode.set(
+                        MODE_RESUME
+                    )
+                    continue
+
                 protocolToContinue.runMode.set(
                     MODE_RESTART
                 )
+
+                protocolAfterReset = (
+                    protocolToContinue
+                )
+
+                if not protocolToContinue.isSaved():
+                    try:
+                        protocolAfterReset = (
+                            currentProject.resetProtocol(
+                                protocolToContinue
+                            )
+                            or protocolToContinue
+                        )
+
+                    except Exception as error:
+                        logger.exception(
+                            "Failed to reset protocol before "
+                            "continue-all restart. "
+                            "projectId=%s protocolId=%s",
+                            projectId,
+                            protocolToContinueId,
+                        )
+
+                        raise HTTPException(
+                            status_code=(
+                                status
+                                .HTTP_500_INTERNAL_SERVER_ERROR
+                            ),
+                            detail={
+                                "message": (
+                                    "Failed to reset protocol "
+                                    "before continue-all restart"
+                                ),
+                                "protocolId": (
+                                    str(protocolToContinueId)
+                                    if protocolToContinueId
+                                    not in (None, "")
+                                    else None
+                                ),
+                                "error": str(error),
+                            },
+                        ) from error
+
+                protocolAfterReset.runMode.set(
+                    MODE_RESTART
+                )
+
+                continuedProtocolMap[
+                    workflowKey
+                ] = (
+                    protocolAfterReset,
+                    protocolLevel,
+                )
+
+                protocolsRestartedByContinue.append(
+                    protocolAfterReset
+                )
+
+                if protocolToContinueId not in (
+                        None,
+                        "",
+                ):
+                    restartedProtocolIds.append(
+                        str(protocolToContinueId)
+                    )
+
+            if protocolsRestartedByContinue:
+                restartOutputCleanupInfo = (
+                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=(
+                            protocolsRestartedByContinue
+                        ),
+                    )
+                )
+
+                if restartOutputCleanupInfo.get(
+                        "errors"
+                ):
+                    raise HTTPException(
+                        status_code=(
+                            status
+                            .HTTP_500_INTERNAL_SERVER_ERROR
+                        ),
+                        detail={
+                            "message": (
+                                "Failed to delete PostgreSQL "
+                                "outputs before continue-all "
+                                "restart"
+                            ),
+                            "errors": (
+                                restartOutputCleanupInfo.get(
+                                    "errors"
+                                )
+                            ),
+                        },
+                    )
+
+                restartInputRefCleanupInfo = (
+                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=(
+                            protocolsRestartedByContinue
+                        ),
+                    )
+                )
+
+                restartResetSyncInfo = (
+                    syncPostgresqlRuntimeProtocolsAfterMutationCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=(
+                            protocolsRestartedByContinue
+                        ),
+                        registerOutputs=False,
+                        syncRelations=False,
+                        authoritativeProtocolState=True,
+                    )
+                )
+
+                if restartResetSyncInfo.get(
+                        "errors"
+                ):
+                    raise HTTPException(
+                        status_code=(
+                            status
+                            .HTTP_500_INTERNAL_SERVER_ERROR
+                        ),
+                        detail={
+                            "message": (
+                                "Failed to synchronize reset "
+                                "protocols before continue-all"
+                            ),
+                            "errors": (
+                                restartResetSyncInfo.get(
+                                    "errors"
+                                )
+                            ),
+                        },
+                    )
+
+                restartResetInfo = {
+                    "protocolIds": (
+                        restartedProtocolIds
+                    ),
+                    "count": len(
+                        restartedProtocolIds
+                    ),
+                }
+
+            protocolsToResume = (
+                workflowProtocolMapToProtocolsCallback(
+                    continuedProtocolMap
+                )
+            )
+
+        else:
+            for protocolToContinue in (
+                    protocolsToResume
+            ):
+                if (
+                        protocolToContinue
+                        .worksInStreaming()
+                        and not protocolToContinue.isSaved()
+                ):
+                    protocolToContinue.runMode.set(
+                        MODE_RESUME
+                    )
+                else:
+                    protocolToContinue.runMode.set(
+                        MODE_RESTART
+                    )
+
         try:
             currentProject._continueWorkflow(
                 errorList,
@@ -425,4 +628,14 @@ class RuntimeProtocolContinueService:
             postgresqlRuntimeContinue=True,
             postgresqlRuntimeSync=postgresqlSync,
             postgresqlRuntimeRefresh=runtimeRefreshReports,
+            postgresqlRestartReset=restartResetInfo,
+            postgresqlRestartOutputCleanup=(
+                restartOutputCleanupInfo
+            ),
+            postgresqlRestartInputRefCleanup=(
+                restartInputRefCleanupInfo
+            ),
+            postgresqlRestartResetSync=(
+                restartResetSyncInfo
+            ),
         )
