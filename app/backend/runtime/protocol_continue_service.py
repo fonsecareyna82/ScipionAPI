@@ -69,6 +69,9 @@ class RuntimeProtocolContinueService:
             protocolId=protocolId,
         )
 
+        runtimeRefreshReports = []
+        runtimeRefreshedProtocolIds = set()
+
         try:
             if usingPostgresqlRuntime:
                 workflowProtocolList = (
@@ -78,8 +81,6 @@ class RuntimeProtocolContinueService:
                         protocolId=protocolId,
                     )
                 )
-
-                runtimeRefreshReports = []
 
                 for workflowProtocol, _level in (
                         workflowProtocolList.values()
@@ -138,6 +139,13 @@ class RuntimeProtocolContinueService:
                     runtimeRefreshReports.append(
                         refreshReport
                     )
+
+                    if refreshReport.get(
+                            "refreshed"
+                    ):
+                        runtimeRefreshedProtocolIds.add(
+                            str(workflowProtocolId)
+                        )
 
                 workflowProtocolList = (
                     getPostgresqlRuntimeSubworkflowCallback(
@@ -240,24 +248,79 @@ class RuntimeProtocolContinueService:
                 except Exception:
                     pass
 
-            pointerRestoreInfo = (
-                restorePostgresqlRuntimePointersForProtocolsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protocolsToResume,
-                    prepareOutputsForLaunch=False,
-                    allowMissingParentOutputs=True,
-                    parentProtocolsById=parentProtocolsById,
+            protocolsNeedingPointerRestore = []
+
+            for protocolToResume in protocolsToResume:
+                protocolToResumeId = getattr(
+                    protocolToResume,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                if protocolToResumeId in (
+                        None,
+                        "",
+                ):
+                    continue
+
+                # A protocol refreshed from run.db already contains
+                # the persistent SQLite Pointer objects required by
+                # Scipion's native streaming resume.
+                #
+                # Replacing those pointers with fresh instances loses
+                # their runtime SQLite identity and can produce:
+                #
+                #   Circular reference, object:
+                #   <id>.<inputName> found twice
+                if (
+                        str(protocolToResumeId)
+                        in runtimeRefreshedProtocolIds
+                ):
+                    continue
+
+                protocolsNeedingPointerRestore.append(
+                    protocolToResume
                 )
-            )
+
+            if protocolsNeedingPointerRestore:
+                pointerRestoreInfo = (
+                    restorePostgresqlRuntimePointersForProtocolsCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocols=(
+                            protocolsNeedingPointerRestore
+                        ),
+                        prepareOutputsForLaunch=False,
+                        allowMissingParentOutputs=True,
+                        parentProtocolsById=(
+                            parentProtocolsById
+                        ),
+                    )
+                )
+            else:
+                pointerRestoreInfo = {
+                    "reports": [],
+                    "errors": [],
+                    "skipped": True,
+                    "reason": (
+                        "runtime_db_pointers_preserved"
+                    ),
+                    "protocolIds": sorted(
+                        runtimeRefreshedProtocolIds
+                    ),
+                }
 
             if pointerRestoreInfo.get("errors"):
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    status_code=(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
                     detail=(
-                        "Failed to restore PostgreSQL runtime pointers "
-                        "before continue-all: %s"
-                        % pointerRestoreInfo.get("errors")
+                            "Failed to restore PostgreSQL runtime "
+                            "pointers before continue-all: %s"
+                            % pointerRestoreInfo.get(
+                        "errors"
+                    )
                     ),
                 )
 
