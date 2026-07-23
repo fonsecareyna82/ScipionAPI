@@ -85,7 +85,11 @@ from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
 import pyworkflow
-from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.mapper.postgresql import (
+    POSTGRESQL_PROTOCOL_ID_START,
+    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+    PostgresqlFlatMapper,
+)
 from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
@@ -1911,8 +1915,47 @@ class ProjectService:
                 else 1
             )
 
-            nextProtocolIdFloor = (
-                    maxSqliteObjectId + 1
+            importedProtocolIds = []
+
+            for importedProtocol in (
+                    project.getRuns()
+                    or []
+            ):
+                protocolId = getattr(
+                    importedProtocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                try:
+                    protocolId = int(
+                        protocolId
+                    )
+                except Exception:
+                    continue
+
+                if (
+                        protocolId
+                        < POSTGRESQL_PROTOCOL_ID_START
+                        or protocolId
+                        >= POSTGRESQL_RUNTIME_OBJECT_ID_START
+                ):
+                    continue
+
+                importedProtocolIds.append(
+                    protocolId
+                )
+
+            maxSqliteProtocolId = max(
+                importedProtocolIds
+                or [
+                    POSTGRESQL_PROTOCOL_ID_START - 1
+                ]
+            )
+
+            nextProtocolIdFloor = max(
+                maxSqliteProtocolId + 1,
+                POSTGRESQL_PROTOCOL_ID_START,
             )
 
             initializedProtocolIdFloor = (
@@ -1941,6 +1984,12 @@ class ProjectService:
                 "database": sqliteDbPath,
                 "maxObjectId": (
                     maxSqliteObjectId
+                ),
+                "maxProtocolId": (
+                    maxSqliteProtocolId
+                ),
+                "protocolsCount": len(
+                    importedProtocolIds
                 ),
                 "nextProtocolIdFloor": (
                     initializedProtocolIdFloor
