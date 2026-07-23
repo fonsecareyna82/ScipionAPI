@@ -27,12 +27,14 @@ import inspect
 import json
 import logging
 import os
+import sqlite3
 from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 import pyworkflow.object as pwobject
 from pyworkflow.mapper.mapper import Mapper
+from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project.project import (
     PROJECT_CREATION_TIME,
     PROJECT_RUNS,
@@ -743,6 +745,149 @@ class PostgresqlRuntimeMapper(Mapper):
             return self.writeFallbackMapper.selectById(objId) is not None
         except Exception:
             return False
+
+    def _getProjectSqlitePath(
+            self,
+    ) -> Optional[str]:
+        """
+        Return the physical project.sqlite path independently of whether
+        a SQLite fallback mapper is currently open.
+        """
+        project = self.project
+
+        if project is None:
+            return None
+
+        projectPath = getattr(
+            project,
+            "path",
+            None,
+        )
+
+        if not projectPath:
+            projectPathGetter = getattr(
+                project,
+                "getPath",
+                None,
+            )
+
+            if callable(
+                    projectPathGetter
+            ):
+                try:
+                    projectPath = (
+                        projectPathGetter()
+                    )
+                except Exception:
+                    projectPath = None
+
+        sqlitePath = None
+
+        dbPathGetter = getattr(
+            project,
+            "getDbPath",
+            None,
+        )
+
+        if callable(
+                dbPathGetter
+        ):
+            try:
+                sqlitePath = dbPathGetter()
+            except Exception:
+                sqlitePath = None
+
+        if not sqlitePath and projectPath:
+            sqlitePath = os.path.join(
+                str(projectPath),
+                PROJECT_DBNAME,
+            )
+
+        if not sqlitePath:
+            return None
+
+        sqlitePath = os.path.expanduser(
+            str(sqlitePath)
+        )
+
+        if not os.path.isabs(
+                sqlitePath
+        ):
+            if not projectPath:
+                return None
+
+            sqlitePath = os.path.join(
+                str(projectPath),
+                sqlitePath,
+            )
+
+        return os.path.abspath(
+            sqlitePath
+        )
+
+    def _existsInProjectSqlite(
+            self,
+            objId,
+    ) -> bool:
+        """
+        Check the real project.sqlite Objects namespace.
+
+        This check must work even when neither the read nor the write
+        fallback mapper is open. Imported project.sqlite databases use
+        one global namespace for protocols and protocol child objects.
+        """
+        if objId is None:
+            return False
+
+        if self._existsInWriteFallback(
+                objId
+        ):
+            return True
+
+        sqlitePath = (
+            self._getProjectSqlitePath()
+        )
+
+        if (
+                not sqlitePath
+                or not os.path.isfile(
+            sqlitePath
+        )
+        ):
+            return False
+
+        try:
+            with sqlite3.connect(
+                    sqlitePath,
+                    timeout=5.0,
+            ) as connection:
+                connection.execute(
+                    "PRAGMA query_only = ON"
+                )
+
+                row = connection.execute(
+                    """
+                    SELECT 1
+                      FROM Objects
+                     WHERE id = ?
+                     LIMIT 1
+                    """,
+                    (
+                        int(objId),
+                    ),
+                ).fetchone()
+
+            return row is not None
+
+        except sqlite3.Error as error:
+            raise RuntimeError(
+                "Could not verify protocol id %s "
+                "against project SQLite database %s."
+                % (
+                    objId,
+                    sqlitePath,
+                )
+            ) from error
 
     def ensureProtocolWriteFallbackMirror(
             self,
@@ -5421,9 +5566,9 @@ class PostgresqlRuntimeMapper(Mapper):
                 break
 
             # Imported project.sqlite databases use one global Objects
-            # namespace. A compact protocol candidate can therefore
-            # already belong to an old String, parameter or output.
-            if not self._existsInWriteFallback(
+            # namespace. Check the physical SQLite database even when
+            # no fallback mapper is currently open.
+            if not self._existsInProjectSqlite(
                     objId
             ):
                 break
