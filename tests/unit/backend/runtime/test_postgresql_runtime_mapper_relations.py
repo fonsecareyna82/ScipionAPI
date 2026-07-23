@@ -40,6 +40,7 @@ class FakeDatabase:
     def __init__(self, rows=None):
         self.rows = list(rows or [])
         self.calls = []
+        self.executeCalls = []
 
     def fetchAll(self, query, values):
         self.calls.append({
@@ -49,14 +50,20 @@ class FakeDatabase:
 
         return list(self.rows)
 
+    def execute(self, query, values, commit=True):
+        self.executeCalls.append({
+            "query": " ".join(str(query).split()),
+            "values": values,
+            "commit": commit,
+        })
+
 
 def buildRuntimeMapper(rows=None):
-    mapper = PostgresqlRuntimeMapper.__new__(
-        PostgresqlRuntimeMapper
-    )
+    mapper = PostgresqlRuntimeMapper.__new__(PostgresqlRuntimeMapper)
 
     mapper.projectId = 7
     mapper.db = FakeDatabase(rows=rows)
+    mapper.writeFallbackMapper = None
     mapper._runtimeProtocolsById = {}
     mapper._sqliteProtocolMirrorIds = set()
 
@@ -548,4 +555,60 @@ def test_SelectRelationObjectReturnsNoneForMissingObject():
 
     assert result is None
     assert genericCalls == [701]
+
+
+def test_InsertRelationDataWritesOnlyRuntimeRelationTable():
+    mapper = buildRuntimeMapper()
+
+    mapper.insertRelationData(
+        relName="source",
+        creatorId=101,
+        parentId=201,
+        childId=301,
+        parentExtended="outputParent",
+        childExtended="outputChild",
+    )
+
+    assert len(mapper.db.executeCalls) == 1
+
+    call = mapper.db.executeCalls[0]
+
+    assert call["query"].startswith(
+        "INSERT INTO scipion_relations"
+    )
+
+    assert call["values"] == (
+        7,
+        "source",
+        101,
+        201,
+        301,
+        "outputParent",
+        "outputChild",
+    )
+
+    assert "scipion_object_relations" not in call["query"]
+
+
+def test_DeleteRelationsDeletesOnlyRuntimeRelations():
+    mapper = buildRuntimeMapper()
+    creator = FakeObject(101)
+
+    mapper.deleteRelations(creator)
+
+    assert len(mapper.db.executeCalls) == 1
+
+    call = mapper.db.executeCalls[0]
+
+    assert call["query"].startswith(
+        "DELETE FROM scipion_relations"
+    )
+
+    assert call["values"] == (
+        7,
+        101,
+    )
+
+    assert "scipion_object_relations" not in call["query"]
+
 
