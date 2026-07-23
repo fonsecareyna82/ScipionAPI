@@ -265,3 +265,5 @@ def test_SelectByRejectsUnsupportedFieldsWithoutUsingFallback():
         )
 
     assert fallback.calls == []
+
+

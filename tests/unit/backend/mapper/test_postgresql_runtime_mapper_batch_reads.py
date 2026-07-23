@@ -350,6 +350,27 @@ def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
     }]
 
 
+def test_SelectByIdDoesNotUseReadFallbackForMissingObject():
+    readFallback = RebuildingFallbackMapper(
+        ExampleProtocol
+    )
+
+    mapper = buildMapper(
+        fallback=readFallback
+    )
+
+    mapper._selectProtocolByIdFromPostgresql = lambda objId: None
+    mapper._selectSetByIdFromPostgresql = lambda objId: None
+    mapper._selectGenericObjectByIdFromPostgresql = lambda objId: None
+
+    result = mapper.selectById(
+        999
+    )
+
+    assert result is None
+    assert readFallback.calls == []
+
+
 def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
     readFallback = RebuildingFallbackMapper(
         OtherProtocol
