@@ -281,7 +281,7 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
     assert resolved == browserRoot.resolve()
 
 
-def test_ReplaceCurrentProjectWithPostgresqlProjectAlwaysDisablesReadFallback(
+def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
         projectService,
         projectServiceModule,
         monkeypatch,
@@ -309,7 +309,6 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectAlwaysDisablesReadFallback(
                 path,
                 projectId,
                 flatMapper,
-                enableReadFallback,
                 enableWriteFallback,
         ):
             captured.update({
@@ -317,7 +316,6 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectAlwaysDisablesReadFallback(
                 "path": path,
                 "projectId": projectId,
                 "flatMapper": flatMapper,
-                "enableReadFallback": enableReadFallback,
                 "enableWriteFallback": enableWriteFallback,
             })
 
@@ -353,7 +351,6 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectAlwaysDisablesReadFallback(
         "path": str(projectPath),
         "projectId": 7,
         "flatMapper": mapper,
-        "enableReadFallback": False,
         "enableWriteFallback": True,
         "loadChdir": True,
     }
@@ -364,7 +361,7 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectAlwaysDisablesReadFallback(
     )
 
 
-def test_LoadPostgresqlRuntimeProjectForMutationAlwaysDisablesReadFallback(
+def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
         projectService,
         projectServiceModule,
         monkeypatch,
@@ -382,7 +379,6 @@ def test_LoadPostgresqlRuntimeProjectForMutationAlwaysDisablesReadFallback(
                 path,
                 projectId,
                 flatMapper,
-                enableReadFallback,
                 enableWriteFallback,
         ):
             captured.update({
@@ -390,7 +386,6 @@ def test_LoadPostgresqlRuntimeProjectForMutationAlwaysDisablesReadFallback(
                 "path": path,
                 "projectId": projectId,
                 "flatMapper": flatMapper,
-                "enableReadFallback": enableReadFallback,
                 "enableWriteFallback": enableWriteFallback,
             })
 
@@ -444,7 +439,6 @@ def test_LoadPostgresqlRuntimeProjectForMutationAlwaysDisablesReadFallback(
         "path": str(projectPath),
         "projectId": 7,
         "flatMapper": mapper,
-        "enableReadFallback": False,
         "enableWriteFallback": True,
         "loadChdir": True,
     }

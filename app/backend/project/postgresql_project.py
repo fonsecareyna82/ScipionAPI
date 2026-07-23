@@ -52,11 +52,11 @@ class PostgresqlProject(ScipionProject):
     hosts and protocol setup logic, but replaces Project.mapper with a
     PostgresqlRuntimeMapper.
 
-    Reads are PostgreSQL-only by default.
+    Project reads are PostgreSQL-only.
 
-    A legacy SqliteMapper fallback can still be enabled explicitly while
-    diagnosing incomplete PostgreSQL mapper operations. Runtime execution
-    databases remain independent from this project-level read fallback.
+    A temporary project.sqlite write mirror can still be enabled for Scipion's
+    native runner. Protocol runtime databases such as logs/run.db remain
+    regular SQLite databases.
     """
 
     def __init__(
@@ -65,7 +65,6 @@ class PostgresqlProject(ScipionProject):
             path: str,
             projectId: int,
             flatMapper: PostgresqlFlatMapper,
-            enableReadFallback: bool = False,
             enableWriteFallback: bool = False,
     ):
         super().__init__(domain, path)
@@ -78,11 +77,9 @@ class PostgresqlProject(ScipionProject):
         self.postgresqlProjectId = int(projectId)
         self.postgresqlFlatMapper = flatMapper
 
-        self.enableReadFallback = bool(enableReadFallback)
         self.enableWriteFallback = bool(enableWriteFallback)
 
         self._postgresqlRuntimeMapper: Optional[PostgresqlRuntimeMapper] = None
-        self._readFallbackMapper = None
         self._writeFallbackMapper = None
 
     def createMapper(self, sqliteFn):
@@ -105,38 +102,20 @@ class PostgresqlProject(ScipionProject):
             )
             return ScipionProject.createMapper(self, sqlitePath)
 
-        readFallbackMapper = self._createFallbackMapper(
-            sqlitePath=sqlitePath,
-            enabled=self.enableReadFallback,
-            label="read",
-        )
-
-        # Read and write compatibility are independent.
-        #
-        # Disabling the project.sqlite read fallback must not disable the
-        # temporary SQLite write mirror required by Scipion's native runner.
-        #
-        # When reads are enabled, reuse the same mapper to avoid opening two
-        # SQLite connections to project.sqlite.
         writeFallbackMapper = None
 
         if self.enableWriteFallback:
-            if readFallbackMapper is not None:
-                writeFallbackMapper = readFallbackMapper
-            else:
-                writeFallbackMapper = self._createFallbackMapper(
-                    sqlitePath=sqlitePath,
-                    enabled=True,
-                    label="write",
-                )
+            writeFallbackMapper = self._createFallbackMapper(
+                sqlitePath=sqlitePath,
+                enabled=True,
+                label="write",
+            )
 
-        self._readFallbackMapper = readFallbackMapper
         self._writeFallbackMapper = writeFallbackMapper
 
         runtimeMapper = PostgresqlRuntimeMapper(
             flatMapper=self.postgresqlFlatMapper,
             projectId=self.postgresqlProjectId,
-            readFallbackMapper=readFallbackMapper,
             writeFallbackMapper=writeFallbackMapper,
             project=self,
         )
@@ -193,21 +172,16 @@ class PostgresqlProject(ScipionProject):
 
     def closeMapper(self):
         """
-            Close runtime mapper and fallback mappers.
-
-            PostgresqlRuntimeMapper.close() already closes readFallbackMapper.
-            This method is defensive and avoids leaking sqlite connections during
-            tests or repeated project loads.
-            """
+        Close the PostgreSQL runtime mapper and the SQLite write mirror.
+        """
         runtimeMapper = self._postgresqlRuntimeMapper
-        readFallbackMapper = self._readFallbackMapper
         writeFallbackMapper = self._writeFallbackMapper
 
         try:
             if runtimeMapper is not None:
                 runtimeMapper.close()
 
-            if writeFallbackMapper is not None and writeFallbackMapper is not readFallbackMapper:
+            if writeFallbackMapper is not None:
                 try:
                     writeFallbackMapper.close()
                 except Exception:
@@ -218,7 +192,6 @@ class PostgresqlProject(ScipionProject):
         finally:
             self.mapper = None
             self._postgresqlRuntimeMapper = None
-            self._readFallbackMapper = None
             self._writeFallbackMapper = None
 
     # ---------------------------------------------------
