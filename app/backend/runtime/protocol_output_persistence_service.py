@@ -68,6 +68,210 @@ class RuntimeProtocolOutputPersistenceService:
 
         return obj.__class__.__name__
 
+    def _resolveProtocolProjectPath(
+            self,
+            protocol: Any,
+            projectPath: Optional[str] = None,
+    ) -> Optional[str]:
+        if projectPath:
+            return os.path.abspath(
+                str(projectPath)
+            )
+
+        project = self.safeCall(
+            protocol,
+            "getProject",
+            None,
+        )
+
+        if project is None:
+            return None
+
+        for attributeName in (
+                "path",
+                "_path",
+        ):
+            value = getattr(
+                project,
+                attributeName,
+                None,
+            )
+
+            if value:
+                return os.path.abspath(
+                    str(value)
+                )
+
+        value = self.safeCall(
+            project,
+            "getPath",
+            None,
+        )
+
+        if value:
+            return os.path.abspath(
+                str(value)
+            )
+
+        return None
+
+    def _openRelativeSetMapperForPersistence(
+            self,
+            *,
+            protocol: Any,
+            scipionSet: Any,
+            projectPath: Optional[str] = None,
+    ) -> bool:
+        """
+        Open a Scipion Set whose mapper filename is relative to the
+        project root.
+
+        The original relative _mapperPath is restored immediately, so
+        PostgreSQL keeps Scipion's portable relative path rather than
+        an installation-specific absolute path.
+
+        Returns True only when this method opened the mapper.
+        """
+        if getattr(
+                scipionSet,
+                "_mapper",
+                None,
+        ) is not None:
+            return False
+
+        fileName = self.safeCall(
+            scipionSet,
+            "getFileName",
+            None,
+        )
+
+        if not fileName:
+            return False
+
+        fileName = str(fileName)
+
+        if os.path.isabs(fileName):
+            return False
+
+        resolvedProjectPath = (
+            self._resolveProtocolProjectPath(
+                protocol=protocol,
+                projectPath=projectPath,
+            )
+        )
+
+        if not resolvedProjectPath:
+            raise RuntimeError(
+                "Cannot resolve relative Scipion Set path "
+                "without a project root. "
+                "setClass=%s fileName=%s"
+                % (
+                    self.getScipionClassName(
+                        scipionSet
+                    ),
+                    fileName,
+                )
+            )
+
+        absoluteFileName = os.path.abspath(
+            os.path.join(
+                resolvedProjectPath,
+                fileName,
+            )
+        )
+
+        if not os.path.isfile(
+                absoluteFileName
+        ):
+            raise FileNotFoundError(
+                "Scipion Set database does not exist. "
+                "relativePath=%s projectPath=%s "
+                "absolutePath=%s"
+                % (
+                    fileName,
+                    resolvedProjectPath,
+                    absoluteFileName,
+                )
+            )
+
+        mapperPath = getattr(
+            scipionSet,
+            "_mapperPath",
+            None,
+        )
+
+        if (
+                mapperPath is None
+                or not callable(
+            getattr(
+                mapperPath,
+                "set",
+                None,
+            )
+        )
+        ):
+            raise RuntimeError(
+                "Scipion Set does not expose a mutable "
+                "_mapperPath. setClass=%s fileName=%s"
+                % (
+                    self.getScipionClassName(
+                        scipionSet
+                    ),
+                    fileName,
+                )
+            )
+
+        originalMapperPath = list(
+            mapperPath
+        )
+
+        prefix = (
+            originalMapperPath[1]
+            if len(originalMapperPath) > 1
+            else ""
+        )
+
+        try:
+            mapperPath.set([
+                absoluteFileName,
+                prefix,
+            ])
+
+            scipionSet.load()
+
+        except Exception:
+            try:
+                scipionSet.close()
+            except Exception:
+                logger.debug(
+                    "Could not close Scipion Set mapper "
+                    "after failed relative-path load. "
+                    "fileName=%s absoluteFileName=%s",
+                    fileName,
+                    absoluteFileName,
+                    exc_info=True,
+                )
+
+            raise
+
+        finally:
+            # Keep the portable Scipion path in the runtime object.
+            mapperPath.set(
+                originalMapperPath
+            )
+
+        logger.debug(
+            "Opened relative Scipion Set mapper using project root. "
+            "setClass=%s relativePath=%s absolutePath=%s",
+            self.getScipionClassName(
+                scipionSet
+            ),
+            fileName,
+            absoluteFileName,
+        )
+
+        return True
+
     def isPersistableNonSetOutput(self, outputObj: Any) -> bool:
         if outputObj is None:
             return False
@@ -1473,6 +1677,7 @@ class RuntimeProtocolOutputPersistenceService:
             protocol: Any,
             mapper,
             returnReport: bool = False,
+            projectPath: Optional[str] = None,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         from app.backend.mapper import (
             ScipionObjectPostgresqlMapper,
@@ -1606,17 +1811,53 @@ class RuntimeProtocolOutputPersistenceService:
                 continue
 
             try:
-                if self.isScipionSetLikeOutput(outputObj):
-                    syncInfo = setMapper.storeSet(
-                        projectId=projectId,
-                        protocolDbId=int(protocolDbId),
-                        outputName=outputName,
-                        scipionSet=outputObj,
+                if self.isScipionSetLikeOutput(
+                        outputObj
+                ):
+                    openedSetMapper = (
+                        self
+                        ._openRelativeSetMapperForPersistence(
+                            protocol=protocol,
+                            scipionSet=outputObj,
+                            projectPath=projectPath,
+                        )
                     )
+
+                    try:
+                        syncInfo = (
+                            setMapper.storeSet(
+                                projectId=projectId,
+                                protocolDbId=int(
+                                    protocolDbId
+                                ),
+                                outputName=outputName,
+                                scipionSet=outputObj,
+                            )
+                        )
+
+                    finally:
+                        if openedSetMapper:
+                            try:
+                                outputObj.close()
+                            except Exception:
+                                logger.debug(
+                                    "Could not close Scipion "
+                                    "Set after PostgreSQL "
+                                    "persistence. "
+                                    "projectId=%s "
+                                    "protocolId=%s "
+                                    "outputName=%s",
+                                    projectId,
+                                    protocolId,
+                                    outputName,
+                                    exc_info=True,
+                                )
 
                     persistedOutputs.append({
                         "outputName": outputName,
-                        "outputClassName": outputClassName,
+                        "outputClassName": (
+                            outputClassName
+                        ),
                         "mapperKind": "flat_set",
                         **(syncInfo or {}),
                     })
