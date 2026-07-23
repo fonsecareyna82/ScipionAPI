@@ -1227,6 +1227,67 @@ class PostgresqlFlatMapper(Mapper):
             tuple(params),
         )
 
+    def ensureProjectProtocolIdFloor(
+            self,
+            projectId: int,
+            nextProtocolId: int,
+    ) -> int:
+        """
+        Ensure that future PostgreSQL protocol ids do not collide with
+        objects already present in an imported project.sqlite.
+
+        Scipion's SQLite Objects table uses one global id namespace for
+        protocols and all their stored child objects.
+        """
+        projectId = int(projectId)
+
+        nextProtocolId = max(
+            int(nextProtocolId),
+            POSTGRESQL_PROTOCOL_ID_START,
+        )
+
+        with self.db.transaction():
+            cursor = self.db.execute(
+                """
+                INSERT INTO project_object_id_counters (
+                    "projectId",
+                    "nextObjectId",
+                    "nextProtocolId"
+                )
+                VALUES (%s, %s, %s)
+                ON CONFLICT ("projectId")
+                DO UPDATE SET
+                    "nextProtocolId" = GREATEST(
+                        project_object_id_counters."nextProtocolId",
+                        EXCLUDED."nextProtocolId"
+                    ),
+                    "updatedAt" = NOW()
+                RETURNING "nextProtocolId"
+                """,
+                (
+                    projectId,
+                    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+                    nextProtocolId,
+                ),
+                commit=False,
+            )
+
+            row = cursor.fetchone()
+
+        if (
+                not row
+                or row.get("nextProtocolId") is None
+        ):
+            raise RuntimeError(
+                "Could not initialize protocol id floor "
+                "for project %s"
+                % projectId
+            )
+
+        return int(
+            row["nextProtocolId"]
+        )
+
     def allocateProjectProtocolId(
             self,
             projectId: int,
@@ -1234,8 +1295,9 @@ class PostgresqlFlatMapper(Mapper):
         """
         Allocate a sequential protocol id for one project.
 
-        Protocol ids use their own namespace and are never affected by
-        Scipion objects, parameters, outputs or SQLite mirror children.
+        PostgreSQL owns protocol allocation, but imported projects seed
+        this counter above the maximum project.sqlite Objects id because
+        the SQLite execution mirror uses one global object namespace.
         """
         projectId = int(projectId)
 

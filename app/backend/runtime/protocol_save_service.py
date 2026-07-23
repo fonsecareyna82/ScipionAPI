@@ -267,8 +267,10 @@ class RuntimeProtocolSaveService:
                         for error in errors
                     ]
 
-                param.set(castedValue)
-                protocol.setAttributeValue(key, castedValue)
+                protocol.setAttributeValue(
+                    key,
+                    castedValue,
+                )
 
                 if key == "runName":
                     protocol.runName.set(castedValue)
@@ -418,7 +420,11 @@ class RuntimeProtocolSaveService:
         if newInputs.isEmpty() and not param.allowsNull.get():
             errorList.append("**" + param.label.get() + "** it must not be empty.")
 
-        protocol.setAttributeValue(inputName, newInputs)
+        setattr(
+            protocol,
+            inputName,
+            newInputs,
+        )
 
         return errorList
 
@@ -486,12 +492,29 @@ class RuntimeProtocolSaveService:
         value = f"{parentScipionProtocolId}.{outputName}"
         pointer = getattr(protocol, inputName, None)
 
-        if pointer is None or isinstance(pointer, str) or not hasattr(pointer, "set"):
-            pointer = Pointer(parentProtocol, extended=outputName)
-            setattr(protocol, inputName, pointer)
+        if not isinstance(
+                pointer,
+                Pointer,
+        ):
+            pointer = Pointer(
+                parentProtocol,
+                extended=outputName,
+            )
+
+            setattr(
+                protocol,
+                inputName,
+                pointer,
+            )
+
         else:
-            pointer.set(parentProtocol)
-            pointer.setExtended(outputName)
+            pointer.set(
+                parentProtocol
+            )
+
+            pointer.setExtended(
+                outputName
+            )
 
         # Keep the form/default textual representation if available,
         # but do not call param.set(value), because that stores the input as string.

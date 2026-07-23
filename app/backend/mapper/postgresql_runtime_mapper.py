@@ -38,6 +38,11 @@ from pyworkflow.project.project import (
     PROJECT_RUNS,
 )
 from pyworkflow.protocol.protocol import Protocol
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
 from pyworkflow.object import (
     Object as ScipionObject,
     Set as ScipionSet,
@@ -5810,52 +5815,108 @@ class PostgresqlRuntimeMapper(Mapper):
                     exc_info=True,
                 )
 
-    def _applyStoredProtocolParams(self, protocol, rawParams):
-        params = self._normalizeStoredProtocolParams(rawParams)
+    def _applyStoredProtocolParams(
+            self,
+            protocol,
+            rawParams,
+    ):
+        params = (
+            self._normalizeStoredProtocolParams(
+                rawParams
+            )
+        )
 
         for key, storedValue in params.items():
-            value = self._extractStoredProtocolParamValue(storedValue)
+            value = (
+                self
+                ._extractStoredProtocolParamValue(
+                    storedValue
+                )
+            )
+
             if value is None:
                 continue
 
-            param = None
             try:
-                param = protocol.getParam(key)
+                param = protocol.getParam(
+                    key
+                )
             except Exception:
                 param = None
 
-            if param is not None:
-                setter = getattr(param, "set", None)
-                if callable(setter):
-                    try:
-                        setter(value)
-                    except Exception:
-                        logger.debug(
-                            "Could not restore PostgreSQL protocol param. key=%s value=%s",
-                            key,
-                            value,
-                            exc_info=True,
-                        )
-
-                try:
-                    protocol.setAttributeValue(key, value)
-                except Exception:
-                    pass
+            # Pointer state is authoritative in protocol_input_refs.
+            # Raw textual values from protocols.params must never be
+            # assigned to Pointer or PointerList runtime attributes.
+            if isinstance(
+                    param,
+                    (
+                            PointerParam,
+                            MultiPointerParam,
+                            RelationParam,
+                    ),
+            ):
                 continue
 
-            attr = getattr(protocol, key, None)
-            attrSetter = getattr(attr, "set", None)
+            # Param is the form definition. Never mutate it with
+            # param.set(value). Only update the runtime attribute.
+            if param is not None:
+                try:
+                    protocol.setAttributeValue(
+                        key,
+                        value,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not restore PostgreSQL protocol "
+                        "attribute value. key=%s value=%s",
+                        key,
+                        value,
+                        exc_info=True,
+                    )
+
+                continue
+
+            attr = getattr(
+                protocol,
+                key,
+                None,
+            )
+
+            attrSetter = getattr(
+                attr,
+                "set",
+                None,
+            )
+
             if callable(attrSetter):
                 try:
-                    attrSetter(value)
+                    attrSetter(
+                        value
+                    )
                     continue
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Could not restore PostgreSQL protocol "
+                        "runtime attribute. key=%s value=%s",
+                        key,
+                        value,
+                        exc_info=True,
+                    )
 
             try:
-                setattr(protocol, key, value)
+                setattr(
+                    protocol,
+                    key,
+                    value,
+                )
             except Exception:
-                pass
+                logger.debug(
+                    "Could not assign PostgreSQL protocol "
+                    "runtime value. key=%s value=%s",
+                    key,
+                    value,
+                    exc_info=True,
+                )
 
     def _normalizeStoredProtocolParams(self, rawParams):
         if rawParams is None:
@@ -5879,33 +5940,39 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return storedValue
 
-    def _applyStoredProtocolParam(self, protocol: Protocol, key: str, value):
-        param = None
-
+    def _applyStoredProtocolParam(
+            self,
+            protocol: Protocol,
+            key: str,
+            value,
+    ):
         try:
-            param = protocol.getParam(key)
+            param = protocol.getParam(
+                key
+            )
         except Exception:
             param = None
 
-        if param is not None:
-            setter = getattr(param, "set", None)
-            if callable(setter):
-                try:
-                    setter(value)
-                except Exception:
-                    logger.debug(
-                        "Could not restore protocol param using param.set(). "
-                        "param=%s value=%s",
-                        key,
-                        value,
-                        exc_info=True,
-                    )
+        if isinstance(
+                param,
+                (
+                        PointerParam,
+                        MultiPointerParam,
+                        RelationParam,
+                ),
+        ):
+            return
 
+        if param is not None:
             try:
-                protocol.setAttributeValue(key, value)
+                protocol.setAttributeValue(
+                    key,
+                    value,
+                )
             except Exception:
                 logger.debug(
-                    "Could not restore protocol attribute value. param=%s value=%s",
+                    "Could not restore protocol attribute "
+                    "value. param=%s value=%s",
                     key,
                     value,
                     exc_info=True,
@@ -5913,15 +5980,27 @@ class PostgresqlRuntimeMapper(Mapper):
 
             return
 
-        attr = getattr(protocol, key, None)
-        attrSetter = getattr(attr, "set", None)
+        attr = getattr(
+            protocol,
+            key,
+            None,
+        )
+
+        attrSetter = getattr(
+            attr,
+            "set",
+            None,
+        )
+
         if callable(attrSetter):
             try:
-                attrSetter(value)
+                attrSetter(
+                    value
+                )
                 return
             except Exception:
                 logger.debug(
-                    "Could not restore protocol attr using attr.set(). "
+                    "Could not restore protocol attr. "
                     "attr=%s value=%s",
                     key,
                     value,
@@ -5929,10 +6008,15 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
         try:
-            setattr(protocol, key, value)
+            setattr(
+                protocol,
+                key,
+                value,
+            )
         except Exception:
             logger.debug(
-                "Could not setattr protocol param. attr=%s value=%s",
+                "Could not setattr protocol param. "
+                "attr=%s value=%s",
                 key,
                 value,
                 exc_info=True,

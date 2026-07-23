@@ -35,6 +35,7 @@ from app.backend.runtime.protocol_output_persistence_service import (
 )
 from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
+from pyworkflow.protocol.protocol import Protocol
 
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,35 @@ class RuntimeProjectRelationSyncService:
                 if fallbackProtocol is None:
                     continue
 
+                if not isinstance(
+                        fallbackProtocol,
+                        Protocol,
+                ):
+                    logger.warning(
+                        "Ignoring invalid SQLite protocol "
+                        "candidate while collecting relations. "
+                        "protocolId=%s source=%s "
+                        "className=%s objectName=%s "
+                        "parentId=%s",
+                        protocolId,
+                        fallbackName,
+                        fallbackProtocol
+                        .__class__
+                        .__name__,
+                        getattr(
+                            fallbackProtocol,
+                            "_objName",
+                            None,
+                        ),
+                        getattr(
+                            fallbackProtocol,
+                            "_objParentId",
+                            None,
+                        ),
+                    )
+
+                    continue
+
                 fallbackProtocol.setMapper(
                     fallbackMapper
                 )
@@ -267,7 +297,10 @@ class RuntimeProjectRelationSyncService:
                         )
                     )
 
-                    if sqliteProtocol is not None:
+                    if isinstance(
+                            sqliteProtocol,
+                            Protocol,
+                    ):
                         sqliteProtocol.setMapper(
                             isolatedMapper
                         )
@@ -276,6 +309,28 @@ class RuntimeProjectRelationSyncService:
                             "project_sqlite_isolated",
                             sqliteProtocol,
                         ))
+
+                    elif sqliteProtocol is not None:
+                        logger.warning(
+                            "Ignoring invalid isolated SQLite "
+                            "protocol candidate. protocolId=%s "
+                            "className=%s objectName=%s "
+                            "parentId=%s",
+                            protocolId,
+                            sqliteProtocol
+                            .__class__
+                            .__name__,
+                            getattr(
+                                sqliteProtocol,
+                                "_objName",
+                                None,
+                            ),
+                            getattr(
+                                sqliteProtocol,
+                                "_objParentId",
+                                None,
+                            ),
+                        )
 
             return self.collectProtocolRelations(
                 protocolCandidates

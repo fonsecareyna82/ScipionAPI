@@ -33,6 +33,7 @@ import copy
 import json
 import threading
 import shutil
+import sqlite3
 
 import numpy as np
 
@@ -1762,6 +1763,51 @@ class ProjectService:
                 "name": projectPath,
             })
 
+            sqliteDbPath = os.path.abspath(
+                str(
+                    project.getDbPath()
+                )
+            )
+
+            with sqlite3.connect(
+                    sqliteDbPath
+            ) as sqliteConnection:
+                sqliteRow = (
+                    sqliteConnection
+                    .execute(
+                        """
+                        SELECT COALESCE(
+                                   MAX(id),
+                                   1
+                               )
+                          FROM Objects
+                        """
+                    )
+                    .fetchone()
+                )
+
+            maxSqliteObjectId = int(
+                sqliteRow[0]
+                if (
+                        sqliteRow
+                        and sqliteRow[0] is not None
+                )
+                else 1
+            )
+
+            nextProtocolIdFloor = (
+                    maxSqliteObjectId + 1
+            )
+
+            initializedProtocolIdFloor = (
+                mapper.ensureProjectProtocolIdFloor(
+                    projectId=projectId,
+                    nextProtocolId=(
+                        nextProtocolIdFloor
+                    ),
+                )
+            )
+
             migrationReport = self.syncProjectProtocolsAndDependencies(
                 mapper=mapper,
                 projectId=projectId,
@@ -1770,6 +1816,18 @@ class ProjectService:
                 strict=True,
                 syncRelations=True,
             )
+
+            migrationReport[
+                "sqliteIdentity"
+            ] = {
+                "database": sqliteDbPath,
+                "maxObjectId": (
+                    maxSqliteObjectId
+                ),
+                "nextProtocolIdFloor": (
+                    initializedProtocolIdFloor
+                ),
+            }
 
             auditService = RuntimeProjectImportAuditService()
 
