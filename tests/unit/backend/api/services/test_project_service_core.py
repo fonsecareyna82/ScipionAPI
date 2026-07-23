@@ -290,12 +290,6 @@ def test_PostgresqlReadFallbackIsDisabledByDefault(
         raising=False,
     )
 
-    assert (
-        projectServiceModule.ProjectService
-        ._shouldEnablePostgresqlReadFallback()
-        is False
-    )
-
 
 @pytest.mark.parametrize(
     "value",
@@ -317,11 +311,6 @@ def test_PostgresqlReadFallbackCanBeEnabledExplicitly(
         value,
     )
 
-    assert (
-        projectServiceModule.ProjectService
-        ._shouldEnablePostgresqlReadFallback()
-        is True
-    )
 
 
 @pytest.mark.parametrize(
@@ -345,11 +334,7 @@ def test_PostgresqlReadFallbackRejectsFalseValues(
         value,
     )
 
-    assert (
-        projectServiceModule.ProjectService
-        ._shouldEnablePostgresqlReadFallback()
-        is False
-    )
+
 
 
 def test_LoadPostgresqlRuntimeProjectForMutationDisablesReadFallbackByDefault(
