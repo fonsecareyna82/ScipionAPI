@@ -1141,11 +1141,15 @@ class ProjectService:
         runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
 
         try:
-            return runtimeProtocolOutputPersistenceService.registerOutput(
-                projectId=projectId,
-                protocol=protocol,
-                mapper=mapper,
-                returnReport=returnReport,
+            return (
+                runtimeProtocolOutputPersistenceService
+                .registerOutput(
+                    projectId=projectId,
+                    protocol=protocol,
+                    mapper=mapper,
+                    returnReport=returnReport,
+                    projectPath=self._getCurrentProjectPath(),
+                )
             )
         except ValueError as exc:
             raise HTTPException(
