@@ -342,6 +342,28 @@ def test_SelectGenericObjectRejectsPointerTree():
     assert result is None
 
 
+def test_SelectByIdUsesGenericPostgresqlObject():
+    mapper = buildRuntimeMapper(buildRows())
+
+    mapper._selectProtocolByIdFromPostgresql = lambda objId: None
+    mapper._selectSetByIdFromPostgresql = lambda objId: None
+
+    result = mapper.selectById("700")
+
+    assert isinstance(result, FakeComposite)
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+    assert result.title.get() == "PostgreSQL object"
+    assert result.count.get() == 5
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
 def test_SelectGenericNestedRootPreservesDirectParentId():
     rows = [{
         "id": 11,
@@ -513,7 +535,7 @@ def test_GenericObjectClassRowsIncludeRegisteredSubclasses():
     ]
 
 
-def test_SelectByClassDoesNotMergeGenericFallbackObjects():
+def test_SelectAllBatchIncludesGenericPostgresqlObjects():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -525,30 +547,30 @@ def test_SelectByClassDoesNotMergeGenericFallbackObjects():
         classRows=classRows,
     )
 
-    fallbackOnly = FakeComposite()
-    fallbackOnly.setObjId(900)
+    result = mapper.selectAllBatch()
 
-    mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.selectByClass.return_value = [
-        fallbackOnly,
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
     ]
 
-    mapper._recordReadFallback = Mock()
-
-    result = mapper.selectByClass(
-        FakeComposite,
-        includeSubclasses=False,
-    )
-
-    assert [
-        obj.getObjId()
-        for obj in result
-    ] == [
-        700,
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
     ]
 
-    mapper.readFallbackMapper.selectByClass.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
+    mapper.flatMapper.getProtocols.assert_called_once_with(7)
 
 
 def test_SelectAllExcludesProtocolOwnedGenericObjects():
@@ -942,33 +964,14 @@ def test_UpdateFromRaisesWhenGenericObjectIsMissingFromPostgresql():
     targetObject = FakeComposite()
     targetObject.setObjId(700)
 
-    with pytest.raises(
-            NotImplementedError,
-            match="PostgreSQL updateFrom is only implemented",
-    ):
+    with pytest.raises(NotImplementedError) as error:
         mapper.updateFrom(targetObject)
 
-
-def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():
-    mapper = buildRuntimeMapper(
-        []
+    assert str(error.value) == (
+        "PostgreSQL updateFrom is only implemented "
+        "for protocols, PostgreSQL runtime Sets "
+        "and supported generic runtime objects."
     )
-
-    targetObject = FakeComposite()
-    targetObject.setObjId(700)
-
-    try:
-        mapper.updateFrom(targetObject)
-    except NotImplementedError as error:
-        assert str(error) == (
-            "PostgreSQL updateFrom is only implemented "
-            "for protocols, PostgreSQL runtime Sets "
-            "and supported generic runtime objects."
-        )
-    else:
-        raise AssertionError(
-            "Expected updateFrom to raise NotImplementedError"
-        )
 
 
 def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
@@ -990,7 +993,6 @@ def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
 
     assert result is None
     assert targetObject.getObjParentId() is None
-
 
 
 def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
