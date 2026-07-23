@@ -154,7 +154,6 @@ def buildRuntimeMapper():
     )
 
     mapper.projectId = 7
-    mapper.readFallbackMapper = None
     mapper.writeFallbackMapper = None
 
     mapper.flatMapper = Mock()

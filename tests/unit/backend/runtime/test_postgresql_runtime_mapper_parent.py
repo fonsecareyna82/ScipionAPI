@@ -33,8 +33,6 @@ def buildRuntimeMapper():
         PostgresqlRuntimeMapper
     )
 
-    mapper.readFallbackMapper = None
-
     resolvedIds = []
     resolvedParent = object()
 
