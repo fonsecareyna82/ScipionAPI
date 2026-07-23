@@ -92,6 +92,40 @@ class RuntimeProtocolContinueService:
                     if workflowProtocolId in (None, ""):
                         continue
 
+                    worksInStreaming = bool(
+                        workflowProtocol
+                        .worksInStreaming()
+                    )
+
+                    isSaved = bool(
+                        workflowProtocol.isSaved()
+                    )
+
+                    # Match Scipion's native continue semantics:
+                    #
+                    # - streaming + not SAVED -> resume from run.db
+                    # - SAVED or non-streaming -> restart, so the old
+                    #   runtime database must not be loaded.
+                    if (
+                            not worksInStreaming
+                            or isSaved
+                    ):
+                        runtimeRefreshReports.append({
+                            "protocolId": (
+                                int(workflowProtocolId)
+                            ),
+                            "refreshed": False,
+                            "reason": (
+                                "native_continue_requires_restart"
+                            ),
+                            "worksInStreaming": (
+                                worksInStreaming
+                            ),
+                            "saved": isSaved,
+                        })
+
+                        continue
+
                     refreshReport = (
                         refreshPostgresqlRuntimeProtocolForResumeCallback(
                             mapper=mapper,
@@ -260,11 +294,24 @@ class RuntimeProtocolContinueService:
 
         errorList = []
 
-        from pyworkflow.protocol import MODE_RESUME
-        for protocolToResume in protocolsToResume:
-            protocolToResume.runMode.set(
-                MODE_RESUME
-            )
+        from pyworkflow.protocol import (
+            MODE_RESTART,
+            MODE_RESUME,
+        )
+
+        for protocolToContinue in protocolsToResume:
+            if (
+                    protocolToContinue
+                            .worksInStreaming()
+                    and not protocolToContinue.isSaved()
+            ):
+                protocolToContinue.runMode.set(
+                    MODE_RESUME
+                )
+            else:
+                protocolToContinue.runMode.set(
+                    MODE_RESTART
+                )
         try:
             currentProject._continueWorkflow(
                 errorList,
