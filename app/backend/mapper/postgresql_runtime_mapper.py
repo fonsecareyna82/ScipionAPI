@@ -2872,10 +2872,7 @@ class PostgresqlRuntimeMapper(Mapper):
         if creationTime is not None:
             result.append(creationTime)
 
-        result = self._mergeRuntimeClassResults(
-            result,
-            [],
-        )
+        result = self._deduplicateRuntimeObjects(result)
 
         return sorted(
             result,
@@ -3487,6 +3484,25 @@ class PostgresqlRuntimeMapper(Mapper):
             return issubclass(candidateClass, ScipionSet)
         except TypeError:
             return False
+
+    def _deduplicateRuntimeObjects(self, objects):
+        result = []
+        identities = set()
+
+        for obj in objects or []:
+            objId = self._getObjId(obj)
+
+            if objId is not None:
+                identity = str(objId)
+
+                if identity in identities:
+                    continue
+
+                identities.add(identity)
+
+            result.append(obj)
+
+        return result
 
     def getParent(self, obj):
         """

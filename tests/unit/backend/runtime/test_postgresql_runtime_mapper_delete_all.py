@@ -27,6 +27,8 @@ from contextlib import contextmanager
 from unittest.mock import Mock
 
 from app.backend.mapper.postgresql import (
+    POSTGRESQL_PROTOCOL_ID_START,
+    POSTGRESQL_RUNTIME_OBJECT_ID_START,
     PostgresqlFlatMapper,
 )
 from app.backend.mapper.postgresql_runtime_mapper import (
@@ -234,6 +236,8 @@ def test_DeleteProjectRuntimeDataClearsOnlyMappedProjectData():
 
     assert counterCall["values"] == (
         7,
+        POSTGRESQL_RUNTIME_OBJECT_ID_START,
+        POSTGRESQL_PROTOCOL_ID_START,
     )
 
     assert counterCall["commit"] is False
