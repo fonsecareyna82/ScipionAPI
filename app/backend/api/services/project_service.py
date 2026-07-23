@@ -6305,7 +6305,7 @@ class ProjectService:
                     self._preparePostgresqlRuntimeExecutionMirrors
                 ),
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                    self._deletePersistedProtocolOutputsForRuntimeProtocols
+                    self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
                 ),
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
                     self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
