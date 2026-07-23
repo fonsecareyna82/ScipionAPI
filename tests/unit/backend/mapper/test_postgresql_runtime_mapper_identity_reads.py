@@ -366,32 +366,15 @@ def test_ExistsReturnsTrueForPersistedPostgresqlSet():
     ]
 
 
-def test_ExistsUsesSqliteFallbackLast():
-    fallback = FakeFallbackMapper(
-        existsResult=True
-    )
+def test_ExistsDoesNotUseReadFallbackForMissingObject():
+    fallback = FakeFallbackMapper(existsResult=True)
 
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+    mapper, _ = buildMapper(fallbackMapper=fallback)
+    mapper.runtimeSetFactory = FakeRuntimeSetFactory()
+    mapper.protocolGraphRepository = FakeProtocolGraphRepository(outputInfo=None)
 
-    mapper.runtimeSetFactory = (
-        FakeRuntimeSetFactory()
-    )
-
-    mapper.protocolGraphRepository = (
-        FakeProtocolGraphRepository(
-            outputInfo=None
-        )
-    )
-
-    assert mapper.exists(
-        999
-    ) is True
-
-    assert fallback.existsCalls == [
-        999
-    ]
+    assert mapper.exists(999) is False
+    assert fallback.existsCalls == []
 
 
 def test_GetParentReturnsNativeHydratedParent():
@@ -474,34 +457,18 @@ def test_GetParentResolvesRuntimeParentIdBeforeFallback():
     ]
 
 
-def test_GetParentUsesSqliteFallbackLast():
+def test_GetParentDoesNotUseReadFallbackWhenParentIsMissing():
     fallbackParent = Object()
+    fallbackParent.setObjId(400)
 
-    fallbackParent.setObjId(
-        400
-    )
+    fallback = FakeFallbackMapper(parent=fallbackParent)
 
-    fallback = FakeFallbackMapper(
-        parent=fallbackParent
-    )
-
-    mapper, _ = buildMapper(
-        fallbackMapper=fallback
-    )
+    mapper, _ = buildMapper(fallbackMapper=fallback)
 
     item = ExampleItem()
-
-    item.setObjId(
-        7
-    )
-
+    item.setObjId(7)
     item._objParent = None
     item._objParentId = None
 
-    assert mapper.getParent(
-        item
-    ) is fallbackParent
-
-    assert fallback.parentCalls == [
-        item
-    ]
+    assert mapper.getParent(item) is None
+    assert fallback.parentCalls == []

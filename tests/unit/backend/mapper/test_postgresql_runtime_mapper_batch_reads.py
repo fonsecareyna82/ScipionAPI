@@ -152,15 +152,18 @@ def buildProtocol(protocolClass, protocolId):
     protocol.setObjId(protocolId)
     return protocol
 
+def test_SelectAllBatchBuildsOnlyPostgresqlProtocols():
+    firstProtocol = buildProtocol(ExampleProtocol, 100)
+    secondProtocol = buildProtocol(ExampleProtocol, 101)
 
-def test_SelectAllBatchPrefersFallbackMirrorAndBuildsPostgresqlOnlyProtocols():
     fallbackProtocol = buildProtocol(ExampleProtocol, 100)
-    fallbackOnlyProtocol = buildProtocol(OtherProtocol, 200)
-    postgresqlOnlyProtocol = buildProtocol(ExampleProtocol, 101)
+
+    fallbackObject = Object()
+    fallbackObject.setObjId(500)
 
     fallback = FakeFallbackMapper([
         fallbackProtocol,
-        fallbackOnlyProtocol,
+        fallbackObject,
     ])
 
     mapper = buildMapper(
@@ -170,66 +173,6 @@ def test_SelectAllBatchPrefersFallbackMirrorAndBuildsPostgresqlOnlyProtocols():
         ],
         fallback=fallback,
     )
-
-    buildCalls = []
-
-    def buildProtocolFromRow(row):
-        protocolId = int(row["protocolId"])
-        buildCalls.append(protocolId)
-
-        if protocolId == 101:
-            return postgresqlOnlyProtocol
-
-        raise AssertionError(
-            "The protocol mirrored in SQLite must not be rebuilt"
-        )
-
-    mapper._buildProtocolFromPostgresqlRow = buildProtocolFromRow
-
-    result = mapper.selectAllBatch(
-        objectFilter=lambda obj: isinstance(obj, Protocol)
-    )
-
-    assert result == [
-        fallbackProtocol,
-        postgresqlOnlyProtocol,
-        fallbackOnlyProtocol,
-    ]
-
-    assert buildCalls == [101]
-    assert mapper.flatMapper.calls == [4]
-
-    assert len(fallback.calls) == 1
-    assert callable(fallback.calls[0])
-
-    assert mapper._runtimeProtocolsById[100] is fallbackProtocol
-    assert mapper._runtimeProtocolsById[101] is postgresqlOnlyProtocol
-    assert mapper._sqliteProtocolMirrorIds == {
-        100,
-    }
-
-    mapper._refreshSqliteProtocolMirrorFromPostgresqlRow = (
-        lambda protocol, row: protocol
-    )
-
-    assert (
-        mapper._selectProtocolByIdFromPostgresql(100)
-        is fallbackProtocol
-    )
-
-    assert mapper.flatMapper.byIdCalls == [
-        (4, 100),
-    ]
-
-
-def test_SelectAllBatchWorksWithoutSqliteFallback():
-    firstProtocol = buildProtocol(ExampleProtocol, 100)
-    secondProtocol = buildProtocol(ExampleProtocol, 101)
-
-    mapper = buildMapper([
-        buildRow(100),
-        buildRow(101),
-    ])
 
     protocolsById = {
         100: firstProtocol,
@@ -245,11 +188,10 @@ def test_SelectAllBatchWorksWithoutSqliteFallback():
 
     mapper._buildProtocolFromPostgresqlRow = buildProtocolFromRow
 
-    result = mapper.selectAllBatch(
-        objectFilter=lambda protocol: protocol.getObjId() == 101
-    )
+    result = mapper.selectAllBatch(objectFilter=lambda obj: isinstance(obj, Protocol))
 
     assert result == [
+        firstProtocol,
         secondProtocol,
     ]
 
@@ -258,31 +200,32 @@ def test_SelectAllBatchWorksWithoutSqliteFallback():
         101,
     ]
 
+    assert fallback.calls == []
+    assert mapper.flatMapper.calls == [4]
+    assert mapper._sqliteProtocolMirrorIds == set()
 
-def test_SelectAllBatchPreservesFallbackOnlyObjectsWithoutFilter():
-    fallbackProtocol = buildProtocol(ExampleProtocol, 100)
 
-    legacyObject = Object()
-    legacyObject.setObjId(500)
+def test_SelectAllBatchAppliesObjectFilter():
+    firstProtocol = buildProtocol(ExampleProtocol, 100)
+    secondProtocol = buildProtocol(ExampleProtocol, 101)
 
-    fallback = FakeFallbackMapper([
-        fallbackProtocol,
-        legacyObject,
+    mapper = buildMapper([
+        buildRow(100),
+        buildRow(101),
     ])
 
-    mapper = buildMapper(
-        rows=[],
-        fallback=fallback,
-    )
+    protocolsById = {
+        100: firstProtocol,
+        101: secondProtocol,
+    }
 
-    result = mapper.selectAllBatch()
+    mapper._buildProtocolFromPostgresqlRow = lambda row: protocolsById[int(row["protocolId"])]
+
+    result = mapper.selectAllBatch(objectFilter=lambda protocol: protocol.getObjId() == 101)
 
     assert result == [
-        fallbackProtocol,
-        legacyObject,
+        secondProtocol,
     ]
-
-    assert mapper.flatMapper.calls == [4]
 
 
 def test_SelectAllBatchRejectsInvalidObjectFilter():
@@ -292,16 +235,11 @@ def test_SelectAllBatchRejectsInvalidObjectFilter():
             TypeError,
             match="objectFilter must be callable or None",
     ):
-        mapper.selectAllBatch(
-            objectFilter="Protocol"
-        )
+        mapper.selectAllBatch(objectFilter="Protocol")
 
-def test_SelectAllBatchRefreshesMirrorStatusWithoutReapplyingParams():
-    fallbackProtocol = buildProtocol(ExampleProtocol, 100)
 
-    fallback = FakeFallbackMapper([
-        fallbackProtocol,
-    ])
+def test_SelectAllBatchSafelyRefreshesCachedWriteMirror():
+    protocol = buildProtocol(ExampleProtocol, 100)
 
     row = buildRow(100)
     row["status"] = "running"
@@ -309,47 +247,31 @@ def test_SelectAllBatchRefreshesMirrorStatusWithoutReapplyingParams():
         "inputParticles": "99.outputParticles",
     }
 
-    mapper = buildMapper(
-        rows=[row],
-        fallback=fallback,
-    )
+    mapper = buildMapper(rows=[row])
+    mapper._runtimeProtocolsById[100] = protocol
+    mapper._sqliteProtocolMirrorIds.add(100)
 
     statusCalls = []
     paramCalls = []
     workingDirCalls = []
 
-    mapper._applyStoredProtocolStatus = (
-        lambda protocol, status: statusCalls.append(
-            (protocol, status)
-        )
-    )
+    mapper._applyStoredProtocolStatus = lambda currentProtocol, status: statusCalls.append((currentProtocol, status))
+    mapper._applyStoredProtocolParams = lambda currentProtocol, params: paramCalls.append((currentProtocol, params))
+    mapper._ensureProtocolWorkingDir = lambda currentProtocol: workingDirCalls.append(currentProtocol)
 
-    mapper._applyStoredProtocolParams = (
-        lambda protocol, params: paramCalls.append(
-            (protocol, params)
-        )
-    )
-
-    mapper._ensureProtocolWorkingDir = (
-        lambda protocol: workingDirCalls.append(protocol)
-    )
-
-    result = mapper.selectAllBatch(
-        objectFilter=lambda obj: isinstance(obj, Protocol)
-    )
+    result = mapper.selectAllBatch(objectFilter=lambda obj: isinstance(obj, Protocol))
 
     assert result == [
-        fallbackProtocol,
+        protocol,
     ]
 
     assert statusCalls == [
-        (fallbackProtocol, "running"),
+        (protocol, "running"),
     ]
 
     assert paramCalls == []
-    assert workingDirCalls == [fallbackProtocol]
-
-    assert mapper._runtimeProtocolsById[100] is fallbackProtocol
+    assert workingDirCalls == [protocol]
+    assert mapper._runtimeProtocolsById[100] is protocol
     assert mapper._sqliteProtocolMirrorIds == {100}
 
 
