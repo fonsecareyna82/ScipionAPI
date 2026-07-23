@@ -1910,10 +1910,9 @@ class PostgresqlRuntimeMapper(Mapper):
         """
         Return one stable, fully hydrated protocol for runtime operations.
 
-        Prefer the SQLite compatibility object on the first read because it
-        contains native pointers, internal attributes and outputs. Cache that
-        instance so all subsequent runtime reads reuse the same protocol
-        identity.
+        Prefer the SQLite execution mirror on the first runtime hydration because
+        it contains native pointers, internal attributes and outputs. Cache that
+        instance so all subsequent runtime reads reuse the same protocol identity.
 
         When refreshCached is False, an existing protocol instance is returned
         without applying PostgreSQL status, params or runtime metadata. This is
@@ -1964,15 +1963,9 @@ class PostgresqlRuntimeMapper(Mapper):
                 None,
             )
 
-        protocol = self._selectByIdFromReadFallback(
-            protocolId,
-            auditOperation=(
-                "selectRuntimeProtocolById."
-                "compatibilityMirror"
-            ),
-        )
+        protocol = self._selectProtocolFromWriteFallbackMirror(protocolId)
 
-        if isinstance(protocol, Protocol):
+        if protocol is not None:
             if row:
                 if refreshCached:
                     return self._adoptSqliteProtocolMirror(
@@ -2018,6 +2011,58 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
         return None
+
+    def _selectProtocolFromWriteFallbackMirror(
+            self,
+            protocolId,
+    ):
+        """
+        Read one native Protocol from the SQLite execution mirror.
+
+        This is not a general project read fallback. The mirror is consulted only
+        to recover Scipion-native protocol state such as Pointer, PointerList,
+        internal attributes and outputs.
+        """
+        writeFallbackMapper = self.writeFallbackMapper
+
+        if writeFallbackMapper is None:
+            return None
+
+        try:
+            protocol = writeFallbackMapper.selectById(
+                protocolId
+            )
+
+        except Exception:
+            logger.debug(
+                "Protocol %s was not found in the SQLite execution mirror.",
+                protocolId,
+                exc_info=True,
+            )
+
+            return None
+
+        if protocol is None:
+            logger.debug(
+                "Protocol %s was not found in the SQLite execution mirror.",
+                protocolId,
+            )
+
+            return None
+
+        if not isinstance(
+                protocol,
+                Protocol,
+        ):
+            logger.debug(
+                "SQLite execution mirror object %s is not a Protocol. class=%s",
+                protocolId,
+                protocol.__class__.__name__,
+            )
+
+            return None
+
+        return protocol
 
     def _selectByIdFromReadFallback(
             self,

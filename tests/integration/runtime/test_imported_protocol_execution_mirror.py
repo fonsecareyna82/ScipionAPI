@@ -114,7 +114,7 @@ def buildRuntimeMapper(project, sqliteMapper):
     mapper.flatMapper = flatMapper
     mapper.db = flatMapper.db
     mapper.dictClasses = buildClassesDictionary()
-    mapper.readFallbackMapper = sqliteMapper
+    mapper.readFallbackMapper = None
     mapper.writeFallbackMapper = sqliteMapper
     mapper._runtimeProtocolsById = {}
     mapper._sqliteProtocolMirrorIds = set()
