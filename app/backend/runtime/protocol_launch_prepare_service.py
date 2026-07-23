@@ -108,43 +108,32 @@ class RuntimeProtocolLaunchPrepareService:
         errors = []
         multiPointerLists = {}
 
-        def resolveParentProtocol(
-                parentProtocolId,
-        ):
-            parentProtocol = None
-            parentScipionProtocolId = (
-                protocolIdentityResolver
-                .resolveScipionProtocolId(
-                    parentProtocolId
-                )
+        resolvedParentProtocolsById = {
+            str(parentProtocolId): parentProtocol
+            for parentProtocolId, parentProtocol in (parentProtocolsById or {}).items()
+        }
+
+        def resolveParentProtocol(parentProtocolId):
+            parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
+                parentProtocolId
             )
 
-            if parentProtocolsById:
-                parentProtocol = (
-                    parentProtocolsById.get(
-                        str(
-                            parentScipionProtocolId
-                        )
-                    )
-                    or parentProtocolsById.get(
-                        parentScipionProtocolId
-                    )
-                )
+            parentProtocol = resolvedParentProtocolsById.get(
+                str(parentScipionProtocolId)
+            )
 
             if parentProtocol is None:
-                (
-                    parentScipionProtocolId,
-                    parentProtocol,
-                ) = getParentProtocolCallback(
+                parentScipionProtocolId, parentProtocol = getParentProtocolCallback(
                     mapper=mapper,
                     projectId=projectId,
                     parentId=parentProtocolId,
                 )
 
-            return (
-                parentScipionProtocolId,
-                parentProtocol,
-            )
+                if parentProtocol is not None:
+                    resolvedParentProtocolsById[str(parentProtocolId)] = parentProtocol
+                    resolvedParentProtocolsById[str(parentScipionProtocolId)] = parentProtocol
+
+            return parentScipionProtocolId, parentProtocol
 
         for row in rows or []:
             inputName = str(row.get("inputName") or "").strip()
