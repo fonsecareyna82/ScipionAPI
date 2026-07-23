@@ -212,33 +212,47 @@ def test_SelectByClassSupportsGenericProtocolClass():
     ]
 
 
-def test_SelectByClassMergesProtocolFallbackWithoutDuplicates():
-    postgresqlProtocol = buildProtocol(ExampleProtocol, 100)
-    duplicatedFallbackProtocol = buildProtocol(ExampleProtocol, 100)
-    legacyProtocol = buildProtocol(ExampleProtocol, 200)
+def test_SelectByClassDoesNotMergeProtocolFallback():
+    postgresqlProtocol = buildProtocol(
+        ExampleProtocol,
+        100,
+    )
+
+    legacyProtocol = buildProtocol(
+        ExampleProtocol,
+        200,
+    )
 
     fallback = FakeFallbackMapper([
-        duplicatedFallbackProtocol,
         legacyProtocol,
     ])
 
     mapper = buildMapper(
         rows=[
-            buildRow(100, "ExampleProtocol"),
+            buildRow(
+                100,
+                "ExampleProtocol",
+            ),
         ],
         fallback=fallback,
     )
 
-    configureProtocolBuilder(mapper, {
-        100: postgresqlProtocol,
-    })
+    configureProtocolBuilder(
+        mapper,
+        {
+            100: postgresqlProtocol,
+        },
+    )
 
-    result = mapper.selectByClass("ExampleProtocol")
+    result = mapper.selectByClass(
+        "ExampleProtocol"
+    )
 
     assert result == [
         postgresqlProtocol,
-        legacyProtocol,
     ]
+
+    assert fallback.calls == []
 
 
 def test_SelectByClassAppliesProtocolObjectFilter():

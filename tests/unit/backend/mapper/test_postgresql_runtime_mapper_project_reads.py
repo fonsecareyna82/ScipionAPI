@@ -183,7 +183,7 @@ def test_SelectByAppliesCreationTimeObjectFilter():
     assert result == []
 
 
-def test_SelectByFallsBackWhenProjectMetadataIsMissing():
+def test_SelectByDoesNotUseFallbackWhenProjectMetadataIsMissing():
     legacyCreationTime = buildCreationTime(
         "2025-06-18 10:20:30.000000"
     )
@@ -201,17 +201,8 @@ def test_SelectByFallsBackWhenProjectMetadataIsMissing():
         name=PROJECT_CREATION_TIME
     )
 
-    assert result == [
-        legacyCreationTime,
-    ]
-
-    assert fallback.calls == [{
-        "iterate": False,
-        "objectFilter": None,
-        "args": {
-            "name": PROJECT_CREATION_TIME,
-        },
-    }]
+    assert result == []
+    assert fallback.calls == []
 
 
 def test_SelectByReturnsEmptyCreationTimeWithoutFallback():
@@ -224,7 +215,7 @@ def test_SelectByReturnsEmptyCreationTimeWithoutFallback():
     assert result == []
 
 
-def test_SelectByUsesFallbackWhenPostgresqlHasNoMatchingObject():
+def test_SelectByDoesNotUseFallbackWhenPostgresqlHasNoMatchingObject():
     legacyObject = String("legacy")
     fallback = FakeFallbackMapper([legacyObject])
 
@@ -240,23 +231,14 @@ def test_SelectByUsesFallbackWhenPostgresqlHasNoMatchingObject():
         name="OtherRootObject"
     )
 
-    assert result == [
-        legacyObject,
-    ]
-
+    assert result == []
     assert db.fetchAllCalls
-
-    assert fallback.calls == [{
-        "iterate": False,
-        "objectFilter": None,
-        "args": {
-            "name": "OtherRootObject",
-        },
-    }]
+    assert fallback.calls == []
 
 
-def test_SelectByRejectsInvalidFilterWithoutFallback():
-    mapper, _ = buildMapper()
+def test_SelectByRejectsInvalidFilterWithoutUsingFallback():
+    fallback = FakeFallbackMapper()
+    mapper, _ = buildMapper(fallback=fallback)
 
     with pytest.raises(
             TypeError,
@@ -266,3 +248,20 @@ def test_SelectByRejectsInvalidFilterWithoutFallback():
             name=PROJECT_CREATION_TIME,
             objectFilter="invalid",
         )
+
+    assert fallback.calls == []
+
+
+def test_SelectByRejectsUnsupportedFieldsWithoutUsingFallback():
+    fallback = FakeFallbackMapper()
+    mapper, _ = buildMapper(fallback=fallback)
+
+    with pytest.raises(
+            NotImplementedError,
+            match="PostgreSQL selectBy does not support query fields",
+    ):
+        mapper.selectBy(
+            unsupportedField="value"
+        )
+
+    assert fallback.calls == []

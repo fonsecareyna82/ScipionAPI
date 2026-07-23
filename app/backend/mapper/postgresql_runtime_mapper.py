@@ -3027,16 +3027,7 @@ class PostgresqlRuntimeMapper(Mapper):
             **args,
     ):
         if objectFilter is not None and not callable(objectFilter):
-            if self.readFallbackMapper is None:
-                raise TypeError(
-                    "objectFilter must be callable or None"
-                )
-
-            return self._selectByFromReadFallback(
-                iterate=iterate,
-                objectFilter=objectFilter,
-                **args,
-            )
+            raise TypeError("objectFilter must be callable or None")
 
         if self._isProjectCreationTimeQuery(args):
             creationTime = self._selectProjectCreationTimeFromPostgresql()
@@ -3052,8 +3043,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
                 return iter(result) if iterate else result
 
-            if self.readFallbackMapper is None:
-                return iter(()) if iterate else []
+            return iter(()) if iterate else []
 
         unsupportedFields = (
                 set(args)
@@ -3061,23 +3051,12 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         if unsupportedFields:
-            return self._selectByFromReadFallback(
-                iterate=iterate,
-                objectFilter=objectFilter,
-                **args,
+            raise NotImplementedError(
+                "PostgreSQL selectBy does not support query fields: %s"
+                % sorted(unsupportedFields)
             )
 
-        if any(
-                value is None
-                for value in args.values()
-        ):
-            if self.readFallbackMapper is not None:
-                return self._selectByFromReadFallback(
-                    iterate=iterate,
-                    objectFilter=objectFilter,
-                    **args,
-                )
-
+        if any(value is None for value in args.values()):
             return iter(()) if iterate else []
 
         if "id" in args:
@@ -3086,13 +3065,6 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             if runtimeObjectId is None:
-                if self.readFallbackMapper is not None:
-                    return self._selectByFromReadFallback(
-                        iterate=iterate,
-                        objectFilter=objectFilter,
-                        **args,
-                    )
-
                 return iter(()) if iterate else []
 
             runtimeObject = self._selectPostgresqlObjectForSelectById(
@@ -3113,13 +3085,6 @@ class PostgresqlRuntimeMapper(Mapper):
                         result.append(runtimeObject)
 
                 return iter(result) if iterate else result
-
-            if self.readFallbackMapper is not None:
-                return self._selectByFromReadFallback(
-                    iterate=iterate,
-                    objectFilter=objectFilter,
-                    **args,
-                )
 
             return iter(()) if iterate else []
 
@@ -3143,29 +3108,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 continue
 
             result.append(obj)
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "selectBy.compatibilityMerge",
-                query=args,
-                objectFilter=objectFilter,
-            )
-
-            fallbackResult = self.readFallbackMapper.selectBy(
-                iterate=False,
-                objectFilter=objectFilter,
-                **args,
-            )
-
-            fallbackObjects = self._attachRuntimeContextList(
-                fallbackResult
-            )
-
-            result = self._mergeSelectByResults(
-                postgresqlObjects=result,
-                fallbackObjects=fallbackObjects,
-                ownedPostgresqlObjects=postgresqlObjects,
-            )
 
         return iter(result) if iterate else result
 
@@ -3420,103 +3362,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return str(value)
 
-    def _mergeSelectByResults(
-            self,
-            postgresqlObjects,
-            fallbackObjects,
-            ownedPostgresqlObjects,
-    ):
-        ownedIds = set()
-        ownedObjectsWithoutId = set()
-
-        for obj in ownedPostgresqlObjects:
-            objId = self._getObjId(obj)
-
-            if objId is not None:
-                ownedIds.add(str(objId))
-                continue
-
-            identity = self._getSelectByObjectWithoutIdIdentity(
-                obj
-            )
-
-            if identity is not None:
-                ownedObjectsWithoutId.add(identity)
-
-        compatibleFallbackObjects = []
-
-        for obj in fallbackObjects:
-            objId = self._getObjId(obj)
-
-            if (
-                    objId is not None
-                    and str(objId) in ownedIds
-            ):
-                continue
-
-            identity = self._getSelectByObjectWithoutIdIdentity(
-                obj
-            )
-
-            if (
-                    identity is not None
-                    and identity in ownedObjectsWithoutId
-            ):
-                continue
-
-            compatibleFallbackObjects.append(obj)
-
-        mergedObjects = self._mergeRuntimeClassResults(
-            postgresqlObjects,
-            compatibleFallbackObjects,
-        )
-
-        return sorted(
-            mergedObjects,
-            key=self._getSelectBySortKey,
-        )
-
-    def _getSelectByObjectWithoutIdIdentity(self, obj):
-        objectName = self._getSelectByStoredName(obj)
-
-        if not objectName:
-            return None
-
-        return (
-            self._getSelectByStoredClassName(obj),
-            objectName,
-        )
-
-    def _selectByFromReadFallback(
-            self,
-            iterate=False,
-            objectFilter=None,
-            **args,
-    ):
-        if self.readFallbackMapper is None:
-            raise NotImplementedError(
-                "PostgreSQL selectBy does not support "
-                "the requested query fields: %s"
-                % sorted(args)
-            )
-
-        self._recordReadFallback(
-            "selectBy",
-            iterate=iterate,
-            query=args,
-            objectFilter=objectFilter,
-        )
-
-        result = self.readFallbackMapper.selectBy(
-            iterate=iterate,
-            objectFilter=objectFilter,
-            **args,
-        )
-
-        if iterate:
-            return self._attachRuntimeContextIterator(result)
-
-        return self._attachRuntimeContextList(result)
 
     @staticmethod
     def _isProjectCreationTimeQuery(args):
@@ -3594,12 +3439,7 @@ class PostgresqlRuntimeMapper(Mapper):
         requestedClass = self._resolveRuntimeObjectClass(requestedClassName)
 
         if objectFilter is not None and not callable(objectFilter):
-            return self._selectByClassFromReadFallback(
-                className=className,
-                includeSubclasses=includeSubclasses,
-                iterate=iterate,
-                objectFilter=objectFilter,
-            )
+            raise TypeError("objectFilter must be callable or None")
 
         if self._isProtocolClass(requestedClass):
             return self._selectProtocolByClass(
@@ -3618,11 +3458,9 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if not isSetRequest:
             if not self._isSupportedGenericRuntimeObjectClass(requestedClass):
-                return self._selectByClassFromReadFallback(
-                    className=className,
-                    includeSubclasses=includeSubclasses,
-                    iterate=iterate,
-                    objectFilter=objectFilter,
+                raise NotImplementedError(
+                    "PostgreSQL selectByClass does not support class: %s"
+                    % requestedClassName
                 )
 
             return self._selectGenericObjectByClass(
@@ -3657,30 +3495,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 continue
 
             result.append(runtimeSet)
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "selectByClass.setCompatibilityMerge",
-                className=className,
-                includeSubclasses=includeSubclasses,
-                objectFilter=objectFilter,
-            )
-
-            fallbackResult = self.readFallbackMapper.selectByClass(
-                className,
-                includeSubclasses=includeSubclasses,
-                iterate=False,
-                objectFilter=objectFilter,
-            )
-
-            fallbackObjects = self._attachRuntimeContextList(
-                fallbackResult or []
-            )
-
-            result = self._mergeRuntimeClassResults(
-                result,
-                fallbackObjects,
-            )
 
         return iter(result) if iterate else result
 
@@ -3719,30 +3533,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
             result.append(protocol)
 
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "selectByClass.protocolCompatibilityMerge",
-                className=className,
-                includeSubclasses=includeSubclasses,
-                objectFilter=objectFilter,
-            )
-
-            fallbackResult = self.readFallbackMapper.selectByClass(
-                className,
-                includeSubclasses=includeSubclasses,
-                iterate=False,
-                objectFilter=objectFilter,
-            )
-
-            fallbackObjects = self._attachRuntimeContextList(
-                fallbackResult or []
-            )
-
-            result = self._mergeRuntimeClassResults(
-                result,
-                fallbackObjects,
-            )
-
         return iter(result) if iterate else result
 
     def _selectGenericObjectByClass(
@@ -3779,30 +3569,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 continue
 
             result.append(runtimeObject)
-
-        if self.readFallbackMapper is not None:
-            self._recordReadFallback(
-                "selectByClass.genericCompatibilityMerge",
-                className=className,
-                includeSubclasses=includeSubclasses,
-                objectFilter=objectFilter,
-            )
-
-            fallbackResult = self.readFallbackMapper.selectByClass(
-                className,
-                includeSubclasses=includeSubclasses,
-                iterate=False,
-                objectFilter=objectFilter,
-            )
-
-            fallbackObjects = self._attachRuntimeContextList(
-                fallbackResult or []
-            )
-
-            result = self._mergeRuntimeClassResults(
-                result,
-                fallbackObjects,
-            )
 
         return iter(result) if iterate else result
 
@@ -3906,39 +3672,6 @@ class PostgresqlRuntimeMapper(Mapper):
             return issubclass(candidateClass, requestedClass)
         except TypeError:
             return False
-
-    def _selectByClassFromReadFallback(
-            self,
-            className,
-            includeSubclasses,
-            iterate,
-            objectFilter,
-    ):
-        if self.readFallbackMapper is None:
-            raise NotImplementedError(
-                "PostgreSQL selectByClass is only implemented "
-                "for native Scipion Set classes."
-            )
-
-        self._recordReadFallback(
-            "selectByClass.unsupportedClass",
-            className=className,
-            includeSubclasses=includeSubclasses,
-            iterate=iterate,
-            objectFilter=objectFilter,
-        )
-
-        result = self.readFallbackMapper.selectByClass(
-            className,
-            includeSubclasses=includeSubclasses,
-            iterate=iterate,
-            objectFilter=objectFilter,
-        )
-
-        if iterate:
-            return self._attachRuntimeContextIterator(result)
-
-        return self._attachRuntimeContextList(result)
 
     def _getPostgresqlSetRowsForClass(
             self,
