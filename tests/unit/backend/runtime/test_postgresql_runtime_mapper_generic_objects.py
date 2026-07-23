@@ -188,7 +188,6 @@ def buildRuntimeMapper(
 
     mapper.projectId = 7
     mapper.project = None
-    mapper.readFallbackMapper = None
     mapper.writeFallbackMapper = None
     mapper.flatMapper = Mock()
     mapper.flatMapper.getProtocols.return_value = []
@@ -204,7 +203,6 @@ def buildRuntimeMapper(
 
     mapper._runtimeProtocolsById = {}
     mapper._sqliteProtocolMirrorIds = set()
-    mapper._fallbackAuditEnabled = False
     mapper.dictClasses = {
         "FakeComposite": FakeComposite,
         "FakeDerivedComposite": FakeDerivedComposite,
@@ -344,56 +342,6 @@ def test_SelectGenericObjectRejectsPointerTree():
     assert result is None
 
 
-def test_RelationResolverUsesGenericPostgresqlObject():
-    mapper = PostgresqlRuntimeMapper.__new__(
-        PostgresqlRuntimeMapper
-    )
-
-    genericObject = FakeComposite()
-    genericCalls = []
-
-    mapper._selectProtocolByIdFromPostgresql = (
-        lambda objId, refreshCached=True: None
-    )
-
-    mapper._selectSetByIdFromPostgresql = (
-        lambda objId, refreshParentProtocol=True: None
-    )
-
-    def selectGenericObject(objId):
-        genericCalls.append(
-            objId
-        )
-
-        return genericObject
-
-    mapper._selectGenericObjectByIdFromPostgresql = (
-        selectGenericObject
-    )
-
-    def failIfFallbackIsUsed(
-            objId,
-            auditOperation="selectById",
-    ):
-        raise AssertionError(
-            "SQLite fallback must not be used"
-        )
-
-    mapper._selectByIdFromReadFallback = (
-        failIfFallbackIsUsed
-    )
-
-    result = mapper._selectRelationObjectById(
-        700
-    )
-
-    assert result is genericObject
-
-    assert genericCalls == [
-        700,
-    ]
-
-
 def test_SelectGenericNestedRootPreservesDirectParentId():
     rows = [{
         "id": 11,
@@ -424,93 +372,7 @@ def test_SelectGenericNestedRootPreservesDirectParentId():
     assert result.getObjParentId() == 700
 
 
-def test_RelationResolverPrefersSetBeforeGenericObject():
-    mapper = PostgresqlRuntimeMapper.__new__(
-        PostgresqlRuntimeMapper
-    )
-
-    runtimeSet = object()
-    setCalls = []
-
-    mapper._selectProtocolByIdFromPostgresql = (
-        lambda objId, refreshCached=True: None
-    )
-
-    def selectSet(objId, refreshParentProtocol=True):
-        setCalls.append((
-            objId,
-            refreshParentProtocol,
-        ))
-
-        return runtimeSet
-
-    mapper._selectSetByIdFromPostgresql = selectSet
-
-    def failIfGenericReaderIsUsed(objId):
-        raise AssertionError(
-            "Set reader must run before generic object reader"
-        )
-
-    mapper._selectGenericObjectByIdFromPostgresql = (
-        failIfGenericReaderIsUsed
-    )
-
-    def failIfFallbackIsUsed(
-            objId,
-            auditOperation="selectById",
-    ):
-        raise AssertionError(
-            "SQLite fallback must not be used"
-        )
-
-    mapper._selectByIdFromReadFallback = failIfFallbackIsUsed
-
-    result = mapper._selectRelationObjectById(700)
-
-    assert result is runtimeSet
-    assert setCalls == [
-        (
-            700,
-            False,
-        ),
-    ]
-
-
-def test_SelectByIdUsesGenericPostgresqlObjectBeforeFallback():
-    mapper = buildRuntimeMapper(buildRows())
-
-    mapper._selectProtocolByIdFromPostgresql = (
-        lambda objId, refreshCached=True: None
-    )
-
-    mapper._selectSetByIdFromPostgresql = (
-        lambda objId, refreshParentProtocol=True: None
-    )
-
-    def failIfFallbackIsUsed(objId, auditOperation="selectById"):
-        raise AssertionError(
-            "SQLite fallback must not be used"
-        )
-
-    mapper._selectByIdFromReadFallback = failIfFallbackIsUsed
-
-    result = mapper.selectById("700")
-
-    assert isinstance(result, FakeComposite)
-    assert result.getObjId() == 700
-    assert result.getObjParentId() == 101
-    assert result.title.get() == "PostgreSQL object"
-    assert result.count.get() == 5
-
-    assert mapper.objectMapper.calls == [
-        (
-            7,
-            700,
-        ),
-    ]
-
-
-def test_ExistsUsesGenericPostgresqlObjectBeforeFallback():
+def test_ExistsUsesCanonicalGenericPostgresqlObject():
     mapper = PostgresqlRuntimeMapper.__new__(
         PostgresqlRuntimeMapper
     )
@@ -534,24 +396,14 @@ def test_ExistsUsesGenericPostgresqlObjectBeforeFallback():
         return_value=10
     )
 
-    mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.exists.side_effect = AssertionError(
-        "SQLite fallback must not be used"
-    )
-
-    mapper._recordReadFallback = Mock()
-
     assert mapper.exists("700") is True
 
     mapper._resolveCanonicalScipionObjectRowId.assert_called_once_with(
         700
     )
 
-    mapper._recordReadFallback.assert_not_called()
-    mapper.readFallbackMapper.exists.assert_not_called()
 
-
-def test_SelectByClassUsesGenericPostgresqlObjectsBeforeFallback():
+def test_SelectByClassUsesGenericPostgresqlObjects():
     classRows = [{
         "id": 10,
         "runtimeObjectId": "700",
@@ -696,88 +548,6 @@ def test_SelectByClassDoesNotMergeGenericFallbackObjects():
     ]
 
     mapper.readFallbackMapper.selectByClass.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
-
-
-def test_SelectAllBatchIncludesGenericPostgresqlObjects():
-    classRows = [{
-        "id": 10,
-        "runtimeObjectId": 700,
-        "className": "FakeComposite",
-    }]
-
-    mapper = buildRuntimeMapper(
-        buildRows(),
-        classRows=classRows,
-    )
-
-    result = mapper.selectAllBatch()
-
-    assert len(result) == 1
-    assert isinstance(result[0], FakeComposite)
-    assert result[0].getObjId() == 700
-    assert result[0].getObjParentId() == 101
-    assert result[0].title.get() == "PostgreSQL object"
-    assert result[0].count.get() == 5
-
-    assert mapper.objectMapper.classCalls == [
-        (
-            7,
-            None,
-        ),
-    ]
-
-    assert mapper.objectMapper.calls == [
-        (
-            7,
-            700,
-        ),
-    ]
-
-    mapper.flatMapper.getProtocols.assert_called_once_with(7)
-
-
-def test_SelectAllBatchDoesNotMergeGenericFallbackObjects():
-    classRows = [{
-        "id": 10,
-        "runtimeObjectId": 700,
-        "className": "FakeComposite",
-    }]
-
-    mapper = buildRuntimeMapper(
-        buildRows(),
-        classRows=classRows,
-    )
-
-    fallbackOnly = FakeComposite()
-    fallbackOnly.setObjId(900)
-
-    mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.selectAllBatch.return_value = [
-        fallbackOnly,
-    ]
-
-    mapper._recordReadFallback = Mock()
-
-    result = mapper.selectAllBatch()
-
-    assert [
-        obj.getObjId()
-        for obj in result
-    ] == [
-        700,
-    ]
-
-    assert isinstance(
-        result[0],
-        FakeComposite,
-    )
-
-    assert result[0].title.get() == (
-        "PostgreSQL object"
-    )
-
-    mapper.readFallbackMapper.selectAllBatch.assert_not_called()
     mapper._recordReadFallback.assert_not_called()
 
 
@@ -941,17 +711,10 @@ def test_DeduplicateRuntimeObjectsKeepsFirstObjectForEachRuntimeId():
     ]
 
 
-def test_SelectByUsesGenericPostgresqlRuntimeIdWithoutFallback():
+def test_SelectByUsesGenericPostgresqlRuntimeId():
     mapper = buildRuntimeMapper(
         buildRows()
     )
-
-    mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.selectBy.side_effect = AssertionError(
-        "SQLite fallback must not be used"
-    )
-
-    mapper._recordReadFallback = Mock()
 
     result = mapper.selectBy(
         id="700",
@@ -969,11 +732,8 @@ def test_SelectByUsesGenericPostgresqlRuntimeIdWithoutFallback():
 
     assert staleResult == []
 
-    mapper.readFallbackMapper.selectBy.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
 
-
-def test_SelectByDoesNotMergeFallbackObjects():
+def test_SelectByReturnsEmptyWhenNoPostgresqlObjectMatches():
     classRows = [{
         "id": 10,
         "runtimeObjectId": 700,
@@ -985,24 +745,11 @@ def test_SelectByDoesNotMergeFallbackObjects():
         classRows=classRows,
     )
 
-    fallbackOnly = String()
-    fallbackOnly.setObjId(900)
-
-    mapper.readFallbackMapper = Mock()
-    mapper.readFallbackMapper.selectBy.return_value = [
-        fallbackOnly,
-    ]
-
-    mapper._recordReadFallback = Mock()
-
     result = mapper.selectBy(
         classname="String",
     )
 
     assert result == []
-
-    mapper.readFallbackMapper.selectBy.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
 
 
 def test_SelectByReturnsIteratorAndAppliesObjectFilter():
@@ -1108,9 +855,6 @@ def test_SelectByReturnsOnlyPostgresqlObjectsInRuntimeIdOrder():
         classRows=classRows,
     )
 
-    mapper.readFallbackMapper = Mock()
-    mapper._recordReadFallback = Mock()
-
     result = mapper.selectBy()
 
     assert [
@@ -1129,17 +873,11 @@ def test_SelectByReturnsOnlyPostgresqlObjectsInRuntimeIdOrder():
         "PostgreSQL object"
     )
 
-    mapper.readFallbackMapper.selectBy.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
-
 
 def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
     mapper = buildRuntimeMapper(
         buildRows()
     )
-
-    mapper.readFallbackMapper = Mock()
-    mapper._recordReadFallback = Mock()
 
     targetObject = FakeComposite()
     targetObject.setObjId(700)
@@ -1190,9 +928,6 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
     assert targetObject._objParent is ownerProtocol
     assert ownerProtocol.mock_calls == []
 
-    mapper.readFallbackMapper.updateFrom.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
-
     assert mapper.objectMapper.calls == [
         (
             7,
@@ -1201,29 +936,17 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
     ]
 
 
-def test_UpdateFromDoesNotUseFallbackWhenGenericObjectIsNotInPostgresql():
-    mapper = buildRuntimeMapper(
-        []
-    )
-
-    mapper.readFallbackMapper = Mock()
-    mapper._recordReadFallback = Mock()
+def test_UpdateFromRaisesWhenGenericObjectIsMissingFromPostgresql():
+    mapper = buildRuntimeMapper([])
 
     targetObject = FakeComposite()
-    targetObject.setObjId(
-        700
-    )
+    targetObject.setObjId(700)
 
     with pytest.raises(
             NotImplementedError,
             match="PostgreSQL updateFrom is only implemented",
     ):
-        mapper.updateFrom(
-            targetObject
-        )
-
-    mapper.readFallbackMapper.updateFrom.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
+        mapper.updateFrom(targetObject)
 
 
 def test_UpdateFromRaisesWhenObjectIsNotAvailableAnywhere():
@@ -1257,9 +980,6 @@ def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
         rows
     )
 
-    mapper.readFallbackMapper = Mock()
-    mapper._recordReadFallback = Mock()
-
     targetObject = FakeComposite()
     targetObject.setObjId(700)
     targetObject._objParentId = 999
@@ -1271,8 +991,7 @@ def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
     assert result is None
     assert targetObject.getObjParentId() is None
 
-    mapper.readFallbackMapper.updateFrom.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
+
 
 def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
     mapper = buildRuntimeMapper(
