@@ -26,6 +26,7 @@
 import json
 import logging
 import os
+import psutil
 from typing import Any, Dict, Optional
 
 from pyworkflow import PROJECT_DBNAME
@@ -603,10 +604,31 @@ class PostgresqlProject(ScipionProject):
                 self
             )
 
-            ScipionProject.resetProtocol(
-                self,
-                sqliteProtocol,
-            )
+            try:
+                ScipionProject.resetProtocol(
+                    self,
+                    sqliteProtocol,
+                )
+
+            except psutil.NoSuchProcess as error:
+                # Scipion resets the protocol inside resetProtocol()'s
+                # finally block. A stale PID only means that the process
+                # had already finished before the reset attempted to
+                # stop it.
+                if not sqliteProtocol.isSaved():
+                    raise
+
+                logger.info(
+                    "Ignoring stale process PID during protocol reset. "
+                    "projectId=%s protocolId=%s pid=%s",
+                    self.postgresqlProjectId,
+                    protocolId,
+                    getattr(
+                        error,
+                        "pid",
+                        None,
+                    ),
+                )
 
             writeFallbackMapper.commit()
 
