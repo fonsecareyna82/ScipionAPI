@@ -68,6 +68,249 @@ class RuntimeProtocolOutputPersistenceService:
 
         return obj.__class__.__name__
 
+    @staticmethod
+    def _setScipionObjectId(
+            obj: Any,
+            objectId: int,
+    ) -> None:
+        setter = getattr(
+            obj,
+            "setObjId",
+            None,
+        )
+
+        if callable(setter):
+            setter(
+                int(objectId)
+            )
+            return
+
+        obj._objId = int(
+            objectId
+        )
+
+    @staticmethod
+    def _setScipionObjectParentId(
+            obj: Any,
+            parentObjectId: Optional[int],
+    ) -> None:
+        if parentObjectId is None:
+            return
+
+        setter = getattr(
+            obj,
+            "setObjParentId",
+            None,
+        )
+
+        if callable(setter):
+            setter(
+                int(parentObjectId)
+            )
+            return
+
+        obj._objParentId = int(
+            parentObjectId
+        )
+
+    def _prepareOutputObjectIdsForPersistence(
+            self,
+            mapper: PostgresqlFlatMapper,
+            objectMapper,
+            projectId: int,
+            protocolDbId: int,
+            protocolId,
+            outputName: str,
+            outputObj: Any,
+            includeNestedProperties: bool,
+    ) -> Dict[str, Any]:
+        allocator = getattr(
+            mapper,
+            "allocateProjectObjectId",
+            None,
+        )
+
+        if not callable(allocator):
+            raise RuntimeError(
+                "PostgreSQL mapper does not expose "
+                "allocateProjectObjectId()."
+            )
+
+        storedRows = (
+            objectMapper.getStoredObjectTree(
+                projectId=int(projectId),
+                protocolDbId=int(protocolDbId),
+                outputName=str(outputName),
+            )
+            or []
+        )
+
+        storedIdsByPath = {}
+
+        for row in storedRows:
+            path = str(
+                row.get("path")
+                or ""
+            ).strip()
+
+            storedObjectId = row.get(
+                "scipionObjId"
+            )
+
+            if (
+                    not path
+                    or storedObjectId is None
+            ):
+                continue
+
+            storedIdsByPath[path] = int(
+                storedObjectId
+            )
+
+        try:
+            protocolRuntimeId = int(
+                protocolId
+            )
+        except (TypeError, ValueError):
+            protocolRuntimeId = None
+
+        visited = set()
+        preparedItems = []
+
+        def prepareObject(
+                runtimeObject,
+                path: str,
+                parentRuntimeObjectId:
+                Optional[int],
+        ) -> None:
+            if runtimeObject is None:
+                return
+
+            runtimeObjectIdentity = id(
+                runtimeObject
+            )
+
+            if runtimeObjectIdentity in visited:
+                return
+
+            visited.add(
+                runtimeObjectIdentity
+            )
+
+            previousObjectId = (
+                self.getScipionObjectId(
+                    runtimeObject
+                )
+            )
+
+            canonicalObjectId = (
+                storedIdsByPath.get(
+                    path
+                )
+            )
+
+            reused = (
+                canonicalObjectId
+                is not None
+            )
+
+            if canonicalObjectId is None:
+                canonicalObjectId = int(
+                    allocator(
+                        int(projectId)
+                    )
+                )
+
+            self._setScipionObjectId(
+                runtimeObject,
+                canonicalObjectId,
+            )
+
+            self._setScipionObjectParentId(
+                runtimeObject,
+                parentRuntimeObjectId,
+            )
+
+            preparedItems.append({
+                "path": path,
+                "previousObjectId": (
+                    previousObjectId
+                ),
+                "canonicalObjectId": (
+                    canonicalObjectId
+                ),
+                "reused": reused,
+            })
+
+            if not includeNestedProperties:
+                return
+
+            attributesGetter = getattr(
+                runtimeObject,
+                "getAttributesToStore",
+                None,
+            )
+
+            if not callable(
+                    attributesGetter
+            ):
+                return
+
+            try:
+                attributes = list(
+                    attributesGetter()
+                    or []
+                )
+            except Exception:
+                return
+
+            for attributeName, childObject in attributes:
+                childPath = "%s.%s" % (
+                    path,
+                    str(attributeName),
+                )
+
+                prepareObject(
+                    runtimeObject=childObject,
+                    path=childPath,
+                    parentRuntimeObjectId=(
+                        canonicalObjectId
+                    ),
+                )
+
+        prepareObject(
+            runtimeObject=outputObj,
+            path=str(outputName),
+            parentRuntimeObjectId=(
+                protocolRuntimeId
+            ),
+        )
+
+        return {
+            "outputName": str(
+                outputName
+            ),
+            "rootObjectId": (
+                self.getScipionObjectId(
+                    outputObj
+                )
+            ),
+            "prepared": len(
+                preparedItems
+            ),
+            "allocated": len([
+                item
+                for item in preparedItems
+                if not item["reused"]
+            ]),
+            "reused": len([
+                item
+                for item in preparedItems
+                if item["reused"]
+            ]),
+            "items": preparedItems,
+        }
+
     def _resolveProtocolProjectPaths(
             self,
             protocol: Any,
@@ -2044,10 +2287,40 @@ class RuntimeProtocolOutputPersistenceService:
                 })
                 continue
 
+            isSetOutput = (
+                self.isScipionSetLikeOutput(
+                    outputObj
+                )
+            )
+
+            isTreeOutput = (
+                not isSetOutput
+                and self.isPersistableNonSetOutput(
+                    outputObj
+                )
+            )
+
             try:
-                if self.isScipionSetLikeOutput(
-                        outputObj
+                if (
+                        isSetOutput
+                        or isTreeOutput
                 ):
+                    self._prepareOutputObjectIdsForPersistence(
+                        mapper=mapper,
+                        objectMapper=objectMapper,
+                        projectId=projectId,
+                        protocolDbId=int(
+                            protocolDbId
+                        ),
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        outputObj=outputObj,
+                        includeNestedProperties=(
+                            isTreeOutput
+                        ),
+                    )
+
+                if isSetOutput:
                     openedSetMapper = False
 
                     try:
@@ -2148,7 +2421,8 @@ class RuntimeProtocolOutputPersistenceService:
                         **(syncInfo or {}),
                     })
 
-                elif self.isPersistableNonSetOutput(outputObj):
+
+                elif isTreeOutput:
                     try:
                         syncInfo = objectMapper.storeObjectTree(
                             projectId=projectId,
