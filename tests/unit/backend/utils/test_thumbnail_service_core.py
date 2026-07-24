@@ -79,10 +79,17 @@ class FakeGraph:
 
 class FakeCurrentProject:
     # fakeCurrentProject
-    def __init__(self, projectPath, protocols=None, graph=None):
+    def __init__(
+            self,
+            projectPath,
+            protocols=None,
+            graph=None,
+            mapper=None,
+    ):
         self._projectPath = projectPath
         self._protocols = protocols or {}
         self._graph = graph
+        self.mapper = mapper
 
     def getPath(self):
         return self._projectPath
@@ -92,6 +99,84 @@ class FakeCurrentProject:
 
     def getRunsGraph(self, refresh=False, checkPids=False):
         return self._graph
+
+class FakePersistedOutput(FakeOutput):
+    def __init__(
+            self,
+            className,
+            size,
+            parentId,
+            objectName,
+    ):
+        super().__init__(
+            className=className,
+            size=size,
+        )
+
+        self._parentId = parentId
+        self._objectName = objectName
+
+    def getObjParentId(self):
+        return self._parentId
+
+    def getObjName(self):
+        return self._objectName
+
+
+class FakePostgresqlRuntimeMapper:
+    isPostgresqlRuntimeMapper = True
+
+    def __init__(
+            self,
+            sets=None,
+            objects=None,
+    ):
+        self.sets = list(
+            sets or []
+        )
+
+        self.objects = list(
+            objects or []
+        )
+
+    def selectByClass(
+            self,
+            objectClass,
+            includeSubclasses=True,
+            iterate=False,
+            objectFilter=None,
+    ):
+        className = getattr(
+            objectClass,
+            "__name__",
+            "",
+        )
+
+        if className == "Set":
+            result = list(
+                self.sets
+            )
+
+        elif className == "Object":
+            result = list(
+                self.objects
+            )
+
+        else:
+            result = []
+
+        if callable(objectFilter):
+            result = [
+                item
+                for item in result
+                if objectFilter(item)
+            ]
+
+        return (
+            iter(result)
+            if iterate
+            else result
+        )
 
 
 @pytest.fixture
@@ -381,3 +466,182 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
             ],
         }
     ]
+
+
+def test_CollectSortedOutputCandidatesUsesDetachedPostgresqlOutputs(
+        thumbnailServiceModule,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        label="Protocol 10",
+        status="finished",
+        outputs=[],
+    )
+
+    persistedOutput = (
+        FakePersistedOutput(
+            className="SetOfParticles",
+            size=8,
+            parentId=10,
+            objectName=(
+                "10.outputParticles"
+            ),
+        )
+    )
+
+    runtimeMapper = (
+        FakePostgresqlRuntimeMapper(
+            sets=[
+                persistedOutput,
+            ]
+        )
+    )
+
+    graph = FakeGraph({
+        "PROJECT": FakeNode(
+            run=None
+        ),
+        "10": FakeNode(
+            run=protocol
+        ),
+    })
+
+    currentProject = (
+        FakeCurrentProject(
+            projectPath=str(
+                projectPath
+            ),
+            protocols={
+                10: protocol,
+            },
+            graph=graph,
+            mapper=runtimeMapper,
+        )
+    )
+
+    service = (
+        thumbnailServiceModule
+        .ThumbnailService(
+            currentProject
+        )
+    )
+
+    candidates = (
+        service
+        ._collectSortedOutputCandidates(
+            protocol
+        )
+    )
+
+    assert len(candidates) == 1
+
+    assert (
+        candidates[0][
+            "outputName"
+        ]
+        == "outputParticles"
+    )
+
+    assert (
+        candidates[0][
+            "output"
+        ]
+        is persistedOutput
+    )
+
+    assert (
+        candidates[0][
+            "itemsCount"
+        ]
+        == 8
+    )
+
+
+def test_NativeProtocolOutputWinsOverPostgresqlFallback(
+        thumbnailServiceModule,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    nativeOutput = FakeOutput(
+        className="SetOfParticles",
+        size=4,
+    )
+
+    persistedOutput = (
+        FakePersistedOutput(
+            className="SetOfParticles",
+            size=8,
+            parentId=10,
+            objectName=(
+                "10.outputParticles"
+            ),
+        )
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        outputs=[
+            (
+                "outputParticles",
+                nativeOutput,
+            ),
+        ],
+    )
+
+    currentProject = (
+        FakeCurrentProject(
+            projectPath=str(
+                projectPath
+            ),
+            mapper=(
+                FakePostgresqlRuntimeMapper(
+                    sets=[
+                        persistedOutput,
+                    ]
+                )
+            ),
+        )
+    )
+
+    service = (
+        thumbnailServiceModule
+        .ThumbnailService(
+            currentProject
+        )
+    )
+
+    outputs = list(
+        service
+        ._iterOutputAttributes(
+            protocol
+        )
+    )
+
+    assert outputs == [
+        (
+            "outputParticles",
+            nativeOutput,
+        ),
+    ]
+
+
