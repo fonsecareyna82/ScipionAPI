@@ -50,7 +50,7 @@ except Exception:
 
 SELF_LABEL = "self"
 NESTED_LOGICAL_TABLES_VERSION = 17
-SET_PROPERTIES_VERSION = 2
+SET_PROPERTIES_VERSION = 3
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
@@ -2117,6 +2117,16 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         setValues = self._getObjDict(
             scipionSet,
             includeClass=False,
+        )
+
+        self._removeLegacyPointerListEntries(
+            setValues
+        )
+
+        setValues.update(
+            self._getItemPointerValues(
+                scipionSet
+            )
         )
 
         for attrPath, value in setValues.items():
