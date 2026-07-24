@@ -34,7 +34,7 @@ class ProtocolGraphRepository:
     This repository owns:
       - protocol_dependencies
       - protocol_input_refs
-      - scipion_object_relations for runtime output relations
+      - scipion_relations for runtime output relations
       - protocols.parentIds
     """
 

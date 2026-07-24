@@ -369,6 +369,56 @@ class RuntimeProjectRelationSyncService:
         except Exception:
             return None
 
+    def _collectCurrentOutputRuntimeObjectIds(self, protocol):
+        """
+        Return the current output ids of one completed protocol.
+
+        None means that pruning is unsafe because the protocol is not finished
+        or its current outputs cannot be identified reliably.
+        """
+        isFinished = getattr(protocol, "isFinished", None)
+
+        if not callable(isFinished):
+            return None
+
+        try:
+            if not isFinished():
+                return None
+        except Exception:
+            return None
+
+        iterOutputAttributes = getattr(protocol, "iterOutputAttributes", None)
+
+        if not callable(iterOutputAttributes):
+            return None
+
+        try:
+            outputAttributes = list(iterOutputAttributes() or [])
+        except Exception:
+            return None
+
+        if not outputAttributes:
+            return set()
+
+        outputIds = set()
+
+        for _outputName, outputObject in outputAttributes:
+            outputId = self._toOptionalInt(
+                self._callOptionalGetter(outputObject, "getObjId")
+            )
+
+            if outputId is None:
+                outputId = self._toOptionalInt(
+                    getattr(outputObject, "_objId", None)
+                )
+
+            if outputId is None:
+                return None
+
+            outputIds.add(outputId)
+
+        return outputIds
+
     def _describeRuntimeRelationEndpoint(
             self,
             protocol,
@@ -537,8 +587,8 @@ class RuntimeProjectRelationSyncService:
         Collect one relation snapshot from all available protocol representations.
 
         The runtime protocol loaded from logs/run.db is the primary source.
-        SQLite fallback protocols are also inspected because some Scipion paths
-        may already have copied their relations into project.sqlite.
+        Additional non-duplicated relations from SQLite mirrors are merged.
+        Deleted output generations are pruned later during synchronization.
         """
         relations = []
         relationKeys = set()
@@ -633,7 +683,6 @@ class RuntimeProjectRelationSyncService:
                     "source": sourceName,
                     "relations": sourceAdded,
                 })
-                break
 
         return {
             "relations": relations,
@@ -766,29 +815,21 @@ class RuntimeProjectRelationSyncService:
                     relationItem = {
                         "relationId": relation.get("id"),
                         "relationName": relation.get("name"),
-                        "creatorProtocolId": (
-                                relation.get("parent_id")
-                                or protocolId
-                        ),
-                        "parentRuntimeObjectId": relation.get(
-                            "object_parent_id"
-                        ),
-                        "childRuntimeObjectId": relation.get(
-                            "object_child_id"
-                        ),
-                        "parentExtended": relation.get(
-                            "object_parent_extended"
-                        ),
-                        "childExtended": relation.get(
-                            "object_child_extended"
-                        ),
-                        "parentEndpoint": relation.get(
-                            "_parentEndpoint"
-                        ),
-                        "childEndpoint": relation.get(
-                            "_childEndpoint"
-                        ),
+                        "creatorProtocolId": relation.get("parent_id") or protocolId,
+                        "parentRuntimeObjectId": relation.get("object_parent_id"),
+                        "childRuntimeObjectId": relation.get("object_child_id"),
+                        "parentExtended": relation.get("object_parent_extended"),
+                        "childExtended": relation.get("object_child_extended"),
                     }
+
+                    parentEndpoint = relation.get("_parentEndpoint")
+                    childEndpoint = relation.get("_childEndpoint")
+
+                    if isinstance(parentEndpoint, dict) and parentEndpoint:
+                        relationItem["parentEndpoint"] = parentEndpoint
+
+                    if isinstance(childEndpoint, dict) and childEndpoint:
+                        relationItem["childEndpoint"] = childEndpoint
 
                     relationItem["creatorProtocolId"] = int(relationItem["creatorProtocolId"])
                     relationItem["parentRuntimeObjectId"] = int(relationItem["parentRuntimeObjectId"])
@@ -835,6 +876,27 @@ class RuntimeProjectRelationSyncService:
             if relationBuildErrors:
                 errors.extend(relationBuildErrors)
                 continue
+
+            currentOutputIds = self._collectCurrentOutputRuntimeObjectIds(
+                protocol
+            )
+
+            if currentOutputIds is not None:
+                currentRelations = []
+
+                for relationItem in protocolRelations:
+                    parentObjectId = relationItem["parentRuntimeObjectId"]
+                    childObjectId = relationItem["childRuntimeObjectId"]
+
+                    if (
+                            parentObjectId in currentOutputIds
+                            or childObjectId in currentOutputIds
+                    ):
+                        currentRelations.append(relationItem)
+                    else:
+                        stale.append(relationItem)
+
+                protocolRelations = currentRelations
 
             # Resolve every object before deleting the previous snapshot.
             # If PostgreSQL does not contain all required outputs yet, preserve

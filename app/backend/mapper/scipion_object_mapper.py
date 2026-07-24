@@ -406,9 +406,8 @@ class ScipionObjectPostgresqlMapper:
         scipion_objects would leave scipion_sets.objectId set to NULL instead
         of removing the complete PostgreSQL Set representation.
 
-        Descendants are selected recursively. Compatibility runtime relations
-        involving any deleted node are removed explicitly, while canonical
-        scipion_object_relations rows are removed through foreign-key cascades.
+        Descendants are selected recursively. Runtime relations involving any
+        deleted node are removed explicitly from scipion_relations.
         """
         projectId = int(projectId)
         scipionObjId = int(scipionObjId)
