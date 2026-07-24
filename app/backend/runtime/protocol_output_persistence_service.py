@@ -288,6 +288,16 @@ class RuntimeProtocolOutputPersistenceService:
                 parentRuntimeObjectId,
             )
 
+            identitySnapshot.append({
+                "runtimeObject": runtimeObject,
+                "previousObjectId": (
+                    previousObjectId
+                ),
+                "previousParentObjectId": (
+                    previousParentObjectId
+                ),
+            })
+
             preparedItems.append({
                 "path": path,
                 "previousObjectId": (
