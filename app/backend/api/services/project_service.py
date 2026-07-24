@@ -2922,11 +2922,70 @@ class ProjectService:
 
         return dbProj
 
-    def loadProjectForThumbnails(self, dbProj: dict):
-        projPath = Path(dbProj["name"])
-        self.currentProject = ScipionProject(pyworkflow.Config.getDomain(), str(projPath))
-        self.currentProject.load(dbPath=self.currentProject.getDbPath())
-        return self.currentProject
+    def loadProjectForThumbnails(
+            self,
+            dbProj: dict,
+            mapper: Optional[
+                PostgresqlFlatMapper
+            ] = None,
+    ):
+        projPath = Path(
+            dbProj["name"]
+        )
+
+        legacyProject = ScipionProject(
+            pyworkflow.Config.getDomain(),
+            str(projPath),
+        )
+
+        legacyDbPath = Path(
+            legacyProject.getDbPath()
+        )
+
+        if legacyDbPath.is_file():
+            self.currentProject = (
+                legacyProject
+            )
+
+            self.currentProject.load(
+                dbPath=str(
+                    legacyDbPath
+                )
+            )
+
+            return self.currentProject
+
+        if mapper is None:
+            raise RuntimeError(
+                "Cannot load thumbnail project context: "
+                "project.sqlite is missing and no "
+                "PostgreSQL mapper was provided. "
+                "projectPath=%s"
+                % projPath
+            )
+
+        projectId = (
+            self._toPersistedOutputInt(
+                dbProj.get("id")
+            )
+        )
+
+        if projectId is None:
+            raise RuntimeError(
+                "Cannot load PostgreSQL thumbnail "
+                "project context: project id is missing."
+            )
+
+        return (
+            self._loadPostgresqlRuntimeProject(
+                mapper=mapper,
+                projectId=projectId,
+                projectPath=str(
+                    projPath
+                ),
+                enableWriteFallback=False,
+            )
+        )
 
     @staticmethod
     def getProjectSize(path: Path) -> int:

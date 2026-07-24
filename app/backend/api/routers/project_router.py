@@ -3777,7 +3777,10 @@ def _loadThumbnailProjectContext(
     if not dbProj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    service.loadProjectForThumbnails(dbProj)
+    service.loadProjectForThumbnails(
+        dbProj,
+        mapper=mapper,
+    )
     return dbProj
 
 
@@ -4042,7 +4045,10 @@ def listProjectThumbnailItems(
             if not dbProj:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(
+                dbProj,
+                mapper=mapper,
+            )
 
             items = service.listProjectThumbnailItems(
                 projectId=projectId,
