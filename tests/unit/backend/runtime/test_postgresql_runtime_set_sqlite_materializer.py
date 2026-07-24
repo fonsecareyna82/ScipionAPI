@@ -302,6 +302,81 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         sourceSet.close()
 
 
+def test_MaterializeReusesExistingLegacySqliteWithoutCopyingItems(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "source.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 31,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+        runtimeProperties={
+            "fileName": str(sourcePath),
+        },
+    )
+
+    def unexpectedIterItems(
+            *args,
+            **kwargs,
+    ):
+        raise AssertionError(
+            "Existing legacy SQLite must be reused "
+            "without iterating PostgreSQL items."
+        )
+
+    sourceSet.iterItems = (
+        unexpectedIterItems
+    )
+
+    materializer = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+    )
+
+    try:
+        targetPath = (
+            materializer.materialize(
+                sourceSet
+            )
+        )
+
+        assert targetPath == str(
+            sourcePath.resolve()
+        )
+
+        assert (
+            sourceSet
+            ._postgresqlRuntimeProperties[
+                "materializedFileName"
+            ]
+            == str(sourcePath.resolve())
+        )
+
+        assert materializer.materialize(
+            sourceSet
+        ) == str(sourcePath.resolve())
+
+    finally:
+        sourceSet.close()
+
+
 def test_MaterializeSupportsEmptySets(
         tmp_path,
 ):

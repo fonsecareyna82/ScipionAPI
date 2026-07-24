@@ -256,6 +256,7 @@ def test_ProtocolOperationsReturn404EnvelopeWhenProjectMissing(
     payload,
 ):
     fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     request = getattr(projectClient, method)
     kwargs = {}
@@ -273,7 +274,7 @@ def test_ProtocolOperationsReturn404EnvelopeWhenProjectMissing(
 
 
 def test_LaunchProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.post(
         "/projects/1/launch",
@@ -477,7 +478,7 @@ def test_SaveProtocolReturns404EnvelopeWhenProjectMissing(
     projectClient,
     fakeProjectService,
 ):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.post(
         "/projects/1/save",

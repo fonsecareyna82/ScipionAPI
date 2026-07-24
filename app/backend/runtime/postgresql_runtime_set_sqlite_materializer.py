@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import tempfile
@@ -7,6 +8,8 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import Set as ScipionSet
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresqlRuntimeSetSqliteMaterializer:
@@ -23,6 +26,27 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             cachedPath = self._getCachedPath(runtimeSet)
             if cachedPath is not None:
                 return cachedPath
+
+            reusableLegacyPath = (
+                self._getReusableLegacyPath(
+                    runtimeSet
+                )
+            )
+
+            if reusableLegacyPath is not None:
+                logger.info(
+                    "Reusing existing SQLite file for PostgreSQL runtime Set. "
+                    "className=%s path=%s",
+                    runtimeSet.getClassName(),
+                    reusableLegacyPath,
+                )
+
+                self._rememberMaterializedPath(
+                    runtimeSet,
+                    reusableLegacyPath,
+                )
+
+                return reusableLegacyPath
 
             materializedPath = self._buildMaterializedPath(runtimeSet)
             os.makedirs(os.path.dirname(materializedPath), exist_ok=True)
@@ -68,6 +92,143 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
         if cachedPath and os.path.isfile(str(cachedPath)):
             return str(cachedPath)
+        return None
+
+    def _getReusableLegacyPath(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> Optional[str]:
+        properties = self._getRuntimeProperties(
+            runtimeSet
+        )
+
+        rawPaths = []
+
+        for propertyName in (
+                "fileName",
+                "_mapperPath",
+        ):
+            rawValue = properties.get(
+                propertyName
+            )
+
+            if not rawValue:
+                continue
+
+            rawPath = str(
+                rawValue
+            ).split(
+                ",",
+                1,
+            )[0].strip()
+
+            if (
+                    rawPath
+                    and rawPath not in rawPaths
+            ):
+                rawPaths.append(
+                    rawPath
+                )
+
+        projectRoots = []
+        owner = self._findPathOwner(
+            runtimeSet
+        )
+
+        if owner is not None:
+            getProject = getattr(
+                owner,
+                "getProject",
+                None,
+            )
+
+            if callable(getProject):
+                try:
+                    project = getProject()
+                    getProjectPath = getattr(
+                        project,
+                        "getPath",
+                        None,
+                    )
+
+                    if callable(getProjectPath):
+                        projectPath = getProjectPath()
+
+                        if projectPath:
+                            projectRoots.append(
+                                str(projectPath)
+                            )
+
+                except Exception:
+                    pass
+
+            getOwnerPath = getattr(
+                owner,
+                "getPath",
+                None,
+            )
+
+            if callable(getOwnerPath):
+                try:
+                    ownerPath = getOwnerPath()
+
+                    if ownerPath:
+                        projectRoots.append(
+                            str(ownerPath)
+                        )
+
+                except Exception:
+                    pass
+
+        for rawPath in rawPaths:
+            expandedPath = os.path.expandvars(
+                os.path.expanduser(
+                    rawPath
+                )
+            )
+
+            candidates = []
+
+            if os.path.isabs(
+                    expandedPath
+            ):
+                candidates.append(
+                    expandedPath
+                )
+
+            else:
+                for rootPath in projectRoots:
+                    candidates.append(
+                        os.path.join(
+                            rootPath,
+                            expandedPath,
+                        )
+                    )
+
+                candidates.append(
+                    os.path.abspath(
+                        expandedPath
+                    )
+                )
+
+            for candidatePath in candidates:
+                normalizedPath = os.path.realpath(
+                    candidatePath
+                )
+
+                if os.path.basename(
+                        normalizedPath
+                ) in {
+                    "project.sqlite",
+                    "run.db",
+                }:
+                    continue
+
+                if os.path.isfile(
+                        normalizedPath
+                ):
+                    return normalizedPath
+
         return None
 
     def _rememberMaterializedPath(

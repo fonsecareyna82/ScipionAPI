@@ -518,7 +518,7 @@ def _normalizeErrors(detail: Any) -> List[str]:
 
 
 @router.post("/{projectId}/launch", response_model=Any)
-async def launchProtocol(
+def launchProtocol(
     projectId: int,
     request: ProtocolRequest,
     usePostgresqlRuntimeProject: bool = Query(True),
