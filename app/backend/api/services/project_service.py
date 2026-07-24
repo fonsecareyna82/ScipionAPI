@@ -243,6 +243,54 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_USE_POSTGRESQL_RUNTIME_PROJECT", "")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+    def _loadPostgresqlRuntimeProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            projectPath: str,
+            enableWriteFallback: bool = False,
+            domain=None,
+    ) -> PostgresqlProject:
+        """
+        Load a PostgreSQL runtime project directly, without first loading a
+        legacy ScipionProject from project.sqlite.
+        """
+        postgresqlProject = PostgresqlProject(
+            domain=domain or pyworkflow.Config.getDomain(),
+            path=str(projectPath),
+            projectId=projectId,
+            flatMapper=mapper,
+            enableWriteFallback=enableWriteFallback,
+        )
+
+        try:
+            postgresqlProject.load(chdir=True)
+        except Exception:
+            try:
+                postgresqlProject.closeMapper()
+            except Exception:
+                logger.debug(
+                    "Could not close PostgreSQL runtime project after load failure. "
+                    "projectId=%s path=%s",
+                    projectId,
+                    projectPath,
+                    exc_info=True,
+                )
+
+            raise
+
+        self.currentProject = postgresqlProject
+
+        logger.info(
+            "Loaded PostgreSQL runtime project directly. "
+            "projectId=%s path=%s writeFallback=%s",
+            projectId,
+            projectPath,
+            enableWriteFallback,
+        )
+
+        return postgresqlProject
+
     def _replaceCurrentProjectWithPostgresqlProject(
             self,
             mapper: PostgresqlFlatMapper,
@@ -289,22 +337,12 @@ class ProjectService:
                 exc_info=True,
             )
 
-        pgProject = PostgresqlProject(
-            domain=domain,
-            path=projectPath,
+        self._loadPostgresqlRuntimeProject(
+            mapper=mapper,
             projectId=projectId,
-            flatMapper=mapper,
+            projectPath=projectPath,
             enableWriteFallback=enableWriteFallback,
-        )
-
-        pgProject.load(chdir=True)
-
-        self.currentProject = pgProject
-
-        logger.info(
-            "Loaded project %s with PostgreSQL runtime mapper. writeFallback=%s",
-            projectId,
-            enableWriteFallback,
+            domain=domain,
         )
 
     def _createObjectManager(self) -> ObjectManager:
@@ -2671,14 +2709,13 @@ class ProjectService:
             )
 
             if needsRuntimeProject:
-                self.loadProjectRuntimeContext(
-                    dbProj=dbProj,
-                )
-
-                self._replaceCurrentProjectWithPostgresqlProject(
+                self._loadPostgresqlRuntimeProject(
                     mapper=mapper,
                     projectId=projectId,
-                    enableWriteFallback=usePostgresqlRuntimeWriteFallback,
+                    projectPath=dbProj["name"],
+                    enableWriteFallback=(
+                        usePostgresqlRuntimeWriteFallback
+                    ),
                 )
 
                 if syncRuntimeStatuses:
@@ -2868,35 +2905,11 @@ class ProjectService:
             dbProj["name"]
         )
 
-        postgresqlProject = PostgresqlProject(
-            domain=pyworkflow.Config.getDomain(),
-            path=projectPath,
+        self._loadPostgresqlRuntimeProject(
+            mapper=mapper,
             projectId=projectId,
-            flatMapper=mapper,
+            projectPath=projectPath,
             enableWriteFallback=enableWriteFallback,
-        )
-
-        try:
-            postgresqlProject.load(
-                chdir=True
-            )
-
-        except Exception:
-            try:
-                postgresqlProject.closeMapper()
-            except Exception:
-                logger.debug(
-                    "Could not close PostgreSQL runtime project "
-                    "after mutation-context load failure. "
-                    "projectId=%s",
-                    projectId,
-                    exc_info=True,
-                )
-
-            raise
-
-        self.currentProject = (
-            postgresqlProject
         )
 
         logger.info(
