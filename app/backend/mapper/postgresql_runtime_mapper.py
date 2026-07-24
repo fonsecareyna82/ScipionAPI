@@ -69,7 +69,7 @@ from app.backend.runtime.protocol_status_sync_service import (
 
 logger = logging.getLogger(__name__)
 
-SQLITE_EXECUTION_CHILD_ID_START = 1_000_000_000
+SQLITE_EXECUTION_CHILD_ID_START = 3_000_000_000
 
 
 class PostgresqlRuntimeMapper(Mapper):

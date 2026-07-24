@@ -102,7 +102,7 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
     )
 
     outputMovies.setObjId(
-        1_000_000
+        1_000_000_050
     )
 
     outputMovies.setName(
@@ -126,6 +126,34 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
         runtimeMapper.materializeProtocolInSqliteMapper(
             protocol=childProtocol,
             sqliteMapper=sqliteMapper,
+        )
+
+        sqliteMapper.db.cursor.execute(
+            """
+            SELECT MAX(id) AS max_id
+              FROM Objects
+             WHERE id >= ?
+            """,
+            (
+                3_000_000_000,
+            ),
+        )
+
+        row = sqliteMapper.db.cursor.fetchone()
+
+        maxInternalId = (
+            row["max_id"]
+            if hasattr(row, "keys")
+            else row[0]
+        )
+
+        assert maxInternalId is not None
+        assert maxInternalId >= 3_000_000_000
+        assert (
+            sqliteMapper.db.selectObjectById(
+                1_000_000_050
+            )
+            is None
         )
 
         runtimeMapper._storeRuntimeObjectInSqliteMapper(
@@ -152,7 +180,7 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
             storedParent
             .outputMovies
             .getObjId()
-            == 1_000_000
+            == 1_000_000_050
         )
 
         runtimeMapper._clearFallbackMapperCaches(
@@ -175,7 +203,7 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
             .inputMovies
             .get()
             .getObjId()
-            == 1_000_000
+            == 1_000_000_050
         )
 
     finally:
