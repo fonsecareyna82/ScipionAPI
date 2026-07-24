@@ -871,3 +871,186 @@ def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
         "mapper": "mapper",
         "projectId": 1,
     }
+
+
+def test_LoadProjectForThumbnailsUsesPostgresqlWhenProjectDbIsMissing(
+        projectServiceModule,
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir()
+
+    class FakeLegacyProject:
+        def __init__(
+                self,
+                domain,
+                path,
+        ):
+            self.domain = domain
+            self.path = path
+            self.loadCalls = []
+
+        def getDbPath(self):
+            return str(
+                projectPath
+                / "project.sqlite"
+            )
+
+        def load(
+                self,
+                dbPath,
+        ):
+            self.loadCalls.append(
+                dbPath
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ScipionProject",
+        FakeLegacyProject,
+    )
+
+    mapper = object()
+    postgresqlProject = object()
+    loadCalls = []
+
+    def loadPostgresqlRuntimeProject(
+            **kwargs,
+    ):
+        loadCalls.append(
+            dict(kwargs)
+        )
+
+        return postgresqlProject
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        loadPostgresqlRuntimeProject,
+    )
+
+    result = (
+        service
+        .loadProjectForThumbnails(
+            dbProj={
+                "id": 342,
+                "name": str(
+                    projectPath
+                ),
+            },
+            mapper=mapper,
+        )
+    )
+
+    assert result is postgresqlProject
+
+    assert loadCalls == [{
+        "mapper": mapper,
+        "projectId": 342,
+        "projectPath": str(
+            projectPath
+        ),
+        "enableWriteFallback": False,
+    }]
+
+
+def test_LoadProjectForThumbnailsKeepsLegacySqlitePath(
+        projectServiceModule,
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "LegacyProject"
+    )
+
+    projectPath.mkdir()
+
+    projectDbPath = (
+        projectPath
+        / "project.sqlite"
+    )
+
+    projectDbPath.write_bytes(
+        b"sqlite"
+    )
+
+    createdProjects = []
+
+    class FakeLegacyProject:
+        def __init__(
+                self,
+                domain,
+                path,
+        ):
+            self.domain = domain
+            self.path = path
+            self.loadCalls = []
+
+            createdProjects.append(
+                self
+            )
+
+        def getDbPath(self):
+            return str(
+                projectDbPath
+            )
+
+        def load(
+                self,
+                dbPath,
+        ):
+            self.loadCalls.append(
+                dbPath
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ScipionProject",
+        FakeLegacyProject,
+    )
+
+    def failPostgresqlLoad(
+            **kwargs,
+    ):
+        raise AssertionError(
+            "PostgreSQL runtime must not be "
+            "used when project.sqlite exists."
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failPostgresqlLoad,
+    )
+
+    result = (
+        service
+        .loadProjectForThumbnails(
+            dbProj={
+                "id": 17,
+                "name": str(
+                    projectPath
+                ),
+            },
+            mapper=object(),
+        )
+    )
+
+    assert result is createdProjects[0]
+
+    assert (
+        createdProjects[0].loadCalls
+        == [
+            str(projectDbPath),
+        ]
+    )
+
+
