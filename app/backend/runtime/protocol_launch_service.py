@@ -421,14 +421,6 @@ class RuntimeProtocolLaunchService:
                         cleanupInfo,
                     )
 
-                if usingPostgresqlRuntime:
-                    self._ensureProtocolExistsInSqliteExecutionDb(
-                        currentProject=currentProject,
-                        protocol=protocol,
-                        protocolId=protocolId,
-                        projectId=projectId,
-                    )
-
                 currentProject.launchProtocol(protocol)
 
                 if usingPostgresqlRuntime:
@@ -438,11 +430,11 @@ class RuntimeProtocolLaunchService:
                         lambda: protocolId,
                     )()
 
-                    # Scipion's native Project.launchProtocol() has already:
+                    # PostgresqlProject.launchProtocol() has already:
                     #   - marked the protocol as launched;
-                    #   - stored it through PostgresqlRuntimeMapper;
-                    #   - mirrored it to project.sqlite;
-                    #   - committed the mapper.
+                    #   - stored the authoritative state in PostgreSQL;
+                    #   - generated logs/run.db directly from PostgreSQL;
+                    #   - launched the native Scipion worker.
                     #
                     # Do not perform a second full protocol store here.
                     runtimeStatusSyncService = (
@@ -510,107 +502,6 @@ class RuntimeProtocolLaunchService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"{e}",
             )
-
-    def _ensureProtocolExistsInSqliteExecutionDb(
-            self,
-            *,
-            currentProject,
-            protocol,
-            protocolId,
-            projectId: int,
-    ) -> Dict[str, Any]:
-        runtimeMapper = None
-
-        try:
-            runtimeMapper = (
-                currentProject
-                .getPostgresqlRuntimeMapper()
-            )
-        except Exception:
-            runtimeMapper = None
-
-        if runtimeMapper is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "PostgreSQL runtime mapper is not available "
-                    "while preparing protocol execution."
-                ),
-            )
-
-        ensureMirror = getattr(
-            runtimeMapper,
-            "ensureProtocolWriteFallbackMirror",
-            None,
-        )
-
-        if not callable(ensureMirror):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "PostgreSQL runtime mapper cannot materialize "
-                    "the SQLite execution mirror."
-                ),
-            )
-
-        try:
-            report = ensureMirror(
-                protocol
-            )
-
-            writeFallbackMapper = getattr(
-                runtimeMapper,
-                "writeFallbackMapper",
-                None,
-            )
-
-            if writeFallbackMapper is not None:
-                writeFallbackMapper.commit()
-
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                        "Could not materialize protocol %s in the "
-                        "SQLite execution mirror: %s"
-                        % (
-                            getattr(
-                                protocol,
-                                "getObjId",
-                                lambda: protocolId,
-                            )(),
-                            exc,
-                        )
-                ),
-            ) from exc
-
-        protocolRuntimeId = getattr(
-            protocol,
-            "getObjId",
-            lambda: protocolId,
-        )()
-
-        if not runtimeMapper._existsInWriteFallback(
-                protocolRuntimeId
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                        "Protocol %s was not found in the SQLite "
-                        "execution mirror after materialization."
-                        % protocolRuntimeId
-                ),
-            )
-
-        logger.info(
-            "Prepared protocol SQLite execution mirror. "
-            "projectId=%s protocolId=%s report=%s",
-            projectId,
-            protocolRuntimeId,
-            report,
-        )
-
-        return report
 
     def _syncPostgresqlRuntimeAfterLaunch(
             self,

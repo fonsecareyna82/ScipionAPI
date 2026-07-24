@@ -223,9 +223,10 @@ class PostgresqlRuntimeMapper(Mapper):
     # Generic Mapper API
     # ---------------------------------------------------------------------
 
-    def _storeProtocolInWriteFallback(
+    def _storeProtocolRootInSqliteMapper(
             self,
             protocol: Protocol,
+            sqliteMapper,
     ) -> bool:
         """
         Ensure that the protocol root exists in the temporary SQLite
@@ -236,11 +237,9 @@ class PostgresqlRuntimeMapper(Mapper):
         explicitly, while internal SQLite child objects use a separate high
         id range.
         """
-        writeFallbackMapper = self.writeFallbackMapper
-
-        if writeFallbackMapper is None:
+        if sqliteMapper is None:
             raise RuntimeError(
-                "SQLite write fallback mapper is not available."
+                "SQLite mapper is required to materialize a protocol root."
             )
 
         protocolId = self._getObjId(
@@ -255,7 +254,7 @@ class PostgresqlRuntimeMapper(Mapper):
         protocolId = int(protocolId)
 
         db = getattr(
-            writeFallbackMapper,
+            sqliteMapper,
             "db",
             None,
         )
@@ -403,6 +402,86 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         return True
+
+    def _storeProtocolInWriteFallback(
+            self,
+            protocol: Protocol,
+    ) -> bool:
+        writeFallbackMapper = self.writeFallbackMapper
+
+        if writeFallbackMapper is None:
+            raise RuntimeError(
+                "SQLite write fallback mapper is not available."
+            )
+
+        return self._storeProtocolRootInSqliteMapper(
+            protocol=protocol,
+            sqliteMapper=writeFallbackMapper,
+        )
+
+    def materializeProtocolInSqliteMapper(
+            self,
+            protocol: Protocol,
+            sqliteMapper,
+    ) -> Dict[str, Any]:
+        if protocol is None:
+            raise ValueError("protocol is required")
+
+        if sqliteMapper is None:
+            raise ValueError("sqliteMapper is required")
+
+        protocolId = self._toOptionalInt(
+            self._getObjId(protocol)
+        )
+
+        if protocolId is None:
+            raise RuntimeError(
+                "Cannot materialize protocol without runtime id."
+            )
+
+        rootCreated = self._storeProtocolRootInSqliteMapper(
+            protocol=protocol,
+            sqliteMapper=sqliteMapper,
+        )
+
+        self._clearFallbackMapperCaches(
+            sqliteMapper
+        )
+
+        identitySnapshot = (
+            self._captureRuntimeObjectTreeIdentity(
+                protocol
+            )
+        )
+
+        try:
+            sqliteMapper.store(protocol)
+            sqliteMapper.commit()
+        finally:
+            self._restoreRuntimeObjectTreeIdentity(
+                identitySnapshot
+            )
+
+            self._clearFallbackMapperCaches(
+                sqliteMapper
+            )
+
+        storedProtocol = sqliteMapper.selectById(
+            protocolId
+        )
+
+        if not isinstance(storedProtocol, Protocol):
+            raise RuntimeError(
+                "Protocol %s was not materialized correctly "
+                "in the SQLite execution database."
+                % protocolId
+            )
+
+        return {
+            "protocolId": protocolId,
+            "created": bool(rootCreated),
+            "className": storedProtocol.__class__.__name__,
+        }
 
     def store(self, obj):
         if obj is None:
@@ -667,80 +746,14 @@ class PostgresqlRuntimeMapper(Mapper):
                 "write fallback mapper is not available."
             )
 
-        protocolId = self._ensureObjId(
-            protocol
+        materializeReport = self.materializeProtocolInSqliteMapper(
+            protocol=protocol,
+            sqliteMapper=writeFallbackMapper,
         )
 
-        if protocolId is None:
-            raise RuntimeError(
-                "Cannot materialize protocol SQLite execution mirror "
-                "without protocol id."
-            )
-
-        protocolId = int(protocolId)
-
-        rootCreated = self._storeProtocolInWriteFallback(
-            protocol
+        protocolId = int(
+            materializeReport["protocolId"]
         )
-
-        # Remove any object previously cached under this id. A stale cache
-        # could otherwise return a String or another compatibility object
-        # even after the database row has been corrected.
-        self._clearFallbackMapperCaches(
-            writeFallbackMapper
-        )
-
-        identitySnapshot = (
-            self
-            ._captureRuntimeObjectTreeIdentity(
-                protocol
-            )
-        )
-
-        try:
-            writeFallbackMapper.store(
-                protocol
-            )
-
-            writeFallbackMapper.commit()
-
-        finally:
-            # SQLite is allowed to assign internal compatibility ids,
-            # but those ids must never leak back into the authoritative
-            # PostgreSQL runtime object.
-            self._restoreRuntimeObjectTreeIdentity(
-                identitySnapshot
-            )
-
-            self._clearFallbackMapperCaches(
-                writeFallbackMapper
-            )
-
-        mirroredProtocol = (
-            writeFallbackMapper.selectById(
-                protocolId
-            )
-        )
-
-        if mirroredProtocol is None:
-            raise RuntimeError(
-                "Protocol %s was not found in the SQLite "
-                "execution mirror after materialization."
-                % protocolId
-            )
-
-        if not isinstance(
-                mirroredProtocol,
-                Protocol,
-        ):
-            raise RuntimeError(
-                "Invalid SQLite execution mirror for protocol %s: "
-                "expected Protocol, found %s."
-                % (
-                    protocolId,
-                    mirroredProtocol.__class__.__name__,
-                )
-            )
 
         self._sqliteProtocolMirrorIds.add(
             protocolId
@@ -748,13 +761,9 @@ class PostgresqlRuntimeMapper(Mapper):
 
         report = {
             "protocolId": protocolId,
-            "created": bool(rootCreated),
-            "updated": not bool(rootCreated),
-            "mirrorClassName": (
-                mirroredProtocol
-                .__class__
-                .__name__
-            ),
+            "created": materializeReport["created"],
+            "updated": not materializeReport["created"],
+            "mirrorClassName": materializeReport["className"],
         }
 
         logger.info(
@@ -762,6 +771,233 @@ class PostgresqlRuntimeMapper(Mapper):
             "projectId=%s report=%s",
             self.projectId,
             report,
+        )
+
+        return report
+
+    def _storeRuntimeObjectInSqliteMapper(
+            self,
+            runtimeObject,
+            sqliteMapper,
+    ) -> None:
+        identitySnapshot = (
+            self._captureRuntimeObjectTreeIdentity(
+                runtimeObject
+            )
+        )
+
+        mapperPath = getattr(
+            runtimeObject,
+            "_mapperPath",
+            None,
+        )
+
+        originalMapperPath = None
+
+        try:
+            if (
+                    isinstance(runtimeObject, ScipionSet)
+                    and mapperPath is not None
+            ):
+                originalMapperPath = mapperPath.get()
+
+                materializedFileName = (
+                    runtimeObject.getFileName()
+                )
+
+                prefix = ""
+
+                getPrefix = getattr(
+                    runtimeObject,
+                    "getPrefix",
+                    None,
+                )
+
+                if callable(getPrefix):
+                    prefix = getPrefix() or ""
+
+                mapperPath.set(
+                    "%s, %s"
+                    % (
+                        materializedFileName,
+                        prefix,
+                    )
+                )
+
+            sqliteMapper.store(
+                runtimeObject
+            )
+
+        finally:
+            if (
+                    originalMapperPath is not None
+                    and mapperPath is not None
+            ):
+                mapperPath.set(
+                    originalMapperPath
+                )
+
+            self._restoreRuntimeObjectTreeIdentity(
+                identitySnapshot
+            )
+
+            self._clearFallbackMapperCaches(
+                sqliteMapper
+            )
+
+    def materializeProjectExecutionSnapshot(
+            self,
+            sqliteMapper,
+            activeProtocol: Optional[Protocol] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build a complete native Scipion SQLite execution snapshot from
+        PostgreSQL without reading or creating project.sqlite.
+        """
+        if sqliteMapper is None:
+            raise ValueError("sqliteMapper is required")
+
+        activeProtocolId = self._toOptionalInt(
+            self._getObjId(activeProtocol)
+            if activeProtocol is not None
+            else None
+        )
+
+        report = {
+            "projectId": self.projectId,
+            "protocols": [],
+            "sets": [],
+            "objects": [],
+            "creationTimeStored": False,
+        }
+
+        creationTime = (
+            self._selectProjectCreationTimeFromPostgresql()
+        )
+
+        if creationTime is not None:
+            sqliteMapper.store(
+                creationTime
+            )
+
+            report["creationTimeStored"] = True
+
+        for row in (
+                self.flatMapper.getProtocols(
+                    self.projectId
+                )
+                or []
+        ):
+            protocolId = self._toOptionalInt(
+                row.get("protocolId")
+            )
+
+            if protocolId is None:
+                continue
+
+            if (
+                    activeProtocol is not None
+                    and protocolId == activeProtocolId
+            ):
+                runtimeProtocol = activeProtocol
+            else:
+                runtimeProtocol = (
+                    self.selectRuntimeProtocolById(
+                        protocolId,
+                        refreshCached=False,
+                    )
+                )
+
+            if runtimeProtocol is None:
+                raise RuntimeError(
+                    "Could not reconstruct PostgreSQL protocol %s "
+                    "for the execution snapshot."
+                    % protocolId
+                )
+
+            protocolReport = (
+                self.materializeProtocolInSqliteMapper(
+                    protocol=runtimeProtocol,
+                    sqliteMapper=sqliteMapper,
+                )
+            )
+
+            report["protocols"].append(
+                protocolReport
+            )
+
+        for outputRow in (
+                self.protocolGraphRepository
+                .listPersistedSetOutputRows(
+                    mapper=self,
+                    projectId=self.projectId,
+                )
+        ):
+            runtimeObjectId = self._toOptionalInt(
+                outputRow.get("runtimeObjectId")
+            )
+
+            if runtimeObjectId is None:
+                continue
+
+            runtimeSet = (
+                self._selectSetByIdFromPostgresql(
+                    runtimeObjectId,
+                    refreshParentProtocol=False,
+                )
+            )
+
+            if runtimeSet is None:
+                raise RuntimeError(
+                    "Could not reconstruct PostgreSQL runtime Set %s "
+                    "for the execution snapshot."
+                    % runtimeObjectId
+                )
+
+            self._storeRuntimeObjectInSqliteMapper(
+                runtimeObject=runtimeSet,
+                sqliteMapper=sqliteMapper,
+            )
+
+            report["sets"].append({
+                "runtimeObjectId": runtimeObjectId,
+                "protocolId": outputRow.get("protocolId"),
+                "outputName": outputRow.get("outputName"),
+                "className": outputRow.get("className"),
+            })
+
+        for runtimeObject in (
+                self._selectAllGenericObjectsFromPostgresql()
+        ):
+            runtimeObjectId = self._toOptionalInt(
+                self._getObjId(runtimeObject)
+            )
+
+            if runtimeObjectId is None:
+                continue
+
+            self._storeRuntimeObjectInSqliteMapper(
+                runtimeObject=runtimeObject,
+                sqliteMapper=sqliteMapper,
+            )
+
+            report["objects"].append({
+                "runtimeObjectId": runtimeObjectId,
+                "className": runtimeObject.__class__.__name__,
+            })
+
+        sqliteMapper.commit()
+
+        report["protocolsCount"] = len(
+            report["protocols"]
+        )
+
+        report["setsCount"] = len(
+            report["sets"]
+        )
+
+        report["objectsCount"] = len(
+            report["objects"]
         )
 
         return report
@@ -3810,7 +4046,6 @@ class PostgresqlRuntimeMapper(Mapper):
             """,
             (self.projectId, int(creatorId)),
         )
-
 
     def _selectPostgresqlRelations(
             self,
