@@ -812,6 +812,169 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return report
 
+    def _storeRuntimeObjectRootInSqliteMapper(
+            self,
+            runtimeObject,
+            sqliteMapper,
+    ) -> str:
+        if runtimeObject is None:
+            raise ValueError(
+                "runtimeObject is required"
+            )
+
+        if sqliteMapper is None:
+            raise ValueError(
+                "sqliteMapper is required"
+            )
+
+        runtimeObjectId = self._toOptionalInt(
+            self._getObjId(
+                runtimeObject
+            )
+        )
+
+        if runtimeObjectId is None:
+            raise RuntimeError(
+                "Cannot materialize a PostgreSQL runtime object "
+                "without its runtime id."
+            )
+
+        parentProtocolId = self._toOptionalInt(
+            getattr(
+                runtimeObject,
+                "_objParentId",
+                None,
+            )
+        )
+
+        if parentProtocolId is None:
+            raise RuntimeError(
+                "Cannot materialize PostgreSQL runtime object %s "
+                "without its parent protocol id."
+                % runtimeObjectId
+            )
+
+        outputName = self._getObjectName(
+            runtimeObject
+        )
+
+        if not outputName:
+            raise RuntimeError(
+                "Cannot materialize PostgreSQL runtime object %s "
+                "without its output name."
+                % runtimeObjectId
+            )
+
+        sqliteObjectName = joinExt(
+            str(parentProtocolId),
+            str(outputName),
+        )
+
+        db = getattr(
+            sqliteMapper,
+            "db",
+            None,
+        )
+
+        if db is None:
+            raise RuntimeError(
+                "SQLite execution mapper does not expose db."
+            )
+
+        expectedClassName = (
+            Mapper.getObjectPersistingClassName(
+                runtimeObject
+            )
+        )
+
+        existingRow = db.selectObjectById(
+            runtimeObjectId
+        )
+
+        if existingRow is not None:
+            existingParentId = self._toOptionalInt(
+                existingRow["parent_id"]
+            )
+
+            existingClassName = str(
+                existingRow["classname"]
+                or ""
+            )
+
+            if (
+                    existingParentId != parentProtocolId
+                    or existingClassName
+                    != str(expectedClassName)
+            ):
+                raise RuntimeError(
+                    "SQLite execution id collision for runtime "
+                    "object %s: expected parentId=%s class=%s, "
+                    "found parentId=%s class=%s."
+                    % (
+                        runtimeObjectId,
+                        parentProtocolId,
+                        expectedClassName,
+                        existingParentId,
+                        existingClassName,
+                    )
+                )
+
+            return sqliteObjectName
+
+        db.executeCommand(
+            """
+            INSERT INTO Objects (
+                id,
+                parent_id,
+                name,
+                classname,
+                value,
+                label,
+                comment,
+                creation
+            )
+            VALUES (
+                ?,
+                ?,
+                ?,
+                ?,
+                NULL,
+                ?,
+                ?,
+                datetime('now')
+            )
+            """,
+            (
+                runtimeObjectId,
+                parentProtocolId,
+                sqliteObjectName,
+                str(expectedClassName),
+                getattr(
+                    runtimeObject,
+                    "_objLabel",
+                    None,
+                ),
+                getattr(
+                    runtimeObject,
+                    "_objComment",
+                    None,
+                ),
+            ),
+        )
+
+        logger.info(
+            "Inserted PostgreSQL runtime output root in SQLite "
+            "execution database. projectId=%s runtimeObjectId=%s "
+            "parentProtocolId=%s name=%s className=%s",
+            self.projectId,
+            runtimeObjectId,
+            parentProtocolId,
+            sqliteObjectName,
+            expectedClassName,
+        )
+
+        return sqliteObjectName
+
     def _storeRuntimeObjectInSqliteMapper(
             self,
             runtimeObject,
@@ -823,6 +986,17 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
+        sqliteObjectName = (
+            self._storeRuntimeObjectRootInSqliteMapper(
+                runtimeObject=runtimeObject,
+                sqliteMapper=sqliteMapper,
+            )
+        )
+
+        self._clearFallbackMapperCaches(
+            sqliteMapper
+        )
+
         mapperPath = getattr(
             runtimeObject,
             "_mapperPath",
@@ -832,6 +1006,11 @@ class PostgresqlRuntimeMapper(Mapper):
         originalMapperPath = None
 
         try:
+            self._setObjName(
+                runtimeObject,
+                sqliteObjectName,
+            )
+
             if (
                     isinstance(runtimeObject, ScipionSet)
                     and mapperPath is not None
