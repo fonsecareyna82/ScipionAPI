@@ -60,6 +60,28 @@ class FakeProtocolRouterService:
         self.lastLaunchProtocolCall: Dict[str, Any]
         self.lastSaveProtocolCall: Dict[str, Any]
         self.lastGetProtocolLogsCall: Dict[str, Any]
+        self.postgresqlRuntimeMutationResult: Any = {
+            "id": 1,
+            "name": "Demo Project",
+        }
+
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall: Dict[str, Any]
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            enableWriteFallback=False,
+    ):
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "enableWriteFallback": enableWriteFallback,
+        }
+
+        return self.postgresqlRuntimeMutationResult
 
     def getProjectById(self, mapper, projectId, currentUser):
         self.lastGetProjectByIdCall = {
@@ -179,7 +201,7 @@ def test_LoadProtocolReturnsProtocolParams(protocolClient, fakeProtocolRouterSer
 
 
 def test_LoadNewProtocolReturns404WhenProjectMissing(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.projectByIdResult = None
+    fakeProtocolRouterService.postgresqlRuntimeMutationResult = None
 
     response = protocolClient.get("/protocols/1/protclass/MyProtClass")
 
@@ -200,6 +222,13 @@ def test_LoadNewProtocolReturnsProtocolTemplate(protocolClient, fakeProtocolRout
         "projectId": 1,
         "protClassName": "MyProtClass",
     }
+    assert (
+        fakeProtocolRouterService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall[
+            "enableWriteFallback"
+        ]
+        is False
+    )
 
 
 def test_LaunchProtocolEndpointIsDisabled(protocolClient):
