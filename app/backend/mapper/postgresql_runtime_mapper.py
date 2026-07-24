@@ -37,7 +37,7 @@ from pyworkflow.project.project import (
     PROJECT_CREATION_TIME,
     PROJECT_RUNS,
 )
-from pyworkflow.protocol.protocol import Protocol
+from pyworkflow.protocol.protocol import LegacyProtocol, Protocol
 from pyworkflow.protocol.params import (
     MultiPointerParam,
     PointerParam,
@@ -50,6 +50,7 @@ from pyworkflow.object import (
 )
 from pyworkflow.utils import joinExt, replaceExt
 from pyworkflow.config import Config
+from pyworkflow.project import config as projectConfig
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
@@ -94,6 +95,11 @@ class PostgresqlRuntimeMapper(Mapper):
             writeFallbackMapper=None,
             project=None,
     ):
+        if not dictClasses or not hasattr(dictClasses, "items"):
+            dictClasses = pwobject.Dict(default=LegacyProtocol)
+            dictClasses.update(Config.getDomain().getMapperDict())
+            dictClasses.update(projectConfig.__dict__)
+
         super().__init__(dictClasses=dictClasses)
 
         self.flatMapper = flatMapper

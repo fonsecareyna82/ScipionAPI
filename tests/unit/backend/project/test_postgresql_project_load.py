@@ -26,6 +26,9 @@
 import importlib
 from datetime import datetime
 
+from pyworkflow.object import String
+from pyworkflow.protocol.protocol import LegacyProtocol
+
 
 class FakeFlatMapper:
     def __init__(self):
@@ -74,6 +77,19 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
 
     assert project.usingPostgresqlRuntimeMapper()
     assert project.mapper.writeFallbackMapper is None
+    classes = project.mapper.dictClasses
+
+    assert hasattr(classes, "items")
+    assert classes["String"] is String
+    assert classes._default is LegacyProtocol
+
+    runtimeClasses = (
+        project.mapper.runtimeSetFactory._loadClasses(
+            classes
+        )
+    )
+
+    assert runtimeClasses["String"] is String
     assert project.getCreationTime() == datetime(
         2026,
         7,
