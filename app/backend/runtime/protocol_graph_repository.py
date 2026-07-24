@@ -402,106 +402,112 @@ class ProtocolGraphRepository:
                 "targetOutputName": targetOutputName,
             }
 
-        sourceRuntimeObjectId = self._extractRuntimeScipionObjId(sourceOutput)
-        targetRuntimeObjectId = self._extractRuntimeScipionObjId(targetOutput)
+        sourceRuntimeObjectId = self._extractRuntimeScipionObjId(
+            sourceOutput
+        )
 
-        metadata = dict(metadata or {})
-        metadata.update({
+        if sourceRuntimeObjectId is None:
+            return {
+                "saved": False,
+                "reason": "source_runtime_object_id_not_found",
+                "relationName": relationName,
+                "sourceProtocolDbId": sourceProtocolDbId,
+                "sourceOutputName": sourceOutputName,
+            }
+
+        targetRuntimeObjectId = self._extractRuntimeScipionObjId(
+            targetOutput
+        )
+
+        if targetRuntimeObjectId is None:
+            return {
+                "saved": False,
+                "reason": "target_runtime_object_id_not_found",
+                "relationName": relationName,
+                "targetProtocolDbId": targetProtocolDbId,
+                "targetOutputName": targetOutputName,
+            }
+
+        relationMetadata = dict(
+            metadata or {}
+        )
+
+        relationMetadata.update({
             "sourceProtocolDbId": int(sourceProtocolDbId),
-            "sourceProtocolId": str(sourceOutput.get("protocolId")),
+            "sourceProtocolId": str(
+                sourceOutput.get("protocolId")
+            ),
             "sourceOutputName": sourceOutputName,
-            "sourceClassName": sourceOutput.get("className"),
+            "sourceClassName": sourceOutput.get(
+                "className"
+            ),
             "targetProtocolDbId": int(targetProtocolDbId),
-            "targetProtocolId": str(targetOutput.get("protocolId")),
+            "targetProtocolId": str(
+                targetOutput.get("protocolId")
+            ),
             "targetOutputName": targetOutputName,
-            "targetClassName": targetOutput.get("className"),
+            "targetClassName": targetOutput.get(
+                "className"
+            ),
             "relationScope": "runtime_output",
         })
 
         with mapper.db.transaction():
             mapper.db.execute(
                 """
-                DELETE FROM scipion_object_relations
+                DELETE FROM scipion_relations
                  WHERE "projectId" = %s
-                   AND "parentObjectId" = %s
+                   AND "parentObjId" = %s
                    AND name = %s
                    AND COALESCE("parentExtended", '') = %s
                 """,
                 (
                     int(projectId),
-                    int(sourceOutput["objectId"]),
+                    int(sourceRuntimeObjectId),
                     relationName,
                     sourceOutputName,
                 ),
                 commit=False,
             )
 
-            if sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None:
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_relations
-                     WHERE "projectId" = %s
-                       AND "parentObjId" = %s
-                       AND name = %s
-                       AND COALESCE("parentExtended", '') = %s
-                    """,
-                    (
-                        int(projectId),
-                        int(sourceRuntimeObjectId),
-                        relationName,
-                        sourceOutputName,
-                    ),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    INSERT INTO scipion_relations (
-                        "projectId",
-                        name,
-                        "creatorObjId",
-                        "parentObjId",
-                        "childObjId",
-                        "parentExtended",
-                        "childExtended"
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        int(projectId),
-                        relationName,
-                        int(sourceRuntimeObjectId),
-                        int(sourceRuntimeObjectId),
-                        int(targetRuntimeObjectId),
-                        sourceOutputName,
-                        targetOutputName,
-                    ),
-                    commit=False,
-                )
-
             mapper.db.execute(
                 """
-                INSERT INTO scipion_object_relations (
+                INSERT INTO scipion_relations (
                     "projectId",
-                    "creatorObjectId",
-                    "parentObjectId",
-                    "childObjectId",
                     name,
+                    "creatorObjId",
+                    "parentObjId",
+                    "childObjId",
                     "parentExtended",
                     "childExtended",
                     metadata
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s::jsonb
+                )
+                ON CONFLICT
+                    ON CONSTRAINT ux_scipion_relations_unique_relation
+                DO UPDATE SET
+                    metadata = EXCLUDED.metadata
                 """,
                 (
                     int(projectId),
-                    int(sourceOutput["objectId"]),
-                    int(sourceOutput["objectId"]),
-                    int(targetOutput["objectId"]),
                     relationName,
+                    int(sourceRuntimeObjectId),
+                    int(sourceRuntimeObjectId),
+                    int(targetRuntimeObjectId),
                     sourceOutputName,
                     targetOutputName,
-                    json.dumps(metadata),
+                    json.dumps(
+                        relationMetadata
+                    ),
                 ),
                 commit=False,
             )
@@ -509,42 +515,65 @@ class ProtocolGraphRepository:
             fallbackRelationSaved = False
             fallbackRelationError = None
 
-            if sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None:
-                fallbackMapper = getattr(mapper, "writeFallbackMapper", None)
-                insertRelationData = getattr(fallbackMapper, "insertRelationData", None)
+            fallbackMapper = getattr(
+                mapper,
+                "writeFallbackMapper",
+                None,
+            )
 
-                if callable(insertRelationData):
-                    try:
-                        insertRelationData(
-                            relationName,
-                            int(sourceRuntimeObjectId),
-                            int(sourceRuntimeObjectId),
-                            int(targetRuntimeObjectId),
-                            sourceOutputName,
-                            targetOutputName,
-                        )
+            insertRelationData = getattr(
+                fallbackMapper,
+                "insertRelationData",
+                None,
+            )
 
-                        commit = getattr(fallbackMapper, "commit", None)
-                        if callable(commit):
-                            commit()
+            if callable(insertRelationData):
+                try:
+                    insertRelationData(
+                        relationName,
+                        int(sourceRuntimeObjectId),
+                        int(sourceRuntimeObjectId),
+                        int(targetRuntimeObjectId),
+                        sourceOutputName,
+                        targetOutputName,
+                    )
 
-                        fallbackRelationSaved = True
+                    commit = getattr(
+                        fallbackMapper,
+                        "commit",
+                        None,
+                    )
 
-                    except Exception as e:
-                        fallbackRelationError = str(e)
+                    if callable(commit):
+                        commit()
+
+                    fallbackRelationSaved = True
+
+                except Exception as error:
+                    fallbackRelationError = str(
+                        error
+                    )
 
         return {
             "saved": True,
             "relationName": relationName,
             "sourceProtocolDbId": int(sourceProtocolDbId),
             "sourceOutputName": sourceOutputName,
-            "sourceObjectId": int(sourceOutput["objectId"]),
-            "sourceRuntimeObjectId": sourceRuntimeObjectId,
+            "sourceObjectId": int(
+                sourceOutput["objectId"]
+            ),
+            "sourceRuntimeObjectId": (
+                sourceRuntimeObjectId
+            ),
             "targetProtocolDbId": int(targetProtocolDbId),
             "targetOutputName": targetOutputName,
-            "targetObjectId": int(targetOutput["objectId"]),
-            "targetRuntimeObjectId": targetRuntimeObjectId,
-            "legacyRelationSaved": sourceRuntimeObjectId is not None and targetRuntimeObjectId is not None,
+            "targetObjectId": int(
+                targetOutput["objectId"]
+            ),
+            "targetRuntimeObjectId": (
+                targetRuntimeObjectId
+            ),
+            "postgresqlRelationSaved": True,
             "fallbackRelationSaved": fallbackRelationSaved,
             "fallbackRelationError": fallbackRelationError,
         }
@@ -574,20 +603,26 @@ class ProtocolGraphRepository:
                 target_protocol."protocolId" AS "targetProtocolId",
                 target_set."setClassName" AS "targetClassName",
                 target_set."itemClassName" AS "targetItemClassName"
-              FROM scipion_sets source_set
-              JOIN scipion_object_relations r
-                ON r."projectId" = source_set."projectId"
-               AND r."parentObjectId" = source_set."objectId"
+              FROM scipion_relations r
+              JOIN scipion_objects source_object
+                ON source_object."projectId" = r."projectId"
+               AND source_object."scipionObjId" = r."parentObjId"
+              JOIN scipion_sets source_set
+                ON source_set."projectId" = source_object."projectId"
+               AND source_set."objectId" = source_object.id
+              JOIN scipion_objects target_object
+                ON target_object."projectId" = r."projectId"
+               AND target_object."scipionObjId" = r."childObjId"
               JOIN scipion_sets target_set
-                ON target_set."projectId" = r."projectId"
-               AND target_set."objectId" = r."childObjectId"
+                ON target_set."projectId" = target_object."projectId"
+               AND target_set."objectId" = target_object.id
               JOIN protocols source_protocol
                 ON source_protocol."projectId" = source_set."projectId"
                AND source_protocol.id = source_set."protocolDbId"
               JOIN protocols target_protocol
                 ON target_protocol."projectId" = target_set."projectId"
                AND target_protocol.id = target_set."protocolDbId"
-             WHERE source_set."projectId" = %s
+             WHERE r."projectId" = %s
                AND source_set."protocolDbId" = %s
                AND source_set."outputName" = %s
              ORDER BY r.id ASC
@@ -1990,13 +2025,10 @@ class ProtocolGraphRepository:
         persistedRelations = []
 
         with mapper.db.transaction():
-            cleanupReport = (
-                self._deleteImportedOutputRelationsForCreatorRows(
-                    mapper=mapper,
-                    projectId=projectId,
-                    creatorProtocolDbId=creatorProtocolDbId,
-                    creatorProtocolId=creatorProtocolId,
-                )
+            cleanupReport = self._deleteImportedOutputRelationsForCreatorRows(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolId=creatorProtocolId,
             )
 
             for relation in relations or []:
@@ -2091,18 +2123,13 @@ class ProtocolGraphRepository:
         """
         Delete the PostgreSQL relation snapshot owned by one Scipion protocol.
 
-        scipion_relations uses native Scipion runtime ids.
-        scipion_object_relations uses canonical scipion_objects ids and stores
-        creatorProtocolDbId in metadata.
+        scipion_relations stores the authoritative Scipion runtime relation ids.
         """
         with mapper.db.transaction():
-            return (
-                self._deleteImportedOutputRelationsForCreatorRows(
-                    mapper=mapper,
-                    projectId=projectId,
-                    creatorProtocolDbId=creatorProtocolDbId,
-                    creatorProtocolId=creatorProtocolId,
-                )
+            return self._deleteImportedOutputRelationsForCreatorRows(
+                mapper=mapper,
+                projectId=projectId,
+                creatorProtocolId=creatorProtocolId,
             )
 
     def _markImportedRelationSnapshotSynchronized(
@@ -2169,7 +2196,7 @@ class ProtocolGraphRepository:
             metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Insert both PostgreSQL relation representations.
+        Insert one authoritative PostgreSQL runtime relation.
 
         The caller owns the transaction.
         """
@@ -2204,13 +2231,13 @@ class ProtocolGraphRepository:
             ),
         })
 
-        legacyParentExtended = (
+        normalizedParentExtended = (
             ""
             if parentExtended is None
             else str(parentExtended)
         )
 
-        legacyChildExtended = (
+        normalizedChildExtended = (
             ""
             if childExtended is None
             else str(childExtended)
@@ -2225,10 +2252,23 @@ class ProtocolGraphRepository:
                 "parentObjId",
                 "childObjId",
                 "parentExtended",
-                "childExtended"
+                "childExtended",
+                metadata
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s::jsonb
+            )
+            ON CONFLICT
+                ON CONSTRAINT ux_scipion_relations_unique_relation
+            DO UPDATE SET
+                metadata = EXCLUDED.metadata
             """,
             (
                 int(projectId),
@@ -2236,35 +2276,8 @@ class ProtocolGraphRepository:
                 int(creatorProtocolId),
                 int(parentRuntimeObjectId),
                 int(childRuntimeObjectId),
-                legacyParentExtended,
-                legacyChildExtended,
-            ),
-            commit=False,
-        )
-
-        mapper.db.execute(
-            """
-            INSERT INTO scipion_object_relations (
-                "projectId",
-                "creatorObjectId",
-                "parentObjectId",
-                "childObjectId",
-                name,
-                "parentExtended",
-                "childExtended",
-                metadata
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                int(projectId),
-                int(parentObject["objectId"]),
-                int(parentObject["objectId"]),
-                int(childObject["objectId"]),
-                relationName,
-                parentExtended,
-                childExtended,
+                normalizedParentExtended,
+                normalizedChildExtended,
                 json.dumps(
                     relationMetadata
                 ),
@@ -2302,15 +2315,14 @@ class ProtocolGraphRepository:
             self,
             mapper,
             projectId: int,
-            creatorProtocolDbId: int,
             creatorProtocolId: int,
     ) -> Dict[str, int]:
         """
-        Delete both relation representations.
+        Delete the authoritative relation snapshot owned by one protocol.
 
         The caller owns the transaction.
         """
-        legacyCursor = mapper.db.execute(
+        cursor = mapper.db.execute(
             """
             DELETE FROM scipion_relations
              WHERE "projectId" = %s
@@ -2323,46 +2335,13 @@ class ProtocolGraphRepository:
             commit=False,
         )
 
-        legacyRelationsDeleted = int(
-            getattr(
-                legacyCursor,
-                "rowcount",
-                0,
-            )
-            or 0
-        )
-
-        canonicalCursor = mapper.db.execute(
-            """
-            DELETE FROM scipion_object_relations
-             WHERE "projectId" = %s
-               AND metadata ->> 'creatorProtocolDbId' = %s
-            """,
-            (
-                int(projectId),
-                str(
-                    int(
-                        creatorProtocolDbId
-                    )
-                ),
-            ),
-            commit=False,
-        )
-
-        canonicalRelationsDeleted = int(
-            getattr(
-                canonicalCursor,
-                "rowcount",
-                0,
-            )
-            or 0
-        )
-
         return {
-            "legacyRelationsDeleted": (
-                legacyRelationsDeleted
-            ),
-            "canonicalRelationsDeleted": (
-                canonicalRelationsDeleted
+            "relationsDeleted": int(
+                getattr(
+                    cursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
             ),
         }
