@@ -47,16 +47,20 @@ class FakeRuntimeObject:
             self,
             objectId,
     ):
-        self._objId = int(
-            objectId
+        self._objId = (
+            None
+            if objectId is None
+            else int(objectId)
         )
 
     def setObjParentId(
             self,
             parentObjectId,
     ):
-        self._objParentId = int(
-            parentObjectId
+        self._objParentId = (
+            None
+            if parentObjectId is None
+            else int(parentObjectId)
         )
 
     def getAttributesToStore(self):
@@ -279,5 +283,219 @@ def test_PrepareOutputObjectIdsReusesPersistedIdsByPath():
 
     assert report["allocated"] == 0
     assert report["reused"] == 2
+
+
+def test_RestoreOutputObjectIdsRestoresRunDbIdentity():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    childObject = FakeRuntimeObject(
+        objectId=3_000_000_151
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_150,
+        attributes=[
+            (
+                "_child",
+                childObject,
+            ),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    childObject._objParentId = (
+        3_000_000_150
+    )
+
+    mapper = FakeMapper([
+        1_000_150,
+        1_000_151,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    preparation = (
+        service
+        ._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="TiltSeries",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+    )
+
+    assert outputObject.getObjId() == (
+        1_000_150
+    )
+
+    assert childObject.getObjId() == (
+        1_000_151
+    )
+
+    service._restoreOutputObjectIdsAfterPersistence(
+        preparation
+    )
+
+    assert outputObject.getObjId() == (
+        3_000_000_150
+    )
+
+    assert outputObject._objParentId == 4
+
+    assert childObject.getObjId() == (
+        3_000_000_151
+    )
+
+    assert childObject._objParentId == (
+        3_000_000_150
+    )
+
+
+class FakePostgresqlRuntimeMapper:
+    isPostgresqlRuntimeMapper = True
+
+
+class FakeSqliteRuntimeMapper:
+    isPostgresqlRuntimeMapper = False
+
+
+class FakeTerminalProtocol:
+    def __init__(
+            self,
+            mapper,
+            outputs=None,
+    ):
+        self.mapper = mapper
+        self.outputs = list(
+            outputs or []
+        )
+
+    def iterOutputAttributes(self):
+        return list(
+            self.outputs
+        )
+
+    def isFinished(self):
+        return True
+
+    def isFailed(self):
+        return False
+
+    def isAborted(self):
+        return False
+
+    def getStatus(self):
+        return "finished"
+
+
+class FakeSetOutput:
+    def iterItems(self):
+        return iter(())
+
+    def getSize(self):
+        return 0
+
+    def getFileName(self):
+        return "output.sqlite"
+
+
+def test_PostgresqlRuntimeProjectionDoesNotReconcileEmptyTerminalOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakePostgresqlRuntimeMapper(),
+        outputs=[],
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+
+def test_RunDbProtocolReconcilesEmptyTerminalOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakeSqliteRuntimeMapper(),
+        outputs=[],
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+
+def test_PostgresqlRuntimeProjectionStillRegistersAvailableOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakePostgresqlRuntimeMapper(),
+        outputs=[
+            (
+                "TiltSeries",
+                FakeSetOutput(),
+            ),
+        ],
+    )
+
+    assert (
+        service
+        .shouldRegisterProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is True
+    )
 
 

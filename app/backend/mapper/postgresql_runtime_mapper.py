@@ -87,6 +87,8 @@ class PostgresqlRuntimeMapper(Mapper):
     the native Scipion runner.
     """
 
+    isPostgresqlRuntimeMapper = True
+
     def __init__(
             self,
             flatMapper: PostgresqlFlatMapper,

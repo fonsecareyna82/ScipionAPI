@@ -68,11 +68,54 @@ class RuntimeProtocolOutputPersistenceService:
 
         return obj.__class__.__name__
 
+    def _isPostgresqlRuntimeProtocolProjection(
+            self,
+            protocol: Any,
+    ) -> bool:
+        if protocol is None:
+            return False
+
+        mapper = getattr(
+            protocol,
+            "mapper",
+            None,
+        )
+
+        if mapper is None:
+            mapper = self.safeCall(
+                protocol,
+                "getMapper",
+                None,
+            )
+
+        if mapper is None:
+            return False
+
+        marker = getattr(
+            mapper,
+            "isPostgresqlRuntimeMapper",
+            False,
+        )
+
+        if callable(marker):
+            try:
+                marker = marker()
+            except Exception:
+                return False
+
+        return bool(marker)
+
     @staticmethod
     def _setScipionObjectId(
             obj: Any,
-            objectId: int,
+            objectId: Optional[int],
     ) -> None:
+        normalizedObjectId = (
+            None
+            if objectId is None
+            else int(objectId)
+        )
+
         setter = getattr(
             obj,
             "setObjId",
@@ -81,21 +124,22 @@ class RuntimeProtocolOutputPersistenceService:
 
         if callable(setter):
             setter(
-                int(objectId)
+                normalizedObjectId
             )
             return
 
-        obj._objId = int(
-            objectId
-        )
+        obj._objId = normalizedObjectId
 
     @staticmethod
     def _setScipionObjectParentId(
             obj: Any,
             parentObjectId: Optional[int],
     ) -> None:
-        if parentObjectId is None:
-            return
+        normalizedParentObjectId = (
+            None
+            if parentObjectId is None
+            else int(parentObjectId)
+        )
 
         setter = getattr(
             obj,
@@ -105,12 +149,12 @@ class RuntimeProtocolOutputPersistenceService:
 
         if callable(setter):
             setter(
-                int(parentObjectId)
+                normalizedParentObjectId
             )
             return
 
-        obj._objParentId = int(
-            parentObjectId
+        obj._objParentId = (
+            normalizedParentObjectId
         )
 
     def _prepareOutputObjectIdsForPersistence(
@@ -176,6 +220,7 @@ class RuntimeProtocolOutputPersistenceService:
 
         visited = set()
         preparedItems = []
+        identitySnapshot = []
 
         def prepareObject(
                 runtimeObject,
@@ -200,6 +245,18 @@ class RuntimeProtocolOutputPersistenceService:
             previousObjectId = (
                 self.getScipionObjectId(
                     runtimeObject
+                )
+            )
+
+            previousParentObjectId = (
+                self.safeCall(
+                    runtimeObject,
+                    "getObjParentId",
+                    getattr(
+                        runtimeObject,
+                        "_objParentId",
+                        None,
+                    ),
                 )
             )
 
@@ -240,6 +297,9 @@ class RuntimeProtocolOutputPersistenceService:
                     canonicalObjectId
                 ),
                 "reused": reused,
+                "previousParentObjectId": (
+                    previousParentObjectId
+                ),
             })
 
             if not includeNestedProperties:
@@ -309,7 +369,52 @@ class RuntimeProtocolOutputPersistenceService:
                 if item["reused"]
             ]),
             "items": preparedItems,
+            "_identitySnapshot": (
+                identitySnapshot
+            ),
         }
+
+    def _restoreOutputObjectIdsAfterPersistence(
+            self,
+            preparationReport:
+            Optional[Dict[str, Any]],
+    ) -> None:
+        if not isinstance(
+                preparationReport,
+                dict,
+        ):
+            return
+
+        identitySnapshot = (
+            preparationReport.get(
+                "_identitySnapshot"
+            )
+            or []
+        )
+
+        for item in reversed(
+                identitySnapshot
+        ):
+            runtimeObject = item.get(
+                "runtimeObject"
+            )
+
+            if runtimeObject is None:
+                continue
+
+            self._setScipionObjectId(
+                runtimeObject,
+                item.get(
+                    "previousObjectId"
+                ),
+            )
+
+            self._setScipionObjectParentId(
+                runtimeObject,
+                item.get(
+                    "previousParentObjectId"
+                ),
+            )
 
     def _resolveProtocolProjectPaths(
             self,
@@ -840,6 +945,14 @@ class RuntimeProtocolOutputPersistenceService:
         Running and streaming protocols may expose only a partial list of
         outputs, so missing outputs must never be removed while they are active.
         """
+        if (
+                self
+                ._isPostgresqlRuntimeProtocolProjection(
+                    protocol
+                )
+        ):
+            return False
+
         for methodName in (
                 "isFinished",
                 "isFailed",
@@ -2300,12 +2413,16 @@ class RuntimeProtocolOutputPersistenceService:
                 )
             )
 
+            identityPreparation = None
+
             try:
                 if (
                         isSetOutput
                         or isTreeOutput
                 ):
-                    self._prepareOutputObjectIdsForPersistence(
+                    identityPreparation = (
+                        self
+                        ._prepareOutputObjectIdsForPersistence(
                         mapper=mapper,
                         objectMapper=objectMapper,
                         projectId=projectId,
@@ -2318,6 +2435,7 @@ class RuntimeProtocolOutputPersistenceService:
                         includeNestedProperties=(
                             isTreeOutput
                         ),
+                        )
                     )
 
                 if isSetOutput:
@@ -2468,6 +2586,10 @@ class RuntimeProtocolOutputPersistenceService:
                     "outputClassName": outputClassName,
                     "error": str(exc),
                 })
+            finally:
+                self._restoreOutputObjectIdsAfterPersistence(
+                    identityPreparation
+                )
 
         if reconcileMissingOutputs:
             staleOutputNames = sorted(
