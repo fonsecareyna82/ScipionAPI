@@ -97,10 +97,41 @@ class PostgresqlRuntimeMapper(Mapper):
     ):
         if not dictClasses or not hasattr(dictClasses, "items"):
             dictClasses = pwobject.Dict(default=LegacyProtocol)
-            dictClasses.update(Config.getDomain().getMapperDict())
-            dictClasses.update(projectConfig.__dict__)
+            dictClasses.update(pwobject.OBJECTS_DICT)
 
-        super().__init__(dictClasses=dictClasses)
+            domain = None
+
+            if project is not None:
+                getDomain = getattr(
+                    project,
+                    "getDomain",
+                    None,
+                )
+
+                if callable(getDomain):
+                    domain = getDomain()
+
+            if domain is None:
+                domain = Config.getDomain()
+
+            getMapperDict = getattr(
+                domain,
+                "getMapperDict",
+                None,
+            )
+
+            if callable(getMapperDict):
+                dictClasses.update(
+                    getMapperDict() or {}
+                )
+
+            dictClasses.update(
+                projectConfig.__dict__
+            )
+
+        super().__init__(
+            dictClasses=dictClasses
+        )
 
         self.flatMapper = flatMapper
         self.db = flatMapper.db
