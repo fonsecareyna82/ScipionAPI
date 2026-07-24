@@ -211,6 +211,12 @@ def buildRelation():
         "object_child_extended": "outputClasses",
     }
 
+def stripCollectedRelationEndpoints(relation):
+    relation = dict(relation)
+    relation.pop("_parentEndpoint", None)
+    relation.pop("_childEndpoint", None)
+    return relation
+
 
 def test_SyncProjectRelationsReplacesProtocolSnapshotWithoutMutatingOutputs(
         monkeypatch,
@@ -601,10 +607,23 @@ def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
         ),
     ])
 
-    assert result["relations"] == [
-        firstRelation,
-        secondRelation,
-    ]
+    assert [
+               stripCollectedRelationEndpoints(relation)
+               for relation in result["relations"]
+           ] == [
+               firstRelation,
+               secondRelation,
+           ]
+
+    assert all(
+        "_parentEndpoint" in relation
+        for relation in result["relations"]
+    )
+
+    assert all(
+        "_childEndpoint" in relation
+        for relation in result["relations"]
+    )
 
     assert result["sources"] == [
         {
@@ -699,9 +718,12 @@ def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
         ),
     ])
 
-    assert result["relations"] == [
-        runtimeRelation,
-    ]
+    assert [
+               stripCollectedRelationEndpoints(relation)
+               for relation in result["relations"]
+           ] == [
+               runtimeRelation,
+           ]
 
     assert result["sources"] == [
         {
@@ -829,11 +851,25 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
     assert result["saved"] is True
     assert len(db.calls) == 1
 
-    assert (
-        "ON CONFLICT DO NOTHING"
-        in db.calls[0]["query"]
+    normalizedQuery = " ".join(
+        db.calls[0]["query"].split()
     )
 
+    assert (
+            "ON CONFLICT ON CONSTRAINT "
+            "ux_scipion_relations_unique_relation"
+            in normalizedQuery
+    )
+
+    assert (
+            "DO UPDATE SET metadata = EXCLUDED.metadata"
+            in normalizedQuery
+    )
+
+    assert (
+            "scipion_object_relations"
+            not in normalizedQuery
+    )
 
 
 def test_ReplaceImportedOutputRelationsRollsBackCompleteSnapshotOnFailure():

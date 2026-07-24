@@ -62,10 +62,7 @@ class RuntimeProjectImportAuditService:
             "setItems": int(
                 migrationReport.get("setItems") or 0
             ),
-            "legacyRelations": int(
-                migrationReport.get("relations") or 0
-            ),
-            "objectRelations": int(
+            "relations": int(
                 migrationReport.get("relations") or 0
             ),
         }
@@ -125,26 +122,9 @@ class RuntimeProjectImportAuditService:
                     SELECT COUNT(*)
                       FROM scipion_relations
                      WHERE "projectId" = %s
-                ) AS "legacyRelations",
-                (
-                    SELECT COUNT(*)
-                      FROM scipion_object_relations
-                     WHERE "projectId" = %s
-                ) AS "objectRelations"
+                ) AS "relations"
             """,
-            (
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-                int(projectId),
-            ),
+            (int(projectId),) * len(expected),
         )
 
         actual = {
