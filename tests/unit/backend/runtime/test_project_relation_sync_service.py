@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 from types import SimpleNamespace
 
 import app.backend.runtime.project_relation_sync_service as relationSyncModule
@@ -804,21 +805,44 @@ def test_SyncProjectRelationsDeduplicatesLogicalRelationWithDifferentIds(
 
 def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
     db = FakeDb()
+
     mapper = SimpleNamespace(
         db=db
     )
 
     repository = ProtocolGraphRepository()
 
+    sourceParentRuntimeObjectId = (
+        3_000_000_101
+    )
+
+    sourceChildRuntimeObjectId = (
+        3_000_000_202
+    )
+
+    canonicalParentRuntimeObjectId = (
+        1_000_101
+    )
+
+    canonicalChildRuntimeObjectId = (
+        1_000_202
+    )
+
     persistedObjects = {
-        101: {
+        sourceParentRuntimeObjectId: {
             "objectId": 1001,
+            "runtimeObjectId": (
+                canonicalParentRuntimeObjectId
+            ),
             "protocolDbId": 200,
             "protocolId": "20",
             "outputName": "outputParticles",
         },
-        202: {
+        sourceChildRuntimeObjectId: {
             "objectId": 2002,
+            "runtimeObjectId": (
+                canonicalChildRuntimeObjectId
+            ),
             "protocolDbId": 300,
             "protocolId": "30",
             "outputName": "outputClasses",
@@ -828,31 +852,73 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
     repository.getPersistedOutputObjectByRuntimeId = (
         lambda **kwargs: persistedObjects.get(
             int(
-                kwargs["runtimeObjectId"]
+                kwargs[
+                    "runtimeObjectId"
+                ]
             )
         )
     )
 
-    result = repository.insertImportedOutputRelation(
-        mapper=mapper,
-        projectId=4,
-        creatorProtocolDbId=200,
-        creatorProtocolId=20,
-        relationName="relation_datasource",
-        parentRuntimeObjectId=101,
-        childRuntimeObjectId=202,
-        parentExtended="TiltSeries",
-        childExtended=None,
-        metadata={
-            "source": "test",
-        },
+    result = (
+        repository
+        .insertImportedOutputRelation(
+            mapper=mapper,
+            projectId=4,
+            creatorProtocolDbId=200,
+            creatorProtocolId=20,
+            relationName=(
+                "relation_datasource"
+            ),
+            parentRuntimeObjectId=(
+                sourceParentRuntimeObjectId
+            ),
+            childRuntimeObjectId=(
+                sourceChildRuntimeObjectId
+            ),
+            parentExtended="TiltSeries",
+            childExtended=None,
+            metadata={
+                "source": "test",
+            },
+        )
     )
 
     assert result["saved"] is True
+
+    assert (
+        result[
+            "parentRuntimeObjectId"
+        ]
+        == canonicalParentRuntimeObjectId
+    )
+
+    assert (
+        result[
+            "childRuntimeObjectId"
+        ]
+        == canonicalChildRuntimeObjectId
+    )
+
+    assert (
+        result[
+            "sourceParentRuntimeObjectId"
+        ]
+        == sourceParentRuntimeObjectId
+    )
+
+    assert (
+        result[
+            "sourceChildRuntimeObjectId"
+        ]
+        == sourceChildRuntimeObjectId
+    )
+
     assert len(db.calls) == 1
 
+    relationCall = db.calls[0]
+
     normalizedQuery = " ".join(
-        db.calls[0]["query"].split()
+        relationCall["query"].split()
     )
 
     assert (
@@ -862,7 +928,8 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
     )
 
     assert (
-            "DO UPDATE SET metadata = EXCLUDED.metadata"
+            "DO UPDATE SET "
+            "metadata = EXCLUDED.metadata"
             in normalizedQuery
     )
 
@@ -870,6 +937,56 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
             "scipion_object_relations"
             not in normalizedQuery
     )
+
+    relationParams = (
+        relationCall["params"]
+    )
+
+    assert relationParams[0] == 4
+    assert relationParams[1] == (
+        "relation_datasource"
+    )
+    assert relationParams[2] == 20
+
+    assert (
+        relationParams[3]
+        == canonicalParentRuntimeObjectId
+    )
+
+    assert (
+        relationParams[4]
+        == canonicalChildRuntimeObjectId
+    )
+
+    assert relationParams[5] == (
+        "TiltSeries"
+    )
+
+    assert relationParams[6] == ""
+
+    relationMetadata = json.loads(
+        relationParams[7]
+    )
+
+    assert relationMetadata[
+        "source"
+    ] == "test"
+
+    assert relationMetadata[
+        "sourceParentRuntimeObjectId"
+    ] == sourceParentRuntimeObjectId
+
+    assert relationMetadata[
+        "sourceChildRuntimeObjectId"
+    ] == sourceChildRuntimeObjectId
+
+    assert relationMetadata[
+        "parentOutputName"
+    ] == "outputParticles"
+
+    assert relationMetadata[
+        "childOutputName"
+    ] == "outputClasses"
 
 
 def test_ReplaceImportedOutputRelationsRollsBackCompleteSnapshotOnFailure():

@@ -2198,11 +2198,65 @@ class ProtocolGraphRepository:
         """
         Insert one authoritative PostgreSQL runtime relation.
 
+        Runtime ids received from run.db are SQLite-local identities.
+        PostgreSQL relations must use the canonical runtime ids of the
+        already persisted parent and child outputs.
+
         The caller owns the transaction.
         """
+        sourceParentRuntimeObjectId = int(
+            parentRuntimeObjectId
+        )
+
+        sourceChildRuntimeObjectId = int(
+            childRuntimeObjectId
+        )
+
+        canonicalParentRuntimeObjectId = (
+            self.toOptionalInt(
+                parentObject.get(
+                    "runtimeObjectId"
+                )
+            )
+        )
+
+        canonicalChildRuntimeObjectId = (
+            self.toOptionalInt(
+                childObject.get(
+                    "runtimeObjectId"
+                )
+            )
+        )
+
+        if canonicalParentRuntimeObjectId is None:
+            canonicalParentRuntimeObjectId = (
+                sourceParentRuntimeObjectId
+            )
+
+        if canonicalChildRuntimeObjectId is None:
+            canonicalChildRuntimeObjectId = (
+                sourceChildRuntimeObjectId
+            )
+
         relationMetadata = dict(
             metadata or {}
         )
+
+        if (
+                sourceParentRuntimeObjectId
+                != canonicalParentRuntimeObjectId
+        ):
+            relationMetadata[
+                "sourceParentRuntimeObjectId"
+            ] = sourceParentRuntimeObjectId
+
+        if (
+                sourceChildRuntimeObjectId
+                != canonicalChildRuntimeObjectId
+        ):
+            relationMetadata[
+                "sourceChildRuntimeObjectId"
+            ] = sourceChildRuntimeObjectId
 
         relationMetadata.update({
             "creatorProtocolDbId": int(
@@ -2274,8 +2328,12 @@ class ProtocolGraphRepository:
                 int(projectId),
                 relationName,
                 int(creatorProtocolId),
-                int(parentRuntimeObjectId),
-                int(childRuntimeObjectId),
+                int(
+                    canonicalParentRuntimeObjectId
+                ),
+                int(
+                    canonicalChildRuntimeObjectId
+                ),
                 normalizedParentExtended,
                 normalizedChildExtended,
                 json.dumps(
@@ -2295,7 +2353,10 @@ class ProtocolGraphRepository:
                 parentObject["objectId"]
             ),
             "parentRuntimeObjectId": int(
-                parentRuntimeObjectId
+                canonicalParentRuntimeObjectId
+            ),
+            "sourceParentRuntimeObjectId": (
+                sourceParentRuntimeObjectId
             ),
             "parentOutputName": parentObject.get(
                 "outputName"
@@ -2304,7 +2365,10 @@ class ProtocolGraphRepository:
                 childObject["objectId"]
             ),
             "childRuntimeObjectId": int(
-                childRuntimeObjectId
+                canonicalChildRuntimeObjectId
+            ),
+            "sourceChildRuntimeObjectId": (
+                sourceChildRuntimeObjectId
             ),
             "childOutputName": childObject.get(
                 "outputName"
