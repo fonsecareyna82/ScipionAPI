@@ -220,6 +220,114 @@ class ProtocolGraphRepository:
 
         return rows[0]
 
+    def getPersistedSetOutputRowByProtocolOutput(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        if mapper is None:
+            raise ValueError(
+                "mapper is required"
+            )
+
+        db = getattr(
+            mapper,
+            "db",
+            None,
+        )
+
+        if db is None:
+            raise ValueError(
+                "mapper.db is required"
+            )
+
+        outputNameText = str(
+            outputName or ""
+        ).strip()
+
+        protocolIdText = str(
+            protocolId
+        ).strip()
+
+        protocolPrefix = (
+            "%s."
+            % protocolIdText
+        )
+
+        if outputNameText.startswith(
+                protocolPrefix
+        ):
+            outputNameText = (
+                outputNameText[
+                    len(protocolPrefix):
+                ]
+            )
+
+        if not outputNameText:
+            return None
+
+        rows = db.fetchAll(
+            """
+            SELECT
+                s.id AS "setId",
+                s."projectId",
+                s."protocolDbId",
+                p."protocolId",
+                s."objectId",
+                o."scipionObjId"
+                    AS "runtimeObjectId",
+                s."outputName",
+                s."setClassName"
+                    AS "className",
+                s."itemClassName",
+                s.properties
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p."projectId" =
+                   s."projectId"
+               AND p.id =
+                   s."protocolDbId"
+              JOIN scipion_objects o
+                ON o."projectId" =
+                   s."projectId"
+               AND o.id =
+                   s."objectId"
+             WHERE s."projectId" = %s
+               AND p."protocolId"::text = %s
+               AND s."outputName" = %s
+             ORDER BY s.id ASC
+             LIMIT 2
+            """,
+            (
+                int(projectId),
+                protocolIdText,
+                outputNameText,
+            ),
+        )
+
+        rows = [
+            dict(row)
+            for row in rows or []
+        ]
+
+        if not rows:
+            return None
+
+        if len(rows) > 1:
+            raise ValueError(
+                "More than one PostgreSQL Set was found "
+                "for project %s, protocol %s and output %s."
+                % (
+                    projectId,
+                    protocolIdText,
+                    outputNameText,
+                )
+            )
+
+        return rows[0]
+
     def listPersistedSetOutputRows(
             self,
             mapper,

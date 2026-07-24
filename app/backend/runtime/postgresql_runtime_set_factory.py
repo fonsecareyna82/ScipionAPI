@@ -28,7 +28,11 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
 
-from pyworkflow.object import Set as ScipionSet
+from pyworkflow.object import (
+    Pointer,
+    PointerList,
+    Set as ScipionSet,
+)
 
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
@@ -474,6 +478,8 @@ class PostgresqlRuntimeSetFactory:
         self._hydrateSetProperties(
             runtimeSet=runtimeSet,
             properties=properties,
+            db=db,
+            classRegistry=classRegistry,
         )
 
         setMapper = ScipionSetPostgresqlMapper(
@@ -995,6 +1001,21 @@ class PostgresqlRuntimeSetFactory:
                     reference
                 )
 
+            targetSet = (
+                self
+                ._resolveRuntimeSetPointerTarget(
+                    db=db,
+                    runtimeSet=runtimeSet,
+                    classRegistry=(
+                        classRegistry
+                    ),
+                    reference=reference,
+                )
+            )
+
+            if targetSet is not None:
+                return targetSet
+
             return self._resolveExternalPointerTarget(
                 db=db,
                 runtimeSet=runtimeSet,
@@ -1006,6 +1027,260 @@ class PostgresqlRuntimeSetFactory:
             )
 
         return resolvePointer
+
+    def _resolveRuntimeSetPointerTarget(
+            self,
+            db,
+            runtimeSet: ScipionSet,
+            classRegistry: Dict[str, Type],
+            reference: Dict[str, Any],
+    ):
+        projectId = self._getRuntimeProjectId(
+            runtimeSet
+        )
+
+        if not isinstance(
+                projectId,
+                int,
+        ):
+            return None
+
+        targetObjectId = self._toOptionalInt(
+            reference.get(
+                "targetObjectId"
+            )
+        )
+
+        targetParentObjectId = (
+            self._toOptionalInt(
+                reference.get(
+                    "targetParentObjectId"
+                )
+            )
+        )
+
+        targetObjectName = str(
+            reference.get(
+                "targetObjectName"
+            )
+            or reference.get(
+                "uniqueId"
+            )
+            or ""
+        ).strip()
+
+        sourceProtocol = (
+            self._findProtocolParent(
+                runtimeSet
+            )
+        )
+
+        runtimeMapper = (
+            self._getProtocolMapper(
+                sourceProtocol
+            )
+        )
+
+        repositoryMapper = runtimeMapper
+
+        if (
+                repositoryMapper is None
+                or getattr(
+            repositoryMapper,
+            "db",
+            None,
+        ) is None
+        ):
+            repositoryMapper = (
+                SimpleNamespace(
+                    db=db
+                )
+            )
+
+        targetOutputInfo = None
+
+        if isinstance(
+                targetObjectId,
+                int,
+        ):
+            targetOutputInfo = (
+                self.protocolGraphRepository
+                .getPersistedSetOutputRowByRuntimeObjectId(
+                    mapper=repositoryMapper,
+                    projectId=projectId,
+                    runtimeObjectId=(
+                        targetObjectId
+                    ),
+                )
+            )
+
+        if (
+                targetOutputInfo is None
+                and isinstance(
+            targetParentObjectId,
+            int,
+        )
+                and targetObjectName
+        ):
+            outputName = (
+                targetObjectName
+            )
+
+            protocolPrefix = (
+                "%s."
+                % targetParentObjectId
+            )
+
+            if outputName.startswith(
+                    protocolPrefix
+            ):
+                outputName = outputName[
+                    len(protocolPrefix):
+                ]
+
+            targetOutputInfo = (
+                self.protocolGraphRepository
+                .getPersistedSetOutputRowByProtocolOutput(
+                    mapper=repositoryMapper,
+                    projectId=projectId,
+                    protocolId=(
+                        targetParentObjectId
+                    ),
+                    outputName=outputName,
+                )
+            )
+
+        if targetOutputInfo is None:
+            return None
+
+        canonicalRuntimeObjectId = (
+            self._toOptionalInt(
+                targetOutputInfo.get(
+                    "runtimeObjectId"
+                )
+            )
+        )
+
+        if not isinstance(
+                canonicalRuntimeObjectId,
+                int,
+        ):
+            return None
+
+        sourceRuntimeObjectId = (
+            self._toOptionalInt(
+                runtimeSet.getObjId()
+            )
+        )
+
+        if (
+                sourceRuntimeObjectId
+                == canonicalRuntimeObjectId
+        ):
+            return runtimeSet
+
+        targetKey = (
+            projectId,
+            canonicalRuntimeObjectId,
+            "__set__",
+        )
+
+        if targetKey in (
+                self._resolvedPointerTargets
+        ):
+            return (
+                self._resolvedPointerTargets[
+                    targetKey
+                ]
+            )
+
+        if targetKey in (
+                self._resolvingPointerTargets
+        ):
+            return None
+
+        self._resolvingPointerTargets.add(
+            targetKey
+        )
+
+        try:
+            targetSet = (
+                self._getCachedRuntimeSet(
+                    projectId=projectId,
+                    runtimeObjectId=(
+                        canonicalRuntimeObjectId
+                    ),
+                )
+            )
+
+            if targetSet is None:
+                targetProtocol = (
+                    self._resolveRuntimeProtocol(
+                        projectId=projectId,
+                        sourceProtocol=(
+                            sourceProtocol
+                        ),
+                        runtimeMapper=(
+                            runtimeMapper
+                        ),
+                        targetOutputInfo=(
+                            targetOutputInfo
+                        ),
+                    )
+                )
+
+                if targetProtocol is None:
+                    return None
+
+                outputName = str(
+                    targetOutputInfo.get(
+                        "outputName"
+                    )
+                    or ""
+                ).strip()
+
+                if not outputName:
+                    return None
+
+                attachedSet = getattr(
+                    targetProtocol,
+                    outputName,
+                    None,
+                )
+
+                if self._isMatchingRuntimeSet(
+                        runtimeSet=attachedSet,
+                        runtimeObjectId=(
+                            canonicalRuntimeObjectId
+                        ),
+                ):
+                    targetSet = attachedSet
+
+                else:
+                    targetSet = self.build(
+                        db=db,
+                        parent=targetProtocol,
+                        outputName=outputName,
+                        outputInfo=(
+                            targetOutputInfo
+                        ),
+                        classes=classRegistry,
+                    )
+
+                self._cacheRuntimeSet(
+                    targetSet
+                )
+
+            self._resolvedPointerTargets[
+                targetKey
+            ] = targetSet
+
+            return targetSet
+
+        finally:
+            self._resolvingPointerTargets.discard(
+                targetKey
+            )
 
     def _resolveExternalPointerTarget(
             self,
@@ -1611,7 +1886,17 @@ class PostgresqlRuntimeSetFactory:
             self,
             runtimeSet,
             properties: Dict[str, Any],
+            db,
+            classRegistry: Dict[str, Type],
     ) -> None:
+        pointerResolver = (
+            self._buildPointerResolver(
+                db=db,
+                runtimeSet=runtimeSet,
+                classRegistry=classRegistry,
+            )
+        )
+
         for path, value in properties.items():
             path = str(path)
 
@@ -1621,18 +1906,52 @@ class PostgresqlRuntimeSetFactory:
             if path in self.SKIPPED_PROPERTY_PATHS:
                 continue
 
+            attribute = (
+                self._getExistingAttribute(
+                    runtimeSet=runtimeSet,
+                    path=path,
+                )
+            )
+
+            if isinstance(
+                    attribute,
+                    Pointer,
+            ):
+                self._hydrateRuntimePointer(
+                    pointer=attribute,
+                    value=value,
+                    pointerResolver=(
+                        pointerResolver
+                    ),
+                )
+
+                continue
+
+            if isinstance(
+                    attribute,
+                    PointerList,
+            ):
+                self._hydrateRuntimePointerList(
+                    pointerList=attribute,
+                    value=value,
+                    pointerResolver=(
+                        pointerResolver
+                    ),
+                )
+
+                continue
+
             self._setExistingAttributeValue(
                 runtimeSet,
                 path,
                 value,
             )
 
-    def _setExistingAttributeValue(
+    def _getExistingAttribute(
             self,
             runtimeSet,
             path: str,
-            value: Any,
-    ) -> bool:
+    ):
         parts = [
             part
             for part in path.split(".")
@@ -1640,7 +1959,7 @@ class PostgresqlRuntimeSetFactory:
         ]
 
         if not parts:
-            return False
+            return None
 
         current = runtimeSet
 
@@ -1652,7 +1971,202 @@ class PostgresqlRuntimeSetFactory:
             )
 
             if current is None:
-                return False
+                return None
+
+        return current
+
+    def _hydrateRuntimePointer(
+            self,
+            pointer: Pointer,
+            value: Any,
+            pointerResolver,
+    ) -> bool:
+        reference = (
+            self._normalizePointerReference(
+                value
+            )
+        )
+
+        pointer._postgresqlRuntimeReference = (
+            dict(reference)
+        )
+
+        target = None
+
+        if (
+                reference
+                and callable(
+            pointerResolver
+        )
+        ):
+            target = pointerResolver(
+                dict(reference)
+            )
+
+        pointer.set(
+            target
+        )
+
+        extended = reference.get(
+            "extended"
+        )
+
+        if extended not in (
+                None,
+                "",
+        ):
+            pointer.setExtended(
+                str(extended)
+            )
+
+        return bool(reference)
+
+    def _hydrateRuntimePointerList(
+            self,
+            pointerList: PointerList,
+            value: Any,
+            pointerResolver,
+    ) -> bool:
+        references = (
+            self._normalizePointerReferences(
+                value
+            )
+        )
+
+        pointerList.clear()
+
+        normalizedReferences = []
+
+        for reference in references:
+            pointer = Pointer()
+
+            self._hydrateRuntimePointer(
+                pointer=pointer,
+                value=reference,
+                pointerResolver=(
+                    pointerResolver
+                ),
+            )
+
+            pointerList.append(
+                pointer
+            )
+
+            normalizedReferences.append(
+                dict(reference)
+            )
+
+        pointerList._postgresqlRuntimeReferences = (
+            normalizedReferences
+        )
+
+        return True
+
+    def _normalizePointerReference(
+            self,
+            value: Any,
+    ) -> Dict[str, Any]:
+        if isinstance(
+                value,
+                dict,
+        ):
+            return dict(value)
+
+        if isinstance(
+                value,
+                str,
+        ):
+            value = value.strip()
+
+            if not value:
+                return {}
+
+            try:
+                parsed = json.loads(
+                    value
+                )
+            except Exception:
+                return {
+                    "version": 0,
+                    "kind": "pointer",
+                    "uniqueId": value,
+                    "extended": "",
+                }
+
+            if isinstance(
+                    parsed,
+                    dict,
+            ):
+                return dict(parsed)
+
+        return {}
+
+    def _normalizePointerReferences(
+            self,
+            value: Any,
+    ):
+        if value is None:
+            return []
+
+        if isinstance(
+                value,
+                str,
+        ):
+            value = value.strip()
+
+            if not value:
+                return []
+
+            try:
+                value = json.loads(
+                    value
+                )
+            except Exception:
+                value = [
+                    value
+                ]
+
+        if isinstance(
+                value,
+                dict,
+        ):
+            value = [
+                value
+            ]
+
+        if not isinstance(
+                value,
+                (
+                    list,
+                    tuple,
+                ),
+        ):
+            return []
+
+        return [
+            reference
+            for reference in (
+                self._normalizePointerReference(
+                    item
+                )
+                for item in value
+            )
+            if reference
+        ]
+
+    def _setExistingAttributeValue(
+            self,
+            runtimeSet,
+            path: str,
+            value: Any,
+    ) -> bool:
+        current = self._getExistingAttribute(
+            runtimeSet=runtimeSet,
+            path=path,
+        )
+
+        if current is None:
+            return False
 
         setter = getattr(
             current,

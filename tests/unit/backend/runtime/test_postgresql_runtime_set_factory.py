@@ -27,13 +27,40 @@ from pathlib import Path
 from pyworkflow.object import (
     Float,
     Object,
+    Pointer,
     Set,
     String,
 )
-
+from app.backend.mapper.scipion_set_mapper import (
+    ScipionSetPostgresqlMapper,
+)
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
 )
+
+class ExampleLinkedSet(Set):
+    ITEM_TYPE = ExampleItem
+
+    def __init__(
+            self,
+            **kwargs,
+    ):
+        super().__init__(
+            **kwargs
+        )
+
+        self._linkedSetPointer = Pointer()
+
+    def getLinkedSet(self):
+        return self._linkedSetPointer.get()
+
+    def setLinkedSet(
+            self,
+            linkedSet,
+    ):
+        self._linkedSetPointer.set(
+            linkedSet
+        )
 
 
 class ExampleItem(Object):
@@ -1364,5 +1391,242 @@ def test_ClearRuntimeSetPointerCacheKeepsOtherSets():
     assert secondPointerKey in (
         factory._resolvingPointerTargets
     )
+
+
+def test_GetSetPropertiesSerializesRootSetPointer():
+    parent = FakeParent()
+    parent.setObjId(5)
+
+    targetSet = ExampleSet()
+    targetSet.setObjId(
+        3_000_000_050
+    )
+    targetSet.setName(
+        "5.outputTiltSeries"
+    )
+    targetSet._objParent = parent
+    targetSet._objParentId = 5
+
+    linkedSet = ExampleLinkedSet()
+    linkedSet.setObjId(
+        3_000_000_051
+    )
+    linkedSet.setLinkedSet(
+        targetSet
+    )
+
+    mapper = (
+        ScipionSetPostgresqlMapper(
+            db=object()
+        )
+    )
+
+    properties = mapper._getSetProperties(
+        linkedSet
+    )
+
+    reference = properties[
+        "_linkedSetPointer"
+    ]
+
+    assert reference["kind"] == "pointer"
+
+    assert reference[
+        "targetObjectId"
+    ] == 3_000_000_050
+
+    assert reference[
+        "targetParentObjectId"
+    ] == 5
+
+    assert reference[
+        "targetObjectName"
+    ] == "5.outputTiltSeries"
+
+    assert reference[
+        "targetClassName"
+    ] == "ExampleSet"
+
+
+def test_BuildHydratesRootSetPointerUsingProtocolOutputIdentity():
+    class FakeRuntimeMapper:
+        def __init__(self):
+            self.projectId = 4
+            self.db = FakeDb()
+
+        def selectById(
+                self,
+                protocolId,
+        ):
+            return None
+
+    class FakeRuntimeParent(FakeParent):
+        def __init__(
+                self,
+                mapper,
+        ):
+            super().__init__()
+
+            self.mapper = mapper
+
+        def getMapper(self):
+            return self.mapper
+
+    class FakePointerRepository:
+        def __init__(self):
+            self.runtimeIdCalls = []
+            self.protocolOutputCalls = []
+
+        def getPersistedSetOutputRowByRuntimeObjectId(
+                self,
+                mapper,
+                projectId,
+                runtimeObjectId,
+        ):
+            self.runtimeIdCalls.append(
+                runtimeObjectId
+            )
+
+            return None
+
+        def getPersistedSetOutputRowByProtocolOutput(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+                outputName,
+        ):
+            self.protocolOutputCalls.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+            })
+
+            return {
+                "setId": 32,
+                "projectId": 4,
+                "protocolDbId": 20,
+                "protocolId": "5",
+                "objectId": 402,
+                "runtimeObjectId": 999,
+                "outputName": (
+                    "outputTiltSeries"
+                ),
+                "className": "ExampleSet",
+                "itemClassName": (
+                    "ExampleItem"
+                ),
+                "properties": {},
+            }
+
+    runtimeMapper = FakeRuntimeMapper()
+
+    sourceParent = FakeRuntimeParent(
+        runtimeMapper
+    )
+
+    sourceParent.setObjId(
+        6
+    )
+
+    targetParent = FakeRuntimeParent(
+        runtimeMapper
+    )
+
+    targetParent.setObjId(
+        5
+    )
+
+    targetSet = ExampleSet()
+    targetSet.setObjId(
+        999
+    )
+    targetSet._objParent = (
+        targetParent
+    )
+    targetSet._objParentId = 5
+    targetSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 999,
+    }
+
+    factory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    repository = FakePointerRepository()
+
+    factory.protocolGraphRepository = (
+        repository
+    )
+
+    factory._runtimeSetsByIdentity[
+        (
+            4,
+            999,
+        )
+    ] = targetSet
+
+    runtimeSet = factory.build(
+        db=runtimeMapper.db,
+        parent=sourceParent,
+        outputName="outputCtfSeries",
+        outputInfo={
+            "setId": 31,
+            "projectId": 4,
+            "objectId": 401,
+            "runtimeObjectId": 998,
+            "className": (
+                "ExampleLinkedSet"
+            ),
+            "itemClassName": (
+                "ExampleItem"
+            ),
+            "properties": {
+                "_linkedSetPointer": {
+                    "version": 1,
+                    "kind": "pointer",
+                    "targetObjectId": (
+                        3_000_000_050
+                    ),
+                    "targetParentObjectId": 5,
+                    "targetObjectName": (
+                        "5.outputTiltSeries"
+                    ),
+                    "targetClassName": (
+                        "ExampleSet"
+                    ),
+                    "extended": "",
+                },
+            },
+        },
+        classes={
+            "ExampleLinkedSet": (
+                ExampleLinkedSet
+            ),
+            "ExampleSet": ExampleSet,
+            "ExampleItem": ExampleItem,
+        },
+    )
+
+    assert (
+        runtimeSet.getLinkedSet()
+        is targetSet
+    )
+
+    assert repository.runtimeIdCalls == [
+        3_000_000_050,
+    ]
+
+    assert repository.protocolOutputCalls == [{
+        "projectId": 4,
+        "protocolId": 5,
+        "outputName": (
+            "outputTiltSeries"
+        ),
+    }]
+
+
+
 
 
