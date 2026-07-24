@@ -127,19 +127,59 @@ def test_LoadProtocolsUsesProjectDbRow(
     }
 
 
-def test_LoadNewProtocolReturnsParams(projectClient, fakeProjectService):
-    response = projectClient.get("/projects/1/protclass/MyProtClass")
+def test_LoadNewProtocolUsesPostgresqlRuntimeMutationContext(
+        projectClient,
+        fakeProjectService,
+        fakeProjectMapper,
+):
+    response = projectClient.get(
+        "/projects/1/protclass/MyProtClass"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "protocolClassName": "ProtClass",
         "params": {"x": 2},
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+            "enableWriteFallback": False,
+        }
+    )
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
     assert fakeProjectService.lastGetNewProtocolParamsCall == {
         "projectId": 1,
         "protClassName": "MyProtClass",
     }
+
+
+def test_LoadNewProtocolReturns404WhenPostgresqlRuntimeProjectMissing(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.get(
+        "/projects/1/protclass/MyProtClass"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    assert fakeProjectService.lastGetNewProtocolParamsCall is None
 
 
 @pytest.mark.parametrize(

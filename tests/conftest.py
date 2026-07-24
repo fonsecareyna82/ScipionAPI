@@ -127,6 +127,9 @@ class FakeProjectService:
         self.projectByIdResult = makeProjectOut()
         self.lastGetProjectByIdCall = None
 
+        self.postgresqlRuntimeMutationResult = makeProjectOut()
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall = None
+
         self.projectDbRowResult = makeProjectOut()
         self.lastGetProjectDbRowCall = None
         self.lastGetProtocolsCall = None
@@ -560,6 +563,22 @@ class FakeProjectService:
             "loadWorkflowFromPostgresql": loadWorkflowFromPostgresql,
         }
         return self.projectByIdResult
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            enableWriteFallback=False,
+    ):
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "enableWriteFallback": enableWriteFallback,
+        }
+
+        return self.postgresqlRuntimeMutationResult
 
     def getProjectDbRow(self, mapper, projectId, currentUser):
         self.lastGetProjectDbRowCall = {

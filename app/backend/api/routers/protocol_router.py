@@ -66,11 +66,23 @@ async def loadNewProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        enableWriteFallback=False,
+    )
 
-    return service.getNewProtocolParams(projectId, protClassName)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    return service.getNewProtocolParams(
+        projectId,
+        protClassName,
+    )
 
 
 # @router.post("/launch", response_model=Any)
