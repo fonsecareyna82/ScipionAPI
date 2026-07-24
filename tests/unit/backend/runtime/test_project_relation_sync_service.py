@@ -126,8 +126,7 @@ class FakeRepository:
         })
 
         return {
-            "legacyRelationsDeleted": 1,
-            "canonicalRelationsDeleted": 1,
+            "relationsDeleted": 1,
         }
 
     def insertImportedOutputRelation(self, **kwargs):
@@ -432,11 +431,7 @@ class AtomicRelationDb:
     ):
         self.rows = [
             (
-                "legacy",
-                "old",
-            ),
-            (
-                "canonical",
+                "runtime",
                 "old",
             ),
         ]
@@ -485,29 +480,7 @@ class AtomicRelationDb:
             self.rows = [
                 row
                 for row in self.rows
-                if row[0] != "legacy"
-            ]
-
-            self.cursor.rowcount = (
-                previousCount
-                - len(
-                    self.rows
-                )
-            )
-
-            return self.cursor
-
-        if normalizedQuery.startswith(
-                "DELETE FROM scipion_object_relations"
-        ):
-            previousCount = len(
-                self.rows
-            )
-
-            self.rows = [
-                row
-                for row in self.rows
-                if row[0] != "canonical"
+                if row[0] != "runtime"
             ]
 
             self.cursor.rowcount = (
@@ -532,24 +505,8 @@ class AtomicRelationDb:
                 )
 
             self.rows.append((
-                "legacy",
-                tuple(
-                    params
-                ),
-            ))
-
-            self.cursor.rowcount = 1
-
-            return self.cursor
-
-        if normalizedQuery.startswith(
-                "INSERT INTO scipion_object_relations"
-        ):
-            self.rows.append((
-                "canonical",
-                tuple(
-                    params
-                ),
+                "runtime",
+                tuple(params),
             ))
 
             self.cursor.rowcount = 1
@@ -576,9 +533,11 @@ class AtomicRelationDb:
         )
 
 
-def test_DeleteImportedOutputRelationsClearsBothRepresentations():
+def test_DeleteImportedOutputRelationsClearsAuthoritativeSnapshot():
     db = FakeDb()
-    mapper = SimpleNamespace(db=db)
+    mapper = SimpleNamespace(
+        db=db
+    )
 
     report = (
         ProtocolGraphRepository()
@@ -590,19 +549,22 @@ def test_DeleteImportedOutputRelationsClearsBothRepresentations():
         )
     )
 
-    assert len(db.calls) == 2
+    assert len(db.calls) == 1
 
-    assert "DELETE FROM scipion_relations" in db.calls[0]["query"]
-    assert db.calls[0]["params"] == (4, 20)
+    assert (
+        "DELETE FROM scipion_relations"
+        in db.calls[0]["query"]
+    )
+
+    assert db.calls[0]["params"] == (
+        4,
+        20,
+    )
+
     assert db.calls[0]["commit"] is False
 
-    assert "DELETE FROM scipion_object_relations" in db.calls[1]["query"]
-    assert db.calls[1]["params"] == (4, "200")
-    assert db.calls[1]["commit"] is False
-
     assert report == {
-        "legacyRelationsDeleted": 1,
-        "canonicalRelationsDeleted": 2,
+        "relationsDeleted": 1,
     }
 
 
@@ -865,17 +827,13 @@ def test_InsertImportedOutputRelationUsesIdempotentPostgresqlInserts():
     )
 
     assert result["saved"] is True
-    assert len(db.calls) == 2
+    assert len(db.calls) == 1
 
     assert (
         "ON CONFLICT DO NOTHING"
         in db.calls[0]["query"]
     )
 
-    assert (
-        "ON CONFLICT DO NOTHING"
-        in db.calls[1]["query"]
-    )
 
 
 def test_ReplaceImportedOutputRelationsRollsBackCompleteSnapshotOnFailure():
@@ -1010,8 +968,7 @@ def test_ReplaceEmptyImportedOutputSnapshotMarksProtocolSynchronized():
     assert result == {
         "saved": True,
         "cleanup": {
-            "legacyRelationsDeleted": 1,
-            "canonicalRelationsDeleted": 1,
+            "relationsDeleted": 1,
         },
         "relations": [],
         "snapshotSynchronized": True,
@@ -1024,16 +981,16 @@ def test_ReplaceEmptyImportedOutputSnapshotMarksProtocolSynchronized():
     assert db.commitCalls == 1
     assert db.rollbackCalls == 0
 
-    assert len(db.calls) == 3
+    assert len(db.calls) == 2
 
     assert (
-        db.calls[2]["query"]
+        db.calls[1]["query"]
         .startswith(
             'UPDATE protocols SET "relationsSynchronized" = TRUE'
         )
     )
 
-    assert db.calls[2]["params"] == (
+    assert db.calls[1]["params"] == (
         4,
         200,
         "20",

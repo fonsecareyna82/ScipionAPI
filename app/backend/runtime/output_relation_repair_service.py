@@ -303,7 +303,7 @@ class RuntimeOutputRelationRepairService:
             "name": relationName,
             "getterName": getterName,
             "setterName": setterName,
-            "source": "scipion_object_relations",
+            "source": "scipion_relations",
         }
 
     def buildRelatedOutputCandidateFromPersistedRelation(
@@ -336,7 +336,7 @@ class RuntimeOutputRelationRepairService:
             "parentProtocolId": targetProtocolId,
             "parentProtocolDbId": targetProtocolDbId,
             "outputName": targetOutputName,
-            "source": "scipion_object_relations",
+            "source": "scipion_relations",
         }
 
     def findRelatedOutputCandidates(
@@ -428,7 +428,7 @@ class RuntimeOutputRelationRepairService:
             "repaired": False,
             "reason": "no_persisted_runtime_output_relation",
             "outputName": outputName,
-            "relationSource": "scipion_object_relations",
+            "relationSource": "scipion_relations",
         }
 
         persistedRelations = self.protocolGraphRepository.loadRuntimeOutputRelations(
@@ -457,7 +457,7 @@ class RuntimeOutputRelationRepairService:
                     "outputName": outputName,
                     "relationName": persistedRelation.get("relationName"),
                     "relationId": persistedRelation.get("relationId"),
-                    "relationSource": "scipion_object_relations",
+                    "relationSource": "scipion_relations",
                 }
                 continue
 
@@ -480,7 +480,7 @@ class RuntimeOutputRelationRepairService:
             )
 
             report["relationId"] = persistedRelation.get("relationId")
-            report["relationSource"] = "scipion_object_relations"
+            report["relationSource"] = "scipion_relations"
 
             lastReport = report
 
@@ -947,8 +947,7 @@ class RuntimeOutputRelationRepairService:
 
                         logger.debug(
                             "Could not write runtime output relation properties. "
-                            "The canonical PostgreSQL relation will still be "
-                            "persisted. "
+                            "The authoritative PostgreSQL relation will still be persisted. "
                             "projectId=%s parentProtocolId=%s "
                             "parentProtocolDbId=%s outputName=%s "
                             "relationName=%s relatedOutputName=%s",

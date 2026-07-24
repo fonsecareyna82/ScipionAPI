@@ -400,3 +400,80 @@ def test_ListPersistedSetOutputRowsValidatesProject():
                 projectId=None,
             )
         )
+
+
+def test_LoadRuntimeOutputRelationsUsesRuntimeObjectIdentity():
+    relationRow = {
+        "relationId": 71,
+        "relationName": "set_of_tilt_series",
+        "sourceOutputName": "outputCtf",
+        "targetOutputName": "outputTiltSeries",
+        "metadata": {
+            "getterName": "getSetOfTiltSeries",
+            "setterName": "setSetOfTiltSeries",
+        },
+        "sourceSetId": 31,
+        "sourceProtocolDbId": 10,
+        "sourceProtocolId": "100",
+        "sourceClassName": "SetOfCTFTomoSeries",
+        "sourceItemClassName": "CTFTomoSeries",
+        "targetSetId": 32,
+        "targetProtocolDbId": 11,
+        "targetProtocolId": "101",
+        "targetClassName": "SetOfTiltSeries",
+        "targetItemClassName": "TiltSeries",
+    }
+
+    mapper = FakeMapper(
+        rows=[
+            relationRow,
+        ]
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .loadRuntimeOutputRelations(
+            mapper=mapper,
+            projectId=4,
+            sourceProtocolDbId=10,
+            sourceOutputName="outputCtf",
+        )
+    )
+
+    assert result == [
+        relationRow,
+    ]
+
+    query = mapper.db.calls[0][
+        "query"
+    ]
+
+    assert (
+        "FROM scipion_relations r"
+        in query
+    )
+
+    assert (
+        'source_object."scipionObjId" = r."parentObjId"'
+        in query
+    )
+
+    assert (
+        'target_object."scipionObjId" = r."childObjId"'
+        in query
+    )
+
+    assert (
+        "scipion_object_relations"
+        not in query
+    )
+
+    assert mapper.db.calls[0][
+        "params"
+    ] == (
+        4,
+        10,
+        "outputCtf",
+    )
+
+
