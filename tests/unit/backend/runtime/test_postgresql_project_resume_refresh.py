@@ -100,6 +100,10 @@ def buildProject(
         protocol
     )
 
+    selectRuntimeProtocolById = (
+        lambda protocolId, refreshCached=False: protocol
+    ),
+
     staleProtocol = object()
 
     runtimeMapper = SimpleNamespace(

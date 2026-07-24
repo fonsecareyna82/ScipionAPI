@@ -536,7 +536,7 @@ async def launchProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     currentUser=currentUser,
-                    enableWriteFallback=True,
+                    enableWriteFallback=False,
                 )
             )
 
