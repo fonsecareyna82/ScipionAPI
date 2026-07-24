@@ -34,6 +34,7 @@ class FakeMapper:
             "id": 10,
             "status": "running",
             "params": {},
+            "relationsSynchronized": False,
         }
 
     def getProjectProtocolByProtocolId(
@@ -69,12 +70,34 @@ class FakeRuntimeProtocol:
 
 def test_TerminalProtocolSyncEnablesRelationsAndUsesRuntimeProtocol(
         monkeypatch,
+        tmp_path,
 ):
     service = RuntimeProtocolStatusSyncService()
     mapper = FakeMapper()
 
     projectProtocol = FakeProjectProtocol()
     runtimeProtocol = FakeRuntimeProtocol()
+
+    projectPath = (
+        tmp_path
+        / "scipion-project"
+    )
+
+    runDbPath = (
+        projectPath
+        / projectProtocol.getWorkingDir()
+        / "logs"
+        / "run.db"
+    )
+
+    runDbPath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    runDbPath.write_bytes(
+        b"fake-runtime-db"
+    )
 
     callbackArgs = {}
 
@@ -85,9 +108,12 @@ def test_TerminalProtocolSyncEnablesRelationsAndUsesRuntimeProtocol(
     )
 
     def syncRuntimeProtocolCallback(**kwargs):
-        callbackArgs.update(kwargs)
+        callbackArgs.update(
+            kwargs
+        )
 
         mapper.row["status"] = "finished"
+        mapper.row["relationsSynchronized"] = True
 
         return {
             "protocols": 1,
@@ -101,7 +127,7 @@ def test_TerminalProtocolSyncEnablesRelationsAndUsesRuntimeProtocol(
         protocolId=1298,
         protocol=projectProtocol,
         getCurrentProjectPathCallback=(
-            lambda: "/tmp/scipion-project"
+            lambda: str(projectPath)
         ),
         syncRuntimeProtocolCallback=(
             syncRuntimeProtocolCallback
@@ -109,6 +135,16 @@ def test_TerminalProtocolSyncEnablesRelationsAndUsesRuntimeProtocol(
     )
 
     assert result["transitionedToTerminal"] is True
+
+    assert result["runDbPath"] == str(
+        runDbPath.resolve()
+    )
+
+    assert result["outputSync"] == {
+        "protocols": 1,
+        "outputs": 1,
+        "relations": 1,
+    }
 
     assert callbackArgs["protocolId"] == 1298
     assert callbackArgs["registerOutputs"] is True

@@ -68,15 +68,17 @@ class FakeProtocol:
         )
 
 
-class FakeFallbackMapper:
+class FakeRuntimeDbMapper:
     def __init__(
             self,
-            protocol,
+            protocol=None,
+            selectError=None,
     ):
         self.protocol = protocol
+        self.selectError = selectError
 
         self.selectedIds = []
-        self.commitCalls = 0
+        self.closeCalls = 0
 
     def selectById(
             self,
@@ -86,32 +88,28 @@ class FakeFallbackMapper:
             protocolId
         )
 
+        if self.selectError is not None:
+            raise self.selectError
+
         return self.protocol
 
-    def commit(self):
-        self.commitCalls += 1
+    def close(self):
+        self.closeCalls += 1
 
 
 def buildProject(
         tmpPath,
         protocol,
 ):
-    fallbackMapper = FakeFallbackMapper(
-        protocol
-    )
-
-    selectRuntimeProtocolById = (
-        lambda protocolId, refreshCached=False: protocol
-    ),
-
     staleProtocol = object()
 
     runtimeMapper = SimpleNamespace(
-        writeFallbackMapper=fallbackMapper,
+        selectRuntimeProtocolById=(
+            lambda protocolId, refreshCached=False: protocol
+        ),
         _runtimeProtocolsById={
             10: staleProtocol,
         },
-        _sqliteProtocolMirrorIds=set(),
     )
 
     project = PostgresqlProject.__new__(
@@ -140,7 +138,6 @@ def buildProject(
     return (
         project,
         runtimeMapper,
-        fallbackMapper,
         staleProtocol,
     )
 
@@ -161,14 +158,16 @@ def createRuntimeDb(
         exist_ok=True,
     )
 
-    runDbPath.touch()
+    runDbPath.write_bytes(
+        b"fake-runtime-db"
+    )
 
     return str(
         runDbPath
     )
 
 
-def test_RefreshProtocolForResumeUsesSqliteMapperAndReplacesCache(
+def test_RefreshProtocolForResumeLoadsProtocolDirectlyFromRunDbAndReplacesCache(
         monkeypatch,
         tmp_path,
 ):
@@ -177,7 +176,6 @@ def test_RefreshProtocolForResumeUsesSqliteMapperAndReplacesCache(
     (
         project,
         runtimeMapper,
-        fallbackMapper,
         staleProtocol,
     ) = buildProject(
         tmpPath=tmp_path,
@@ -189,44 +187,32 @@ def test_RefreshProtocolForResumeUsesSqliteMapperAndReplacesCache(
         protocol=protocol,
     )
 
-    operations = []
-
-    def updateProtocol(
-            currentProject,
-            currentProtocol,
-    ):
-        operations.append({
-            "operation": "update",
-            "projectMapper": (
-                currentProject.mapper
-            ),
-            "protocolMapper": (
-                currentProtocol.mapper
-            ),
-        })
-
-        currentProtocol.runtimeState = (
-            "hydrated"
-        )
-
-        return {
-            "updated": True,
-        }
-
-    def commit():
-        operations.append({
-            "operation": "commit",
-        })
-
-        fallbackMapper.commitCalls += 1
-
-    monkeypatch.setattr(
-        projectModule.ScipionProject,
-        "_updateProtocol",
-        updateProtocol,
+    runtimeDbMapper = FakeRuntimeDbMapper(
+        protocol=protocol
     )
 
-    fallbackMapper.commit = commit
+    createdMapperPaths = []
+
+    def createMapper(dbPath):
+        createdMapperPaths.append(
+            dbPath
+        )
+
+        return runtimeDbMapper
+
+    monkeypatch.setattr(
+        project,
+        "createMapper",
+        createMapper,
+    )
+
+    # refreshProtocolFromRuntimeDbForResume validates that the object loaded
+    # from run.db is a Protocol. FakeProtocol represents that contract here.
+    monkeypatch.setattr(
+        projectModule,
+        "Protocol",
+        FakeProtocol,
+    )
 
     result = (
         project
@@ -239,33 +225,23 @@ def test_RefreshProtocolForResumeUsesSqliteMapperAndReplacesCache(
         "protocolId": 10,
         "refreshed": True,
         "runDbPath": runDbPath,
-        "updateResult": {
-            "updated": True,
-        },
+        "source": "run_db",
     }
 
-    assert fallbackMapper.selectedIds == [
+    assert createdMapperPaths == [
+        runDbPath,
+    ]
+
+    assert runtimeDbMapper.selectedIds == [
         10,
     ]
 
-    assert operations == [
-        {
-            "operation": "update",
-            "projectMapper": fallbackMapper,
-            "protocolMapper": fallbackMapper,
-        },
-        {
-            "operation": "commit",
-        },
-    ]
-
-    assert fallbackMapper.commitCalls == 1
+    assert runtimeDbMapper.closeCalls == 1
 
     assert project.mapper is runtimeMapper
 
     assert protocol.mapper is runtimeMapper
     assert protocol.project is project
-    assert protocol.runtimeState == "hydrated"
 
     assert runtimeMapper._runtimeProtocolsById[
         10
@@ -275,17 +251,16 @@ def test_RefreshProtocolForResumeUsesSqliteMapperAndReplacesCache(
         10
     ] is not staleProtocol
 
-    assert runtimeMapper._sqliteProtocolMirrorIds == {
-        10,
-    }
-
     assert protocol.mapperHistory == [
-        fallbackMapper,
         runtimeMapper,
     ]
 
+    assert protocol.projectHistory == [
+        project,
+    ]
 
-def test_RefreshProtocolForResumeRestoresMapperAndKeepsCacheOnFailure(
+
+def test_RefreshProtocolForResumeClosesRunDbMapperAndKeepsCacheOnFailure(
         monkeypatch,
         tmp_path,
 ):
@@ -294,80 +269,70 @@ def test_RefreshProtocolForResumeRestoresMapperAndKeepsCacheOnFailure(
     (
         project,
         runtimeMapper,
-        fallbackMapper,
         staleProtocol,
     ) = buildProject(
         tmpPath=tmp_path,
         protocol=protocol,
     )
 
-    createRuntimeDb(
+    runDbPath = createRuntimeDb(
         tmpPath=tmp_path,
         protocol=protocol,
     )
 
-    def updateProtocol(
-            currentProject,
-            currentProtocol,
-    ):
-        assert (
-            currentProject.mapper
-            is fallbackMapper
-        )
-
-        assert (
-            currentProtocol.mapper
-            is fallbackMapper
-        )
-
-        raise RuntimeError(
+    runtimeDbMapper = FakeRuntimeDbMapper(
+        selectError=RuntimeError(
             "forced runtime refresh failure"
         )
+    )
+
+    createdMapperPaths = []
+
+    def createMapper(dbPath):
+        createdMapperPaths.append(
+            dbPath
+        )
+
+        return runtimeDbMapper
 
     monkeypatch.setattr(
-        projectModule.ScipionProject,
-        "_updateProtocol",
-        updateProtocol,
+        project,
+        "createMapper",
+        createMapper,
     )
 
     with pytest.raises(
             RuntimeError,
-            match=(
-                "forced runtime refresh failure"
-            ),
+            match="forced runtime refresh failure",
     ):
         project.refreshProtocolFromRuntimeDbForResume(
             10
         )
 
-    assert fallbackMapper.selectedIds == [
+    assert createdMapperPaths == [
+        runDbPath,
+    ]
+
+    assert runtimeDbMapper.selectedIds == [
         10,
     ]
 
-    assert fallbackMapper.commitCalls == 0
+    assert runtimeDbMapper.closeCalls == 1
 
     assert project.mapper is runtimeMapper
 
-    assert protocol.mapper is runtimeMapper
-    assert protocol.project is project
+    assert protocol.mapper is None
+    assert protocol.project is None
 
     assert runtimeMapper._runtimeProtocolsById == {
         10: staleProtocol,
     }
 
-    assert (
-        runtimeMapper
-        ._sqliteProtocolMirrorIds
-        == set()
-    )
-
-    assert protocol.mapperHistory == [
-        fallbackMapper,
-        runtimeMapper,
-    ]
+    assert protocol.mapperHistory == []
+    assert protocol.projectHistory == []
 
 
-def test_RefreshProtocolForResumeAdoptsSqliteProtocolWhenRunDbIsMissing(
+def test_RefreshProtocolForResumeDefersWhenRunDbIsMissingAndKeepsCache(
         monkeypatch,
         tmp_path,
 ):
@@ -376,26 +341,21 @@ def test_RefreshProtocolForResumeAdoptsSqliteProtocolWhenRunDbIsMissing(
     (
         project,
         runtimeMapper,
-        fallbackMapper,
         staleProtocol,
     ) = buildProject(
         tmpPath=tmp_path,
         protocol=protocol,
     )
 
-    updateCalls = []
+    def unexpectedCreateMapper(dbPath):
+        raise AssertionError(
+            "run.db mapper must not be created when run.db is missing"
+        )
 
     monkeypatch.setattr(
-        projectModule.ScipionProject,
-        "_updateProtocol",
-        lambda *args, **kwargs: (
-            updateCalls.append(
-                (
-                    args,
-                    kwargs,
-                )
-            )
-        ),
+        project,
+        "createMapper",
+        unexpectedCreateMapper,
     )
 
     expectedRunDbPath = str(
@@ -417,31 +377,22 @@ def test_RefreshProtocolForResumeAdoptsSqliteProtocolWhenRunDbIsMissing(
     assert result == {
         "protocolId": 10,
         "refreshed": False,
-        "reason": (
-            "runtime_db_not_found"
-        ),
+        "reason": "runtime_db_not_found",
         "runDbPath": expectedRunDbPath,
+        "runtimeDbRefreshDeferred": True,
     }
-
-    assert updateCalls == []
-    assert fallbackMapper.commitCalls == 0
 
     assert project.mapper is runtimeMapper
 
-    assert protocol.mapper is runtimeMapper
-    assert protocol.project is project
+    assert protocol.mapper is None
+    assert protocol.project is None
 
-    assert runtimeMapper._runtimeProtocolsById[
-        10
-    ] is protocol
-
-    assert runtimeMapper._runtimeProtocolsById[
-        10
-    ] is not staleProtocol
-
-    assert runtimeMapper._sqliteProtocolMirrorIds == {
-        10,
+    assert runtimeMapper._runtimeProtocolsById == {
+        10: staleProtocol,
     }
+
+    assert protocol.mapperHistory == []
+    assert protocol.projectHistory == []
 
 
 def test_RefreshProtocolForResumeDoesNothingForLegacyProject(
