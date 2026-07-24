@@ -38,6 +38,24 @@ from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
 )
 
+
+class ExampleItem(Object):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._name = String()
+
+
+class ExampleSet(Set):
+    ITEM_TYPE = ExampleItem
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._samplingRate = Float()
+
+    def getSamplingRate(self):
+        return self._samplingRate.get()
+
+
 class ExampleLinkedSet(Set):
     ITEM_TYPE = ExampleItem
 
@@ -62,22 +80,6 @@ class ExampleLinkedSet(Set):
             linkedSet
         )
 
-
-class ExampleItem(Object):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._name = String()
-
-
-class ExampleSet(Set):
-    ITEM_TYPE = ExampleItem
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._samplingRate = Float()
-
-    def getSamplingRate(self):
-        return self._samplingRate.get()
 
 
 class FakeParent(Object):

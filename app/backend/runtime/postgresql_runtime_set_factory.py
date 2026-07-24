@@ -1035,6 +1035,26 @@ class PostgresqlRuntimeSetFactory:
             classRegistry: Dict[str, Type],
             reference: Dict[str, Any],
     ):
+        targetClassName = str(
+            reference.get(
+                "targetClassName"
+            )
+            or ""
+        ).strip()
+
+        targetClass = (
+            classRegistry.get(
+                targetClassName
+            )
+            if classRegistry
+            else None
+        )
+
+        if not self._isScipionSetClass(
+                targetClass
+        ):
+            return None
+
         projectId = self._getRuntimeProjectId(
             runtimeSet
         )
