@@ -26,6 +26,7 @@
 import logging
 import os
 from typing import Any, Dict
+import uuid
 
 from pyworkflow.protocol.protocol import Protocol
 
@@ -94,21 +95,43 @@ class RuntimeProtocolExecutionDbService:
             exist_ok=True,
         )
 
-        for suffix in self.SQLITE_SIDECAR_SUFFIXES:
-            candidatePath = (
-                executionDbPath + suffix
+        temporaryDbPath = "%s.building-%s" % (
+            executionDbPath,
+            uuid.uuid4().hex,
+        )
+
+        def removeSqliteFiles(
+                sqlitePath,
+                includeMain=True,
+        ):
+            suffixes = (
+                self.SQLITE_SIDECAR_SUFFIXES
+                if includeMain
+                else self.SQLITE_SIDECAR_SUFFIXES[1:]
             )
 
-            if os.path.isfile(candidatePath):
-                os.remove(candidatePath)
+            for suffix in suffixes:
+                candidatePath = sqlitePath + suffix
+
+                try:
+                    if os.path.isfile(candidatePath):
+                        os.remove(candidatePath)
+                except Exception:
+                    logger.debug(
+                        "Could not remove SQLite file: %s",
+                        candidatePath,
+                        exc_info=True,
+                    )
+
+        removeSqliteFiles(
+            temporaryDbPath
+        )
 
         executionMapper = None
 
         try:
-            # PostgresqlProject.createMapper() delegates non-project SQLite
-            # databases to Scipion's regular SQLite mapper.
             executionMapper = currentProject.createMapper(
-                executionDbPath
+                temporaryDbPath
             )
 
             snapshotReport = (
@@ -132,20 +155,9 @@ class RuntimeProtocolExecutionDbService:
             executionMapper.commit()
 
         except Exception:
-            for suffix in self.SQLITE_SIDECAR_SUFFIXES:
-                candidatePath = (
-                    executionDbPath + suffix
-                )
-
-                try:
-                    if os.path.isfile(candidatePath):
-                        os.remove(candidatePath)
-                except Exception:
-                    logger.debug(
-                        "Could not remove failed execution DB file: %s",
-                        candidatePath,
-                        exc_info=True,
-                    )
+            removeSqliteFiles(
+                temporaryDbPath
+            )
 
             raise
 
@@ -158,6 +170,37 @@ class RuntimeProtocolExecutionDbService:
                         "Could not close protocol execution mapper.",
                         exc_info=True,
                     )
+
+        if not os.path.isfile(temporaryDbPath):
+            raise RuntimeError(
+                "Temporary protocol execution database was not created: %s"
+                % temporaryDbPath
+            )
+
+        # Remove sidecar files belonging to the previous run.db, but preserve
+        # the previous main DB until the new snapshot is completely ready.
+        removeSqliteFiles(
+            executionDbPath,
+            includeMain=False,
+        )
+
+        try:
+            os.replace(
+                temporaryDbPath,
+                executionDbPath,
+            )
+        except Exception:
+            removeSqliteFiles(
+                temporaryDbPath
+            )
+
+            raise
+
+        # A clean close should checkpoint SQLite, but remove any temporary
+        # sidecars that may remain after the atomic replacement.
+        removeSqliteFiles(
+            temporaryDbPath
+        )
 
         report = {
             "projectId": runtimeMapper.projectId,

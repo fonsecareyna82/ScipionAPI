@@ -692,6 +692,40 @@ class RuntimeProtocolStatusSyncService:
             protocol=protocol,
         )
 
+        if (
+                not os.path.isfile(runDbPath)
+                or os.path.getsize(runDbPath) == 0
+        ):
+            row = mapper.getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            params = self.normalizeParams(
+                row.get("params")
+                if row
+                else {}
+            )
+
+            runtimeMetadata = params.get(
+                self.RUNTIME_METADATA_KEY
+            ) or {}
+
+            return {
+                "projectId": projectId,
+                "protocolId": str(protocolId),
+                "runDbPath": runDbPath,
+                "status": (
+                    row.get("status")
+                    if row
+                    else None
+                ),
+                "runtimeMetadata": runtimeMetadata,
+                "runtimeDbMissing": True,
+                "transitionedToTerminal": False,
+                "outputSync": None,
+            }
+
         runtimeProtocol = self.loadRuntimeProtocolFromRunDb(
             projectPath=projectPath,
             runDbPath=runDbPath,
