@@ -2881,7 +2881,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             currentUser: dict,
-            enableWriteFallback: bool = True,
+            enableWriteFallback: bool = False,
     ) -> Optional[dict]:
         """
         Load only the PostgreSQL-aware Scipion runtime context required

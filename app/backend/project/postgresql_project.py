@@ -33,13 +33,17 @@ from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
 from pyworkflow.project.project import REGEX_NUMBER_ENDING
 from pyworkflow.protocol.constants import (
+    MODE_RESTART,
     STATUS_SAVED,
     STATUS_SCHEDULED,
 )
 from pyworkflow.protocol.protocol import Protocol
+import pyworkflow.protocol as pwprot
+import pyworkflow.utils as pwutils
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
+from app.backend.runtime.protocol_execution_db_service import RuntimeProtocolExecutionDbService
 
 logger = logging.getLogger(__name__)
 
@@ -509,9 +513,185 @@ class PostgresqlProject(ScipionProject):
             protocolId,
         )
 
+    def _preparePostgresqlExecutionDatabase(
+            self,
+            protocol,
+    ) -> Dict[str, Any]:
+        service = RuntimeProtocolExecutionDbService()
+
+        return service.prepareExecutionDatabase(
+            currentProject=self,
+            protocol=protocol,
+        )
+
+    def launchProtocol(
+            self,
+            protocol: Protocol,
+            wait=False,
+            scheduled=False,
+            force=False,
+    ):
+        if not self.usingPostgresqlRuntimeMapper():
+            return super().launchProtocol(
+                protocol,
+                wait=wait,
+                scheduled=scheduled,
+                force=force,
+            )
+
+        if protocol.getPrerequisites() and not scheduled:
+            return self.scheduleProtocol(
+                protocol
+            )
+
+        isRestart = (
+            protocol.getRunMode()
+            == MODE_RESTART
+        )
+
+        if not force:
+            if (
+                    (
+                        not protocol.isInteractive()
+                        and not protocol.isInStreaming()
+                    )
+                    or isRestart
+            ):
+                self._checkModificationAllowed(
+                    [protocol],
+                    "Cannot RE-LAUNCH protocol",
+                )
+
+        protocol.setStatus(
+            pwprot.STATUS_LAUNCHED
+        )
+
+        self._setupProtocol(
+            protocol
+        )
+
+        if not scheduled:
+            protocol.makePathsAndClean()
+
+            if isRestart:
+                self.mapper.deleteRelations(
+                    protocol
+                )
+
+                protocol.cleanExecutionAttributes()
+
+                protocol._store(
+                    protocol._jobId,
+                    protocol._pid,
+                )
+
+            self.mapper.commit()
+
+            executionReport = (
+                self._preparePostgresqlExecutionDatabase(
+                    protocol
+                )
+            )
+
+            logger.info(
+                "Prepared PostgreSQL protocol execution database. "
+                "projectId=%s protocolId=%s report=%s",
+                self.postgresqlProjectId,
+                protocol.getObjId(),
+                executionReport,
+            )
+
+            protocol.lastUpdateTimeStamp.set(
+                pwutils.getFileLastModificationDate(
+                    protocol.getDbPath()
+                )
+            )
+
+        pwprot.launch(
+            protocol,
+            wait,
+        )
+
+        if wait:
+            self._updateProtocol(
+                protocol
+            )
+        else:
+            self.mapper.store(
+                protocol
+            )
+
+        self.mapper.commit()
+
+    def scheduleProtocol(
+            self,
+            protocol,
+            prerequisites=None,
+            initialSleepTime=0,
+    ):
+        if not self.usingPostgresqlRuntimeMapper():
+            return super().scheduleProtocol(
+                protocol,
+                prerequisites=prerequisites or [],
+                initialSleepTime=initialSleepTime,
+            )
+
+        prerequisites = prerequisites or []
+
+        isRestart = (
+            protocol.getRunMode()
+            == MODE_RESTART
+        )
+
+        protocol.setStatus(
+            pwprot.STATUS_SCHEDULED
+        )
+
+        protocol.addPrerequisites(
+            *prerequisites
+        )
+
+        self._setupProtocol(
+            protocol
+        )
+
+        protocol.makePathsAndClean()
+
+        if isRestart:
+            self.mapper.deleteRelations(
+                protocol
+            )
+
+        self.mapper.commit()
+
+        executionReport = (
+            self._preparePostgresqlExecutionDatabase(
+                protocol
+            )
+        )
+
+        logger.info(
+            "Prepared scheduled PostgreSQL execution database. "
+            "projectId=%s protocolId=%s report=%s",
+            self.postgresqlProjectId,
+            protocol.getObjId(),
+            executionReport,
+        )
+
+        pwprot.schedule(
+            protocol,
+            initialSleepTime=initialSleepTime,
+        )
+
+        self.mapper.store(
+            protocol
+        )
+
+        self.mapper.commit()
+
     def resetProtocol(self, protocol):
         """
-        Reset a PostgreSQL-runtime protocol through its SQLite execution
+        Reset the PostgreSQL-runtime protocol through its SQLite execution
         mirror.
 
         Scipion's native resetProtocol() finishes by calling
