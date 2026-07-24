@@ -4082,45 +4082,69 @@ def listProjectThumbnailItems(
     status_code=status.HTTP_200_OK,
 )
 def getProtocolOutputThumbnail(
-    request: Request,
-    projectId: int,
-    protocolId: int,
-    outputName: str,
-    size: int = Query(320, ge=128, le=1024),
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        request: Request,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        size: int = Query(
+            320,
+            ge=128,
+            le=1024,
+        ),
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
     try:
-        with _thumbnailProjectLock:
-            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-            if not dbProj:
-                raise HTTPException(status_code=404, detail="Project not found")
-
-            service.loadProjectForThumbnails(dbProj)
-
-            result = service.buildProtocolOutputThumbnail(
-                protocolId=protocolId,
-                outputName=outputName,
-                force=False,
-                size=size,
-                mapper=mapper,
-                projectId=projectId,
+        def buildThumbnail():
+            return (
+                service
+                .buildProtocolOutputThumbnail(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    force=False,
+                    size=size,
+                    mapper=mapper,
+                    projectId=projectId,
+                )
             )
 
-        thumbPath = result.get("absolutePath")
+        result = _runThumbnailProjectJob(
+            service=service,
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            job=buildThumbnail,
+        )
+
+        thumbPath = result.get(
+            "absolutePath"
+        )
+
         if not thumbPath:
             logger.warning(
-                "Protocol output thumbnail not found. projectId=%s protocolId=%s outputName=%s result=%s",
+                "Protocol output thumbnail not found. "
+                "projectId=%s protocolId=%s "
+                "outputName=%s result=%s",
                 projectId,
                 protocolId,
                 outputName,
                 result,
             )
+
             raise HTTPException(
                 status_code=404,
                 detail={
-                    "message": "Protocol output thumbnail not found",
+                    "message": (
+                        "Protocol output thumbnail "
+                        "not found"
+                    ),
                     "projectId": projectId,
                     "protocolId": protocolId,
                     "outputName": outputName,
@@ -4131,20 +4155,30 @@ def getProtocolOutputThumbnail(
         return _buildCachedThumbnailResponse(
             request=request,
             filePath=thumbPath,
-            filename=f"protocol_{protocolId}_{outputName}_thumbnail.png",
+            filename=(
+                f"protocol_{protocolId}_"
+                f"{outputName}_thumbnail.png"
+            ),
             currentUser=currentUser,
             maxAge=900,
         )
 
     except HTTPException:
         raise
+
     except Exception as e:
-        logger.exception("Error in getProtocolOutputThumbnail: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load protocol output thumbnail: {e}",
+        logger.exception(
+            "Error in getProtocolOutputThumbnail: %s",
+            e,
         )
 
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to load protocol output "
+                f"thumbnail: {e}"
+            ),
+        )
 
 @router.post(
     "/{projectId}/output-thumbnails",
@@ -4175,7 +4209,10 @@ def getProtocolOutputThumbnailsBatch(
             if not dbProj:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(
+                dbProj,
+                mapper=mapper,
+            )
 
             seen = set()
 
