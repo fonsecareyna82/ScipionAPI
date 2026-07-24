@@ -54,18 +54,20 @@ class FakeProtocolRouterService:
         self.launchError = None  # type: Optional[Exception]
         self.saveError = None  # type: Optional[Exception]
 
-        self.lastGetProjectByIdCall: Dict[str, Any]
-        self.lastGetProtocolParamsCall: Dict[str, Any]
-        self.lastGetNewProtocolParamsCall: Dict[str, Any]
-        self.lastLaunchProtocolCall: Dict[str, Any]
-        self.lastSaveProtocolCall: Dict[str, Any]
-        self.lastGetProtocolLogsCall: Dict[str, Any]
+        self.lastGetProjectByIdCall: Optional[Dict[str, Any]] = None
+        self.lastGetProtocolParamsCall: Optional[Dict[str, Any]] = None
+        self.lastGetNewProtocolParamsCall: Optional[Dict[str, Any]] = None
+        self.lastLaunchProtocolCall: Optional[Dict[str, Any]] = None
+        self.lastSaveProtocolCall: Optional[Dict[str, Any]] = None
+        self.lastGetProtocolLogsCall: Optional[Dict[str, Any]] = None
         self.postgresqlRuntimeMutationResult: Any = {
             "id": 1,
             "name": "Demo Project",
         }
 
-        self.lastLoadPostgresqlRuntimeProjectForMutationCall: Dict[str, Any]
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall: Optional[
+            Dict[str, Any]
+        ] = None
 
     def loadPostgresqlRuntimeProjectForMutation(
             self,
@@ -174,29 +176,61 @@ def protocolClient(
     app.dependency_overrides.clear()
 
 
-def test_LoadProtocolReturns404WhenProjectMissing(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.projectByIdResult = None
+def test_LoadProtocolReturns404WhenPostgresqlRuntimeProjectMissing(
+        protocolClient,
+        fakeProtocolRouterService,
+):
+    fakeProtocolRouterService.postgresqlRuntimeMutationResult = None
 
-    response = protocolClient.get("/protocols/1/10")
+    response = protocolClient.get(
+        "/protocols/1/10"
+    )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Project not found"
 
+    assert fakeProtocolRouterService.lastGetProjectByIdCall is None
+    assert fakeProtocolRouterService.lastGetProtocolParamsCall is None
 
-def test_LoadProtocolReturnsProtocolParams(protocolClient, fakeProtocolRouterService):
-    response = protocolClient.get("/protocols/1/10")
+
+def test_LoadProtocolUsesPostgresqlRuntimeContextAndReturnsProtocolParams(
+        protocolClient,
+        fakeProtocolRouterService,
+        fakeProjectMapper,
+):
+    response = protocolClient.get(
+        "/protocols/1/10"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "protocolId": "10",
         "protocolClassName": "ProtClass",
         "params": {"a": 1},
     }
 
+    assert (
+        fakeProtocolRouterService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+            "enableWriteFallback": False,
+        }
+    )
+
+    assert fakeProtocolRouterService.lastGetProjectByIdCall is None
+
     assert fakeProtocolRouterService.lastGetProtocolParamsCall == {
+        "mapper": fakeProjectMapper,
         "projectId": 1,
         "protocolId": 10,
-        "mapper": fakeProtocolRouterService.lastGetProtocolParamsCall["mapper"],
     }
 
 

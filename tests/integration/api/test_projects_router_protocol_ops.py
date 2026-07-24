@@ -43,31 +43,62 @@ def patchRenameProtocolFake(fakeProjectService):
     fakeProjectService.renameProtocol = renameProtocol
 
 
-def test_LoadProtocolReturns404WhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+def test_LoadProtocolReturns404WhenPostgresqlRuntimeProjectMissing(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
-    response = projectClient.get("/projects/1/protocols/10")
+    response = projectClient.get(
+        "/projects/1/protocols/10"
+    )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Project not found"
 
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetProtocolParamsCall is None
 
-def test_LoadProtocolReturnsParams(projectClient, fakeProjectService):
-    response = projectClient.get("/projects/1/protocols/10")
+
+def test_LoadProtocolUsesPostgresqlRuntimeContextAndReturnsParams(
+        projectClient,
+        fakeProjectService,
+        fakeProjectMapper,
+):
+    response = projectClient.get(
+        "/projects/1/protocols/10"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "protocolId": "10",
         "protocolClassName": "ProtClass",
         "params": {"a": 1},
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+            "enableWriteFallback": False,
+        }
+    )
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
     assert fakeProjectService.lastGetProtocolParamsCall == {
+        "mapper": fakeProjectMapper,
         "projectId": 1,
         "protocolId": 10,
-        "mapper": fakeProjectService.lastGetProtocolParamsCall["mapper"],
     }
-
 
 def test_LoadProtocolsReturns404WhenProjectMissing(
     projectClient,
