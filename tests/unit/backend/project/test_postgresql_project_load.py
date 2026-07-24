@@ -43,6 +43,14 @@ class FakeFlatMapper:
         }
 
 
+class FakeDomain:
+    @staticmethod
+    def getMapperDict():
+        return {
+            "String": String,
+        }
+
+
 def test_PostgresqlProjectLoadsWithoutProjectSqlite(
         authTestEnv,
         tmp_path,
@@ -53,7 +61,7 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
     )
 
     project = module.PostgresqlProject(
-        domain=object(),
+        domain=FakeDomain(),
         path=str(tmp_path),
         projectId=7,
         flatMapper=FakeFlatMapper(),
@@ -125,7 +133,7 @@ def test_PostgresqlProjectKeepsExistingOptionalSqliteMirror(
     sqlitePath.touch()
 
     project = module.PostgresqlProject(
-        domain=object(),
+        domain=FakeDomain(),
         path=str(tmp_path),
         projectId=7,
         flatMapper=FakeFlatMapper(),
