@@ -856,21 +856,7 @@ def renameProtocol(
             or {}
         )
 
-        syncResult = (
-            service
-            .syncProjectGraphAfterMutation(
-                mapper=mapper,
-                projectId=projectId,
-                actionLabel=(
-                    "rename protocol"
-                ),
-                refresh=True,
-                checkPid=True,
-            )
-            or {}
-        )
-
-        response = {
+        return {
             "status": renameResult.get(
                 "status",
                 0,
@@ -880,12 +866,9 @@ def renameProtocol(
                 [],
             ),
             "workflow": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
         }
-
-        return _appendProtocolSyncCounts(
-            response,
-            syncResult,
-        )
 
     except HTTPException as error:
         return JSONResponse(
