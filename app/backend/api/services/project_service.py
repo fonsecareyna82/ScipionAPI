@@ -8025,59 +8025,45 @@ class ProjectService:
             self,
             mapper,
             projectId: int,
-            protocolIds: List[Union[int, str]],
+            protocols: List[Any],
     ) -> Dict[str, Any]:
         """
         Persist only protocols created by workflow import.
 
+        Imported protocol objects must be used directly because Scipion's
+        loadProtocols() has already remapped their internal pointers from
+        source protocol ids to the newly created protocol objects.
+
         Existing PostgreSQL protocols, input refs, dependencies and outputs
-        must remain untouched.
+        remain untouched.
         """
         reports = []
         dependenciesCount = 0
 
-        for protocolId in protocolIds or []:
-            protocol = (
-                self
-                ._getScipionProtocolForRuntime(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-            )
+        for protocol in protocols or []:
+            protocolId = self._getScipionObjectId(protocol)
 
-            protocolSync = (
-                    self
-                    .syncPostgresqlRuntimeProtocol(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                        protocol=protocol,
-                        registerOutputs=False,
-                        syncRelations=False,
-                        authoritativeProtocolState=True,
-                    )
-                    or {}
-            )
+            if protocolId is None:
+                continue
 
-            inputSync = (
-                    self
-                    .syncPostgresqlRuntimeProtocolInputsAndDependencies(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocol=protocol,
-                        params=None,
-                    )
-                    or {}
-            )
+            protocolSync = self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                registerOutputs=False,
+                syncRelations=False,
+                authoritativeProtocolState=True,
+            ) or {}
 
-            dependenciesCount += int(
-                inputSync.get(
-                    "dependenciesSaved",
-                    0,
-                )
-                or 0
-            )
+            inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                params=None,
+            ) or {}
+
+            dependenciesCount += int(inputSync.get("dependencies", 0) or 0)
 
             reports.append({
                 "protocolId": str(protocolId),
@@ -8086,7 +8072,7 @@ class ProjectService:
             })
 
         return {
-            "protocols": len(protocolIds or []),
+            "protocols": len(protocols or []),
             "dependencies": dependenciesCount,
             "reports": reports,
         }
@@ -8134,31 +8120,35 @@ class ProjectService:
         if not isSameProjectImport:
             workflowContent = self._sanitizeWorkflowExternalReferences(workflowContent)
 
-        beforeIds = self._getCurrentWorkflowProtocolIds()
         workflowJson = json.dumps(workflowContent, ensure_ascii=False)
 
         try:
-            loadResult =  self.currentProject.loadProtocols(jsonStr=workflowJson)
+            importedProtocolMap = self.currentProject.loadProtocols(jsonStr=workflowJson)
         except Exception as error:
             logger.exception(
-                "Failed to import workflow protocols. "
-                "projectId=%s",
+                "Failed to import workflow protocols. projectId=%s",
                 projectId,
             )
 
             raise HTTPException(
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail=(
-                    "Failed to import workflow protocols: "
-                    f"{error}"
-                ),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to import workflow protocols: {error}",
             )
 
-        errors = self._normalizeWorkflowImportErrors(loadResult)
-        afterIds = self._getCurrentWorkflowProtocolIds()
-        createdIds = self._sortProtocolIds(afterIds - beforeIds)
+        errors = self._normalizeWorkflowImportErrors(importedProtocolMap)
+        importedProtocols = self._workflowProtocolMapToProtocols(importedProtocolMap)
+
+        created = []
+
+        for sourceId, importedValue in (importedProtocolMap or {}).items():
+            protocol = importedValue[0] if isinstance(importedValue, (tuple, list)) and importedValue else importedValue
+            newId = self._getScipionObjectId(protocol)
+
+            if newId is not None:
+                created.append({
+                    "sourceId": str(sourceId),
+                    "newId": str(newId),
+                })
 
         syncInfo = {
             "protocols": 0,
@@ -8166,20 +8156,21 @@ class ProjectService:
             "reports": [],
         }
 
-        if createdIds:
+        if importedProtocols:
             syncInfo = self._syncImportedPostgresqlRuntimeProtocols(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolIds=createdIds,
+                mapper=mapper,
+                projectId=projectId,
+                protocols=importedProtocols,
             )
 
         return {
             "status": 1 if errors else 0,
             "errors": errors,
             "workflow": [],
-            "created": [{"newId": protocolId} for protocolId in createdIds],
+            "created": created,
             "protocolsCount": int(syncInfo.get("protocols", 0)),
             "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+            "syncReports": syncInfo.get("reports") or [],
         }
 
     def writeRemoteFileService(
