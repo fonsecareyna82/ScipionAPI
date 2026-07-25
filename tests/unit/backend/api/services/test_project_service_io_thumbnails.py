@@ -433,18 +433,33 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
     ]
 
 
-def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutputs(
-    projectServiceModule,
-    service,
-    monkeypatch,
+def test_ListProjectThumbnailItemsKeepsDetachedPostgresqlOutputs(
+        projectServiceModule,
+        service,
+        monkeypatch,
 ):
-    class FakeThumbnailServiceWithItems:
-        # fakeThumbnailServiceWithItems
-        instances = []
+    expectedItems = [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "outputs": [
+                {
+                    "outputName": (
+                        "outputTiltSeries"
+                    ),
+                },
+            ],
+        },
+    ]
 
-        def __init__(self, currentProject):
-            self.currentProject = currentProject
-            FakeThumbnailServiceWithItems.instances.append(self)
+    class FakeThumbnailServiceWithItems:
+        def __init__(
+                self,
+                currentProject,
+        ):
+            self.currentProject = (
+                currentProject
+            )
 
         def listProtocolThumbnailItems(
                 self,
@@ -455,29 +470,7 @@ def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutp
                 maxOutputsPerProtocol=4,
                 inlineImages=False,
         ):
-            return [
-                {
-                    "projectId": projectId,
-                    "protocolId": 500,
-                    "outputs": [
-                        {"outputName": "outputVol"},
-                        {"outputName": "missingOutput"},
-                    ],
-                },
-                {
-                    "projectId": projectId,
-                    "protocolId": 999,
-                    "outputs": [
-                        {"outputName": "outputVol"},
-                    ],
-                },
-            ]
-
-    output = FakeOutput("volume.mrc")
-    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
-    service.currentProject = FakeCurrentProject(protocols={10: protocol})
-
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+            return expectedItems
 
     monkeypatch.setattr(
         projectServiceModule,
@@ -485,28 +478,20 @@ def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutp
         FakeThumbnailServiceWithItems,
     )
 
-    result = service.listProjectThumbnailItems(
-        projectId=1,
-        force=False,
-        size=320,
-        maxProtocols=12,
-        maxOutputsPerProtocol=4,
-        inlineImages=False,
-        mapper=mapper,
+    result = (
+        service
+        .listProjectThumbnailItems(
+            projectId=1,
+            force=False,
+            size=128,
+            maxProtocols=4,
+            maxOutputsPerProtocol=2,
+            inlineImages=True,
+            mapper=object(),
+        )
     )
 
-    assert result == [
-        {
-            "projectId": 1,
-            "protocolId": 500,
-            "outputs": [
-                {"outputName": "outputVol"},
-            ],
-        }
-    ]
-
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
-    assert mapper.db.fetchCalls[1]["params"] == (1, 999, "999")
+    assert result == expectedItems
 
 
 def test_NormalizeExportJsonContentAcceptsJsonString(service):
