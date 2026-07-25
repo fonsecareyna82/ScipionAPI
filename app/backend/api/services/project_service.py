@@ -1344,6 +1344,7 @@ class ProjectService:
             self,
             protocolContext: Dict[str, Any],
             storedRow: Optional[Dict[str, Any]],
+            protocol=None,
     ) -> Dict[str, Any]:
         """
         Keep PostgreSQL protocol parameters authoritative when synchronizing
@@ -1395,10 +1396,20 @@ class ProjectService:
             runtimeMetadataKey
         )
 
-        # PostgreSQL is authoritative for editable protocol parameters.
-        mergedValues = copy.deepcopy(
-            storedParams
-        )
+        # PostgreSQL protocols.params remains authoritative for regular
+        # editable values. Pointer values reconstructed from
+        # protocol_input_refs are authoritative for protocol inputs.
+        mergedValues = copy.deepcopy(storedParams)
+
+        if protocol is not None:
+            for paramName, runtimeValue in runtimeValues.items():
+                try:
+                    param = protocol.getParam(paramName)
+                except Exception:
+                    param = None
+
+                if isinstance(param, (PointerParam, MultiPointerParam)):
+                    mergedValues[paramName] = copy.deepcopy(runtimeValue)
 
         # Runtime metadata may legitimately have changed in run.db.
         if runtimeMetadata is not None:
@@ -1492,6 +1503,7 @@ class ProjectService:
                 ._preserveStoredProtocolParamsInRuntimeContext(
                     protocolContext=protocolContext,
                     storedRow=storedRow,
+                    protocol=protocol,
                 )
             )
 
