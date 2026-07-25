@@ -56,7 +56,6 @@ from pyworkflow.protocol.protocol import anonimizeGPUs
 from pyworkflow.utils import LoggingConfigurator
 from pyworkflow.utils.log import setDefaultLoggingContext
 
-from app.backend.database import getMapper
 from app.backend.project import PostgresqlProject
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
@@ -315,6 +314,7 @@ class RuntimePostgresqlProtocolWorker:
         self.runtimeMapper = None
 
     def load(self) -> None:
+        from app.backend.database import getMapper
         self.mapper = getMapper()
 
         projectRow = self.mapper.db.fetchOne(
