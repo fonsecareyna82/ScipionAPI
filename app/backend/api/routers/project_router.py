@@ -733,88 +733,193 @@ def suggestionProtocol(
         )
 
 
-@router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
+@router.put(
+    "/{projectId}/protocols/{protocolId}/rename",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
 def renameProtocol(
-    projectId: int,
-    protocolId: int,
-    payload: ProtocolRenameIn,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        projectId: int,
+        protocolId: int,
+        payload: ProtocolRenameIn,
+        usePostgresqlRuntimeProject: bool = Query(
+            True
+        ),
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"status": 1,
-                     "errors": ["Project not found"],
-                     "workflow": []},
+    try:
+        if usePostgresqlRuntimeProject:
+            project = (
+                service
+                .loadPostgresqlRuntimeProjectForMutation(
+                    mapper=mapper,
+                    projectId=projectId,
+                    currentUser=currentUser,
+                    enableWriteFallback=False,
+                )
+            )
+        else:
+            project = service.getProjectById(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                refresh=True,
+                checkPid=False,
+                loadWorkflowFromPostgresql=False,
+                usePostgresqlRuntimeProject=False,
+                usePostgresqlRuntimeWriteFallback=False,
+            )
+
+        if not project:
+            return JSONResponse(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
+                content={
+                    "status": 1,
+                    "errors": [
+                        "Project not found"
+                    ],
+                    "workflow": [],
+                },
+            )
+
+        newName = getattr(
+            payload,
+            "runName",
+            None,
         )
 
-    try:
-        newName = getattr(payload, "runName", None)
-        newComment = getattr(payload, "comment", "")
+        newComment = getattr(
+            payload,
+            "comment",
+            "",
+        )
 
         if newName is None:
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
                 content={
                     "status": 1,
-                    "errors": ["Missing name"],
+                    "errors": [
+                        "Missing name"
+                    ],
                     "workflow": [],
                 },
             )
 
-        newNameText = str(newName)
-
-        if newNameText != "" and not newNameText.strip():
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                content={
-                    "status": 1,
-                    "errors": ["Missing name"],
-                    "workflow": [],
-                },
-            )
-
-        service.renameProtocol(
-            mapper,
-            projectId,
-            protocolId,
-            newNameText.strip(),
-            str(newComment or "").strip(),
+        newNameText = str(
+            newName
         )
-        syncResult = service.syncProjectGraphAfterMutation(
-            mapper,
-            projectId,
-            actionLabel="rename protocol",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+
+        if (
+                newNameText != ""
+                and not newNameText.strip()
+        ):
+            return JSONResponse(
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                content={
+                    "status": 1,
+                    "errors": [
+                        "Missing name"
+                    ],
+                    "workflow": [],
+                },
+            )
+
+        renameResult = (
+            service.renameProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                newName=(
+                    newNameText.strip()
+                ),
+                newComment=str(
+                    newComment or ""
+                ).strip(),
+            )
+            or {}
+        )
+
+        syncResult = (
+            service
+            .syncProjectGraphAfterMutation(
+                mapper=mapper,
+                projectId=projectId,
+                actionLabel=(
+                    "rename protocol"
+                ),
+                refresh=True,
+                checkPid=True,
+            )
+            or {}
+        )
 
         response = {
-            "status": 0,
-            "errors": [],
+            "status": renameResult.get(
+                "status",
+                0,
+            ),
+            "errors": renameResult.get(
+                "errors",
+                [],
+            ),
             "workflow": [],
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
-
-    except HTTPException as e:
-        return JSONResponse(
-            status_code=e.status_code,
-            content={"status": 1,
-                     "errors": _normalizeErrors(e.detail),
-                     "workflow": []},
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": 1,
-                     "errors": [str(e)],
-                     "workflow": []},
+        return _appendProtocolSyncCounts(
+            response,
+            syncResult,
         )
 
+    except HTTPException as error:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(
+                    error.detail
+                ),
+                "workflow": [],
+            },
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Error renaming protocol. "
+            "projectId=%s protocolId=%s",
+            projectId,
+            protocolId,
+        )
+
+        return JSONResponse(
+            status_code=(
+                status
+                .HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            content={
+                "status": 1,
+                "errors": [
+                    str(error)
+                ],
+                "workflow": [],
+            },
+        )
 
 @router.post("/{projectId}/protocols/duplicate", response_model=Any, status_code=status.HTTP_201_CREATED)
 def duplicateProtocol(
