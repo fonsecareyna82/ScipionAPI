@@ -293,3 +293,145 @@ def test_LogicalTableMapperUsesStoredProperties():
         "parentItemId",
         "source",
     ]
+
+
+def test_SelectAllSupportsNumericComparison():
+    db = FakeDb(
+        rows=[]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    mapper.selectAll(
+        where="_score > 0.5",
+        iterate=False,
+    )
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')'
+        '::DOUBLE PRECISION > %s'
+        in db.query
+    )
+
+    assert db.params == (
+        31,
+        "_score",
+        0.5,
+    )
+
+
+def test_UnsupportedWhereExpressionFailsExplicitly():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    with pytest.raises(
+            NotImplementedError
+    ):
+        mapper.selectAll(
+            where=(
+                "_score BETWEEN "
+                "0.1 AND 0.5"
+            ),
+            iterate=False,
+        )
+
+
+
+def test_UniqueReturnsParallelListsForDistinctRows():
+    db = FakeDb(
+        rows=[
+            {
+                "value_0": "TS_01",
+                "value_1": 7,
+            },
+            {
+                "value_0": "TS_02",
+                "value_1": 8,
+            },
+        ]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.unique(
+        [
+            "_tomoId",
+            "id",
+        ],
+        where="id > 6",
+    )
+
+    assert result == {
+        "_tomoId": [
+            "TS_01",
+            "TS_02",
+        ],
+        "id": [
+            7,
+            8,
+        ],
+    }
+
+    assert (
+        'SELECT DISTINCT '
+        '"values" ->> %s AS "value_0", '
+        '"scipionItemId" AS "value_1"'
+        in db.query
+    )
+
+    assert (
+        '"scipionItemId" > %s'
+        in db.query
+    )
+
+    assert db.params == (
+        "_tomoId",
+        31,
+        6,
+    )
+
+
+def test_UniqueReturnsListForSingleAttribute():
+    db = FakeDb(
+        rows=[
+            {
+                "value_0": "TS_01",
+            },
+            {
+                "value_0": "TS_02",
+            },
+        ]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.unique(
+        "_tomoId"
+    )
+
+    assert result == [
+        "TS_01",
+        "TS_02",
+    ]
+
+    assert db.params == (
+        "_tomoId",
+        31,
+    )
+
+
