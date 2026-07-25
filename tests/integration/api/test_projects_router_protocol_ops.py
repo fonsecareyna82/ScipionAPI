@@ -691,6 +691,33 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "refresh": True,
         "checkPid": True,
     }
+    assert (
+            fakeProjectService
+            .lastLoadPostgresqlRuntimeProjectForMutationCall
+            == {
+                "mapper": (
+                    fakeProjectService
+                    .lastRenameProtocolCall[
+                        "mapper"
+                    ]
+                ),
+                "projectId": 1,
+                "currentUser": {
+                    "id": 1,
+                    "email": (
+                        "user@example.com"
+                    ),
+                    "role": "user",
+                },
+                "enableWriteFallback": False,
+            }
+    )
+
+    assert (
+            fakeProjectService
+            .lastGetProjectByIdCall
+            is None
+    )
 
 
 def test_RenameProtocolWrapsUnexpectedException(
