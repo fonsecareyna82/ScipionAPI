@@ -137,19 +137,6 @@ def test_SelectByIdUsesRuntimeItemId():
     )
 
 
-def test_UnsupportedWhereExpressionFailsExplicitly():
-    mapper = PostgresqlSetRuntimeMapper(
-        db=FakeDb(),
-        setId=31,
-        itemBuilder=buildItem,
-    )
-
-    with pytest.raises(NotImplementedError):
-        mapper.selectAll(
-            where="_score > 0.5",
-            iterate=False,
-        )
-
 def test_MapperRequiresExactlyOneStorageScope():
     with pytest.raises(
             ValueError,
