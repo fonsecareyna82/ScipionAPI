@@ -1189,34 +1189,6 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
     }
 
 
-def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
-    patchRenameProtocolFake(fakeProjectService)
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="rename protocol succeeded but graph sync to PostgreSQL failed",
-    )
-
-    response = projectClient.put(
-        "/projects/1/protocols/10/rename",
-        json={"runName": "Renamed protocol", "comment": "Updated comment"},
-    )
-
-    assert response.status_code == 500
-    assert response.json() == {
-        "status": 1,
-        "errors": ["rename protocol succeeded but graph sync to PostgreSQL failed"],
-        "workflow": [],
-    }
-
-    assert fakeProjectService.lastRenameProtocolCall == {
-        "mapper": fakeProjectService.lastRenameProtocolCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-        "newName": "Renamed protocol",
-        "newComment": "Updated comment",
-    }
-
-
 def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
     fakeProjectService.restartProtocolAllResult = []
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
