@@ -7246,6 +7246,81 @@ class ProjectService:
 
         return protocolList
 
+    def _prepareRuntimeProtocolsForExport(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[Union[int, str]],
+    ) -> List[Any]:
+        """
+        Load runtime protocols and restore their PostgreSQL-backed pointer
+        inputs before serializing them as a Scipion workflow.
+
+        This operation only modifies the in-memory protocol instances.
+        It does not persist protocols, inputs, dependencies or outputs.
+        """
+        protocolList = (
+            self
+            ._resolveRuntimeProtocolsForExport(
+                mapper=mapper,
+                projectId=projectId,
+                protocolIds=protocolIds,
+            )
+        )
+
+        if not (
+                self
+                        ._currentProjectUsesPostgresqlRuntimeMapper()
+        ):
+            return protocolList
+
+        parentProtocolsById = {}
+
+        for protocol in protocolList:
+            protocolId = (
+                self
+                ._getProtocolObjIdForExport(
+                    protocol
+                )
+            )
+
+            if protocolId:
+                parentProtocolsById[
+                    str(protocolId)
+                ] = protocol
+
+        restoreReport = (
+                self
+                ._restorePostgresqlRuntimePointersForProtocols(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protocolList,
+                    prepareOutputsForLaunch=False,
+                    allowMissingParentOutputs=True,
+                    parentProtocolsById=parentProtocolsById,
+                )
+                or {}
+        )
+
+        restoreErrors = (
+                restoreReport.get("errors")
+                or []
+        )
+
+        if restoreErrors:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                        "Failed to restore PostgreSQL "
+                        "protocol inputs for export: %s"
+                        % restoreErrors
+                ),
+            )
+
+        return protocolList
+
     def _sanitizeExportFilename(self, rawFilename: str) -> str:
         filename = str(rawFilename or "").strip()
         filename = filename.replace("\\", "/").split("/")[-1].strip()
@@ -7692,10 +7767,13 @@ class ProjectService:
         )
 
         try:
-            protocolList = self._resolveRuntimeProtocolsForExport(
-                mapper=mapper,
-                projectId=projectId,
-                protocolIds=protocolIds,
+            protocolList = (
+                self
+                ._prepareRuntimeProtocolsForExport(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolIds=protocolIds,
+                )
             )
 
             rawExport = self.currentProject.getProtocolsJson(protocolList)
@@ -7921,10 +7999,13 @@ class ProjectService:
                 detail="Missing protocolIds",
             )
 
-        protocolList = self._resolveRuntimeProtocolsForExport(
-            mapper=mapper,
-            projectId=projectId,
-            protocolIds=protocolIds,
+        protocolList = (
+            self
+            ._prepareRuntimeProtocolsForExport(
+                mapper=mapper,
+                projectId=projectId,
+                protocolIds=protocolIds,
+            )
         )
 
         rawExport = self.currentProject.getProtocolsJson(protocolList)
