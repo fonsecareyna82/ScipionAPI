@@ -383,6 +383,27 @@ class RuntimePostgresqlProtocolWorker:
 
         self.protocol.makeWorkingDir()
 
+        self.configureSchedulingLogging()
+
+    def configureSchedulingLogging(
+            self,
+    ) -> None:
+        schedulePath = os.path.abspath(
+            self.protocol.getScheduleLog()
+        )
+
+        LoggingConfigurator.setUpProtocolSchedulingLog(
+            schedulePath
+        )
+
+        setDefaultLoggingContext(
+            self.protocolId,
+            self.project.getShortName(),
+        )
+
+    def configureRunLogging(
+            self,
+    ) -> None:
         stdoutPath = os.path.abspath(
             self.protocol.getStdoutLog()
         )
@@ -472,7 +493,353 @@ class RuntimePostgresqlProtocolWorker:
             for row in rows or []
         ]
 
-    def waitForDependencies(self) -> None:
+    def loadInputRefs(
+            self,
+    ) -> List[Dict[str, Any]]:
+        return (
+            ProtocolGraphRepository()
+            .loadInputRefsForProtocol(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolDbId=(
+                    self.getProtocolDbId()
+                ),
+            )
+        )
+
+    def getRuntimeOutputInfo(
+            self,
+            inputRef,
+    ) -> Dict[str, Any]:
+        outputName = str(
+            inputRef.get(
+                "parentOutputName"
+            )
+            or ""
+        ).strip()
+
+        rootOutputName = (
+            outputName.split(".", 1)[0]
+            if outputName
+            else ""
+        )
+
+        if not rootOutputName:
+            return {
+                "exists": False,
+                "runtimeObjectId": None,
+            }
+
+        return (
+            ProtocolGraphRepository()
+            .getPostgresqlRuntimeOutputInfo(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                parentProtocolDbId=int(
+                    inputRef[
+                        "parentProtocolDbId"
+                    ]
+                ),
+                outputName=rootOutputName,
+            )
+        )
+
+    def getPrerequisiteProtocolIds(
+            self,
+    ):
+        result = set()
+
+        for protocolId in (
+                self.protocol
+                .getPrerequisites()
+                or []
+        ):
+            try:
+                result.add(
+                    int(protocolId)
+                )
+            except Exception:
+                continue
+
+        return result
+
+    def getReadinessState(
+            self,
+    ) -> Dict[str, Any]:
+        parentRows = (
+            self.loadParentStatuses()
+        )
+
+        inputRefs = (
+            self.loadInputRefs()
+        )
+
+        streaming = bool(
+            self.protocol
+            .worksInStreaming()
+        )
+
+        prerequisiteIds = (
+            self
+            .getPrerequisiteProtocolIds()
+        )
+
+        parentRowsByDbId = {}
+
+        for row in parentRows:
+            try:
+                parentRowsByDbId[
+                    int(row["protocolDbId"])
+                ] = row
+            except Exception:
+                continue
+
+        failedParents = []
+        pendingParents = []
+        missingInputs = []
+        pendingKeys = set()
+        inputParentDbIds = set()
+
+        def addPending(
+                row,
+                reason,
+        ):
+            protocolDbId = row.get(
+                "protocolDbId"
+            )
+
+            key = (
+                str(protocolDbId),
+                str(reason),
+            )
+
+            if key in pendingKeys:
+                return
+
+            pendingKeys.add(key)
+
+            pendingParents.append({
+                "protocolDbId": (
+                    protocolDbId
+                ),
+                "protocolId": row.get(
+                    "protocolId"
+                ),
+                "status": row.get(
+                    "status"
+                ),
+                "reason": reason,
+            })
+
+        for row in parentRows:
+            parentStatus = str(
+                row.get("status")
+                or ""
+            ).strip().lower()
+
+            if (
+                    parentStatus
+                    in FAILED_PARENT_STATUSES
+            ):
+                failedParents.append(
+                    dict(row)
+                )
+
+        for row in parentRows:
+            try:
+                parentProtocolId = int(
+                    row["protocolId"]
+                )
+            except Exception:
+                continue
+
+            parentStatus = str(
+                row.get("status")
+                or ""
+            ).strip().lower()
+
+            if (
+                    parentStatus
+                    in FAILED_PARENT_STATUSES
+            ):
+                continue
+
+            if (
+                    parentProtocolId
+                    in prerequisiteIds
+                    and parentStatus
+                    not in READY_PARENT_STATUSES
+            ):
+                addPending(
+                    row,
+                    "prerequisite_not_finished",
+                )
+
+        for inputRef in inputRefs:
+            try:
+                parentProtocolDbId = int(
+                    inputRef[
+                        "parentProtocolDbId"
+                    ]
+                )
+            except Exception:
+                missingInputs.append({
+                    **dict(inputRef),
+                    "reason": (
+                        "missing_parent_protocol"
+                    ),
+                })
+                continue
+
+            inputParentDbIds.add(
+                parentProtocolDbId
+            )
+
+            parentRow = (
+                parentRowsByDbId.get(
+                    parentProtocolDbId
+                )
+            )
+
+            parentStatus = str(
+                (
+                    parentRow
+                    or {}
+                ).get("status")
+                or ""
+            ).strip().lower()
+
+            if (
+                    parentStatus
+                    in FAILED_PARENT_STATUSES
+            ):
+                continue
+
+            if not streaming:
+                if (
+                        parentRow is None
+                        or parentStatus
+                        not in READY_PARENT_STATUSES
+                ):
+                    addPending(
+                        parentRow or {
+                            "protocolDbId": (
+                                parentProtocolDbId
+                            ),
+                            "protocolId": (
+                                inputRef.get(
+                                    "parentProtocolId"
+                                )
+                            ),
+                            "status": (
+                                parentStatus
+                            ),
+                        },
+                        "input_parent_not_finished",
+                    )
+
+                    continue
+
+            outputInfo = (
+                self.getRuntimeOutputInfo(
+                    inputRef
+                )
+            )
+
+            if (
+                    not outputInfo.get(
+                        "exists"
+                    )
+                    or outputInfo.get(
+                        "runtimeObjectId"
+                    )
+                    in (
+                        None,
+                        "",
+                    )
+            ):
+                missingInputs.append({
+                    "inputName": (
+                        inputRef.get(
+                            "inputName"
+                        )
+                    ),
+                    "itemIndex": int(
+                        inputRef.get(
+                            "itemIndex"
+                        )
+                        or 0
+                    ),
+                    "parentProtocolDbId": (
+                        parentProtocolDbId
+                    ),
+                    "parentProtocolId": (
+                        inputRef.get(
+                            "parentProtocolId"
+                        )
+                    ),
+                    "parentOutputName": (
+                        inputRef.get(
+                            "parentOutputName"
+                        )
+                    ),
+                    "reason": (
+                        "parent_output_not_available"
+                    ),
+                })
+
+        for row in parentRows:
+            try:
+                parentProtocolDbId = int(
+                    row["protocolDbId"]
+                )
+
+                parentProtocolId = int(
+                    row["protocolId"]
+                )
+            except Exception:
+                continue
+
+            if (
+                    parentProtocolDbId
+                    in inputParentDbIds
+                    or parentProtocolId
+                    in prerequisiteIds
+            ):
+                continue
+
+            parentStatus = str(
+                row.get("status")
+                or ""
+            ).strip().lower()
+
+            if (
+                    parentStatus
+                    not in READY_PARENT_STATUSES
+                    and parentStatus
+                    not in FAILED_PARENT_STATUSES
+            ):
+                addPending(
+                    row,
+                    "dependency_not_finished",
+                )
+
+        return {
+            "streaming": streaming,
+            "failedParents": (
+                failedParents
+            ),
+            "pendingParents": (
+                pendingParents
+            ),
+            "missingInputs": (
+                missingInputs
+            ),
+        }
+
+    def waitUntilReady(
+            self,
+    ) -> None:
         startedAt = time.monotonic()
 
         timeoutSeconds = float(
@@ -483,37 +850,22 @@ class RuntimePostgresqlProtocolWorker:
             or 0
         )
 
-        lastReportedAt = 0.0
+        lastReportedAt = -30.0
 
         while True:
-            parentRows = self.loadParentStatuses()
+            readiness = (
+                self.getReadinessState()
+            )
 
-            failedParents = []
-            pendingParents = []
-
-            for row in parentRows:
-                parentStatus = str(
-                    row.get("status")
-                    or ""
-                ).strip().lower()
-
-                if (
-                        parentStatus
-                        in FAILED_PARENT_STATUSES
-                ):
-                    failedParents.append(row)
-                    continue
-
-                if (
-                        parentStatus
-                        not in READY_PARENT_STATUSES
-                ):
-                    pendingParents.append(row)
+            failedParents = readiness[
+                "failedParents"
+            ]
 
             if failedParents:
                 raise RuntimeError(
-                    "Cannot execute protocol %s because "
-                    "parent protocol(s) failed or aborted: %s"
+                    "Cannot execute protocol %s "
+                    "because parent protocol(s) "
+                    "failed or aborted: %s"
                     % (
                         self.protocolId,
                         ", ".join(
@@ -528,7 +880,27 @@ class RuntimePostgresqlProtocolWorker:
                     )
                 )
 
-            if not pendingParents:
+            pendingParents = readiness[
+                "pendingParents"
+            ]
+
+            missingInputs = readiness[
+                "missingInputs"
+            ]
+
+            if (
+                    not pendingParents
+                    and not missingInputs
+            ):
+                logger.info(
+                    "PostgreSQL protocol is ready. "
+                    "projectId=%s protocolId=%s "
+                    "streaming=%s",
+                    self.projectId,
+                    self.protocolId,
+                    readiness["streaming"],
+                )
+
                 return
 
             elapsed = (
@@ -542,19 +914,15 @@ class RuntimePostgresqlProtocolWorker:
                     >= timeoutSeconds
             ):
                 raise TimeoutError(
-                    "Timed out waiting for parent "
-                    "protocols of %s: %s"
+                    "Timed out waiting for "
+                    "PostgreSQL protocol inputs. "
+                    "protocolId=%s "
+                    "pendingParents=%s "
+                    "missingInputs=%s"
                     % (
                         self.protocolId,
-                        ", ".join(
-                            str(
-                                row.get(
-                                    "protocolId"
-                                )
-                            )
-                            for row
-                            in pendingParents
-                        ),
+                        pendingParents,
+                        missingInputs,
                     )
                 )
 
@@ -564,23 +932,16 @@ class RuntimePostgresqlProtocolWorker:
                     >= 30
             ):
                 logger.info(
-                    "Waiting for PostgreSQL parent "
-                    "protocols. projectId=%s "
-                    "protocolId=%s parents=%s",
+                    "PostgreSQL protocol is still "
+                    "scheduled. projectId=%s "
+                    "protocolId=%s streaming=%s "
+                    "pendingParents=%s "
+                    "missingInputs=%s",
                     self.projectId,
                     self.protocolId,
-                    [
-                        {
-                            "protocolId": row.get(
-                                "protocolId"
-                            ),
-                            "status": row.get(
-                                "status"
-                            ),
-                        }
-                        for row
-                        in pendingParents
-                    ],
+                    readiness["streaming"],
+                    pendingParents,
+                    missingInputs,
                 )
 
                 lastReportedAt = elapsed
@@ -690,7 +1051,7 @@ class RuntimePostgresqlProtocolWorker:
 
             outputObject = (
                 self.runtimeMapper
-                .selectById(
+                .selectRuntimeInputObjectById(
                     int(runtimeObjectId)
                 )
             )
@@ -944,7 +1305,6 @@ class RuntimePostgresqlProtocolWorker:
         return 0
 
     def execute(self) -> int:
-        self.waitForDependencies()
 
         inputReport = (
             self.restoreExecutionInputs()
@@ -957,6 +1317,7 @@ class RuntimePostgresqlProtocolWorker:
                 % inputReport["errors"]
             )
 
+        self.configureRunLogging()
         stepAdapter = (
             RuntimePostgresqlStepAdapter(
                 mapper=self.mapper,
@@ -1044,7 +1405,7 @@ class RuntimePostgresqlProtocolWorker:
         self.load()
 
         try:
-            self.waitForDependencies()
+            self.waitUntilReady()
 
             if (
                     not execute

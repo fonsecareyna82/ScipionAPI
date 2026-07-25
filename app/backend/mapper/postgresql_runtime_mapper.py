@@ -3279,6 +3279,37 @@ class PostgresqlRuntimeMapper(Mapper):
             runtimeObjectId
         )
 
+    def selectRuntimeInputObjectById(
+            self,
+            objId,
+    ):
+        runtimeObjectId = (
+            self._toOptionalInt(
+                objId
+            )
+        )
+
+        if runtimeObjectId is None:
+            return None
+
+        runtimeSet = (
+            self
+            ._selectSetByIdFromPostgresql(
+                runtimeObjectId,
+                refreshParentProtocol=False,
+            )
+        )
+
+        if runtimeSet is not None:
+            return runtimeSet
+
+        return (
+            self
+            ._selectGenericObjectByIdFromPostgresql(
+                runtimeObjectId
+            )
+        )
+
     def _selectAllPostgresqlObjectsForSelectBy(self):
         result = []
 
