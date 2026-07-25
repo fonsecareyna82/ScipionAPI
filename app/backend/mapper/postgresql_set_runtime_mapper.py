@@ -67,7 +67,7 @@ class PostgresqlSetRuntimeMapper:
     WHERE_PART_PATTERN = re.compile(
         r"""^\s*
             (?P<field>[A-Za-z_][A-Za-z0-9_.]*)
-            \s*(?P<operator>==|=)\s*
+            \s*(?P<operator><=|>=|!=|<>|==|=|<|>)\s*
             (?P<value>.+?)
             \s*$
         """,
@@ -465,10 +465,120 @@ class PostgresqlSetRuntimeMapper:
             attributes,
             where=None,
     ):
-        raise NotImplementedError(
-            "PostgreSQL set unique() will be implemented after the "
-            "read and native-object hydration contract is validated."
+        if isinstance(
+                attributes,
+                str,
+        ):
+            labels = [
+                attributes,
+            ]
+        else:
+            labels = [
+                str(attribute)
+                for attribute
+                in attributes or []
+            ]
+
+        if not labels:
+            raise ValueError(
+                "At least one attribute is required"
+            )
+
+        selectParts = []
+        selectParams = []
+        aliases = []
+
+        for index, label in enumerate(
+                labels
+        ):
+            expression, expressionParams = (
+                self._fieldExpression(
+                    label
+                )
+            )
+
+            alias = (
+                    "value_%d"
+                    % index
+            )
+
+            selectParts.append(
+                '%s AS "%s"'
+                % (
+                    expression,
+                    alias,
+                )
+            )
+
+            selectParams.extend(
+                expressionParams
+            )
+
+            aliases.append(
+                alias
+            )
+
+        whereSql, whereParams = (
+            self._buildWhere(
+                where
+            )
         )
+
+        query = """
+            SELECT DISTINCT {selectParts}
+              FROM {itemsTable}
+             WHERE "{scopeColumn}" = %s
+        """.format(
+            selectParts=", ".join(
+                selectParts
+            ),
+            itemsTable=self._itemsTable,
+            scopeColumn=self._scopeColumn,
+        )
+
+        params = list(
+            selectParams
+        )
+
+        params.append(
+            self._scopeId
+        )
+
+        if whereSql:
+            query += (
+                    "\n AND "
+                    + whereSql
+            )
+
+            params.extend(
+                whereParams
+            )
+
+        rows = self.db.fetchAll(
+            query,
+            tuple(params),
+        )
+
+        result = {
+            label: []
+            for label in labels
+        }
+
+        for row in rows or []:
+            for label, alias in zip(
+                    labels,
+                    aliases,
+            ):
+                result[label].append(
+                    row.get(alias)
+                )
+
+        if len(labels) == 1:
+            return result[
+                labels[0]
+            ]
+
+        return result
 
     # ------------------------------------------------------------------
     # Read-only lifecycle
@@ -676,6 +786,15 @@ class PostgresqlSetRuntimeMapper:
                 "field"
             )
 
+            operator = match.group(
+                "operator"
+            )
+
+            if operator == "==":
+                operator = "="
+            elif operator == "<>":
+                operator = "!="
+
             value = self._parseWhereValue(
                 match.group("value")
             )
@@ -687,8 +806,11 @@ class PostgresqlSetRuntimeMapper:
             )
 
             clauses.append(
-                "%s = %%s"
-                % expression
+                "%s %s %%s"
+                % (
+                    expression,
+                    operator,
+                )
             )
 
             params.extend(
