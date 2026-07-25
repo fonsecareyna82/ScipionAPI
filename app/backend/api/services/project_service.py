@@ -126,6 +126,7 @@ from app.backend.runtime import (
     RuntimeProtocolResetService,
     RuntimeProtocolStopService,
     RuntimeProtocolRenameService,
+    RuntimePostgresqlRestartLauncherService,
 )
 from app.backend.runtime.project_import_service import (
     RuntimeProjectImportService,
@@ -6603,26 +6604,70 @@ class ProjectService:
 
         return list(workflowProtocolMap or [])
 
-    def restartProtocolAll(self, mapper, projectId: int, protocolId):
-        runtimeProtocolRestartService = RuntimeProtocolRestartService()
+    def _validatePostgresqlRestartSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlRestartLauncherService()
+        )
 
-        return runtimeProtocolRestartService.restartProtocolSubworkflow(
+        return service.validateRestartSubworkflow(
             mapper=mapper,
             projectId=projectId,
-            protocolId=protocolId,
-            usingPostgresqlRuntime=(
-                self._currentProjectUsesPostgresqlRuntimeMapper()
+            workflowProtocolMap=(
+                workflowProtocolMap
+            ),
+        )
+
+    def _launchPostgresqlRestartSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlRestartLauncherService()
+        )
+
+        return service.launchRestartSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            workflowProtocolMap=(
+                workflowProtocolMap
             ),
             currentProject=self.currentProject,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-            workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-            restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
-            preparePostgresqlExecutionMirrorsCallback=self._preparePostgresqlRuntimeExecutionMirrors,
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-            syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
-            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+        )
+
+    def restartProtocolAll(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ):
+        runtimeProtocolRestartService = (
+            RuntimeProtocolRestartService()
+        )
+
+        return (
+            runtimeProtocolRestartService
+            .restartProtocolSubworkflow(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
+                currentProject=self.currentProject,
+                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+                validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
+                launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            )
         )
 
     def continueProtocolAll(

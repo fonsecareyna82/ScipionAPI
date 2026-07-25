@@ -51,6 +51,7 @@ from app.backend.runtime.protocol_reset_service import RuntimeProtocolResetServi
 from app.backend.runtime.protocol_stop_service import RuntimeProtocolStopService
 from app.backend.runtime.protocol_rename_service import RuntimeProtocolRenameService
 from app.backend.runtime.protocol_execution_db_service import RuntimeProtocolExecutionDbService
+from app.backend.runtime.protocol_postgresql_restart_launcher_service import RuntimePostgresqlRestartLauncherService
 
 __all__ = [
     "ProtocolIdentityResolver",
@@ -81,4 +82,5 @@ __all__ = [
     "RuntimeProtocolStopService",
     "RuntimeProtocolRenameService",
     "RuntimeProtocolExecutionDbService",
+    "RuntimePostgresqlRestartLauncherService",
 ]

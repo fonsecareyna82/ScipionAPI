@@ -2029,6 +2029,28 @@ class PostgresqlFlatMapper(Mapper):
             (str(protocolId), str(projectPath)),
         )
 
+    def deleteProtocolSteps(
+            self,
+            projectId: int,
+            protocolId: int,
+    ) -> int:
+        cursor = self.db.execute(
+            """
+            DELETE FROM protocol_steps
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (
+                int(projectId),
+                str(protocolId),
+            ),
+        )
+
+        return int(
+            cursor.rowcount
+            or 0
+        )
+
     def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int, steps: List[Dict[str, Any]]) -> None:
         self.db.execute(
             'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
