@@ -683,14 +683,11 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "newName": "Renamed protocol",
         "newComment": "Updated comment",
     }
-
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "rename protocol",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
     assert (
             fakeProjectService
             .lastLoadPostgresqlRuntimeProjectForMutationCall
