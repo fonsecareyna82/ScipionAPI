@@ -218,12 +218,15 @@ class ProtocolService:
         protocol reconstruction.
         """
         if usingPostgresqlRuntime:
-            syncResult = syncPostgresqlRuntimeProtocolCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                registerOutputs=False,
-                returnProtocolContext=True,
+            syncResult = (
+                syncPostgresqlRuntimeProtocolCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    registerOutputs=False,
+                    syncRelations=False,
+                    returnProtocolContext=True,
+                )
             )
 
             return syncResult["protocolContext"]
