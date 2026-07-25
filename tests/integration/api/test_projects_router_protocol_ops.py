@@ -1037,6 +1037,26 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
         "dependenciesCount": 0,
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": (
+                fakeProjectService
+                .lastRestartProtocolAllCall[
+                    "mapper"
+                ]
+            ),
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+            "enableWriteFallback": False,
+        }
+    )
+
     assert fakeProjectService.lastRestartProtocolAllCall == {
         "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
         "projectId": 1,
