@@ -1838,12 +1838,14 @@ def exportProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            enableWriteFallback=False,
+        )
     )
     if not project:
         raise HTTPException(
@@ -1880,12 +1882,14 @@ def exportWorkflowProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            enableWriteFallback=False,
+        )
     )
     if not project:
         raise HTTPException(
