@@ -178,6 +178,13 @@ class PostgresqlRuntimeMapper(Mapper):
         "creation",
     })
 
+    INTERNAL_PROTOCOL_OBJECT_NAMES = frozenset({
+        "_jobId",
+        "_pid",
+        "_outputs",
+        "_useOutputList",
+    })
+
     # ---------------------------------------------------------------------
     # Lifecycle
     # ---------------------------------------------------------------------
@@ -4468,17 +4475,22 @@ class PostgresqlRuntimeMapper(Mapper):
             scipionObj=scipionObj,
         )
 
-    def _shouldSkipRuntimeObjectTree(self, outputName, scipionObj) -> bool:
+    def _shouldSkipRuntimeObjectTree(
+            self,
+            outputName,
+            scipionObj,
+    ) -> bool:
         """
-        Skip only known internal protocol runtime fields that are not real outputs.
+        Skip internal protocol runtime fields that are not real outputs.
         """
-        name = str(outputName or "").strip()
+        name = str(
+            outputName or ""
+        ).strip()
 
-        internalNames = {
-            "_jobId",
-        }
-
-        return name in internalNames
+        return (
+                name
+                in self.INTERNAL_PROTOCOL_OBJECT_NAMES
+        )
 
     # ---------------------------------------------------------------------
     # Serialization helpers
@@ -5312,22 +5324,16 @@ class PostgresqlRuntimeMapper(Mapper):
         except Exception:
             pass
 
-        internalNames = {
-            "_jobId",
-            "_pid",
-            "_outputs",
-        }
-
         for rawName in candidateNames:
             name = str(rawName or "").strip()
             if not name:
                 continue
 
-            if name in internalNames:
+            if name in self.INTERNAL_PROTOCOL_OBJECT_NAMES:
                 return True
 
             shortName = name.split(".")[-1]
-            if shortName in internalNames:
+            if shortName in self.INTERNAL_PROTOCOL_OBJECT_NAMES:
                 return True
 
         return False
