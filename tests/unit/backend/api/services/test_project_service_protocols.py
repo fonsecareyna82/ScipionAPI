@@ -30,6 +30,9 @@ import json
 import pytest
 from fastapi import HTTPException
 from pyworkflow.object import Object as ScipionObject
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 class FakeValueHolder:
@@ -2472,3 +2475,60 @@ def test_DuplicateProtocolWrapsCopyErrorAsHttpException(service, mapper):
 
     assert exc.value.status_code == 500
     assert exc.value.detail == "Failed to duplicate protocols: copy failed"
+
+
+def test_PreserveStoredProtocolParamsInRuntimeContext(
+        service,
+):
+    runtimeMetadataKey = (
+        RuntimeProtocolStatusSyncService
+        .RUNTIME_METADATA_KEY
+    )
+
+    protocolContext = {
+        "info": {
+            "protocolId": 9,
+            "runName": "Old runtime name",
+        },
+        "values": {
+            "threshold": 1.0,
+            "numberOfThreads": 4,
+            runtimeMetadataKey: {
+                "status": "finished",
+            },
+        },
+    }
+
+    storedRow = {
+        "params": {
+            "threshold": 2.5,
+            "numberOfThreads": 12,
+            "runName": "Edited protocol",
+        },
+    }
+
+    result = (
+        service
+        ._preserveStoredProtocolParamsInRuntimeContext(
+            protocolContext=protocolContext,
+            storedRow=storedRow,
+        )
+    )
+
+    assert result["values"]["threshold"] == 2.5
+    assert (
+        result["values"]["numberOfThreads"]
+        == 12
+    )
+    assert (
+        result["values"][runtimeMetadataKey]
+        == {
+            "status": "finished",
+        }
+    )
+    assert (
+        result["info"]["runName"]
+        == "Edited protocol"
+    )
+
+

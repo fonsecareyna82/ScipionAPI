@@ -1335,6 +1335,100 @@ class ProjectService:
             syncRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
         )
 
+    def _preserveStoredProtocolParamsInRuntimeContext(
+            self,
+            protocolContext: Dict[str, Any],
+            storedRow: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Keep PostgreSQL protocol parameters authoritative when synchronizing
+        runtime information from run.db.
+
+        run.db provides execution status, steps and outputs, but it may contain
+        the parameter values from the previous execution.
+        """
+        if (
+                not isinstance(protocolContext, dict)
+                or not storedRow
+        ):
+            return protocolContext
+
+        storedParams = storedRow.get(
+            "params"
+        )
+
+        if isinstance(storedParams, str):
+            try:
+                storedParams = json.loads(
+                    storedParams
+                )
+            except Exception:
+                storedParams = None
+
+        if not isinstance(
+                storedParams,
+                dict,
+        ):
+            return protocolContext
+
+        runtimeValues = protocolContext.get(
+            "values"
+        )
+
+        if not isinstance(
+                runtimeValues,
+                dict,
+        ):
+            runtimeValues = {}
+
+        runtimeMetadataKey = (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+
+        runtimeMetadata = runtimeValues.get(
+            runtimeMetadataKey
+        )
+
+        # PostgreSQL is authoritative for editable protocol parameters.
+        mergedValues = copy.deepcopy(
+            storedParams
+        )
+
+        # Runtime metadata may legitimately have changed in run.db.
+        if runtimeMetadata is not None:
+            mergedValues[
+                runtimeMetadataKey
+            ] = runtimeMetadata
+
+        protocolContext[
+            "values"
+        ] = mergedValues
+
+        protocolInfo = protocolContext.setdefault(
+            "info",
+            {},
+        )
+
+        storedRunName = (
+                mergedValues.get("runName")
+                or mergedValues.get(
+            "object.label"
+        )
+        )
+
+        if storedRunName not in (
+                None,
+                "",
+        ):
+            protocolInfo[
+                "runName"
+            ] = str(
+                storedRunName
+            )
+
+        return protocolContext
+
     def syncPostgresqlRuntimeProtocol(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1373,12 +1467,28 @@ class ProjectService:
                 )
             )
 
-        protocolContext = self._buildProtocolContext(projectId, protocol, mapper)
-
-        storedRow = mapper.getProjectProtocolByProtocolId(
-            projectId=projectId,
-            protocolId=scipionProtocolId,
+        protocolContext = self._buildProtocolContext(
+            projectId,
+            protocol,
+            mapper,
         )
+
+        storedRow = (
+            mapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+            )
+        )
+
+        if not authoritativeProtocolState:
+            protocolContext = (
+                self
+                ._preserveStoredProtocolParamsInRuntimeContext(
+                    protocolContext=protocolContext,
+                    storedRow=storedRow,
+                )
+            )
 
         storedStatus = (
             storedRow.get("status")
