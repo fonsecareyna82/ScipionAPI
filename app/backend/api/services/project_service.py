@@ -66,6 +66,11 @@ from pyworkflow.protocol import (
     STATUS_RUNNING,
     STATUS_SCHEDULED,
 )
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
 from pyworkflow.template import TemplateList
 
 try:
@@ -7952,6 +7957,137 @@ class ProjectService:
 
         return sanitizeValue(workflowContent)
 
+    @staticmethod
+    def _getImportedWorkflowProtocol(importedValue):
+        if isinstance(importedValue, (tuple, list)) and importedValue:
+            return importedValue[0]
+
+        return importedValue
+
+    def _remapImportedWorkflowPointerValue(
+            self,
+            rawValue: Any,
+            importedProtocolIdMap: Dict[str, str],
+    ) -> Any:
+        if isinstance(rawValue, str):
+            pointerValue = rawValue.strip()
+
+            if "." not in pointerValue:
+                return rawValue
+
+            sourceParentId, outputName = pointerValue.split(".", 1)
+            sourceParentId = sourceParentId.strip()
+            outputName = outputName.strip()
+
+            newParentId = importedProtocolIdMap.get(sourceParentId)
+
+            if newParentId is None or not outputName:
+                return rawValue
+
+            return "%s.%s" % (newParentId, outputName)
+
+        if isinstance(rawValue, list):
+            return [
+                self._remapImportedWorkflowPointerValue(
+                    item,
+                    importedProtocolIdMap,
+                )
+                for item in rawValue
+            ]
+
+        if isinstance(rawValue, tuple):
+            return [
+                self._remapImportedWorkflowPointerValue(
+                    item,
+                    importedProtocolIdMap,
+                )
+                for item in rawValue
+            ]
+
+        if isinstance(rawValue, dict):
+            return {
+                key: self._remapImportedWorkflowPointerValue(
+                    value,
+                    importedProtocolIdMap,
+                )
+                for key, value in rawValue.items()
+            }
+
+        return rawValue
+
+    def _buildImportedWorkflowPointerParamsByProtocolId(
+            self,
+            workflowContent: Any,
+            importedProtocolMap: Dict[Any, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        workflowItemsBySourceId = {}
+
+        for index, protocolItem in enumerate(
+                self._getWorkflowProtocolItems(workflowContent)
+        ):
+            sourceId = self._getWorkflowProtocolId(
+                protocolItem,
+                index,
+            )
+
+            if sourceId:
+                workflowItemsBySourceId[str(sourceId)] = protocolItem
+
+        importedProtocolsBySourceId = {}
+        importedProtocolIdMap = {}
+
+        for rawSourceId, importedValue in (importedProtocolMap or {}).items():
+            sourceId = str(rawSourceId).strip()
+            protocol = self._getImportedWorkflowProtocol(importedValue)
+            newProtocolId = self._getScipionObjectId(protocol)
+
+            if not sourceId or newProtocolId is None:
+                continue
+
+            importedProtocolsBySourceId[sourceId] = protocol
+            importedProtocolIdMap[sourceId] = str(newProtocolId)
+
+        pointerParamsByProtocolId = {}
+
+        for sourceId, protocol in importedProtocolsBySourceId.items():
+            protocolItem = workflowItemsBySourceId.get(sourceId)
+
+            if not isinstance(protocolItem, dict):
+                continue
+
+            pointerParams = {}
+
+            for paramName, rawValue in protocolItem.items():
+                try:
+                    param = protocol.getParam(paramName)
+                except Exception:
+                    param = None
+
+                if not isinstance(
+                        param,
+                        (
+                            PointerParam,
+                            MultiPointerParam,
+                            RelationParam,
+                        ),
+                ):
+                    continue
+
+                pointerParams[paramName] = (
+                    self._remapImportedWorkflowPointerValue(
+                        rawValue,
+                        importedProtocolIdMap,
+                    )
+                )
+
+            if not pointerParams:
+                continue
+
+            newProtocolId = importedProtocolIdMap[sourceId]
+            pointerParamsByProtocolId[newProtocolId] = pointerParams
+
+        return pointerParamsByProtocolId
+
     def _unwrapWorkflowImportPayload(self, workflowPayload: Any) -> Any:
         if workflowPayload is None:
             raise HTTPException(
@@ -8026,25 +8162,32 @@ class ProjectService:
             mapper,
             projectId: int,
             protocols: List[Any],
+            pointerParamsByProtocolId: Optional[
+                Dict[str, Dict[str, Any]]
+            ] = None,
     ) -> Dict[str, Any]:
         """
         Persist only protocols created by workflow import.
 
-        Imported protocol objects must be used directly because Scipion's
-        loadProtocols() has already remapped their internal pointers from
-        source protocol ids to the newly created protocol objects.
+        Protocol rows are persisted first so every newly imported parent exists
+        before child input references and dependency edges are created.
 
         Existing PostgreSQL protocols, input refs, dependencies and outputs
         remain untouched.
         """
-        reports = []
+        importedProtocols = []
+        reportsByProtocolId = {}
         dependenciesCount = 0
+        inputRefsCount = 0
 
+        # First pass: persist every newly imported protocol.
         for protocol in protocols or []:
             protocolId = self._getScipionObjectId(protocol)
 
             if protocolId is None:
                 continue
+
+            protocolIdText = str(protocolId)
 
             protocolSync = self.syncPostgresqlRuntimeProtocol(
                 mapper=mapper,
@@ -8056,24 +8199,53 @@ class ProjectService:
                 authoritativeProtocolState=True,
             ) or {}
 
-            inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=protocol,
-                params=None,
-            ) or {}
+            importedProtocols.append(
+                (
+                    protocolIdText,
+                    protocol,
+                )
+            )
 
-            dependenciesCount += int(inputSync.get("dependencies", 0) or 0)
-
-            reports.append({
-                "protocolId": str(protocolId),
+            reportsByProtocolId[protocolIdText] = {
+                "protocolId": protocolIdText,
                 "protocolSync": protocolSync,
-                "inputSync": inputSync,
-            })
+                "inputSync": {},
+            }
+
+        # Second pass: persist only inputs and dependencies of imported protocols.
+        for protocolIdText, protocol in importedProtocols:
+            pointerParams = (
+                pointerParamsByProtocolId or {}
+            ).get(protocolIdText)
+
+            inputSync = (
+                self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=protocol,
+                    params=pointerParams,
+                )
+                or {}
+            )
+
+            dependenciesCount += int(
+                inputSync.get("dependencies", 0) or 0
+            )
+            inputRefsCount += int(
+                inputSync.get("inputRefsSaved", 0) or 0
+            )
+
+            reportsByProtocolId[protocolIdText]["inputSync"] = inputSync
+
+        reports = [
+            reportsByProtocolId[protocolIdText]
+            for protocolIdText, _protocol in importedProtocols
+        ]
 
         return {
-            "protocols": len(protocols or []),
+            "protocols": len(importedProtocols),
             "dependencies": dependenciesCount,
+            "inputRefs": inputRefsCount,
             "reports": reports,
         }
 
@@ -8136,12 +8308,21 @@ class ProjectService:
             )
 
         errors = self._normalizeWorkflowImportErrors(importedProtocolMap)
-        importedProtocols = self._workflowProtocolMapToProtocols(importedProtocolMap)
+        importedProtocols = self._workflowProtocolMapToProtocols(
+            importedProtocolMap
+        )
+
+        pointerParamsByProtocolId = (
+            self._buildImportedWorkflowPointerParamsByProtocolId(
+                workflowContent=workflowContent,
+                importedProtocolMap=importedProtocolMap,
+            )
+        )
 
         created = []
 
         for sourceId, importedValue in (importedProtocolMap or {}).items():
-            protocol = importedValue[0] if isinstance(importedValue, (tuple, list)) and importedValue else importedValue
+            protocol = self._getImportedWorkflowProtocol(importedValue)
             newId = self._getScipionObjectId(protocol)
 
             if newId is not None:
@@ -8161,6 +8342,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocols=importedProtocols,
+                pointerParamsByProtocolId=pointerParamsByProtocolId,
             )
 
         return {
@@ -8170,6 +8352,7 @@ class ProjectService:
             "created": created,
             "protocolsCount": int(syncInfo.get("protocols", 0)),
             "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+            "inputRefsCount": int(syncInfo.get("inputRefs", 0)),
             "syncReports": syncInfo.get("reports") or [],
         }
 
