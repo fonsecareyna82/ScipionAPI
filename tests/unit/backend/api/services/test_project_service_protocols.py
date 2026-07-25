@@ -30,6 +30,7 @@ import json
 import pytest
 from fastapi import HTTPException
 from pyworkflow.object import Object as ScipionObject
+from pyworkflow.protocol.params import MultiPointerParam, PointerParam
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -2530,5 +2531,54 @@ def test_PreserveStoredProtocolParamsInRuntimeContext(
         result["info"]["runName"]
         == "Edited protocol"
     )
+
+
+def test_PreserveRuntimePointerParamsInProtocolContext(
+        service,
+):
+    class FakeProtocol:
+        def __init__(self):
+            self.params = {
+                "inputParticles": object.__new__(PointerParam),
+                "inputVolumes": object.__new__(MultiPointerParam),
+            }
+
+        def getParam(self, paramName):
+            return self.params.get(paramName)
+
+    protocolContext = {
+        "info": {
+            "protocolId": 9,
+        },
+        "values": {
+            "threshold": 1.0,
+            "inputParticles": "300001.outputParticles",
+            "inputVolumes": [
+                "300002.outputVolume",
+                "300003.outputVolume",
+            ],
+        },
+    }
+
+    storedRow = {
+        "params": {
+            "threshold": 2.5,
+            "inputParticles": None,
+            "inputVolumes": [],
+        },
+    }
+
+    result = service._preserveStoredProtocolParamsInRuntimeContext(
+        protocolContext=protocolContext,
+        storedRow=storedRow,
+        protocol=FakeProtocol(),
+    )
+
+    assert result["values"]["threshold"] == 2.5
+    assert result["values"]["inputParticles"] == "300001.outputParticles"
+    assert result["values"]["inputVolumes"] == [
+        "300002.outputVolume",
+        "300003.outputVolume",
+    ]
 
 
