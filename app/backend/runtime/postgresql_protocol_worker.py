@@ -34,7 +34,6 @@ from types import MethodType
 from typing import Any, Dict, List
 
 from pyworkflow import Config
-from pyworkflow.constants import JOB_COMMAND
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import (
     LegacyProtocol,
@@ -902,7 +901,7 @@ class RuntimePostgresqlProtocolWorker:
             self.protocol.getSubmitDict()
         )
 
-        submitDict[JOB_COMMAND] = (
+        submitDict["JOB_COMMAND"] = (
             shlex.join(command)
         )
 
