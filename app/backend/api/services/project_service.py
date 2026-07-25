@@ -8021,6 +8021,76 @@ class ProjectService:
             "scipionWeb": metadata,
         }
 
+    def _syncImportedPostgresqlRuntimeProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[Union[int, str]],
+    ) -> Dict[str, Any]:
+        """
+        Persist only protocols created by workflow import.
+
+        Existing PostgreSQL protocols, input refs, dependencies and outputs
+        must remain untouched.
+        """
+        reports = []
+        dependenciesCount = 0
+
+        for protocolId in protocolIds or []:
+            protocol = (
+                self
+                ._getScipionProtocolForRuntime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            protocolSync = (
+                    self
+                    .syncPostgresqlRuntimeProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        protocol=protocol,
+                        registerOutputs=False,
+                        syncRelations=False,
+                        authoritativeProtocolState=True,
+                    )
+                    or {}
+            )
+
+            inputSync = (
+                    self
+                    .syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=protocol,
+                        params=None,
+                    )
+                    or {}
+            )
+
+            dependenciesCount += int(
+                inputSync.get(
+                    "dependenciesSaved",
+                    0,
+                )
+                or 0
+            )
+
+            reports.append({
+                "protocolId": str(protocolId),
+                "protocolSync": protocolSync,
+                "inputSync": inputSync,
+            })
+
+        return {
+            "protocols": len(protocolIds or []),
+            "dependencies": dependenciesCount,
+            "reports": reports,
+        }
+
     def importWorkflowProtocolsService(
             self,
             mapper: PostgresqlFlatMapper,
@@ -8068,25 +8138,40 @@ class ProjectService:
         workflowJson = json.dumps(workflowContent, ensure_ascii=False)
 
         try:
-            loadResult = self.currentProject.loadProtocols(jsonStr=workflowJson)
-        except Exception as e:
-            logger.exception("Failed to import workflow protocols. projectId=%s", projectId)
+            loadResult =  self.currentProject.loadProtocols(jsonStr=workflowJson)
+        except Exception as error:
+            logger.exception(
+                "Failed to import workflow protocols. "
+                "projectId=%s",
+                projectId,
+            )
+
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to import workflow protocols: {e}",
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Failed to import workflow protocols: "
+                    f"{error}"
+                ),
             )
 
         errors = self._normalizeWorkflowImportErrors(loadResult)
-
-        syncInfo = self.syncProjectProtocolsAndDependencies(
-            mapper,
-            projectId,
-            refresh=True,
-            checkPid=True,
-        )
-
         afterIds = self._getCurrentWorkflowProtocolIds()
         createdIds = self._sortProtocolIds(afterIds - beforeIds)
+
+        syncInfo = {
+            "protocols": 0,
+            "dependencies": 0,
+            "reports": [],
+        }
+
+        if createdIds:
+            syncInfo = self._syncImportedPostgresqlRuntimeProtocols(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolIds=createdIds,
+            )
 
         return {
             "status": 1 if errors else 0,
