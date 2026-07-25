@@ -37,10 +37,6 @@ from pyworkflow.protocol.params import (
     PointerParam,
     RelationParam,
 )
-
-from app.backend.runtime.postgresql_protocol_worker import (
-    buildPostgresqlWorkerCommand,
-)
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
@@ -477,6 +473,10 @@ class RuntimePostgresqlRestartLauncherService:
             workflowProtocolMap,
             currentProject,
     ) -> Dict[str, Any]:
+        from app.backend.runtime.postgresql_protocol_worker import (
+            buildPostgresqlWorkerCommand,
+        )
+
         runtimeMapper = (
             currentProject
             .getPostgresqlRuntimeMapper()
