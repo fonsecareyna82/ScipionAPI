@@ -283,11 +283,16 @@ class RuntimePointerResolver:
         explicitParamNames = set(mergedParams.keys())
 
         try:
-            inputAttributes = list(protocol.iterInputAttributes())
+            inputPointers = list(protocol.iterInputPointers())
         except Exception:
-            inputAttributes = []
+            try:
+                inputPointers = list(protocol.iterInputAttributes())
+            except Exception:
+                inputPointers = []
 
-        for inputName, attr in inputAttributes:
+        pointerValuesByInputName: Dict[str, List[str]] = {}
+
+        for inputName, attr in inputPointers:
             if inputName in explicitParamNames:
                 # The request explicitly sent this param. Do not resurrect old values
                 # if the frontend intentionally cleared it.
@@ -298,6 +303,13 @@ class RuntimePointerResolver:
             if not pointerValues:
                 continue
 
+            inputValues = pointerValuesByInputName.setdefault(inputName, [])
+
+            for pointerValue in pointerValues:
+                if pointerValue not in inputValues:
+                    inputValues.append(pointerValue)
+
+        for inputName, pointerValues in pointerValuesByInputName.items():
             mergedParams[inputName] = pointerValues[0] if len(pointerValues) == 1 else pointerValues
 
         return mergedParams
