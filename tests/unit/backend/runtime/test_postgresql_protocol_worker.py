@@ -465,3 +465,31 @@ def test_WaitForDependencyChangeUsesEventListener():
         90,
     ]
 
+
+def test_StreamingProtocolWaitsForScheduledParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="scheduled",
+        outputExists=True,
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "scheduled",
+            "reason": (
+                "streaming_input_parent_not_started"
+            ),
+        },
+    ]
+
+    assert readiness[
+        "missingInputs"
+    ] == []

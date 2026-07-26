@@ -422,3 +422,39 @@ def test_UniqueReturnsListForSingleAttribute():
     )
 
 
+def test_LogicalTableMapperRefreshesRecreatedTableId():
+    currentScope = {
+        "tableId": 91,
+    }
+
+    db = FakeLogicalTableDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        tableIdResolver=(
+            lambda: currentScope[
+                "tableId"
+            ]
+        ),
+        itemBuilder=buildItem,
+    )
+
+    mapper.selectAll(
+        iterate=False
+    )
+
+    assert mapper.tableId == 91
+    assert db.params == (91,)
+
+    # Simulate ScipionSetPostgresqlMapper replacing
+    # scipion_set_tables and creating a new row id.
+    currentScope["tableId"] = 191
+
+    mapper.selectAll(
+        iterate=False
+    )
+
+    assert mapper.tableId == 191
+    assert mapper._scopeId == 191
+    assert db.params == (191,)
