@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import argparse
+import json
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import (
     LegacyProtocol,
     MODE_RESTART,
+    MODE_RESUME,
     Set,
     STATUS_ABORTED,
     STATUS_FAILED,
@@ -87,6 +89,40 @@ WORKER_MODULE = (
     "app.backend.runtime.postgresql_protocol_worker"
 )
 
+POSTGRESQL_RUN_MODE_RESTART = (
+    "restart"
+)
+
+POSTGRESQL_RUN_MODE_RESUME = (
+    "resume"
+)
+
+POSTGRESQL_RUN_MODES = {
+    POSTGRESQL_RUN_MODE_RESTART,
+    POSTGRESQL_RUN_MODE_RESUME,
+}
+
+
+def normalizePostgresqlRunMode(
+        runMode,
+) -> str:
+    normalizedRunMode = str(
+        runMode
+        or POSTGRESQL_RUN_MODE_RESTART
+    ).strip().lower()
+
+    if (
+            normalizedRunMode
+            not in POSTGRESQL_RUN_MODES
+    ):
+        raise ValueError(
+            "Unsupported PostgreSQL "
+            "protocol run mode: %s"
+            % runMode
+        )
+
+    return normalizedRunMode
+
 FINISHED_INPUT_PARENT_STATUSES = {
     str(STATUS_FINISHED).strip().lower(),
     "finished",
@@ -113,7 +149,16 @@ def buildPostgresqlWorkerCommand(
         projectId: int,
         protocolId: int,
         execute: bool = False,
+        runMode: str = (
+            POSTGRESQL_RUN_MODE_RESTART
+        ),
 ) -> List[str]:
+    normalizedRunMode = (
+        normalizePostgresqlRunMode(
+            runMode
+        )
+    )
+
     command = [
         sys.executable,
         "-m",
@@ -124,8 +169,21 @@ def buildPostgresqlWorkerCommand(
         str(protocolId),
     ]
 
+    # Keep the existing restart command
+    # unchanged for backward compatibility.
+    if (
+            normalizedRunMode
+            != POSTGRESQL_RUN_MODE_RESTART
+    ):
+        command.extend([
+            "--run-mode",
+            normalizedRunMode,
+        ])
+
     if execute:
-        command.append("--execute")
+        command.append(
+            "--execute"
+        )
 
     return command
 
@@ -143,10 +201,19 @@ class RuntimePostgresqlStepAdapter:
             mapper,
             projectId: int,
             protocol,
+            runMode: str = (
+                    POSTGRESQL_RUN_MODE_RESTART
+            ),
     ):
         self.mapper = mapper
         self.projectId = int(projectId)
         self.protocol = protocol
+
+        self.runMode = (
+            normalizePostgresqlRunMode(
+                runMode
+            )
+        )
         self.stepService = (
             RuntimeProtocolStepPersistenceService()
         )
@@ -181,13 +248,9 @@ class RuntimePostgresqlStepAdapter:
         adapter = self
 
         def loadSteps(protocolSelf):
-            return list(
-                getattr(
-                    protocolSelf,
-                    "_steps",
-                    [],
-                )
-                or []
+            return (
+                adapter
+                .loadPreviousSteps()
             )
 
         def storeSteps(protocolSelf):
@@ -261,6 +324,246 @@ class RuntimePostgresqlStepAdapter:
             self.protocol,
         )
 
+    def loadPreviousSteps(
+            self,
+    ) -> List[Any]:
+        if (
+                self.runMode
+                != POSTGRESQL_RUN_MODE_RESUME
+        ):
+            return []
+
+        snapshots = (
+            self.mapper
+            .listProtocolSteps(
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+            )
+            or []
+        )
+
+        snapshotsByIndex = {}
+
+        for snapshot in snapshots:
+            try:
+                stepIndex = int(
+                    snapshot.get(
+                        "index"
+                    )
+                )
+
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                continue
+
+            snapshotsByIndex[
+                stepIndex
+            ] = dict(
+                snapshot
+            )
+
+        previousSteps = []
+
+        currentSteps = list(
+            getattr(
+                self.protocol,
+                "_steps",
+                [],
+            )
+            or []
+        )
+
+        # Scipion compares previous and current
+        # steps positionally. Stop at the first
+        # missing previous step to preserve that
+        # alignment.
+        for currentStep in currentSteps:
+            try:
+                stepIndex = int(
+                    currentStep.getIndex()
+                )
+
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                break
+
+            snapshot = (
+                snapshotsByIndex.get(
+                    stepIndex
+                )
+            )
+
+            if snapshot is None:
+                break
+
+            previousSteps.append(
+                self.buildPreviousStep(
+                    currentStep=currentStep,
+                    snapshot=snapshot,
+                )
+            )
+
+        return previousSteps
+
+    def buildPreviousStep(
+            self,
+            *,
+            currentStep,
+            snapshot,
+    ):
+        previousStep = (
+            currentStep.clone()
+        )
+
+        stepIndex = int(
+            snapshot.get(
+                "index"
+            )
+            or currentStep.getIndex()
+        )
+
+        previousStep.setIndex(
+            stepIndex
+        )
+
+        prerequisites = []
+
+        for prerequisite in (
+                snapshot.get(
+                    "prerequisites"
+                )
+                or []
+        ):
+            try:
+                prerequisites.append(
+                    int(prerequisite)
+                )
+
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                continue
+
+        previousStep.setPrerequisites(
+            *prerequisites
+        )
+
+        storedName = snapshot.get(
+            "name"
+        )
+
+        if (
+                storedName is not None
+                and hasattr(
+                    previousStep,
+                    "funcName",
+                )
+        ):
+            previousStep.funcName.set(
+                str(storedName)
+            )
+
+        storedArgs = snapshot.get(
+            "args"
+        )
+
+        if (
+                storedArgs is not None
+                and hasattr(
+                    previousStep,
+                    "argsStr",
+                )
+        ):
+            previousStep.argsStr.set(
+                json.dumps(
+                    storedArgs,
+                    default=str,
+                )
+            )
+
+        storedStatus = str(
+            snapshot.get(
+                "status"
+            )
+            or ""
+        ).strip()
+
+        if storedStatus:
+            previousStep.setStatus(
+                storedStatus
+            )
+
+        if hasattr(
+                previousStep,
+                "initTime",
+        ):
+            previousStep.initTime.set(
+                snapshot.get(
+                    "initTime"
+                )
+            )
+
+        if hasattr(
+                previousStep,
+                "endTime",
+        ):
+            previousStep.endTime.set(
+                snapshot.get(
+                    "endTime"
+                )
+            )
+
+        errorObject = getattr(
+            previousStep,
+            "_error",
+            None,
+        )
+
+        if errorObject is not None:
+            errorObject.set(
+                snapshot.get(
+                    "error"
+                )
+            )
+
+        interactiveObject = getattr(
+            previousStep,
+            "interactive",
+            None,
+        )
+
+        if interactiveObject is not None:
+            interactiveObject.set(
+                bool(
+                    snapshot.get(
+                        "interactive"
+                    )
+                )
+            )
+
+        needsGpuObject = getattr(
+            previousStep,
+            "_needsGPU",
+            None,
+        )
+
+        if needsGpuObject is not None:
+            needsGpuObject.set(
+                bool(
+                    snapshot.get(
+                        "needsGpu",
+                        True,
+                    )
+                )
+            )
+
+        return previousStep
+
     def buildSnapshots(self) -> List[Dict[str, Any]]:
         return (
             self.stepService
@@ -321,9 +624,18 @@ class RuntimePostgresqlProtocolWorker:
             self,
             projectId: int,
             protocolId: int,
+            runMode: str = (
+                POSTGRESQL_RUN_MODE_RESTART
+            ),
     ):
         self.projectId = int(projectId)
         self.protocolId = int(protocolId)
+
+        self.runMode = (
+            normalizePostgresqlRunMode(
+                runMode
+            )
+        )
 
         self.mapper = None
         self.project = None
@@ -1884,6 +2196,7 @@ class RuntimePostgresqlProtocolWorker:
             projectId=self.projectId,
             protocolId=self.protocolId,
             execute=True,
+            runMode=self.runMode,
         )
 
         hostConfig = (
@@ -1936,7 +2249,10 @@ class RuntimePostgresqlProtocolWorker:
             mapper=self.mapper,
             projectId=self.projectId,
             protocolId=self.protocolId,
-            resetElapsed=True,
+            resetElapsed=(
+                    self.runMode
+                    == POSTGRESQL_RUN_MODE_RESTART
+            ),
         )
 
         return 0
@@ -1970,13 +2286,23 @@ class RuntimePostgresqlProtocolWorker:
                 mapper=self.mapper,
                 projectId=self.projectId,
                 protocol=self.protocol,
+                runMode=self.runMode,
             )
         )
 
         stepAdapter.install()
 
+        scipionRunMode = (
+            MODE_RESUME
+            if (
+                    self.runMode
+                    == POSTGRESQL_RUN_MODE_RESUME
+            )
+            else MODE_RESTART
+        )
+
         self.protocol.runMode.set(
-            MODE_RESTART
+            scipionRunMode
         )
 
         self.protocol.setStatus(
@@ -1994,7 +2320,10 @@ class RuntimePostgresqlProtocolWorker:
             mapper=self.mapper,
             projectId=self.projectId,
             protocolId=self.protocolId,
-            resetElapsed=True,
+            resetElapsed=(
+                    self.runMode
+                    == POSTGRESQL_RUN_MODE_RESTART
+            ),
         )
 
         self.protocol.setStepsExecutor(
@@ -2087,6 +2416,16 @@ def main() -> int:
     )
 
     parser.add_argument(
+        "--run-mode",
+        choices=sorted(
+            POSTGRESQL_RUN_MODES
+        ),
+        default=(
+            POSTGRESQL_RUN_MODE_RESTART
+        ),
+    )
+
+    parser.add_argument(
         "--execute",
         action="store_true",
     )
@@ -2096,6 +2435,7 @@ def main() -> int:
     worker = RuntimePostgresqlProtocolWorker(
         projectId=args.project_id,
         protocolId=args.protocol_id,
+        runMode=args.run_mode,
     )
 
     return worker.run(
