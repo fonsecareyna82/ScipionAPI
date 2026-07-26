@@ -676,8 +676,18 @@ def test_IterItemsReturnsNativeScipionItems():
 
     assert items[0].getObjId() == 7
     assert items[0].getObjParentId() == 44
-    assert items[0]._objParent is runtimeSet
-    assert items[0]._name.get() == "particle-7"
+
+    assert items[0]._objParent is None
+
+    assert (
+            items[0]
+            ._postgresqlRuntimeParentRef()
+            is runtimeSet
+    )
+
+    assert items[0]._name.get() == (
+        "particle-7"
+    )
 
 
 def test_RuntimeSetCanReloadMapperAfterClose():
@@ -719,6 +729,13 @@ def test_NestedSetItemsUseLogicalTableMapper():
 
     assert nestedSet._mapper is None
     assert nestedSet.isPostgresqlRuntimeOutput()
+    assert nestedSet._objParent is None
+
+    assert (
+        nestedSet
+        ._postgresqlRuntimeParentRef()
+        is runtimeSet
+    )
 
     children = list(
         nestedSet.iterItems()
@@ -732,6 +749,14 @@ def test_NestedSetItemsUseLogicalTableMapper():
 
     assert children[0].getObjParentId() == (
         nestedSet.getObjId()
+    )
+
+    assert children[0]._objParent is None
+
+    assert (
+        children[0]
+        ._postgresqlRuntimeParentRef()
+        is nestedSet
     )
 
     assert children[0]._value.get() == (
@@ -1627,6 +1652,38 @@ def test_BuildHydratesRootSetPointerUsingProtocolOutputIdentity():
             "outputTiltSeries"
         ),
     }]
+
+
+def test_NestedRuntimeSetResolvesProtocolThroughRuntimeParent():
+    parent, runtimeSet = (
+        buildNestedRuntimeSet()
+    )
+
+    runtimeSet._postgresqlRuntimeInfo[
+        "projectId"
+    ] = 4
+
+    nestedSet = (
+        runtimeSet.getFirstItem()
+    )
+
+    factory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    assert (
+        factory._findProtocolParent(
+            nestedSet
+        )
+        is parent
+    )
+
+    assert (
+        factory._getRuntimeProjectId(
+            nestedSet
+        )
+        == 4
+    )
 
 
 

@@ -30,6 +30,7 @@ from pyworkflow.object import (
     Object,
     Pointer,
     PointerList,
+    Set,
     String,
 )
 
@@ -49,6 +50,10 @@ class ExampleItem(Object):
         super().__init__(**kwargs)
         self._name = String()
         self._nested = None
+
+
+class ExampleSet(Set):
+    ITEM_TYPE = ExampleItem
 
 
 class ExamplePointerItem(Object):
@@ -112,9 +117,11 @@ def test_BuildReturnsNativeScipionItem():
     assert item._nested._score.get() == 42
 
 
-def test_BuildAttachesParentRuntimeSet():
+def test_BuildKeepsRuntimeParentOutOfScipionObjectGraph():
     parent = Object()
-    parent.setObjId(9)
+    parent.setObjId(
+        9
+    )
 
     item = buildHydrator(
         parent=parent,
@@ -123,8 +130,115 @@ def test_BuildAttachesParentRuntimeSet():
         "values": {},
     })
 
-    assert item._objParent is parent
+    assert item._objParent is None
     assert item.getObjParentId() == 9
+
+    assert (
+        item
+        ._postgresqlRuntimeParentRef()
+        is parent
+    )
+
+    clonedItem = item.clone()
+
+    assert clonedItem._objParent is None
+
+    assert not hasattr(
+        clonedItem,
+        "_postgresqlRuntimeParentRef",
+    )
+
+    assert all(
+        not str(path).startswith(
+            "_objParent"
+        )
+        for path in clonedItem.getObjDict(
+            includeClass=True
+        )
+    )
+
+
+def test_HydratedItemCloneDoesNotPersistRuntimeParentGraph(
+        tmp_path,
+):
+    runtimeProtocol = Object()
+
+    runtimeProtocol._prerequisites = (
+        String("10")
+    )
+
+    runtimeSet = Object()
+    runtimeSet.setObjId(
+        9
+    )
+
+    runtimeSet._objParent = (
+        runtimeProtocol
+    )
+
+    item = buildHydrator(
+        parent=runtimeSet,
+    ).build({
+        "scipionItemId": 17,
+        "values": {
+            "_name": "item-17",
+        },
+    })
+
+    clonedItem = item.clone()
+
+    itemSchema = clonedItem.getObjDict(
+        includeClass=True
+    )
+
+    assert all(
+        "_objParent"
+        not in str(path)
+        for path in itemSchema
+    )
+
+    assert all(
+        "_prerequisites"
+        not in str(path)
+        for path in itemSchema
+    )
+
+    outputSet = ExampleSet(
+        filename=str(
+            tmp_path
+            / "output.sqlite"
+        ),
+        classesDict={
+            "ExampleItem": ExampleItem,
+            "ExampleSet": ExampleSet,
+        },
+    )
+
+    try:
+        outputSet.append(
+            clonedItem
+        )
+
+        outputSet.write()
+        outputSet.close()
+
+        # Force the same schema reconstruction
+        # performed by getFirstItem() in IMOD.
+        outputSet.load()
+
+        storedItem = (
+            outputSet.getFirstItem()
+        )
+
+        assert storedItem is not None
+        assert storedItem.getObjId() == 17
+
+        assert storedItem._name.get() == (
+            "item-17"
+        )
+
+    finally:
+        outputSet.close()
 
 
 def test_BuildKeepsUnmappedPostgresqlValues():

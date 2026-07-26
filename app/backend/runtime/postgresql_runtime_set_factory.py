@@ -36,6 +36,7 @@ from pyworkflow.object import (
 
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
+    getPostgresqlRuntimeParent,
 )
 from app.backend.mapper.postgresql_set_runtime_mapper import (
     PostgresqlSetRuntimeMapper,
@@ -1541,10 +1542,10 @@ class PostgresqlRuntimeSetFactory:
                 currentIdentity
             )
 
-            current = getattr(
-                current,
-                "_objParent",
-                None,
+            current = (
+                getPostgresqlRuntimeParent(
+                    current
+                )
             )
 
         return current
@@ -1629,10 +1630,10 @@ class PostgresqlRuntimeSetFactory:
                 ):
                     return projectId
 
-            current = getattr(
-                current,
-                "_objParent",
-                None,
+            current = (
+                getPostgresqlRuntimeParent(
+                    current
+                )
             )
 
         protocol = self._findProtocolParent(

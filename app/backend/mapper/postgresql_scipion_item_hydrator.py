@@ -25,6 +25,7 @@
 # ******************************************************************************
 import json
 import logging
+import weakref
 from typing import (
     Any,
     Callable,
@@ -41,6 +42,63 @@ from pyworkflow.object import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def setPostgresqlRuntimeParentReference(
+        runtimeObject,
+        parent,
+) -> None:
+    """
+    Keep the runtime parent available without adding it to the
+    persistent Scipion Object graph.
+
+    Native items reconstructed by SqliteFlatMapper keep the parent id,
+    but they do not expose their containing Set through _objParent.
+    """
+    runtimeObject._objParent = None
+
+    runtimeObject._postgresqlRuntimeParentRef = (
+        weakref.ref(parent)
+        if parent is not None
+        else None
+    )
+
+
+def getPostgresqlRuntimeParent(
+        runtimeObject,
+):
+    """
+    Return either the native Scipion parent or the detached PostgreSQL
+    runtime parent.
+    """
+    if runtimeObject is None:
+        return None
+
+    nativeParent = getattr(
+        runtimeObject,
+        "_objParent",
+        None,
+    )
+
+    if nativeParent is not None:
+        return nativeParent
+
+    runtimeParentReference = getattr(
+        runtimeObject,
+        "_postgresqlRuntimeParentRef",
+        None,
+    )
+
+    if not callable(
+            runtimeParentReference
+    ):
+        return None
+
+    try:
+        return runtimeParentReference()
+
+    except Exception:
+        return None
 
 
 class PostgresqlScipionItemHydrator:
@@ -566,7 +624,18 @@ class PostgresqlScipionItemHydrator:
             )
 
         if self.parent is not None:
-            item._objParent = self.parent
+            # Keep the runtime parent outside the Scipion Object graph.
+            #
+            # Otherwise clone()/copyInfo() may recursively copy:
+            #
+            # item -> Set -> protocol -> internal protocol attributes
+            #
+            # into a newly created output item and corrupt its SQLite
+            # item schema.
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=item,
+                parent=self.parent,
+            )
 
             parentIdGetter = getattr(
                 self.parent,
@@ -576,7 +645,10 @@ class PostgresqlScipionItemHydrator:
 
             if callable(parentIdGetter):
                 try:
-                    item._objParentId = parentIdGetter()
+                    item._objParentId = (
+                        parentIdGetter()
+                    )
+
                 except Exception:
                     item._objParentId = None
 
