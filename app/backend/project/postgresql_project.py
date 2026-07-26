@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import signal
+import subprocess
 import json
 import logging
 import os
@@ -584,6 +586,77 @@ class PostgresqlProject(ScipionProject):
             protocol=protocol,
         )
 
+    def _startPostgresqlProtocolWorker(
+            self,
+            *,
+            protocol,
+            runMode: str,
+            wait: bool = False,
+    ):
+        from app.backend.runtime.postgresql_protocol_worker import (
+            buildPostgresqlWorkerCommand,
+        )
+
+        command = buildPostgresqlWorkerCommand(
+            projectId=self.postgresqlProjectId,
+            protocolId=int(
+                protocol.getObjId()
+            ),
+            runMode=runMode,
+        )
+
+        process = subprocess.Popen(
+            command,
+            cwd=self.path,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+        protocol.setPid(
+            process.pid
+        )
+
+        self.mapper.store(
+            protocol
+        )
+
+        self.mapper.commit()
+
+        logger.info(
+            "Started isolated PostgreSQL protocol worker. "
+            "projectId=%s protocolId=%s pid=%s "
+            "processGroupId=%s runMode=%s",
+            self.postgresqlProjectId,
+            protocol.getObjId(),
+            process.pid,
+            os.getpgid(
+                process.pid
+            ),
+            runMode,
+        )
+
+        if wait:
+            returnCode = process.wait()
+
+            self.mapper.updateFrom(
+                protocol
+            )
+
+            if returnCode != 0:
+                raise RuntimeError(
+                    "PostgreSQL protocol worker %s "
+                    "finished with return code %s."
+                    % (
+                        protocol.getObjId(),
+                        returnCode,
+                    )
+                )
+
+        return process
+
     def launchProtocol(
             self,
             protocol: Protocol,
@@ -599,21 +672,24 @@ class PostgresqlProject(ScipionProject):
                 force=force,
             )
 
-        if protocol.getPrerequisites() and not scheduled:
+        if (
+                protocol.getPrerequisites()
+                and not scheduled
+        ):
             return self.scheduleProtocol(
                 protocol
             )
 
         isRestart = (
-            protocol.getRunMode()
-            == MODE_RESTART
+                protocol.getRunMode()
+                == MODE_RESTART
         )
 
         if not force:
             if (
                     (
-                        not protocol.isInteractive()
-                        and not protocol.isInStreaming()
+                            not protocol.isInteractive()
+                            and not protocol.isInStreaming()
                     )
                     or isRestart
             ):
@@ -634,89 +710,55 @@ class PostgresqlProject(ScipionProject):
         if not scheduled:
             protocol.makePathsAndClean()
 
-            if isRestart:
-                self.mapper.deleteRelations(
-                    protocol
-                )
-
-                protocol.cleanExecutionAttributes()
-
-                protocol._store(
-                    protocol._jobId,
-                    protocol._pid,
-                )
-
-            self.mapper.commit()
-
-            try:
-                # The active status must exist in the execution snapshot, but
-                # it must not be published to PostgreSQL until run.db is ready
-                # and the native launcher has accepted the execution.
-                protocol.setStatus(
-                    pwprot.STATUS_LAUNCHED
-                )
-
-                executionReport = (
-                    self._preparePostgresqlExecutionDatabase(
-                        protocol
-                    )
-                )
-
-                logger.info(
-                    "Prepared PostgreSQL protocol execution database. "
-                    "projectId=%s protocolId=%s report=%s",
-                    self.postgresqlProjectId,
-                    protocol.getObjId(),
-                    executionReport,
-                )
-
-                protocol.lastUpdateTimeStamp.set(
-                    pwutils.getFileLastModificationDate(
-                        protocol.getDbPath()
-                    )
-                )
-
-                pwprot.launch(
-                    protocol,
-                    wait,
-                )
-
-            except Exception:
-                # Do not leave an active PostgreSQL protocol without a valid
-                # worker/run.db. Otherwise every project refresh attempts to
-                # synchronize a launch that never actually started.
-                protocol.setStatus(
-                    previousStatus
-                )
-
-                self.mapper.store(
-                    protocol
-                )
-
-                self.mapper.commit()
-
-                raise
-        else:
-            protocol.setStatus(
-                pwprot.STATUS_LAUNCHED
-            )
-
-            pwprot.launch(
-                protocol,
-                wait,
-            )
-
-
-        if wait:
-            self._updateProtocol(
+        if isRestart:
+            self.mapper.deleteRelations(
                 protocol
             )
-        else:
+
+        protocol.cleanExecutionAttributes()
+
+        protocol.setStatus(
+            STATUS_SCHEDULED
+        )
+
+        self.mapper.store(
+            protocol
+        )
+
+        self.mapper.commit()
+
+        runMode = (
+            "restart"
+            if isRestart
+            else "resume"
+        )
+
+        try:
+            return (
+                self
+                ._startPostgresqlProtocolWorker(
+                    protocol=protocol,
+                    runMode=runMode,
+                    wait=wait,
+                )
+            )
+
+        except Exception:
+            protocol.setStatus(
+                previousStatus
+            )
+
+            protocol.setPid(
+                0
+            )
+
             self.mapper.store(
                 protocol
             )
 
-        self.mapper.commit()
+            self.mapper.commit()
+
+            raise
 
     def scheduleProtocol(
             self,
@@ -727,19 +769,21 @@ class PostgresqlProject(ScipionProject):
         if not self.usingPostgresqlRuntimeMapper():
             return super().scheduleProtocol(
                 protocol,
-                prerequisites=prerequisites or [],
-                initialSleepTime=initialSleepTime,
+                prerequisites=(
+                        prerequisites or []
+                ),
+                initialSleepTime=(
+                    initialSleepTime
+                ),
             )
 
-        prerequisites = prerequisites or []
-
-        isRestart = (
-            protocol.getRunMode()
-            == MODE_RESTART
+        prerequisites = (
+                prerequisites or []
         )
 
-        protocol.setStatus(
-            pwprot.STATUS_SCHEDULED
+        isRestart = (
+                protocol.getRunMode()
+                == MODE_RESTART
         )
 
         protocol.addPrerequisites(
@@ -757,25 +801,10 @@ class PostgresqlProject(ScipionProject):
                 protocol
             )
 
-        self.mapper.commit()
+        protocol.cleanExecutionAttributes()
 
-        executionReport = (
-            self._preparePostgresqlExecutionDatabase(
-                protocol
-            )
-        )
-
-        logger.info(
-            "Prepared scheduled PostgreSQL execution database. "
-            "projectId=%s protocolId=%s report=%s",
-            self.postgresqlProjectId,
-            protocol.getObjId(),
-            executionReport,
-        )
-
-        pwprot.schedule(
-            protocol,
-            initialSleepTime=initialSleepTime,
+        protocol.setStatus(
+            STATUS_SCHEDULED
         )
 
         self.mapper.store(
@@ -783,6 +812,39 @@ class PostgresqlProject(ScipionProject):
         )
 
         self.mapper.commit()
+
+        runMode = (
+            "restart"
+            if isRestart
+            else "resume"
+        )
+
+        try:
+            return (
+                self
+                ._startPostgresqlProtocolWorker(
+                    protocol=protocol,
+                    runMode=runMode,
+                    wait=False,
+                )
+            )
+
+        except Exception:
+            protocol.setStatus(
+                STATUS_SAVED
+            )
+
+            protocol.setPid(
+                0
+            )
+
+            self.mapper.store(
+                protocol
+            )
+
+            self.mapper.commit()
+
+            raise
 
     def resetProtocol(self, protocol):
         """
