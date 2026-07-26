@@ -125,15 +125,26 @@ class RuntimeProtocolSaveService:
 
         usingPostgresqlRuntime = usesPostgresqlRuntimeCallback()
 
-        if errorList and usingPostgresqlRuntime:
+        if (
+                errorList
+                and usingPostgresqlRuntime
+                and not setToSave
+        ):
             logger.warning(
-                "Skipping protocol persistence because parameter application produced errors. "
-                "projectId=%s protocolId=%s protocolClassName=%s errors=%s",
+                "Blocking protocol execution because "
+                "parameter application produced errors. "
+                "projectId=%s protocolId=%s "
+                "protocolClassName=%s errors=%s",
                 projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: protocolId,
+                )(),
                 protocolClassName,
                 errorList,
             )
+
             return protocol, errorList
 
         deferPersistenceToNativeLaunch = (
