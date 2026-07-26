@@ -748,3 +748,47 @@ def test_StopRejectsEmptyProtocolList():
     assert error.value.status_code == 422
 
 
+def test_StopDoesNotAbortWhenStoredPidIsDead(
+        monkeypatch,
+):
+    protocol = FakeProtocol(
+        protocolId=10,
+        protocolStatus="scheduled",
+        pid=1234,
+    )
+
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_isPidAlive",
+        lambda pid: False,
+    )
+
+    with pytest.raises(
+            HTTPException
+    ) as error:
+        service.stopProtocols(
+            mapper=FakeMapper(),
+            projectId=1,
+            protocolIds=["10"],
+            usingPostgresqlRuntime=True,
+            currentProject=(
+                FakeCurrentProject()
+            ),
+            getScipionProtocolForRuntimeCallback=(
+                lambda **kwargs: protocol
+            ),
+            buildProtocolMutationResultCallback=(
+                buildResult
+            ),
+        )
+
+    assert error.value.status_code == 500
+
+    assert protocol.getStatus() == (
+        "scheduled"
+    )
+

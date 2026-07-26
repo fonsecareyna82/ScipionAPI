@@ -2581,6 +2581,26 @@ class RuntimePostgresqlProtocolWorker:
             ),
         )
 
+    def registerCoordinatorProcess(
+            self,
+    ) -> None:
+        """
+        Register the real PostgreSQL worker before waiting
+        for dependencies.
+
+        This PID is authoritative for the PostgreSQL-only
+        stop operation.
+        """
+        self.protocol.setPid(
+            os.getpid()
+        )
+
+        self.protocol.setStatus(
+            STATUS_SCHEDULED
+        )
+
+        self.storeProtocol()
+
     def markFailed(self, error) -> None:
         logger.exception(
             "PostgreSQL protocol execution failed. "
@@ -2800,6 +2820,9 @@ class RuntimePostgresqlProtocolWorker:
         self.load()
 
         try:
+            if not execute:
+                self.registerCoordinatorProcess()
+
             self.waitUntilReady()
 
             if (

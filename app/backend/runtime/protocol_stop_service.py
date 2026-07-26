@@ -451,14 +451,17 @@ class RuntimeProtocolStopService:
         if not self._isPidAlive(
                 pid
         ):
-            return {
-                "pid": int(pid),
-                "processGroupId": None,
-                "terminated": True,
-                "alreadyStopped": True,
-                "signal": None,
-                "verified": False,
-            }
+            raise RuntimeError(
+                "Cannot stop active PostgreSQL protocol "
+                "projectId=%s protocolId=%s because its "
+                "stored pid=%s is not alive. The protocol "
+                "state will not be changed."
+                % (
+                    projectId,
+                    protocolId,
+                    pid,
+                )
+            )
 
         verification = (
             self._assertProtocolWorkerPid(
@@ -1179,6 +1182,28 @@ class RuntimeProtocolStopService:
                     ),
                     **processReport,
                 })
+
+            processTerminationConfirmed = bool(
+                processReport
+                and processReport.get(
+                    "terminated"
+                )
+            )
+
+            queueTerminationConfirmed = bool(
+                queueReports
+            )
+
+            if not (
+                    processTerminationConfirmed
+                    or queueTerminationConfirmed
+            ):
+                raise RuntimeError(
+                    "Cannot mark PostgreSQL protocol %s "
+                    "as aborted because no local process "
+                    "or queue job termination was confirmed."
+                    % protocolId
+                )
 
             self._markProtocolAbortedInMemory(
                 protocol
