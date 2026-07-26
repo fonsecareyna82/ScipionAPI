@@ -121,7 +121,7 @@ class FakeProtocolGraphRepository:
         }
 
 
-def test_PreparePointersReusesOneParentProtocolInstance(
+def test_PreparePointersUsesDirectOutputsWithoutModifyingParent(
         monkeypatch,
 ):
     monkeypatch.setattr(
@@ -137,53 +137,220 @@ def test_PreparePointersReusesOneParentProtocolInstance(
     )
 
     childProtocol = ChildProtocol()
-    childProtocol.setObjId(6)
+    childProtocol.setObjId(
+        6
+    )
 
-    loadedParents = []
+    parentProtocol = (
+        ExampleProtocol()
+    )
+    parentProtocol.setObjId(
+        5
+    )
+
+    # Deliberately do not attach outputs to the parent.
+    parentStateBefore = dict(
+        parentProtocol.__dict__
+    )
+
+    tiltSeries = Object()
+    tiltSeries.setObjId(
+        40
+    )
+
+    ctf = Object()
+    ctf.setObjId(
+        41
+    )
+
+    runtimeOutputs = {
+        40: tiltSeries,
+        41: ctf,
+    }
+
+    parentLoadCalls = []
 
     def getParentProtocol(
             mapper,
             projectId,
             parentId,
     ):
-        assert projectId == 1
-        assert int(parentId) == 5
-
-        parentProtocol = ExampleProtocol()
-        parentProtocol.setObjId(5)
-
-        parentProtocol.outputTiltSeries = Object()
-        parentProtocol.outputCtf = Object()
-
-        loadedParents.append(parentProtocol)
+        parentLoadCalls.append(
+            int(parentId)
+        )
 
         return 5, parentProtocol
 
-    report = RuntimeProtocolLaunchPrepareService().preparePointerOutputsForLaunch(
-        mapper=object(),
-        projectId=1,
-        protocol=childProtocol,
-        getProtocolIdCallback=lambda protocol: protocol.getObjId(),
-        getParentProtocolCallback=getParentProtocol,
+    resolvedRuntimeIds = []
+
+    def resolveRuntimeInputObject(
+            runtimeObjectId,
+    ):
+        runtimeObjectId = int(
+            runtimeObjectId
+        )
+
+        resolvedRuntimeIds.append(
+            runtimeObjectId
+        )
+
+        return runtimeOutputs.get(
+            runtimeObjectId
+        )
+
+    report = (
+        RuntimeProtocolLaunchPrepareService()
+        .preparePointerOutputsForLaunch(
+            mapper=object(),
+            projectId=1,
+            protocol=childProtocol,
+            getProtocolIdCallback=(
+                lambda protocol:
+                protocol.getObjId()
+            ),
+            getParentProtocolCallback=(
+                getParentProtocol
+            ),
+            resolveRuntimeInputObjectCallback=(
+                resolveRuntimeInputObject
+            ),
+        )
     )
 
     assert report["errors"] == []
     assert report["prepared"] == 2
+    assert report[
+        "parentProtocolsReadOnly"
+    ] is True
 
-    assert len(loadedParents) == 1
+    # Existing outputs do not require loading or modifying the parent.
+    assert parentLoadCalls == []
+    assert parentProtocol.__dict__ == (
+        parentStateBefore
+    )
 
-    assert isinstance(childProtocol.inputTiltSeries, Pointer)
-    assert isinstance(childProtocol.inputCtf, Pointer)
+    assert resolvedRuntimeIds == [
+        40,
+        41,
+    ]
 
-    tiltSeriesParent = childProtocol.inputTiltSeries.getObjValue()
-    ctfParent = childProtocol.inputCtf.getObjValue()
+    assert isinstance(
+        childProtocol.inputTiltSeries,
+        Pointer,
+    )
 
-    assert tiltSeriesParent is loadedParents[0]
-    assert ctfParent is loadedParents[0]
-    assert tiltSeriesParent is ctfParent
+    assert isinstance(
+        childProtocol.inputCtf,
+        Pointer,
+    )
 
-    assert childProtocol.inputTiltSeries.getExtended() == "outputTiltSeries"
-    assert childProtocol.inputCtf.getExtended() == "outputCtf"
+    assert (
+        childProtocol
+        .inputTiltSeries
+        .getObjValue()
+        is tiltSeries
+    )
 
-    assert childProtocol.inputTiltSeries.get() is tiltSeriesParent.outputTiltSeries
-    assert childProtocol.inputCtf.get() is ctfParent.outputCtf
+    assert (
+        childProtocol
+        .inputTiltSeries
+        .get()
+        is tiltSeries
+    )
+
+    assert (
+        childProtocol
+        .inputCtf
+        .getObjValue()
+        is ctf
+    )
+
+    assert (
+        childProtocol
+        .inputCtf
+        .get()
+        is ctf
+    )
+
+    assert all(
+        item[
+            "directOutputPointer"
+        ]
+        for item in report[
+            "items"
+        ]
+    )
+
+
+class SamplingOutput(Object):
+    def __init__(
+            self,
+            samplingRate,
+    ):
+        super().__init__()
+
+        self.samplingRate = float(
+            samplingRate
+        )
+
+    def getSamplingRate(self):
+        return self.samplingRate
+
+
+def test_PreparedPointerCanBeUsedDuringProtocolValidation(
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolGraphRepository",
+        FakeProtocolGraphRepository,
+    )
+
+    childProtocol = ChildProtocol()
+    childProtocol.setObjId(
+        6
+    )
+
+    outputMovies = SamplingOutput(
+        1.35
+    )
+    outputMovies.setObjId(
+        40
+    )
+
+    RuntimeProtocolLaunchPrepareService().preparePointerOutputsForLaunch(
+        mapper=object(),
+        projectId=1,
+        protocol=childProtocol,
+        getProtocolIdCallback=(
+            lambda protocol:
+            protocol.getObjId()
+        ),
+        getParentProtocolCallback=(
+            lambda **kwargs: (
+                5,
+                ExampleProtocol(),
+            )
+        ),
+        resolveRuntimeInputObjectCallback=(
+            lambda runtimeObjectId:
+            outputMovies
+            if int(runtimeObjectId) == 40
+            else Object()
+        ),
+    )
+
+    movieSampling = (
+        childProtocol
+        .inputTiltSeries
+        .get()
+        .getSamplingRate()
+    )
+
+    assert movieSampling == 1.35

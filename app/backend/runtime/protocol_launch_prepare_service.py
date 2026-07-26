@@ -45,6 +45,7 @@ class RuntimeProtocolLaunchPrepareService:
             protocol,
             getProtocolIdCallback: Callable,
             getParentProtocolCallback: Callable,
+            resolveRuntimeInputObjectCallback: Callable,
             allowMissingParentOutputs: bool = False,
             parentProtocolsById: Optional[
                 Dict[str, Any]
@@ -136,221 +137,382 @@ class RuntimeProtocolLaunchPrepareService:
             return parentScipionProtocolId, parentProtocol
 
         for row in rows or []:
-            inputName = str(row.get("inputName") or "").strip()
-            parentOutputName = str(
-                row.get("parentOutputName") or ""
+            inputName = str(
+                row.get(
+                    "inputName"
+                )
+                or ""
             ).strip()
 
-            parentProtocolId = row.get("parentProtocolId")
-            parentProtocolDbId = row.get("parentProtocolDbId")
+            parentOutputName = str(
+                row.get(
+                    "parentOutputName"
+                )
+                or ""
+            ).strip()
+
+            parentProtocolId = row.get(
+                "parentProtocolId"
+            )
+
+            parentProtocolDbId = row.get(
+                "parentProtocolDbId"
+            )
 
             if not inputName:
                 continue
 
             if (
                     not parentOutputName
-                    or parentProtocolId in (None, "")
+                    or parentProtocolId
+                    in (
+                    None,
+                    "",
+            )
             ):
                 errors.append({
                     "inputName": inputName,
                     "itemIndex": row.get(
                         "itemIndex"
                     ),
-                    "parentProtocolDbId": row.get(
-                        "parentProtocolDbId"
+                    "parentProtocolDbId": (
+                        parentProtocolDbId
                     ),
-                    "parentProtocolId": parentProtocolId,
-                    "parentOutputName": parentOutputName,
+                    "parentProtocolId": (
+                        parentProtocolId
+                    ),
+                    "parentOutputName": (
+                        parentOutputName
+                    ),
                     "error": (
-                        "Invalid PostgreSQL input reference"
+                        "Invalid PostgreSQL "
+                        "input reference"
                     ),
                 })
 
                 continue
 
+            outputParts = [
+                part
+                for part in (
+                    parentOutputName
+                    .split(".")
+                )
+                if part
+            ]
+
+            rootOutputName = (
+                outputParts[0]
+                if outputParts
+                else parentOutputName
+            )
+
+            parentScipionProtocolId = (
+                protocolIdentityResolver
+                .resolveScipionProtocolId(
+                    parentProtocolId
+                )
+            )
+
             itemReport = {
                 "inputName": inputName,
-                "itemIndex": row.get("itemIndex"),
-                "parentProtocolId": str(parentProtocolId),
-                "parentProtocolDbId": parentProtocolDbId,
-                "parentOutputName": parentOutputName,
-                "hadRuntimeAttribute": False,
+                "itemIndex": row.get(
+                    "itemIndex"
+                ),
+                "parentProtocolId": str(
+                    parentScipionProtocolId
+                ),
+                "parentProtocolDbId": (
+                    parentProtocolDbId
+                ),
+                "parentOutputName": (
+                    parentOutputName
+                ),
+                "rootOutputName": (
+                    rootOutputName
+                ),
                 "pointerReset": False,
+                "directOutputPointer": False,
                 "parentProtocolReadOnly": True,
+                "parentProtocolModified": False,
                 "outputRelationRepairSkipped": True,
             }
 
             try:
-                parentScipionProtocolId, parentProtocol = (
-                    resolveParentProtocol(
-                        parentProtocolId
-                    )
+                resolvedParentProtocolDbId = (
+                    parentProtocolDbId
                 )
 
-                if parentProtocol is None:
-                    raise ValueError(
-                        "Parent protocol %s could not be loaded"
-                        % str(parentScipionProtocolId)
-                    )
-
-                try:
-                    itemReport["hadRuntimeAttribute"] = bool(
-                        hasattr(parentProtocol, parentOutputName)
-                    )
-                except Exception:
-                    itemReport["hadRuntimeAttribute"] = False
-
-                resolvedParentProtocolDbId = parentProtocolDbId
-
-                if resolvedParentProtocolDbId in (None, ""):
+                if resolvedParentProtocolDbId in (
+                        None,
+                        "",
+                ):
                     resolvedParentProtocolDbId = (
                         protocolIdentityResolver
                         .resolvePostgresqlProtocolDbId(
-                            parentScipionProtocolId,
+                            parentScipionProtocolId
                         )
                     )
 
-                if resolvedParentProtocolDbId in (None, ""):
+                if resolvedParentProtocolDbId in (
+                        None,
+                        "",
+                ):
                     raise ValueError(
-                        "Parent protocol %s was not found in PostgreSQL"
-                        % str(parentScipionProtocolId)
+                        "Parent protocol %s was not "
+                        "found in PostgreSQL"
+                        % parentScipionProtocolId
                     )
 
-                itemReport["parentProtocolDbId"] = int(
+                resolvedParentProtocolDbId = int(
                     resolvedParentProtocolDbId
                 )
+
+                itemReport[
+                    "parentProtocolDbId"
+                ] = resolvedParentProtocolDbId
 
                 outputInfo = (
                     protocolGraphRepository
                     .getPostgresqlRuntimeOutputInfo(
                         mapper=mapper,
                         projectId=projectId,
-                        parentProtocolDbId=int(
+                        parentProtocolDbId=(
                             resolvedParentProtocolDbId
                         ),
-                        outputName=parentOutputName,
+                        outputName=rootOutputName,
                     )
                 )
 
-                if not outputInfo.get("exists"):
-                    if allowMissingParentOutputs:
-                        itemReport["missingParentOutput"] = True
-                        itemReport["missingParentOutputReason"] = (
-                            "parent_output_not_produced_yet"
+                pointer = None
+
+                if outputInfo.get(
+                        "exists"
+                ):
+                    runtimeObjectId = (
+                        outputInfo.get(
+                            "runtimeObjectId"
                         )
-                    else:
-                        raise ValueError(
-                            "Parent output %s.%s was not found in PostgreSQL"
+                    )
+
+                    if runtimeObjectId in (
+                            None,
+                            "",
+                    ):
+                        raise RuntimeError(
+                            "Parent output %s.%s "
+                            "does not have a Scipion "
+                            "runtime object id"
                             % (
-                                str(parentScipionProtocolId),
+                                parentScipionProtocolId,
+                                rootOutputName,
+                            )
+                        )
+
+                    outputObject = (
+                        resolveRuntimeInputObjectCallback(
+                            int(
+                                runtimeObjectId
+                            )
+                        )
+                    )
+
+                    if outputObject is None:
+                        raise RuntimeError(
+                            "Could not reconstruct "
+                            "PostgreSQL runtime output "
+                            "%s.%s with runtime id %s"
+                            % (
+                                parentScipionProtocolId,
+                                rootOutputName,
+                                runtimeObjectId,
+                            )
+                        )
+
+                    # Point directly to the detached PostgreSQL output.
+                    # Do not attach it to or modify the parent protocol.
+                    pointer = Pointer(
+                        outputObject
+                    )
+
+                    if len(
+                            outputParts
+                    ) > 1:
+                        pointer.setExtendedParts(
+                            outputParts[1:]
+                        )
+
+                    resolvedPointerObject = (
+                        pointer.get()
+                    )
+
+                    if resolvedPointerObject is None:
+                        raise RuntimeError(
+                            "PostgreSQL runtime pointer "
+                            "resolved to None. "
+                            "protocolId=%s inputName=%s "
+                            "value=%s.%s"
+                            % (
+                                protocolId,
+                                inputName,
+                                parentScipionProtocolId,
                                 parentOutputName,
                             )
                         )
-                else:
-                    itemReport["outputInfo"] = {
-                        "kind": outputInfo.get("kind"),
-                        "setId": outputInfo.get("setId"),
-                        "objectId": outputInfo.get("objectId"),
-                        "className": outputInfo.get("className"),
-                        "itemClassName": outputInfo.get(
-                            "itemClassName"
+
+                    itemReport.update({
+                        "runtimeObjectId": int(
+                            runtimeObjectId
                         ),
-                        "itemsCount": outputInfo.get("itemsCount"),
-                    }
+                        "objectClassName": (
+                            outputInfo.get(
+                                "className"
+                            )
+                        ),
+                        "directOutputPointer": True,
+                        "pointerResolved": True,
+                        "outputInfo": {
+                            "kind": outputInfo.get(
+                                "kind"
+                            ),
+                            "setId": outputInfo.get(
+                                "setId"
+                            ),
+                            "objectId": outputInfo.get(
+                                "objectId"
+                            ),
+                            "runtimeObjectId": int(
+                                runtimeObjectId
+                            ),
+                            "className": outputInfo.get(
+                                "className"
+                            ),
+                            "itemClassName": (
+                                outputInfo.get(
+                                    "itemClassName"
+                                )
+                            ),
+                            "itemsCount": (
+                                outputInfo.get(
+                                    "itemsCount"
+                                )
+                            ),
+                        },
+                    })
 
-                param = protocol.getParam(inputName)
+                elif allowMissingParentOutputs:
+                    parentScipionProtocolId, (
+                        parentProtocol
+                    ) = resolveParentProtocol(
+                        parentProtocolId
+                    )
 
-                if isinstance(param, MultiPointerParam):
-                    pointerList = multiPointerLists.get(inputName)
+                    if parentProtocol is None:
+                        raise ValueError(
+                            "Parent protocol %s "
+                            "could not be loaded"
+                            % parentScipionProtocolId
+                        )
 
-                    if pointerList is None:
-                        pointerList = PointerList()
-                        multiPointerLists[inputName] = pointerList
-
-                        # The PointerList belongs exclusively to the child protocol.
-                        setattr(protocol, inputName, pointerList)
-
+                    # Used only when launching a workflow whose upstream
+                    # protocol has not produced the output yet. The worker
+                    # will replace it with a direct output pointer later.
                     pointer = Pointer(
                         parentProtocol,
-                        extended=parentOutputName,
+                        extended=(
+                            parentOutputName
+                        ),
                     )
 
-                    pointerList.append(pointer)
+                    itemReport.update({
+                        "missingParentOutput": True,
+                        "missingParentOutputReason": (
+                            "parent_output_not_produced_yet"
+                        ),
+                        "deferredOutputPointer": True,
+                        "pointerResolved": False,
+                    })
 
-                    pointerValue = "%s.%s" % (
-                        str(parentScipionProtocolId),
-                        parentOutputName,
-                    )
-
-                    itemReport["multiPointer"] = True
-                    itemReport["pointerReset"] = True
-                    itemReport["pointerValue"] = pointerValue
-                    itemReport["paramDefaultUpdateSkipped"] = (
-                        "multipointer_runtime_pointer_list"
-                    )
-                    itemReport["pointerResolutionSkipped"] = (
-                        "parent_protocol_and_outputs_are_read_only"
-                    )
-
-                    preparedItems.append(itemReport)
-                    continue
-
-                pointer = Pointer(
-                    parentProtocol,
-                    extended=parentOutputName,
-                )
-
-                # Always replace the child runtime attribute with a fresh
-                # Pointer. PostgreSQL input refs are the source of truth.
-                setattr(
-                    protocol,
-                    inputName,
-                    pointer,
-                )
-
-                pointerValue = "%s.%s" % (
-                    str(parentScipionProtocolId),
-                    parentOutputName,
-                )
-
-                pointerTarget = pointer.getObjValue()
-
-                if (
-                        pointerTarget is None
-                        or isinstance(pointerTarget, str)
-                ):
-                    raise RuntimeError(
-                        "Could not restore runtime Pointer object. "
-                        "protocolId=%s inputName=%s value=%s"
+                else:
+                    raise ValueError(
+                        "Parent output %s.%s was "
+                        "not found in PostgreSQL"
                         % (
-                            protocolId,
-                            inputName,
-                            pointerValue,
+                            parentScipionProtocolId,
+                            rootOutputName,
                         )
                     )
 
-                itemReport[
-                    "paramDefaultUpdateSkipped"
-                ] = (
-                    "postgresql_input_refs_are_authoritative"
+                param = protocol.getParam(
+                    inputName
                 )
 
-                itemReport["pointerReset"] = True
-                itemReport["pointerValue"] = pointerValue
+                if isinstance(
+                        param,
+                        MultiPointerParam,
+                ):
+                    pointerList = (
+                        multiPointerLists.get(
+                            inputName
+                        )
+                    )
 
-                # Do not call pointer.get() here. Resolving the pointer may
-                # access or materialize an output belonging to the parent.
-                itemReport["pointerResolutionSkipped"] = (
-                    "parent_protocol_and_outputs_are_read_only"
+                    if pointerList is None:
+                        pointerList = (
+                            PointerList()
+                        )
+
+                        multiPointerLists[
+                            inputName
+                        ] = pointerList
+
+                        setattr(
+                            protocol,
+                            inputName,
+                            pointerList,
+                        )
+
+                    pointerList.append(
+                        pointer
+                    )
+
+                    itemReport[
+                        "multiPointer"
+                    ] = True
+
+                else:
+                    setattr(
+                        protocol,
+                        inputName,
+                        pointer,
+                    )
+
+                pointerValue = "%s.%s" % (
+                    parentScipionProtocolId,
+                    parentOutputName,
                 )
 
-                preparedItems.append(itemReport)
+                itemReport.update({
+                    "pointerReset": True,
+                    "pointerValue": (
+                        pointerValue
+                    ),
+                    "paramDefaultUpdateSkipped": (
+                        "postgresql_input_refs_are_authoritative"
+                    ),
+                })
 
-            except Exception as exc:
+                preparedItems.append(
+                    itemReport
+                )
+
+            except Exception as error:
                 logger.exception(
-                    "Failed to prepare PostgreSQL child runtime pointer. "
-                    "projectId=%s protocolId=%s inputName=%s "
-                    "parentProtocolId=%s parentOutputName=%s",
+                    "Failed to prepare PostgreSQL "
+                    "child runtime pointer. "
+                    "projectId=%s protocolId=%s "
+                    "inputName=%s parentProtocolId=%s "
+                    "parentOutputName=%s",
                     projectId,
                     protocolId,
                     inputName,
@@ -358,8 +520,15 @@ class RuntimeProtocolLaunchPrepareService:
                     parentOutputName,
                 )
 
-                itemReport["error"] = str(exc)
-                errors.append(itemReport)
+                itemReport[
+                    "error"
+                ] = str(
+                    error
+                )
+
+                errors.append(
+                    itemReport
+                )
 
         report = {
             "protocolId": str(protocolId),
