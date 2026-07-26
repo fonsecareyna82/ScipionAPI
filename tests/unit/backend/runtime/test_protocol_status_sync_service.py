@@ -28,6 +28,20 @@ from app.backend.runtime.protocol_status_sync_service import (
 )
 
 
+class FakeActiveRuntimeProtocol:
+    def getPid(self):
+        return 4321
+
+    def getJobIds(self):
+        return [
+            "77",
+            "78",
+        ]
+
+    def getElapsedTime(self):
+        return None
+
+
 class FakeMapper:
     def __init__(self):
         self.row = {
@@ -154,3 +168,19 @@ def test_TerminalProtocolSyncEnablesRelationsAndUsesRuntimeProtocol(
             callbackArgs["protocol"]
             is runtimeProtocol
     )
+
+
+def test_BuildRuntimeMetadataIncludesProcessIdentity():
+    metadata = (
+        RuntimeProtocolStatusSyncService()
+        .buildRuntimeMetadata(
+            FakeActiveRuntimeProtocol()
+        )
+    )
+
+    assert metadata["pid"] == 4321
+
+    assert metadata["jobIds"] == [
+        "77",
+        "78",
+    ]
