@@ -1417,7 +1417,14 @@ def stopProtocol(
                          "workflow": []},
             )
 
-        result = service.stopProtocol(mapper, projectId, protocolIds)
+        result = service.stopProtocol(
+            mapper,
+            projectId,
+            protocolIds,
+        )
+
+        workflow = []
+
         if usePostgresqlRuntimeProject:
             refreshedProject = service.getProjectById(
                 mapper,

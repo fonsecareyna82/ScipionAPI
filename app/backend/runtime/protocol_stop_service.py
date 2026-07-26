@@ -23,14 +23,18 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import datetime
 import logging
 import os
 import signal
+import subprocess
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 from fastapi import HTTPException, status
-from pyworkflow.protocol.constants import STATUS_SCHEDULED
+from pyworkflow.object import Set as ScipionSet
+from pyworkflow.protocol import STATUS_ABORTED
+
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -40,51 +44,228 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolStopService:
-    """Orchestrate stopping one or more runtime protocols."""
+    """
+    Stop Scipion runtime protocols.
+
+    PostgreSQL runtime mode is completely independent from:
+
+    - project.sqlite
+    - logs/run.db
+    - steps.sqlite
+
+    Only the explicitly selected protocols are modified.
+    Parent and child protocols remain read-only.
+    """
+
+    ABORT_MESSAGE = "Aborted by user."
 
     @staticmethod
-    def _getProtocolPid(protocol):
-        """Return the protocol execution PID when available."""
-        for attrName in ("_pid", "pid"):
-            attr = getattr(protocol, attrName, None)
+    def _scalarValue(
+            value,
+            default=None,
+    ):
+        if value is None:
+            return default
 
-            if attr is None:
+        getter = getattr(
+            value,
+            "get",
+            None,
+        )
+
+        if callable(getter):
+            try:
+                return getter()
+
+            except TypeError:
+                try:
+                    return getter(default)
+
+                except Exception:
+                    return default
+
+            except Exception:
+                return default
+
+        return value
+
+    def _getProtocolStatus(
+            self,
+            protocol,
+    ) -> str:
+        try:
+            value = protocol.getStatus()
+
+        except Exception:
+            value = self._scalarValue(
+                getattr(
+                    protocol,
+                    "status",
+                    None,
+                )
+            )
+
+        return str(
+            value or ""
+        ).strip().lower()
+
+    def _getProtocolPid(
+            self,
+            protocol,
+    ):
+        for attrName in (
+                "_pid",
+                "pid",
+        ):
+            value = self._scalarValue(
+                getattr(
+                    protocol,
+                    attrName,
+                    None,
+                )
+            )
+
+            if value in (
+                    None,
+                    "",
+                    0,
+                    "0",
+            ):
                 continue
 
             try:
-                value = (
-                    attr.get()
-                    if hasattr(attr, "get")
-                    else attr
-                )
-            except Exception:
-                value = None
+                return int(value)
 
-            if value not in (None, "", 0, "0"):
-                try:
-                    return int(value)
-                except Exception:
-                    return None
+            except Exception:
+                return None
 
         try:
             value = protocol.getPid()
 
-            if value not in (None, "", 0, "0"):
-                return int(value)
+        except Exception:
+            value = None
+
+        if value in (
+                None,
+                "",
+                0,
+                "0",
+        ):
+            return None
+
+        try:
+            return int(value)
 
         except Exception:
-            pass
+            return None
 
-        return None
+    def _getProtocolJobIds(
+            self,
+            protocol,
+    ) -> List[str]:
+        rawJobIds = None
+
+        try:
+            rawJobIds = (
+                protocol.getJobIds()
+            )
+
+        except Exception:
+            rawJobIds = self._scalarValue(
+                getattr(
+                    protocol,
+                    "_jobId",
+                    None,
+                )
+            )
+
+        if rawJobIds in (
+                None,
+                "",
+        ):
+            return []
+
+        if isinstance(
+                rawJobIds,
+                str,
+        ):
+            rawValues = (
+                rawJobIds
+                .replace(";", ",")
+                .split(",")
+            )
+
+        else:
+            try:
+                rawValues = list(
+                    rawJobIds
+                )
+
+            except TypeError:
+                rawValues = [
+                    rawJobIds,
+                ]
+
+        jobIds = []
+        seen = set()
+
+        for rawValue in rawValues:
+            jobId = str(
+                rawValue or ""
+            ).strip()
+
+            if (
+                    not jobId
+                    or jobId == "0"
+                    or jobId in seen
+            ):
+                continue
+
+            seen.add(
+                jobId
+            )
+
+            jobIds.append(
+                jobId
+            )
+
+        return jobIds
 
     @staticmethod
-    def _isPidAlive(pid) -> bool:
-        """Return whether the supplied local process is still alive."""
+    def _safeBooleanCall(
+            protocol,
+            methodName: str,
+    ) -> bool:
+        method = getattr(
+            protocol,
+            methodName,
+            None,
+        )
+
+        if not callable(method):
+            return False
+
+        try:
+            return bool(
+                method()
+            )
+
+        except Exception:
+            return False
+
+    @staticmethod
+    def _isPidAlive(
+            pid,
+    ) -> bool:
         if not pid:
             return False
 
         try:
-            os.kill(int(pid), 0)
+            os.kill(
+                int(pid),
+                0,
+            )
+
             return True
 
         except ProcessLookupError:
@@ -96,51 +277,1070 @@ class RuntimeProtocolStopService:
         except Exception:
             return False
 
-    def _killPid(self, pid) -> bool:
-        """
-        Terminate a local process.
-
-        Send SIGTERM first and use SIGKILL only when the process remains alive.
-        """
-        if not pid:
+    @staticmethod
+    def _isProcessGroupAlive(
+            processGroupId,
+    ) -> bool:
+        if not processGroupId:
             return False
 
         try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.killpg(
+                int(processGroupId),
+                0,
+            )
+
+            return True
 
         except ProcessLookupError:
+            return False
+
+        except PermissionError:
             return True
 
         except Exception:
-            logger.exception(
-                "Could not send SIGTERM to protocol pid=%s",
-                pid,
-            )
             return False
+
+    @staticmethod
+    def _getProcessCommandLine(
+            pid: int,
+    ) -> List[str]:
+        commandLinePath = (
+            "/proc/%s/cmdline"
+            % int(pid)
+        )
+
+        try:
+            with open(
+                    commandLinePath,
+                    "rb",
+            ) as commandLineFile:
+                rawCommandLine = (
+                    commandLineFile.read()
+                )
+
+        except FileNotFoundError:
+            return []
+
+        except PermissionError as error:
+            raise RuntimeError(
+                "Cannot verify protocol worker pid=%s: %s"
+                % (
+                    pid,
+                    error,
+                )
+            ) from error
+
+        except Exception as error:
+            raise RuntimeError(
+                "Cannot inspect protocol worker pid=%s: %s"
+                % (
+                    pid,
+                    error,
+                )
+            ) from error
+
+        return [
+            token.decode(
+                errors="replace"
+            )
+            for token in rawCommandLine.split(
+                b"\0"
+            )
+            if token
+        ]
+
+    def _assertProtocolWorkerPid(
+            self,
+            *,
+            pid: int,
+            projectId: int,
+            protocolId: int,
+    ) -> Dict[str, Any]:
+        commandLine = (
+            self._getProcessCommandLine(
+                pid
+            )
+        )
+
+        if not commandLine:
+            return {
+                "verified": False,
+                "processMissing": True,
+                "commandLine": [],
+            }
+
+        commandText = " ".join(
+            commandLine
+        )
+
+        expectedModule = (
+            "app.backend.runtime."
+            "postgresql_protocol_worker"
+        )
+
+        expectedProjectId = str(
+            projectId
+        )
+
+        expectedProtocolId = str(
+            protocolId
+        )
+
+        moduleMatches = (
+            expectedModule
+            in commandText
+        )
+
+        projectMatches = False
+        protocolMatches = False
+
+        for index, token in enumerate(
+                commandLine
+        ):
+            if (
+                    token == "--project-id"
+                    and index + 1
+                    < len(commandLine)
+            ):
+                projectMatches = (
+                    commandLine[index + 1]
+                    == expectedProjectId
+                )
+
+            if (
+                    token == "--protocol-id"
+                    and index + 1
+                    < len(commandLine)
+            ):
+                protocolMatches = (
+                    commandLine[index + 1]
+                    == expectedProtocolId
+                )
+
+        if not (
+                moduleMatches
+                and projectMatches
+                and protocolMatches
+        ):
+            raise RuntimeError(
+                "Refusing to terminate pid=%s because it "
+                "does not belong to PostgreSQL protocol "
+                "projectId=%s protocolId=%s. command=%s"
+                % (
+                    pid,
+                    projectId,
+                    protocolId,
+                    commandText,
+                )
+            )
+
+        return {
+            "verified": True,
+            "processMissing": False,
+            "commandLine": commandLine,
+        }
+
+    def _killProcessGroup(
+            self,
+            *,
+            pid: int,
+            projectId: int,
+            protocolId: int,
+    ) -> Dict[str, Any]:
+        if not self._isPidAlive(
+                pid
+        ):
+            return {
+                "pid": int(pid),
+                "processGroupId": None,
+                "terminated": True,
+                "alreadyStopped": True,
+                "signal": None,
+                "verified": False,
+            }
+
+        verification = (
+            self._assertProtocolWorkerPid(
+                pid=int(pid),
+                projectId=int(projectId),
+                protocolId=int(protocolId),
+            )
+        )
+
+        if verification.get(
+                "processMissing"
+        ):
+            return {
+                "pid": int(pid),
+                "processGroupId": None,
+                "terminated": True,
+                "alreadyStopped": True,
+                "signal": None,
+                "verified": False,
+            }
+
+        try:
+            processGroupId = os.getpgid(
+                int(pid)
+            )
+
+        except ProcessLookupError:
+            return {
+                "pid": int(pid),
+                "processGroupId": None,
+                "terminated": True,
+                "alreadyStopped": True,
+                "signal": None,
+                "verified": True,
+            }
+
+        currentProcessGroupId = (
+            os.getpgrp()
+        )
+
+        if (
+                int(processGroupId)
+                == int(currentProcessGroupId)
+        ):
+            raise RuntimeError(
+                "Refusing to terminate PostgreSQL "
+                "protocol process group %s because it "
+                "matches the API process group."
+                % processGroupId
+            )
+
+        try:
+            os.killpg(
+                processGroupId,
+                signal.SIGTERM,
+            )
+
+        except ProcessLookupError:
+            return {
+                "pid": int(pid),
+                "processGroupId": (
+                    int(processGroupId)
+                ),
+                "terminated": True,
+                "alreadyStopped": True,
+                "signal": "SIGTERM",
+                "verified": True,
+            }
+
+        except Exception as error:
+            raise RuntimeError(
+                "Could not send SIGTERM to PostgreSQL "
+                "protocol process group %s: %s"
+                % (
+                    processGroupId,
+                    error,
+                )
+            ) from error
+
+        for _ in range(15):
+            if not self._isProcessGroupAlive(
+                    processGroupId
+            ):
+                return {
+                    "pid": int(pid),
+                    "processGroupId": (
+                        int(processGroupId)
+                    ),
+                    "terminated": True,
+                    "alreadyStopped": False,
+                    "signal": "SIGTERM",
+                    "verified": True,
+                }
+
+            time.sleep(
+                0.2
+            )
+
+        try:
+            os.killpg(
+                processGroupId,
+                signal.SIGKILL,
+            )
+
+        except ProcessLookupError:
+            return {
+                "pid": int(pid),
+                "processGroupId": (
+                    int(processGroupId)
+                ),
+                "terminated": True,
+                "alreadyStopped": False,
+                "signal": "SIGKILL",
+                "verified": True,
+            }
+
+        except Exception as error:
+            raise RuntimeError(
+                "Could not send SIGKILL to PostgreSQL "
+                "protocol process group %s: %s"
+                % (
+                    processGroupId,
+                    error,
+                )
+            ) from error
 
         for _ in range(10):
-            if not self._isPidAlive(pid):
-                return True
+            if not self._isProcessGroupAlive(
+                    processGroupId
+            ):
+                return {
+                    "pid": int(pid),
+                    "processGroupId": (
+                        int(processGroupId)
+                    ),
+                    "terminated": True,
+                    "alreadyStopped": False,
+                    "signal": "SIGKILL",
+                    "verified": True,
+                }
 
-            try:
-                time.sleep(0.2)
-            except Exception:
-                break
+            time.sleep(
+                0.1
+            )
+
+        raise RuntimeError(
+            "PostgreSQL protocol process group %s "
+            "is still alive after SIGKILL."
+            % processGroupId
+        )
+
+    def _cancelQueueJobs(
+            self,
+            protocol,
+    ) -> List[Dict[str, Any]]:
+        jobIds = (
+            self._getProtocolJobIds(
+                protocol
+            )
+        )
+
+        if not jobIds:
+            return []
 
         try:
-            os.kill(int(pid), signal.SIGKILL)
-
-        except ProcessLookupError:
-            return True
-
-        except Exception:
-            logger.exception(
-                "Could not send SIGKILL to protocol pid=%s",
-                pid,
+            hostConfig = (
+                protocol.getHostConfig()
             )
+
+            cancelCommandTemplate = (
+                hostConfig.getCancelCommand()
+            )
+
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load the queue cancel "
+                "command: %s"
+                % error
+            ) from error
+
+        if not cancelCommandTemplate:
+            raise RuntimeError(
+                "Queue cancellation command is not configured"
+            )
+
+        reports = []
+
+        for jobId in jobIds:
+            try:
+                cancelCommand = (
+                    cancelCommandTemplate
+                    % {
+                        "JOB_ID": jobId,
+                    }
+                )
+
+            except Exception as error:
+                raise RuntimeError(
+                    "Could not build queue cancellation "
+                    "command for job %s: %s"
+                    % (
+                        jobId,
+                        error,
+                    )
+                ) from error
+
+            completedProcess = subprocess.run(
+                cancelCommand,
+                shell=True,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            report = {
+                "jobId": str(jobId),
+                "command": cancelCommand,
+                "returnCode": int(
+                    completedProcess.returncode
+                ),
+                "stdout": str(
+                    completedProcess.stdout
+                    or ""
+                ).strip(),
+                "stderr": str(
+                    completedProcess.stderr
+                    or ""
+                ).strip(),
+            }
+
+            reports.append(
+                report
+            )
+
+            if (
+                    completedProcess.returncode
+                    != 0
+            ):
+                raise RuntimeError(
+                    "Queue cancellation failed for "
+                    "job %s with return code %s: %s"
+                    % (
+                        jobId,
+                        completedProcess.returncode,
+                        report["stderr"]
+                        or report["stdout"],
+                    )
+                )
+
+        return reports
+
+    @staticmethod
+    def _setScalarAttribute(
+            target,
+            attributeName: str,
+            value,
+    ) -> bool:
+        attribute = getattr(
+            target,
+            attributeName,
+            None,
+        )
+
+        setter = getattr(
+            attribute,
+            "set",
+            None,
+        )
+
+        if not callable(setter):
             return False
 
-        return not self._isPidAlive(pid)
+        setter(
+            value
+        )
+
+        return True
+
+    def _markProtocolAbortedInMemory(
+            self,
+            protocol,
+    ) -> None:
+        setStatus = getattr(
+            protocol,
+            "setStatus",
+            None,
+        )
+
+        if callable(setStatus):
+            setStatus(
+                STATUS_ABORTED
+            )
+
+        else:
+            self._setScalarAttribute(
+                protocol,
+                "status",
+                STATUS_ABORTED,
+            )
+
+        self._setScalarAttribute(
+            protocol,
+            "endTime",
+            datetime.datetime.now(),
+        )
+
+        self._setScalarAttribute(
+            protocol,
+            "_error",
+            self.ABORT_MESSAGE,
+        )
+
+        self._setScalarAttribute(
+            protocol,
+            "_pid",
+            0,
+        )
+
+        jobIdsAttribute = getattr(
+            protocol,
+            "_jobId",
+            None,
+        )
+
+        clearJobIds = getattr(
+            jobIdsAttribute,
+            "clear",
+            None,
+        )
+
+        if callable(clearJobIds):
+            clearJobIds()
+
+        else:
+            setJobIds = getattr(
+                jobIdsAttribute,
+                "set",
+                None,
+            )
+
+            if callable(setJobIds):
+                setJobIds(
+                    []
+                )
+
+    def _abortRunningProtocolSteps(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Dict[str, Any]:
+        cursor = mapper.db.execute(
+            """
+            UPDATE protocol_steps
+               SET status = %s,
+                   "endTime" = COALESCE(
+                       "endTime",
+                       NOW()
+                   ),
+                   error = CASE
+                       WHEN error IS NULL
+                            OR BTRIM(error) = ''
+                       THEN %s
+                       ELSE error
+                   END,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND LOWER(status) = 'running'
+            """,
+            (
+                str(STATUS_ABORTED),
+                self.ABORT_MESSAGE,
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        return {
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "stepsAborted": int(
+                getattr(
+                    cursor,
+                    "rowcount",
+                    0,
+                )
+                or 0
+            ),
+        }
+
+    def _closePostgresqlOutputSets(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Dict[str, Any]:
+        storedSets = mapper.db.fetchAll(
+            """
+            SELECT id,
+                   "outputName"
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "outputName"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        ) or []
+
+        if not storedSets:
+            return {
+                "protocolDbId": int(
+                    protocolDbId
+                ),
+                "setsClosed": 0,
+                "outputs": [],
+            }
+
+        closedState = int(
+            ScipionSet.STREAM_CLOSED
+        )
+
+        with mapper.db.transaction():
+            mapper.db.execute(
+                """
+                UPDATE scipion_sets
+                   SET properties = jsonb_set(
+                           jsonb_set(
+                               COALESCE(
+                                   properties,
+                                   '{}'::jsonb
+                               ),
+                               '{streamState}',
+                               TO_JSONB(%s::integer),
+                               TRUE
+                           ),
+                           '{_streamState}',
+                           TO_JSONB(%s::integer),
+                           TRUE
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    closedState,
+                    closedState,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            for propertyName in (
+                    "streamState",
+                    "_streamState",
+            ):
+                mapper.db.execute(
+                    """
+                    INSERT INTO scipion_set_properties (
+                        "setId",
+                        key,
+                        value
+                    )
+                    SELECT id,
+                           %s,
+                           %s
+                      FROM scipion_sets
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                    ON CONFLICT ON CONSTRAINT
+                        ux_scipion_set_properties_set_key
+                    DO UPDATE SET
+                        value = EXCLUDED.value
+                    """,
+                    (
+                        propertyName,
+                        str(closedState),
+                        int(projectId),
+                        int(protocolDbId),
+                    ),
+                    commit=False,
+                )
+
+        return {
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "setsClosed": len(
+                storedSets
+            ),
+            "outputs": [
+                str(
+                    row.get(
+                        "outputName"
+                    )
+                    or ""
+                )
+                for row in storedSets
+            ],
+        }
+
+    @staticmethod
+    def _getPostgresqlRuntimeMapper(
+            currentProject,
+    ):
+        getter = getattr(
+            currentProject,
+            "getPostgresqlRuntimeMapper",
+            None,
+        )
+
+        if not callable(getter):
+            raise RuntimeError(
+                "Current project does not expose "
+                "a PostgreSQL runtime mapper"
+            )
+
+        runtimeMapper = getter()
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "PostgreSQL runtime mapper is not available"
+            )
+
+        return runtimeMapper
+
+    def _stopPostgresqlProtocols(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            resolvedProtocols,
+            currentProject,
+            buildProtocolMutationResultCallback: Callable,
+    ) -> Dict[str, Any]:
+        runtimeMapper = (
+            self._getPostgresqlRuntimeMapper(
+                currentProject
+            )
+        )
+
+        statusService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        stopped = []
+        skipped = []
+        localStopped = []
+        queueStopped = []
+        stepReports = []
+        outputReports = []
+        statusReports = []
+        elapsedReports = []
+
+        for protocol in resolvedProtocols:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if protocolId in (
+                    None,
+                    "",
+            ):
+                raise RuntimeError(
+                    "Cannot stop protocol without runtime id"
+                )
+
+            protocolId = int(
+                protocolId
+            )
+
+            storedRow = (
+                mapper
+                .getProjectProtocolByProtocolId(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            if not storedRow:
+                raise RuntimeError(
+                    "Protocol %s was not found "
+                    "in PostgreSQL"
+                    % protocolId
+                )
+
+            protocolDbId = int(
+                storedRow["id"]
+            )
+
+            protocolStatus = (
+                self._getProtocolStatus(
+                    protocol
+                )
+            )
+
+            if (
+                    protocolStatus
+                    not in
+                    RuntimeProtocolStatusSyncService
+                    .ACTIVE_STATUS_TEXTS
+            ):
+                skipped.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "protocolDbId": (
+                        protocolDbId
+                    ),
+                    "status": (
+                        protocolStatus
+                    ),
+                    "reason": (
+                        "protocol_not_active"
+                    ),
+                })
+
+                continue
+
+            elapsedSnapshot = (
+                statusService
+                .captureProtocolElapsedState(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            stoppedAtEpochSeconds = (
+                time.time()
+            )
+
+            pid = self._getProtocolPid(
+                protocol
+            )
+
+            jobIds = (
+                self._getProtocolJobIds(
+                    protocol
+                )
+            )
+
+            usesQueueForProtocol = (
+                self._safeBooleanCall(
+                    protocol,
+                    "useQueueForProtocol",
+                )
+            )
+
+            usesQueueForSteps = (
+                self._safeBooleanCall(
+                    protocol,
+                    "useQueueForSteps",
+                )
+            )
+
+            queueReports = []
+
+            if jobIds:
+                queueReports = (
+                    self._cancelQueueJobs(
+                        protocol
+                    )
+                )
+
+                queueStopped.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "protocolDbId": (
+                        protocolDbId
+                    ),
+                    "jobIds": list(
+                        jobIds
+                    ),
+                    "queueForProtocol": (
+                        usesQueueForProtocol
+                    ),
+                    "queueForSteps": (
+                        usesQueueForSteps
+                    ),
+                    "reports": (
+                        queueReports
+                    ),
+                })
+
+            processReport = None
+
+            # Queue-for-steps still has a local PostgreSQL
+            # worker coordinating the queue jobs.
+            #
+            # A scheduled protocol may also have a coordinator
+            # PID before it submits the actual queue job.
+            if pid:
+                processReport = (
+                    self._killProcessGroup(
+                        pid=pid,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+
+                localStopped.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "protocolDbId": (
+                        protocolDbId
+                    ),
+                    **processReport,
+                })
+
+            self._markProtocolAbortedInMemory(
+                protocol
+            )
+
+            runtimeMapper.store(
+                protocol
+            )
+
+            runtimeMapper.commit()
+
+            stepReport = (
+                self._abortRunningProtocolSteps(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                )
+            )
+
+            outputReport = (
+                self._closePostgresqlOutputSets(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                )
+            )
+
+            statusReport = (
+                statusService
+                .markProtocolAborted(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            elapsedReport = (
+                statusService
+                .finalizeProtocolElapsedTime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    elapsedSnapshot=elapsedSnapshot,
+                    stoppedAtEpochSeconds=(
+                        stoppedAtEpochSeconds
+                    ),
+                )
+            )
+
+            stepReports.append(
+                stepReport
+            )
+
+            outputReports.append(
+                outputReport
+            )
+
+            statusReports.append(
+                statusReport
+            )
+
+            elapsedReports.append(
+                elapsedReport
+            )
+
+            stopped.append({
+                "protocolId": str(
+                    protocolId
+                ),
+                "protocolDbId": (
+                    protocolDbId
+                ),
+                "previousStatus": (
+                    protocolStatus
+                ),
+                "status": str(
+                    STATUS_ABORTED
+                ),
+                "pid": pid,
+                "jobIds": list(
+                    jobIds
+                ),
+                "process": (
+                    processReport
+                ),
+                "queue": (
+                    queueReports
+                ),
+                "steps": (
+                    stepReport
+                ),
+                "outputs": (
+                    outputReport
+                ),
+            })
+
+        return (
+            buildProtocolMutationResultCallback(
+                "Protocol stopped successfully",
+                protocolsCount=len(
+                    stopped
+                ),
+                dependenciesCount=0,
+                postgresqlRuntimeStop=True,
+                postgresqlOnly=True,
+                usesProjectSqlite=False,
+                usesRunDb=False,
+                usesStepsSqlite=False,
+                stopped=stopped,
+                skipped=skipped,
+                localStopped=localStopped,
+                queueStopped=queueStopped,
+                postgresqlRuntimeStatus=(
+                    statusReports
+                ),
+                postgresqlRuntimeElapsed=(
+                    elapsedReports
+                ),
+                postgresqlRuntimeSteps=(
+                    stepReports
+                ),
+                postgresqlRuntimeOutputs=(
+                    outputReports
+                ),
+                postgresqlPointerRestore=None,
+                postgresqlRuntimeSync=None,
+                missingExecutionMirrors=[],
+                degradedStop=False,
+            )
+        )
+
+    def _stopLegacyProtocols(
+            self,
+            *,
+            resolvedProtocols,
+            currentProject,
+            buildProtocolMutationResultCallback: Callable,
+    ) -> Dict[str, Any]:
+        stopped = []
+
+        for protocol in resolvedProtocols:
+            currentProject.stopProtocol(
+                protocol
+            )
+
+            stopped.append(
+                str(
+                    protocol.getObjId()
+                )
+            )
+
+        return (
+            buildProtocolMutationResultCallback(
+                "Protocol stopped successfully",
+                protocolsCount=len(
+                    stopped
+                ),
+                dependenciesCount=0,
+                nativeStopped=stopped,
+                postgresqlRuntimeStop=False,
+            )
+        )
 
     def stopProtocols(
             self,
@@ -151,380 +1351,98 @@ class RuntimeProtocolStopService:
             usingPostgresqlRuntime: bool,
             currentProject,
             getScipionProtocolForRuntimeCallback: Callable,
-            restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
-            loadProtocolFromRuntimeDbCallback: Callable,
-            syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ) -> Dict[str, Any]:
         """
-        Stop the selected runtime protocols.
+        Stop only the explicitly selected protocols.
 
-        The operation only mutates the selected protocols:
-
-        - External parent protocols are never persisted.
-        - Parent outputs are never replaced, repaired or deleted.
-        - PostgreSQL pointer restoration may only update input Pointer
-          attributes belonging to the selected protocol.
-        - Output persistence is not performed during the final sync.
+        External parents, children and their outputs remain
+        completely untouched.
         """
         resolvedProtocols = []
+        seenProtocolIds = set()
 
-        for protocolId in protocolIds or []:
-            protocol = getScipionProtocolForRuntimeCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
+        for rawProtocolId in (
+                protocolIds or []
+        ):
+            protocol = (
+                getScipionProtocolForRuntimeCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=rawProtocolId,
+                )
             )
 
-            resolvedProtocols.append(protocol)
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            protocolIdText = str(
+                protocolId
+            )
+
+            if protocolIdText in seenProtocolIds:
+                continue
+
+            seenProtocolIds.add(
+                protocolIdText
+            )
+
+            resolvedProtocols.append(
+                protocol
+            )
 
         if not resolvedProtocols:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No valid protocols to stop",
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                detail=(
+                    "No valid protocols to stop"
+                ),
             )
-
-        pointerRestoreInfo = None
-
-        if usingPostgresqlRuntime:
-            pointerRestoreInfo = (
-                restorePostgresqlRuntimePointersForProtocolsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=resolvedProtocols,
-                    prepareOutputsForLaunch=True,
-                    allowMissingParentOutputs=True,
-                )
-            )
-
-            if pointerRestoreInfo.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                        "Failed to restore PostgreSQL runtime pointers "
-                        "before stop: %s"
-                        % pointerRestoreInfo.get("errors")
-                    ),
-                )
 
         try:
-            scheduledStopped = []
-            nativeStopped = []
-            missingExecutionMirrors = []
-
-            runtimeElapsedService = (
-                RuntimeProtocolStatusSyncService()
-                if usingPostgresqlRuntime
-                else None
-            )
-
-            elapsedSnapshots = {}
-            stoppedAtByProtocolId = {}
-
-            for protocol in resolvedProtocols:
-                protocolStatus = None
-
-                try:
-                    protocolStatus = protocol.getStatus()
-
-                except Exception:
-                    statusAttr = getattr(
-                        protocol,
-                        "status",
-                        None,
-                    )
-
-                    try:
-                        protocolStatus = (
-                            statusAttr.get()
-                            if statusAttr is not None
-                            else None
-                        )
-                    except Exception:
-                        protocolStatus = None
-
-                protocolRuntimeId = getattr(
-                    protocol,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                if (
-                        runtimeElapsedService
-                        is not None
-                        and protocolRuntimeId
-                        not in (None, "")
-                ):
-                    elapsedSnapshots[
-                        str(protocolRuntimeId)
-                    ] = (
-                        runtimeElapsedService
-                        .captureProtocolElapsedState(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=(
-                                protocolRuntimeId
-                            ),
-                        )
-                    )
-
-                isScheduledProtocol = (
-                    usingPostgresqlRuntime
-                    and protocolStatus == STATUS_SCHEDULED
-                )
-
-                protocolToStop = protocol
-
-                if usingPostgresqlRuntime:
-                    try:
-                        executionProtocol = (
-                            loadProtocolFromRuntimeDbCallback(
-                                protocolId=protocolRuntimeId,
-                            )
-                        )
-
-                        if executionProtocol is not None:
-                            protocolToStop = executionProtocol
-
-                    except Exception:
-                        logger.debug(
-                            "Could not reload protocol from execution DB "
-                            "before stop. projectId=%s protocolId=%s",
-                            projectId,
-                            protocolRuntimeId,
-                            exc_info=True,
-                        )
-
-                    pointerRestoreInfo = (
-                        restorePostgresqlRuntimePointersForProtocolsCallback(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocols=[protocolToStop],
-                            prepareOutputsForLaunch=True,
-                            allowMissingParentOutputs=True,
-                        )
-                    )
-
-                    if pointerRestoreInfo.get("errors"):
-                        raise HTTPException(
-                            status_code=(
-                                status.HTTP_500_INTERNAL_SERVER_ERROR
-                            ),
-                            detail=(
-                                "Failed to restore PostgreSQL runtime "
-                                "pointers before stop: %s"
-                                % pointerRestoreInfo.get("errors")
-                            ),
-                        )
-
-                pidBeforeStop = self._getProtocolPid(
-                    protocolToStop
-                )
-
-                missingExecutionMirror = False
-                nativeStopError = None
-
-                try:
-                    currentProject.stopProtocol(
-                        protocolToStop
-                    )
-
-                except RuntimeError as error:
-                    errorText = str(error)
-
-                    missingExecutionMirror = (
-                            usingPostgresqlRuntime
-                            and (
-                                    "was not found in the SQLite "
-                                    "compatibility database"
-                                    in errorText
-                            )
-                    )
-
-                    if not missingExecutionMirror:
-                        raise
-
-                    nativeStopError = errorText
-
-                    logger.warning(
-                        "Protocol execution mirror was missing "
-                        "during stop. Falling back to process "
-                        "termination and PostgreSQL aborted state. "
-                        "projectId=%s protocolId=%s error=%s",
-                        projectId,
-                        protocolRuntimeId,
-                        errorText,
-                    )
-
-                if (
-                        runtimeElapsedService
-                        is not None
-                        and protocolRuntimeId
-                        not in (None, "")
-                ):
-                    stoppedAtByProtocolId[
-                        str(protocolRuntimeId)
-                    ] = time.time()
-
-                pidKilled = False
-
-                if (
-                        usingPostgresqlRuntime
-                        and pidBeforeStop
-                        and self._isPidAlive(pidBeforeStop)
-                ):
-                    killed = self._killPid(
-                        pidBeforeStop
-                    )
-
-                    pidKilled = bool(
-                        killed
-                    )
-
-                    if not killed:
-                        raise HTTPException(
-                            status_code=(
-                                status.HTTP_500_INTERNAL_SERVER_ERROR
-                            ),
-                            detail=(
-                                "Protocol %s was marked as stopped but "
-                                "process pid=%s is still alive."
-                                % (
-                                    protocolRuntimeId,
-                                    pidBeforeStop,
-                                )
-                            ),
-                        )
-
-                    if missingExecutionMirror:
-                        missingExecutionMirrors.append({
-                            "protocolId": str(
-                                protocolRuntimeId
-                            ),
-                            "error": nativeStopError,
-                            "pid": pidBeforeStop,
-                            "pidKilled": pidKilled,
-                            "nativeStopSkipped": True,
-                        })
-
-                if isScheduledProtocol:
-                    scheduledStopped.append(
-                        str(protocolRuntimeId)
-                    )
-                else:
-                    nativeStopped.append(
-                        str(protocolRuntimeId)
-                    )
-
-            postgresqlSync = None
-
             if usingPostgresqlRuntime:
-                postgresqlSync = (
-                    syncPostgresqlRuntimeProtocolsAfterMutationCallback(
+                return (
+                    self
+                    ._stopPostgresqlProtocols(
                         mapper=mapper,
                         projectId=projectId,
-                        protocols=resolvedProtocols,
-                        registerOutputs=False,
-                    )
-                )
-
-            postgresqlStatusReports = []
-
-            if runtimeElapsedService is not None:
-                for protocol in resolvedProtocols:
-                    protocolRuntimeId = getattr(
-                        protocol,
-                        "getObjId",
-                        lambda: None,
-                    )()
-
-                    if protocolRuntimeId in (None, ""):
-                        continue
-
-                    postgresqlStatusReports.append(
-                        runtimeElapsedService.markProtocolAborted(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=protocolRuntimeId,
-                        )
-                    )
-
-            elapsedTimingReports = []
-
-            for protocol in resolvedProtocols:
-                protocolRuntimeId = getattr(
-                    protocol,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                protocolIdText = str(
-                    protocolRuntimeId
-                )
-
-                elapsedSnapshot = (
-                    elapsedSnapshots.get(
-                        protocolIdText
-                    )
-                )
-
-                stoppedAtEpochSeconds = (
-                    stoppedAtByProtocolId.get(
-                        protocolIdText
-                    )
-                )
-
-                if (
-                        elapsedSnapshot is None
-                        or stoppedAtEpochSeconds
-                        is None
-                ):
-                    continue
-
-                elapsedTimingReports.append(
-                    runtimeElapsedService
-                    .finalizeProtocolElapsedTime(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=(
-                            protocolRuntimeId
+                        resolvedProtocols=(
+                            resolvedProtocols
                         ),
-                        elapsedSnapshot=(
-                            elapsedSnapshot
+                        currentProject=(
+                            currentProject
                         ),
-                        stoppedAtEpochSeconds=(
-                            stoppedAtEpochSeconds
+                        buildProtocolMutationResultCallback=(
+                            buildProtocolMutationResultCallback
                         ),
                     )
                 )
 
-            return buildProtocolMutationResultCallback(
-                "Protocol stopped successfully",
-                protocolsCount=(
-                    int(
-                        postgresqlSync.get(
-                            "protocolsCount",
-                            0,
-                        ) or 0
-                    )
-                    if postgresqlSync
-                    else len(resolvedProtocols)
-                ),
-                dependenciesCount=0,
-                postgresqlPointerRestore=pointerRestoreInfo,
-                postgresqlRuntimeStop=True,
-                postgresqlRuntimeSync=postgresqlSync,
-                postgresqlRuntimeStatus=postgresqlStatusReports,
-                scheduledStopped=scheduledStopped,
-                nativeStopped=nativeStopped,
-                postgresqlRuntimeElapsed=(
-                    elapsedTimingReports
-                ),
-                missingExecutionMirrors=missingExecutionMirrors,
-                degradedStop=bool(missingExecutionMirrors),
+            return (
+                self
+                ._stopLegacyProtocols(
+                    resolvedProtocols=(
+                        resolvedProtocols
+                    ),
+                    currentProject=(
+                        currentProject
+                    ),
+                    buildProtocolMutationResultCallback=(
+                        buildProtocolMutationResultCallback
+                    ),
+                )
             )
 
-        except Exception as exc:
+        except HTTPException:
+            raise
+
+        except Exception as error:
             logger.exception(
                 "Failed to stop protocols. "
                 "projectId=%s protocolIds=%s",
@@ -533,9 +1451,12 @@ class RuntimeProtocolStopService:
             )
 
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
                 detail=(
                     "Failed to stop protocols: %s"
-                    % str(exc)
+                    % error
                 ),
-            )
+            ) from error
