@@ -696,10 +696,31 @@ def suggestionProtocol(
     projectId: int,
     protocolId: int,
     currentUser=Depends(getCurrentUser),
+    usePostgresqlRuntimeProject: bool = Query(True),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    if usePostgresqlRuntimeProject:
+        project = (
+            service
+            .loadPostgresqlRuntimeProjectForMutation(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                enableWriteFallback=False,
+            )
+        )
+    else:
+        project = service.getProjectById(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            refresh=True,
+            checkPid=False,
+            loadWorkflowFromPostgresql=False,
+            usePostgresqlRuntimeProject=False,
+            usePostgresqlRuntimeWriteFallback=False,
+        )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
