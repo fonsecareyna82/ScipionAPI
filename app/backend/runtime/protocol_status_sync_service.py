@@ -199,6 +199,93 @@ class RuntimeProtocolStatusSyncService:
 
         return jobIds
 
+    def persistProtocolProcessIdentity(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            protocol,
+    ) -> Dict[str, Any]:
+        """
+        Persist only the active process and queue identity.
+
+        This is used by QueueStepExecutor whenever a step job
+        is submitted to or removed from the queue.
+        """
+        row = (
+            mapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot persist protocol process identity: "
+                "protocol row was not found. "
+                "projectId=%s protocolId=%s"
+                % (
+                    projectId,
+                    protocolId,
+                )
+            )
+
+        params = self.normalizeParams(
+            row.get(
+                "params"
+            )
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(
+            runtimeMetadata
+        )
+
+        pid = self.getProtocolPid(
+            protocol
+        )
+
+        jobIds = self.getProtocolJobIds(
+            protocol
+        )
+
+        runtimeMetadata["pid"] = pid
+        runtimeMetadata["jobIds"] = list(
+            jobIds
+        )
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "params": json.dumps(
+                params,
+                ensure_ascii=False,
+            ),
+        })
+
+        return {
+            "protocolId": str(
+                protocolId
+            ),
+            "pid": pid,
+            "jobIds": list(
+                jobIds
+            ),
+        }
+
     def toSeconds(self, value: Any) -> Optional[float]:
         value = self.scalarValue(value)
 
