@@ -5001,18 +5001,178 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return objId
 
-    def _attachRuntimeContext(self, obj):
+    def _attachProtocolHostConfig(
+            self,
+            protocol,
+    ) -> bool:
+        """
+        Restore the non-persistent Scipion HostConfig for a
+        PostgreSQL-hydrated protocol.
+
+        HostConfig is loaded from the current project configuration
+        using the persisted protocol hostName. It is deliberately
+        never stored in PostgreSQL.
+        """
+        if (
+                protocol is None
+                or self.project is None
+        ):
+            return False
+
+        try:
+            existingHostConfig = (
+                protocol.getHostConfig()
+            )
+
+        except (
+                AttributeError,
+                TypeError,
+        ):
+            existingHostConfig = None
+
+        except Exception:
+            existingHostConfig = None
+
+        if existingHostConfig is not None:
+            return True
+
+        try:
+            hostName = (
+                protocol.getHostName()
+            )
+
+        except Exception:
+            hostName = None
+
+        hostName = str(
+            hostName or ""
+        ).strip()
+
+        if not hostName:
+            logger.warning(
+                "Cannot attach HostConfig to PostgreSQL "
+                "protocol without hostName. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self._getObjId(
+                    protocol
+                ),
+            )
+
+            return False
+
+        getHostConfig = getattr(
+            self.project,
+            "getHostConfig",
+            None,
+        )
+
+        if not callable(
+                getHostConfig
+        ):
+            logger.warning(
+                "Current PostgreSQL project does not expose "
+                "getHostConfig(). projectId=%s protocolId=%s "
+                "hostName=%s",
+                self.projectId,
+                self._getObjId(
+                    protocol
+                ),
+                hostName,
+            )
+
+            return False
+
+        try:
+            hostConfig = getHostConfig(
+                hostName
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not resolve PostgreSQL protocol "
+                "HostConfig. projectId=%s protocolId=%s "
+                "hostName=%s",
+                self.projectId,
+                self._getObjId(
+                    protocol
+                ),
+                hostName,
+            )
+
+            return False
+
+        if hostConfig is None:
+            logger.warning(
+                "HostConfig was not found for PostgreSQL "
+                "protocol. projectId=%s protocolId=%s "
+                "hostName=%s",
+                self.projectId,
+                self._getObjId(
+                    protocol
+                ),
+                hostName,
+            )
+
+            return False
+
+        try:
+            protocol.setHostConfig(
+                hostConfig
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not attach HostConfig to PostgreSQL "
+                "protocol. projectId=%s protocolId=%s "
+                "hostName=%s",
+                self.projectId,
+                self._getObjId(
+                    protocol
+                ),
+                hostName,
+            )
+
+            return False
+
+        return True
+
+    def _attachRuntimeContext(
+            self,
+            obj,
+    ):
         if obj is None:
             return obj
 
-        if isinstance(obj, Protocol):
-            obj.setMapper(self)
+        if isinstance(
+                obj,
+                Protocol,
+        ):
+            obj.setMapper(
+                self
+            )
 
             if self.project is not None:
                 try:
-                    obj.setProject(self.project)
+                    obj.setProject(
+                        self.project
+                    )
+
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Could not attach PostgreSQL project "
+                        "to runtime protocol. projectId=%s "
+                        "protocolId=%s",
+                        self.projectId,
+                        self._getObjId(
+                            obj
+                        ),
+                        exc_info=True,
+                    )
+
+            self._attachProtocolHostConfig(
+                obj
+            )
 
         return obj
 

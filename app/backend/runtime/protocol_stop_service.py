@@ -762,19 +762,55 @@ class RuntimeProtocolStopService:
             return []
 
         try:
+            hostName = str(
+                protocol.getHostName()
+                or ""
+            ).strip()
+
+        except Exception:
+            hostName = ""
+
+        try:
             hostConfig = (
                 protocol.getHostConfig()
             )
 
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load HostConfig for queued "
+                "protocol %s. hostName=%s error=%s"
+                % (
+                    protocol.getObjId(),
+                    hostName or "<empty>",
+                    error,
+                )
+            ) from error
+
+        if hostConfig is None:
+            raise RuntimeError(
+                "HostConfig is not available for queued "
+                "protocol %s. hostName=%s"
+                % (
+                    protocol.getObjId(),
+                    hostName or "<empty>",
+                )
+            )
+
+        try:
             cancelCommandTemplate = (
                 hostConfig.getCancelCommand()
             )
 
         except Exception as error:
             raise RuntimeError(
-                "Could not load the queue cancel "
-                "command: %s"
-                % error
+                "Could not load the queue cancellation "
+                "command for protocol %s. hostName=%s "
+                "error=%s"
+                % (
+                    protocol.getObjId(),
+                    hostName or "<empty>",
+                    error,
+                )
             ) from error
 
         if not cancelCommandTemplate:
