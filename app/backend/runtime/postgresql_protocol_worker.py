@@ -60,6 +60,9 @@ from pyworkflow.utils import LoggingConfigurator
 from pyworkflow.utils.log import setDefaultLoggingContext
 
 from app.backend.project import PostgresqlProject
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    setPostgresqlRuntimeParentReference,
+)
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
@@ -2360,8 +2363,18 @@ class RuntimePostgresqlProtocolWorker:
                     outputName
                 )
 
-            outputObject._objParent = (
-                self.protocol
+            # Keep the owning protocol available at runtime without
+            # adding it to the persistent Scipion Object graph.
+            #
+            # A strong reference here creates:
+            #
+            # protocol -> output Set -> protocol
+            #
+            # and Set.write() enters infinite recursion while
+            # serializing the Set properties.
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=outputObject,
+                parent=self.protocol,
             )
 
             parentIdSetter = getattr(
