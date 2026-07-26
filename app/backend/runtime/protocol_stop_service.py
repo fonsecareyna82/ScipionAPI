@@ -27,6 +27,7 @@ import datetime
 import logging
 import os
 import signal
+import psutil
 import subprocess
 import time
 from typing import Any, Callable, Dict, List
@@ -278,19 +279,71 @@ class RuntimeProtocolStopService:
             return False
 
     @staticmethod
-    def _isProcessGroupAlive(
-            processGroupId,
+    def _reapChildProcess(
+            pid,
     ) -> bool:
-        if not processGroupId:
+        """
+        Reap a terminated worker when the current API
+        process is its direct parent.
+
+        A terminated but unreaped worker remains visible
+        as a zombie and os.killpg(pgid, 0) still reports
+        that its process group exists.
+        """
+        if not pid:
             return False
 
         try:
-            os.killpg(
-                int(processGroupId),
-                0,
+            waitedPid, _ = os.waitpid(
+                int(pid),
+                os.WNOHANG,
             )
 
-            return True
+            return (
+                waitedPid
+                == int(pid)
+            )
+
+        except (
+                ChildProcessError,
+                ProcessLookupError,
+        ):
+            # The worker may have been launched by another
+            # API process or may already have been reaped.
+            return False
+
+        except Exception:
+            logger.debug(
+                "Could not reap PostgreSQL protocol "
+                "worker pid=%s.",
+                pid,
+                exc_info=True,
+            )
+
+            return False
+
+    @staticmethod
+    def _isProcessGroupAlive(
+            processGroupId,
+    ) -> bool:
+        """
+        Return True only when the process group contains
+        at least one process that is still executing.
+
+        Zombie/dead processes do not count as alive.
+        """
+        if not processGroupId:
+            return False
+
+        processGroupId = int(
+            processGroupId
+        )
+
+        try:
+            os.killpg(
+                processGroupId,
+                0,
+            )
 
         except ProcessLookupError:
             return False
@@ -300,6 +353,67 @@ class RuntimeProtocolStopService:
 
         except Exception:
             return False
+
+        terminalStatuses = {
+            psutil.STATUS_ZOMBIE,
+            psutil.STATUS_DEAD,
+        }
+
+        try:
+            for process in psutil.process_iter([
+                "pid",
+                "status",
+            ]):
+                try:
+                    if (
+                            os.getpgid(
+                                process.pid
+                            )
+                            != processGroupId
+                    ):
+                        continue
+
+                    processStatus = (
+                        process.info.get(
+                            "status"
+                        )
+                    )
+
+                    if (
+                            processStatus
+                            not in terminalStatuses
+                    ):
+                        return True
+
+                except (
+                        psutil.NoSuchProcess,
+                        ProcessLookupError,
+                ):
+                    continue
+
+                except (
+                        psutil.AccessDenied,
+                        PermissionError,
+                ):
+                    # We cannot prove that the process is
+                    # stopped, so remain conservative.
+                    return True
+
+        except Exception:
+            logger.debug(
+                "Could not inspect PostgreSQL protocol "
+                "process group %s.",
+                processGroupId,
+                exc_info=True,
+            )
+
+            # killpg(..., 0) confirmed that something
+            # exists, but inspection failed.
+            return True
+
+        # The group disappeared during inspection or all
+        # its remaining members are zombies/dead.
+        return False
 
     @staticmethod
     def _getProcessCommandLine(
@@ -552,6 +666,10 @@ class RuntimeProtocolStopService:
             ) from error
 
         for _ in range(15):
+            self._reapChildProcess(
+                pid
+            )
+
             if not self._isProcessGroupAlive(
                     processGroupId
             ):
@@ -577,6 +695,9 @@ class RuntimeProtocolStopService:
             )
 
         except ProcessLookupError:
+            self._reapChildProcess(
+                pid
+            )
             return {
                 "pid": int(pid),
                 "processGroupId": (
@@ -599,6 +720,10 @@ class RuntimeProtocolStopService:
             ) from error
 
         for _ in range(10):
+            self._reapChildProcess(
+                pid
+            )
+
             if not self._isProcessGroupAlive(
                     processGroupId
             ):
