@@ -67,6 +67,9 @@ from app.backend.runtime.postgresql_runtime_event_service import (
     PostgresqlRuntimeEventListener,
     PostgresqlRuntimeEventPublisher,
 )
+from app.backend.runtime.postgresql_scheduling_log_formatter import (
+    PostgresqlSchedulingLogFormatter,
+)
 from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
@@ -435,6 +438,25 @@ class RuntimePostgresqlProtocolWorker:
         setDefaultLoggingContext(
             self.protocolId,
             self.project.getShortName(),
+        )
+
+    def getSchedulingProtocolLabel(
+            self,
+    ) -> str:
+        try:
+            label = str(
+                self.protocol.getObjLabel()
+                or ""
+            ).strip()
+
+        except Exception:
+            label = ""
+
+        if label:
+            return label
+
+        return "Protocol %s" % (
+            self.protocolId
         )
 
     def close(self) -> None:
@@ -1296,24 +1318,57 @@ class RuntimePostgresqlProtocolWorker:
     ) -> None:
         startedAt = time.monotonic()
 
-        timeoutSeconds = float(
-            os.environ.get(
-                "SCIPION_POSTGRESQL_DEPENDENCY_TIMEOUT",
-                "0",
-            )
-            or 0
+        timeoutSeconds = max(
+            0.0,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_DEPENDENCY_TIMEOUT",
+                    "0",
+                )
+                or 0
+            ),
         )
 
-        lastReportedAt = -30.0
+        eventWaitSeconds = max(
+            1.0,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_EVENT_WAIT_SECONDS",
+                    str(
+                        DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
+                    ),
+                )
+                or DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
+            ),
+        )
 
-        eventWaitSeconds = float(
-            os.environ.get(
-                "SCIPION_POSTGRESQL_EVENT_WAIT_SECONDS",
-                str(
-                    DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
-                ),
-            )
-            or DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
+        heartbeatSeconds = max(
+            30.0,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_SCHEDULE_HEARTBEAT_SECONDS",
+                    "300",
+                )
+                or 300
+            ),
+        )
+
+        formatter = (
+            PostgresqlSchedulingLogFormatter()
+        )
+
+        protocolLabel = (
+            self.getSchedulingProtocolLabel()
+        )
+
+        lastWaitFingerprint = None
+        lastWaitLogAt = None
+
+        logger.info(
+            "Checking whether protocol "
+            "\"%s\" (id %s) can start.",
+            protocolLabel,
+            self.protocolId,
         )
 
         self.openDependencyEventListener()
@@ -1328,22 +1383,23 @@ class RuntimePostgresqlProtocolWorker:
             ]
 
             if failedParents:
+                failedProtocolIds = ", ".join(
+                    str(
+                        row.get(
+                            "protocolId"
+                        )
+                    )
+                    for row
+                    in failedParents
+                )
+
                 raise RuntimeError(
-                    "Cannot execute protocol %s "
-                    "because input parent "
-                    "protocol(s) failed or "
-                    "aborted: %s"
+                    "Protocol \"%s\" cannot start "
+                    "because input protocol(s) %s "
+                    "failed or were aborted."
                     % (
-                        self.protocolId,
-                        ", ".join(
-                            str(
-                                row.get(
-                                    "protocolId"
-                                )
-                            )
-                            for row
-                            in failedParents
-                        ),
+                        protocolLabel,
+                        failedProtocolIds,
                     )
                 )
 
@@ -1352,21 +1408,24 @@ class RuntimePostgresqlProtocolWorker:
             ]
 
             if missingPrerequisites:
+                missingProtocolIds = ", ".join(
+                    str(
+                        item.get(
+                            "protocolId"
+                        )
+                    )
+                    for item
+                    in missingPrerequisites
+                )
+
                 raise RuntimeError(
-                    "Cannot execute protocol %s "
+                    "Protocol \"%s\" cannot start "
                     "because prerequisite "
-                    "protocol(s) do not exist: %s"
+                    "protocol(s) %s do not exist. "
+                    "Check the Prerequisites field."
                     % (
-                        self.protocolId,
-                        ", ".join(
-                            str(
-                                item.get(
-                                    "protocolId"
-                                )
-                            )
-                            for item
-                            in missingPrerequisites
-                        ),
+                        protocolLabel,
+                        missingProtocolIds,
                     )
                 )
 
@@ -1393,20 +1452,63 @@ class RuntimePostgresqlProtocolWorker:
                     and not validationErrors
             ):
                 logger.info(
-                    "PostgreSQL protocol is ready. "
-                    "projectId=%s protocolId=%s "
-                    "streaming=%s",
-                    self.projectId,
+                    "All dependencies and inputs "
+                    "are ready. Starting protocol "
+                    "\"%s\" (id %s).",
+                    protocolLabel,
                     self.protocolId,
-                    readiness["streaming"],
                 )
 
                 return
 
+            now = time.monotonic()
+
             elapsed = (
-                time.monotonic()
+                now
                 - startedAt
             )
+
+            waitFingerprint = (
+                formatter.buildFingerprint(
+                    readiness
+                )
+            )
+
+            waitStateChanged = (
+                waitFingerprint
+                != lastWaitFingerprint
+            )
+
+            heartbeatDue = (
+                lastWaitLogAt is None
+                or (
+                    now
+                    - lastWaitLogAt
+                    >= heartbeatSeconds
+                )
+            )
+
+            if (
+                    waitStateChanged
+                    or heartbeatDue
+            ):
+                logger.info(
+                    "%s",
+                    formatter.buildWaitingMessage(
+                        readiness,
+                        heartbeat=(
+                            not waitStateChanged
+                            and lastWaitFingerprint
+                            is not None
+                        ),
+                    ),
+                )
+
+                lastWaitFingerprint = (
+                    waitFingerprint
+                )
+
+                lastWaitLogAt = now
 
             if (
                     timeoutSeconds > 0
@@ -1414,49 +1516,41 @@ class RuntimePostgresqlProtocolWorker:
                     >= timeoutSeconds
             ):
                 raise TimeoutError(
-                    "Timed out waiting for "
-                    "PostgreSQL protocol inputs. "
-                    "protocolId=%s "
-                    "pendingParents=%s "
-                    "missingInputs=%s "
-                    "inputRestoreErrors=%s "
-                    "validationErrors=%s"
+                    "Protocol \"%s\" could not "
+                    "start after %.0f seconds.\n%s"
                     % (
-                        self.protocolId,
-                        pendingParents,
-                        missingInputs,
-                        inputRestoreErrors,
-                        validationErrors,
+                        protocolLabel,
+                        elapsed,
+                        formatter
+                        .buildWaitingMessage(
+                            readiness,
+                            heartbeat=True,
+                        ),
                     )
                 )
 
-            if (
-                    elapsed
-                    - lastReportedAt
-                    >= 30
-            ):
-                logger.info(
-                    "PostgreSQL protocol is still "
-                    "scheduled. projectId=%s "
-                    "protocolId=%s streaming=%s "
-                    "pendingParents=%s "
-                    "missingInputs=%s "
-                    "inputRestoreErrors=%s "
-                    "validationErrors=%s",
-                    self.projectId,
-                    self.protocolId,
-                    readiness["streaming"],
-                    pendingParents,
-                    missingInputs,
-                    inputRestoreErrors,
-                    validationErrors,
+            waitSeconds = (
+                eventWaitSeconds
+            )
+
+            if timeoutSeconds > 0:
+                remainingTimeout = max(
+                    0.0,
+                    timeoutSeconds
+                    - elapsed,
                 )
 
-                lastReportedAt = elapsed
+                waitSeconds = min(
+                    waitSeconds,
+                    remainingTimeout,
+                )
+
+            if waitSeconds <= 0:
+                continue
 
             dependencyEvent = (
                 self.waitForDependencyChange(
-                    eventWaitSeconds
+                    waitSeconds
                 )
             )
 
