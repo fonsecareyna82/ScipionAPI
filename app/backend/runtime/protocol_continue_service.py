@@ -1,28 +1,3 @@
-# ******************************************************************************
-# *
-# * Authors:     Yunior C. Fonseca Reyna
-# *
-# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
-# *
-# * This program is free software; you can redistribute it and/or modify
-# * it under the terms of the GNU General Public License as published by
-# * the Free Software Foundation; either version 3 of the License, or
-# * (at your option) any later version.
-# *
-# * This program is distributed in the hope that it will be useful,
-# * but WITHOUT ANY WARRANTY; without even the implied warranty of
-# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# * GNU General Public License for more details.
-# *
-# * You should have received a copy of the GNU General Public License
-# * along with this program; if not, write to the Free Software
-# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
-# * 02111-1307  USA
-# *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
-# *
-# ******************************************************************************
 import logging
 from typing import Any, Callable, Dict
 
@@ -46,596 +21,298 @@ class RuntimeProtocolContinueService:
             getScipionProtocolForRuntimeCallback: Callable,
             getPostgresqlRuntimeSubworkflowCallback: Callable,
             workflowProtocolMapToProtocolsCallback: Callable,
-            restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
-            preparePostgresqlExecutionMirrorsCallback: Callable,
+            buildPostgresqlContinuePlanCallback: Callable,
+            launchPostgresqlContinueSubworkflowCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
-            syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
-            refreshPostgresqlRuntimeProtocolForResumeCallback: Callable,
     ) -> Dict[str, Any]:
         """
-        Continue the selected protocol subworkflow.
+        Continue the selected downstream workflow.
 
-        Parent protocols and their outputs are strictly read-only:
+        PostgreSQL runtime guarantees:
 
-        - No parent output is replaced or repaired.
-        - No parent protocol is persisted.
-        - Persisted outputs are preserved for resumed streaming protocols.
-        - Persisted outputs are deleted only for protocols restarted by
-          continue-all.
-        - Only input Pointer attributes belonging to resumed protocols
-          may be restored.
+        - Existing parent protocols are read-only.
+        - Existing parent outputs are read-only.
+        - Streaming protocols are resumed from PostgreSQL steps and outputs.
+        - Non-streaming or SAVED protocols are restarted.
+        - Outputs are deleted only for protocols classified as restart.
+        - project.sqlite, run.db and steps.sqlite are not used.
         """
-        protocol = getScipionProtocolForRuntimeCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+        protocol = (
+            getScipionProtocolForRuntimeCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
         )
-
-        runtimeRefreshReports = []
-        runtimeRefreshedProtocolIds = set()
 
         try:
             if usingPostgresqlRuntime:
-                workflowProtocolList = (
+                workflowProtocolMap = (
                     getPostgresqlRuntimeSubworkflowCallback(
                         mapper=mapper,
                         projectId=projectId,
                         protocolId=protocolId,
                     )
                 )
-
-                for workflowProtocol, _level in (
-                        workflowProtocolList.values()
-                ):
-                    workflowProtocolId = getattr(
-                        workflowProtocol,
-                        "getObjId",
-                        lambda: None,
-                    )()
-
-                    if workflowProtocolId in (None, ""):
-                        continue
-
-                    worksInStreaming = bool(
-                        workflowProtocol
-                        .worksInStreaming()
-                    )
-
-                    isSaved = bool(
-                        workflowProtocol.isSaved()
-                    )
-
-                    # Match Scipion's native continue semantics:
-                    #
-                    # - streaming + not SAVED -> resume from run.db
-                    # - SAVED or non-streaming -> restart, so the old
-                    #   runtime database must not be loaded.
-                    if (
-                            not worksInStreaming
-                            or isSaved
-                    ):
-                        runtimeRefreshReports.append({
-                            "protocolId": (
-                                int(workflowProtocolId)
-                            ),
-                            "refreshed": False,
-                            "reason": (
-                                "native_continue_requires_restart"
-                            ),
-                            "worksInStreaming": (
-                                worksInStreaming
-                            ),
-                            "saved": isSaved,
-                        })
-
-                        continue
-
-                    refreshReport = (
-                        refreshPostgresqlRuntimeProtocolForResumeCallback(
-                            mapper=mapper,
-                            projectId=projectId,
-                            protocolId=workflowProtocolId,
-                        )
-                    )
-
-                    runtimeRefreshReports.append(
-                        refreshReport
-                    )
-
-                    if refreshReport.get(
-                            "refreshed"
-                    ):
-                        runtimeRefreshedProtocolIds.add(
-                            str(workflowProtocolId)
-                        )
-
-                workflowProtocolList = (
-                    getPostgresqlRuntimeSubworkflowCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
-                )
-
-                protocolsToResume = (
-                    workflowProtocolMapToProtocolsCallback(
-                        workflowProtocolList
-                    )
-                )
-
-                # PostgreSQL currently provides the full downstream workflow.
-                # There is no separate active-protocol collection yet.
-                activeProtocolList = {}
-
             else:
-                workflowProtocolList, activeProtocolList = (
-                    currentProject._getSubworkflow(protocol)
+                (
+                    workflowProtocolMap,
+                    activeProtocolMap,
+                ) = currentProject._getSubworkflow(
+                    protocol
                 )
 
+                continuedProtocolMap = (
+                    activeProtocolMap
+                    or workflowProtocolMap
+                )
 
-        except Exception as exc:
+        except Exception as error:
             logger.exception(
-                "Failed to resolve subworkflow for continue-all. "
-                "projectId=%s protocolId=%s",
+                "Failed to resolve subworkflow for "
+                "continue-all. projectId=%s "
+                "protocolId=%s",
                 projectId,
                 protocolId,
             )
 
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
                 detail=(
-                    "Failed to resolve protocol subworkflow: %s"
-                    % str(exc)
+                    "Failed to resolve protocol "
+                    "subworkflow: %s"
+                    % error
                 ),
             )
 
-        continuedProtocolMap = (
-            activeProtocolList
-            or workflowProtocolList
-        )
-
-        protocolsToResume = workflowProtocolMapToProtocolsCallback(
-            continuedProtocolMap
-        )
-
-        if not protocolsToResume:
-            return buildProtocolMutationResultCallback(
-                "No protocols to continue"
-            )
-
-        pointerRestoreInfo = None
-        executionMirrorPrepareInfo = None
-
-        if usingPostgresqlRuntime:
-            parentProtocolsById = {}
-
-            workflowProtocols = workflowProtocolMapToProtocolsCallback(
-                workflowProtocolList
-            )
-
-            workflowProtocolsById = {}
-
-            for workflowProtocol in workflowProtocols:
-                workflowProtocolId = getattr(
-                    workflowProtocol,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                if workflowProtocolId in (None, ""):
-                    continue
-
-                workflowProtocolsById[
-                    str(workflowProtocolId)
-                ] = workflowProtocol
-
-            for cachedProtocol in workflowProtocols:
-                cachedProtocolId = getattr(
-                    cachedProtocol,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                if cachedProtocolId is None:
-                    continue
-
-                parentProtocolsById[str(cachedProtocolId)] = (
-                    cachedProtocol
-                )
-
-                try:
-                    parentProtocolsById[int(cachedProtocolId)] = (
-                        cachedProtocol
-                    )
-                except Exception:
-                    pass
-
-            protocolsNeedingPointerRestore = []
-
-            for protocolToResume in protocolsToResume:
-                protocolToResumeId = getattr(
-                    protocolToResume,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                if protocolToResumeId in (
-                        None,
-                        "",
-                ):
-                    continue
-
-                # A protocol refreshed from run.db already contains
-                # the persistent SQLite Pointer objects required by
-                # Scipion's native streaming resume.
-                #
-                # Replacing those pointers with fresh instances loses
-                # their runtime SQLite identity and can produce:
-                #
-                #   Circular reference, object:
-                #   <id>.<inputName> found twice
-                if (
-                        str(protocolToResumeId)
-                        in runtimeRefreshedProtocolIds
-                ):
-                    continue
-
-                protocolsNeedingPointerRestore.append(
-                    protocolToResume
-                )
-
-            if protocolsNeedingPointerRestore:
-                pointerRestoreInfo = (
-                    restorePostgresqlRuntimePointersForProtocolsCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocols=(
-                            protocolsNeedingPointerRestore
-                        ),
-                        prepareOutputsForLaunch=False,
-                        allowMissingParentOutputs=True,
-                        parentProtocolsById=(
-                            parentProtocolsById
-                        ),
-                    )
-                )
-            else:
-                pointerRestoreInfo = {
-                    "reports": [],
-                    "errors": [],
-                    "skipped": True,
-                    "reason": (
-                        "runtime_db_pointers_preserved"
-                    ),
-                    "protocolIds": sorted(
-                        runtimeRefreshedProtocolIds
-                    ),
-                }
-
-            if pointerRestoreInfo.get("errors"):
-                raise HTTPException(
-                    status_code=(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    detail=(
-                            "Failed to restore PostgreSQL runtime "
-                            "pointers before continue-all: %s"
-                            % pointerRestoreInfo.get(
-                        "errors"
-                    )
-                    ),
-                )
-
-            executionMirrorPrepareInfo = preparePostgresqlExecutionMirrorsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protocolsToResume,
-            )
-
-            if executionMirrorPrepareInfo.get("errors"):
-                raise HTTPException(
-                    status_code=(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    detail=(
-                        "Failed to prepare SQLite execution "
-                        "mirrors before continue-all: %s"
-                        % executionMirrorPrepareInfo.get(
-                            "errors"
-                        )
-                    ),
-                )
-
-        errorList = []
-
-        from pyworkflow.protocol import (
-            MODE_RESTART,
-            MODE_RESUME,
-        )
-
-        restartResetInfo = None
-        restartOutputCleanupInfo = None
-        restartInputRefCleanupInfo = None
-        restartResetSyncInfo = None
-
-        protocolsRestartedByContinue = []
-        restartedProtocolIds = []
-
-        if usingPostgresqlRuntime:
-            for workflowKey, workflowItem in list(
-                    continuedProtocolMap.items()
-            ):
-                (
-                    protocolToContinue,
-                    protocolLevel,
-                ) = workflowItem
-
-                protocolToContinueId = getattr(
-                    protocolToContinue,
-                    "getObjId",
-                    lambda: None,
-                )()
-
-                shouldResume = (
-                    protocolToContinue.worksInStreaming()
-                    and not protocolToContinue.isSaved()
-                )
-
-                if shouldResume:
-                    protocolToContinue.runMode.set(
-                        MODE_RESUME
-                    )
-                    continue
-
-                protocolToContinue.runMode.set(
-                    MODE_RESTART
-                )
-
-                protocolAfterReset = (
-                    protocolToContinue
-                )
-
-                if not protocolToContinue.isSaved():
-                    try:
-                        protocolAfterReset = (
-                            currentProject.resetProtocol(
-                                protocolToContinue
-                            )
-                            or protocolToContinue
-                        )
-
-                    except Exception as error:
-                        logger.exception(
-                            "Failed to reset protocol before "
-                            "continue-all restart. "
-                            "projectId=%s protocolId=%s",
-                            projectId,
-                            protocolToContinueId,
-                        )
-
-                        raise HTTPException(
-                            status_code=(
-                                status
-                                .HTTP_500_INTERNAL_SERVER_ERROR
-                            ),
-                            detail={
-                                "message": (
-                                    "Failed to reset protocol "
-                                    "before continue-all restart"
-                                ),
-                                "protocolId": (
-                                    str(protocolToContinueId)
-                                    if protocolToContinueId
-                                    not in (None, "")
-                                    else None
-                                ),
-                                "error": str(error),
-                            },
-                        ) from error
-
-                protocolAfterReset.runMode.set(
-                    MODE_RESTART
-                )
-
-                continuedProtocolMap[
-                    workflowKey
-                ] = (
-                    protocolAfterReset,
-                    protocolLevel,
-                )
-
-                protocolsRestartedByContinue.append(
-                    protocolAfterReset
-                )
-
-                if protocolToContinueId not in (
-                        None,
-                        "",
-                ):
-                    restartedProtocolIds.append(
-                        str(protocolToContinueId)
-                    )
-
-            if protocolsRestartedByContinue:
-                restartOutputCleanupInfo = (
-                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocols=(
-                            protocolsRestartedByContinue
-                        ),
-                    )
-                )
-
-                if restartOutputCleanupInfo.get(
-                        "errors"
-                ):
-                    raise HTTPException(
-                        status_code=(
-                            status
-                            .HTTP_500_INTERNAL_SERVER_ERROR
-                        ),
-                        detail={
-                            "message": (
-                                "Failed to delete PostgreSQL "
-                                "outputs before continue-all "
-                                "restart"
-                            ),
-                            "errors": (
-                                restartOutputCleanupInfo.get(
-                                    "errors"
-                                )
-                            ),
-                        },
-                    )
-
-                restartInputRefCleanupInfo = (
-                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocols=(
-                            protocolsRestartedByContinue
-                        ),
-                    )
-                )
-
-                restartResetSyncInfo = (
-                    syncPostgresqlRuntimeProtocolsAfterMutationCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocols=(
-                            protocolsRestartedByContinue
-                        ),
-                        registerOutputs=False,
-                        syncRelations=False,
-                        authoritativeProtocolState=True,
-                    )
-                )
-
-                if restartResetSyncInfo.get(
-                        "errors"
-                ):
-                    raise HTTPException(
-                        status_code=(
-                            status
-                            .HTTP_500_INTERNAL_SERVER_ERROR
-                        ),
-                        detail={
-                            "message": (
-                                "Failed to synchronize reset "
-                                "protocols before continue-all"
-                            ),
-                            "errors": (
-                                restartResetSyncInfo.get(
-                                    "errors"
-                                )
-                            ),
-                        },
-                    )
-
-                restartResetInfo = {
-                    "protocolIds": (
-                        restartedProtocolIds
-                    ),
-                    "count": len(
-                        restartedProtocolIds
-                    ),
-                }
-
-            protocolsToResume = (
+        if not usingPostgresqlRuntime:
+            protocolsToContinue = (
                 workflowProtocolMapToProtocolsCallback(
                     continuedProtocolMap
                 )
             )
 
-        else:
-            for protocolToContinue in (
-                    protocolsToResume
-            ):
-                if (
-                        protocolToContinue
-                        .worksInStreaming()
-                        and not protocolToContinue.isSaved()
-                ):
-                    protocolToContinue.runMode.set(
-                        MODE_RESUME
+            if not protocolsToContinue:
+                return (
+                    buildProtocolMutationResultCallback(
+                        "No protocols to continue"
                     )
-                else:
-                    protocolToContinue.runMode.set(
-                        MODE_RESTART
-                    )
+                )
 
-        try:
-            currentProject._continueWorkflow(
-                errorList,
-                continuedProtocolMap,
+            errors = []
+
+            try:
+                currentProject._continueWorkflow(
+                    errors,
+                    continuedProtocolMap,
+                )
+
+            except Exception as error:
+                logger.exception(
+                    "Failed to continue legacy "
+                    "workflow subtree. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail=(
+                        "Failed to continue protocol "
+                        "subtree: %s"
+                        % error
+                    ),
+                )
+
+            if errors:
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_422_UNPROCESSABLE_ENTITY
+                    ),
+                    detail=[
+                        str(error)
+                        for error in errors
+                    ],
+                )
+
+            return (
+                buildProtocolMutationResultCallback(
+                    "Protocol subtree continued successfully",
+                    protocolsCount=len(
+                        protocolsToContinue
+                    ),
+                    dependenciesCount=0,
+                )
             )
 
-        except Exception as exc:
-            logger.exception(
-                "Failed to continue workflow subtree. "
-                "projectId=%s protocolId=%s",
-                projectId,
-                protocolId,
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "Failed to continue protocol subtree: %s"
-                    % str(exc)
+        continuePlan = (
+            buildPostgresqlContinuePlanCallback(
+                mapper=mapper,
+                projectId=projectId,
+                workflowProtocolMap=(
+                    workflowProtocolMap
                 ),
             )
+        )
 
-        if errorList:
+        if continuePlan.get("errors"):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=[
-                    str(error)
-                    for error in errorList
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                detail=continuePlan[
+                    "errors"
                 ],
             )
 
-        postgresqlSync = None
+        planSummary = (
+            continuePlan.get(
+                "summary"
+            )
+            or {}
+        )
 
-        if usingPostgresqlRuntime:
-            postgresqlSync = (
-                syncPostgresqlRuntimeProtocolsAfterMutationCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protocolsToResume,
-                    registerOutputs=False,
+        actionableCount = int(
+            planSummary.get(
+                "actionableCount",
+                0,
+            )
+            or 0
+        )
+
+        if actionableCount == 0:
+            return (
+                buildProtocolMutationResultCallback(
+                    "No protocols require continuation",
+                    protocolsCount=int(
+                        planSummary.get(
+                            "protocolsCount",
+                            0,
+                        )
+                        or 0
+                    ),
+                    dependenciesCount=0,
+                    postgresqlContinuePlan=(
+                        planSummary
+                    ),
+                    postgresqlRuntimeContinue=True,
                 )
             )
 
-        return buildProtocolMutationResultCallback(
-            "Protocol subtree continued successfully",
-            protocolsCount=(
-                int(
-                    postgresqlSync.get(
+        restartProtocols = [
+            entry["protocol"]
+            for entry in (
+                continuePlan.get(
+                    "entries"
+                )
+                or []
+            )
+            if entry.get("action")
+            == "restart"
+        ]
+
+        restartOutputCleanup = None
+        restartInputRefCleanup = None
+
+        # No destructive operation occurs until
+        # the complete mixed workflow has passed
+        # PostgreSQL validation.
+        if restartProtocols:
+            restartOutputCleanup = (
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=(
+                        restartProtocols
+                    ),
+                )
+            )
+
+            if restartOutputCleanup.get(
+                    "errors"
+            ):
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail={
+                        "message": (
+                            "Failed to delete "
+                            "PostgreSQL outputs for "
+                            "protocols restarted by "
+                            "continue-all"
+                        ),
+                        "errors": (
+                            restartOutputCleanup
+                            .get("errors")
+                        ),
+                    },
+                )
+
+            restartInputRefCleanup = (
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=(
+                        restartProtocols
+                    ),
+                )
+            )
+
+        launchInfo = (
+            launchPostgresqlContinueSubworkflowCallback(
+                mapper=mapper,
+                projectId=projectId,
+                plan=continuePlan,
+            )
+        )
+
+        if launchInfo.get("errors"):
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=launchInfo[
+                    "errors"
+                ],
+            )
+
+        return (
+            buildProtocolMutationResultCallback(
+                "Protocol subtree continued successfully",
+                protocolsCount=int(
+                    launchInfo.get(
                         "protocolsCount",
                         0,
-                    ) or 0
-                )
-                if postgresqlSync
-                else len(protocolsToResume)
-            ),
-            dependenciesCount=0,
-            postgresqlPointerRestore=pointerRestoreInfo,
-            postgresqlExecutionMirrors=executionMirrorPrepareInfo,
-            postgresqlRuntimeContinue=True,
-            postgresqlRuntimeSync=postgresqlSync,
-            postgresqlRuntimeRefresh=runtimeRefreshReports,
-            postgresqlRestartReset=restartResetInfo,
-            postgresqlRestartOutputCleanup=(
-                restartOutputCleanupInfo
-            ),
-            postgresqlRestartInputRefCleanup=(
-                restartInputRefCleanupInfo
-            ),
-            postgresqlRestartResetSync=(
-                restartResetSyncInfo
-            ),
+                    )
+                    or 0
+                ),
+                dependenciesCount=0,
+                postgresqlContinuePlan=(
+                    planSummary
+                ),
+                postgresqlRestartOutputCleanup=(
+                    restartOutputCleanup
+                ),
+                postgresqlRestartInputRefCleanup=(
+                    restartInputRefCleanup
+                ),
+                postgresqlWorkerLaunch=(
+                    launchInfo
+                ),
+                postgresqlRuntimeContinue=True,
+            )
         )

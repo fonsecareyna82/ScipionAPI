@@ -2099,6 +2099,237 @@ class RuntimePostgresqlProtocolWorker:
             "parentProtocolsReadOnly": True,
         }
 
+    def restoreResumeOutputs(
+            self,
+    ) -> Dict[str, Any]:
+        if (
+                self.runMode
+                != POSTGRESQL_RUN_MODE_RESUME
+        ):
+            return {
+                "restored": 0,
+                "items": [],
+                "errors": [],
+                "skipped": True,
+                "reason": "protocol_not_resuming",
+                "selfProtocolOnly": True,
+                "parentProtocolsModified": False,
+            }
+
+        objectMapper = getattr(
+            self.runtimeMapper,
+            "objectMapper",
+            None,
+        )
+
+        outputReader = getattr(
+            objectMapper,
+            "listProtocolStoredObjects",
+            None,
+        )
+
+        if not callable(outputReader):
+            return {
+                "restored": 0,
+                "items": [],
+                "errors": [{
+                    "error": (
+                        "PostgreSQL runtime object "
+                        "mapper cannot load protocol outputs"
+                    ),
+                }],
+                "skipped": False,
+                "selfProtocolOnly": True,
+                "parentProtocolsModified": False,
+            }
+
+        protocolDbId = (
+            self.getProtocolDbId()
+        )
+
+        rows = outputReader(
+            projectId=self.projectId,
+            protocolDbId=protocolDbId,
+        ) or []
+
+        rootRows = [
+            dict(row)
+            for row in rows
+            if row.get(
+                "parentObjectId"
+            ) in (
+                None,
+                "",
+            )
+        ]
+
+        restored = []
+        errors = []
+        restoredOutputNames = set()
+
+        for row in rootRows:
+            outputName = str(
+                row.get("path")
+                or row.get("name")
+                or ""
+            ).strip()
+
+            runtimeObjectId = row.get(
+                "scipionObjId"
+            )
+
+            if not outputName:
+                errors.append({
+                    **row,
+                    "error": (
+                        "Stored PostgreSQL output "
+                        "does not have an output name"
+                    ),
+                })
+                continue
+
+            if outputName in restoredOutputNames:
+                continue
+
+            if runtimeObjectId in (
+                    None,
+                    "",
+            ):
+                errors.append({
+                    **row,
+                    "outputName": outputName,
+                    "error": (
+                        "Stored PostgreSQL output "
+                        "does not have a Scipion "
+                        "runtime object id"
+                    ),
+                })
+                continue
+
+            outputObject = (
+                self.runtimeMapper
+                .selectRuntimeInputObjectById(
+                    int(runtimeObjectId)
+                )
+            )
+
+            if outputObject is None:
+                errors.append({
+                    **row,
+                    "outputName": outputName,
+                    "runtimeObjectId": (
+                        runtimeObjectId
+                    ),
+                    "error": (
+                        "Could not reconstruct "
+                        "PostgreSQL protocol output"
+                    ),
+                })
+                continue
+
+            # This is the protocol being resumed.
+            # No external parent protocol or parent
+            # output is attached or modified here.
+            outputObject._objParent = (
+                self.protocol
+            )
+
+            parentIdSetter = getattr(
+                outputObject,
+                "setObjParentId",
+                None,
+            )
+
+            if callable(parentIdSetter):
+                parentIdSetter(
+                    self.protocolId
+                )
+            else:
+                outputObject._objParentId = (
+                    self.protocolId
+                )
+
+            setattr(
+                self.protocol,
+                outputName,
+                outputObject,
+            )
+
+            protocolOutputs = getattr(
+                self.protocol,
+                "_outputs",
+                None,
+            )
+
+            if (
+                    protocolOutputs is not None
+                    and outputName
+                    not in protocolOutputs
+            ):
+                protocolOutputs.append(
+                    outputName
+                )
+
+            useOutputList = getattr(
+                self.protocol,
+                "_useOutputList",
+                None,
+            )
+
+            useOutputListSetter = getattr(
+                useOutputList,
+                "set",
+                None,
+            )
+
+            if callable(useOutputListSetter):
+                useOutputListSetter(
+                    True
+                )
+
+            reopened = False
+
+            if isinstance(
+                    outputObject,
+                    Set,
+            ):
+                outputObject.setStreamState(
+                    Set.STREAM_OPEN
+                )
+
+                reopened = True
+
+            restoredOutputNames.add(
+                outputName
+            )
+
+            restored.append({
+                "outputName": outputName,
+                "runtimeObjectId": int(
+                    runtimeObjectId
+                ),
+                "className": (
+                    outputObject
+                    .__class__
+                    .__name__
+                ),
+                "streamReopened": reopened,
+                "ownerProtocolId": (
+                    self.protocolId
+                ),
+                "ownerProtocolModified": True,
+                "parentProtocolsModified": False,
+            })
+
+        return {
+            "restored": len(restored),
+            "items": restored,
+            "errors": errors,
+            "skipped": False,
+            "selfProtocolOnly": True,
+            "parentProtocolsModified": False,
+        }
+
     def buildStepsExecutor(self):
         protocol = self.protocol
         hostConfig = protocol.getHostConfig()
@@ -2268,6 +2499,21 @@ class RuntimePostgresqlProtocolWorker:
                 "Could not restore PostgreSQL "
                 "execution inputs: %s"
                 % inputReport["errors"]
+            )
+
+        resumeOutputReport = (
+            self.restoreResumeOutputs()
+        )
+
+        if resumeOutputReport.get(
+                "errors"
+        ):
+            raise RuntimeError(
+                "Could not restore PostgreSQL "
+                "outputs for protocol resume: %s"
+                % resumeOutputReport[
+                    "errors"
+                ]
             )
 
         validationErrors = (

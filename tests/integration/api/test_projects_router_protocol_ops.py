@@ -1123,14 +1123,31 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
         "dependenciesCount": 0,
     }
 
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "continue protocol subtree",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastLoadPostgresqlRuntimeProjectForMutationCall
+            == {
+                "mapper": (
+                    fakeProjectService
+                    .lastContinueProtocolAllCall[
+                        "mapper"
+                    ]
+                ),
+                "projectId": 1,
+                "currentUser": {
+                    "id": 1,
+                    "email": "user@example.com",
+                    "role": "user",
+                },
+                "enableWriteFallback": False,
+            }
+    )
 
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
     assert fakeProjectService.lastContinueProtocolAllCall == {
         "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
         "projectId": 1,
@@ -1229,33 +1246,6 @@ def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakePro
         "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
         "projectId": 1,
         "protocolId": 10,
-    }
-
-
-def test_ContinueProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="continue protocol subtree succeeded but graph sync to PostgreSQL failed",
-    )
-
-    response = projectClient.post("/projects/1/protocols/10/continue-all")
-
-    assert response.status_code == 500
-    assert response.json() == {
-        "status": 1,
-        "errors": ["continue protocol subtree succeeded but graph sync to PostgreSQL failed"],
-        "workflow": [],
-    }
-
-    assert fakeProjectService.lastContinueProtocolAllCall == {
-        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-        "currentUser": {
-            "id": 1,
-            "email": "user@example.com",
-            "role": "user",
-        },
     }
 
 

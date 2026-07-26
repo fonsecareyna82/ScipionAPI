@@ -24,6 +24,14 @@
 # *
 # ******************************************************************************
 import json
+import pytest
+from types import SimpleNamespace
+
+from pyworkflow.object import (
+    Boolean,
+    CsvList,
+    Set,
+)
 
 from pyworkflow.protocol import (
     MODE_RESTART,
@@ -327,3 +335,135 @@ def test_ResumePreservesStepDifferenceDetection():
 
 def test_ScipionRunModesRemainDistinct():
     assert MODE_RESTART != MODE_RESUME
+
+
+class ResumeOutputProtocolStub:
+    def __init__(self):
+        self._outputs = CsvList()
+        self._useOutputList = Boolean(
+            False
+        )
+
+
+def test_ResumeRestoresAndReopensOwnOutputs():
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=7,
+        protocolId=10,
+        runMode=(
+            POSTGRESQL_RUN_MODE_RESUME
+        ),
+    )
+
+    protocol = (
+        ResumeOutputProtocolStub()
+    )
+
+    outputSet = Set()
+    outputSet.setObjId(
+        500
+    )
+
+    objectMapper = SimpleNamespace(
+        listProtocolStoredObjects=(
+            lambda **kwargs: [
+                {
+                    "protocolDbId": 110,
+                    "scipionObjId": 500,
+                    "parentObjectId": None,
+                    "name": "outputSet",
+                    "path": "outputSet",
+                    "className": "Set",
+                },
+            ]
+        )
+    )
+
+    runtimeMapper = SimpleNamespace(
+        objectMapper=objectMapper,
+        selectRuntimeInputObjectById=(
+            lambda runtimeObjectId: (
+                outputSet
+                if runtimeObjectId == 500
+                else None
+            )
+        ),
+    )
+
+    worker.protocol = protocol
+    worker.runtimeMapper = runtimeMapper
+    worker.getProtocolDbId = (
+        lambda: 110
+    )
+
+    report = (
+        worker.restoreResumeOutputs()
+    )
+
+    assert report["errors"] == []
+    assert report["restored"] == 1
+    assert report[
+        "parentProtocolsModified"
+    ] is False
+
+    assert protocol.outputSet is (
+        outputSet
+    )
+
+    assert outputSet._objParent is (
+        protocol
+    )
+
+    assert outputSet.isStreamOpen()
+    assert "outputSet" in (
+        protocol._outputs
+    )
+
+    assert (
+        protocol
+        ._useOutputList
+        .get()
+        is True
+    )
+
+
+def test_RestartDoesNotRestorePreviousOutputs():
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=7,
+        protocolId=10,
+        runMode=(
+            POSTGRESQL_RUN_MODE_RESTART
+        ),
+    )
+
+    worker.protocol = (
+        ResumeOutputProtocolStub()
+    )
+
+    worker.runtimeMapper = SimpleNamespace(
+        objectMapper=SimpleNamespace(
+            listProtocolStoredObjects=(
+                lambda **kwargs: (
+                    pytest.fail(
+                        "Restart must not load "
+                        "previous outputs"
+                    )
+                )
+            )
+        )
+    )
+
+    report = (
+        worker.restoreResumeOutputs()
+    )
+
+    assert report == {
+        "restored": 0,
+        "items": [],
+        "errors": [],
+        "skipped": True,
+        "reason": (
+            "protocol_not_resuming"
+        ),
+        "selfProtocolOnly": True,
+        "parentProtocolsModified": False,
+    }
