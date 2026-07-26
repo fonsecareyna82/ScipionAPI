@@ -474,29 +474,37 @@ class RuntimeProtocolStopService:
         if verification.get(
                 "processMissing"
         ):
-            return {
-                "pid": int(pid),
-                "processGroupId": None,
-                "terminated": True,
-                "alreadyStopped": True,
-                "signal": None,
-                "verified": False,
-            }
+            raise RuntimeError(
+                "Cannot stop PostgreSQL protocol "
+                "projectId=%s protocolId=%s because "
+                "pid=%s disappeared before a stop "
+                "signal could be sent. The protocol "
+                "state will not be changed."
+                % (
+                    projectId,
+                    protocolId,
+                    pid,
+                )
+            )
 
         try:
             processGroupId = os.getpgid(
                 int(pid)
             )
 
-        except ProcessLookupError:
-            return {
-                "pid": int(pid),
-                "processGroupId": None,
-                "terminated": True,
-                "alreadyStopped": True,
-                "signal": None,
-                "verified": True,
-            }
+        except ProcessLookupError as error:
+            raise RuntimeError(
+                "Cannot stop PostgreSQL protocol "
+                "projectId=%s protocolId=%s because "
+                "pid=%s disappeared before its process "
+                "group could be resolved. The protocol "
+                "state will not be changed."
+                % (
+                    projectId,
+                    protocolId,
+                    pid,
+                )
+            ) from error
 
         currentProcessGroupId = (
             os.getpgrp()
@@ -519,17 +527,19 @@ class RuntimeProtocolStopService:
                 signal.SIGTERM,
             )
 
-        except ProcessLookupError:
-            return {
-                "pid": int(pid),
-                "processGroupId": (
-                    int(processGroupId)
-                ),
-                "terminated": True,
-                "alreadyStopped": True,
-                "signal": "SIGTERM",
-                "verified": True,
-            }
+        except ProcessLookupError as error:
+            raise RuntimeError(
+                "Cannot confirm the stop of PostgreSQL "
+                "protocol projectId=%s protocolId=%s. "
+                "Process group %s disappeared before "
+                "SIGTERM could be delivered, so the "
+                "protocol state will not be changed."
+                % (
+                    projectId,
+                    protocolId,
+                    processGroupId,
+                )
+            ) from error
 
         except Exception as error:
             raise RuntimeError(

@@ -35,6 +35,7 @@ from pyworkflow.protocol import (
     MODE_RESUME,
     MODE_RESTART,
     STATUS_LAUNCHED,
+    STATUS_SCHEDULED,
 )
 
 logger = logging.getLogger(__name__)
@@ -430,33 +431,28 @@ class RuntimeProtocolLaunchService:
                         lambda: protocolId,
                     )()
 
-                    # PostgresqlProject.launchProtocol() has already:
-                    #   - marked the protocol as launched;
-                    #   - stored the authoritative state in PostgreSQL;
-                    #   - generated logs/run.db directly from PostgreSQL;
-                    #   - launched the native Scipion worker.
+                    # The PostgreSQL worker owns the execution
+                    # lifecycle. While it waits for dependencies,
+                    # the authoritative status must remain scheduled.
                     #
-                    # Do not perform a second full protocol store here.
-                    runtimeStatusSyncService = (
-                        RuntimeProtocolStatusSyncService()
-                    )
-
-                    elapsedTiming = (
-                        runtimeStatusSyncService
-                        .markProtocolLaunched(
-                            mapper=mapper,
+                    # The worker will mark the protocol as launched
+                    # only immediately before queue submission or
+                    # local execution.
+                    storedProtocolRow = (
+                        mapper
+                        .getProjectProtocolByProtocolId(
                             projectId=projectId,
                             protocolId=(
                                 launchedProtocolId
                             ),
-                            baseElapsedTimeSeconds=(
-                                elapsedBeforeLaunchSeconds
-                            ),
-                            resetElapsed=(
-                                executeMode
-                                == "restart"
-                            ),
                         )
+                    ) or {}
+
+                    currentStatus = str(
+                        storedProtocolRow.get(
+                            "status"
+                        )
+                        or STATUS_SCHEDULED
                     )
 
                     return {
@@ -464,10 +460,25 @@ class RuntimeProtocolLaunchService:
                         "dependencies": 0,
                         "postgresqlRuntimeLaunch": True,
                         "launchAccepted": True,
-                        "protocolId": str(launchedProtocolId),
-                        "protocolStatus": STATUS_LAUNCHED,
-                        "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
-                        "elapsedTiming": elapsedTiming,
+                        "protocolId": str(
+                            launchedProtocolId
+                        ),
+                        "protocolStatus": (
+                            currentStatus
+                        ),
+                        "postgresqlLaunchPointerReport": (
+                            postgresqlLaunchPointerReport
+                        ),
+                        "elapsedTiming": {
+                            "deferredToWorker": True,
+                            "baseElapsedTimeSeconds": (
+                                elapsedBeforeLaunchSeconds
+                            ),
+                            "resetElapsed": (
+                                executeMode
+                                == "restart"
+                            ),
+                        },
                     }
 
             if usingPostgresqlRuntime:
