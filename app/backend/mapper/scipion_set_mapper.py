@@ -39,6 +39,9 @@ from pyworkflow.object import (
 from app.backend.mapper.scipion_object_mapper import (
     ScipionObjectPostgresqlMapper,
 )
+from app.backend.runtime.postgresql_runtime_event_service import (
+    PostgresqlRuntimeEventPublisher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +224,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 finalProperties["sourceMTime"] = sourceMTime
             self._updateSetProperties(setId, finalProperties)
             self._upsertSetProperties(setId, finalProperties)
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=rootObjectId,
+            itemsCount=itemsCount,
+            maxItemId=maxItemId,
+        )
 
         return {
             "setId": setId,

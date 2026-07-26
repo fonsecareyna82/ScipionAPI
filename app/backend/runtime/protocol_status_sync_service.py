@@ -31,6 +31,9 @@ from typing import Any, Callable, Dict, Optional
 
 from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED
 from pyworkflow.protocol.protocol import getProtocolFromDb
+from app.backend.runtime.postgresql_runtime_event_service import (
+    PostgresqlRuntimeEventPublisher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +194,19 @@ class RuntimeProtocolStatusSyncService:
             "id": row["id"],
             "status": STATUS_ABORTED,
         })
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=mapper.db,
+            projectId=projectId,
+            eventType=(
+                "protocol_changed"
+            ),
+            protocolId=protocolId,
+            protocolDbId=row["id"],
+            status=str(
+                STATUS_ABORTED
+            ),
+        )
 
         return {
             "protocolId": str(protocolId),

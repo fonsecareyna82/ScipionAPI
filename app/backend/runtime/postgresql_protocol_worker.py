@@ -61,6 +61,12 @@ from app.backend.project import PostgresqlProject
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+from app.backend.runtime.postgresql_runtime_event_service import (
+    DEFAULT_RUNTIME_EVENT_WAIT_SECONDS,
+    FALLBACK_RUNTIME_POLL_SECONDS,
+    PostgresqlRuntimeEventListener,
+    PostgresqlRuntimeEventPublisher,
+)
 from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
@@ -320,6 +326,7 @@ class RuntimePostgresqlProtocolWorker:
         self.project = None
         self.protocol = None
         self.runtimeMapper = None
+        self.dependencyEventListener = None
 
     def load(self) -> None:
         from app.backend.database import getMapper
@@ -431,6 +438,22 @@ class RuntimePostgresqlProtocolWorker:
         )
 
     def close(self) -> None:
+        if (
+                self.dependencyEventListener
+                is not None
+        ):
+            try:
+                self.dependencyEventListener.close()
+
+            except Exception:
+                logger.debug(
+                    "Could not close PostgreSQL "
+                    "runtime event listener.",
+                    exc_info=True,
+                )
+
+            self.dependencyEventListener = None
+
         if self.project is not None:
             try:
                 self.project.closeMapper()
@@ -674,6 +697,181 @@ class RuntimePostgresqlProtocolWorker:
             )
 
         return result
+
+    def openDependencyEventListener(
+            self,
+    ):
+        if (
+                self.dependencyEventListener
+                is not None
+        ):
+            return (
+                self.dependencyEventListener
+            )
+
+        listener = (
+            PostgresqlRuntimeEventListener(
+                projectId=self.projectId
+            )
+        )
+
+        try:
+            # Subscribe before reading dependencies.
+            # This avoids losing an event between the
+            # initial readiness check and LISTEN.
+            listener.open()
+
+            parentRows = (
+                self.loadParentStatuses()
+            )
+
+            prerequisiteIds = (
+                self
+                .getPrerequisiteProtocolIds()
+            )
+
+            prerequisiteRows = (
+                self
+                .loadPrerequisiteStatuses(
+                    prerequisiteIds
+                )
+            )
+
+            watchedProtocolIds = set(
+                prerequisiteIds
+            )
+
+            watchedProtocolDbIds = set()
+
+            for row in parentRows:
+                protocolId = row.get(
+                    "protocolId"
+                )
+
+                protocolDbId = row.get(
+                    "protocolDbId"
+                )
+
+                try:
+                    watchedProtocolIds.add(
+                        int(protocolId)
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    watchedProtocolDbIds.add(
+                        int(protocolDbId)
+                    )
+                except Exception:
+                    pass
+
+            for row in (
+                    prerequisiteRows.values()
+            ):
+                protocolDbId = row.get(
+                    "protocolDbId"
+                )
+
+                try:
+                    watchedProtocolDbIds.add(
+                        int(protocolDbId)
+                    )
+                except Exception:
+                    pass
+
+            listener.setWatchedProtocols(
+                protocolIds=(
+                    watchedProtocolIds
+                ),
+                protocolDbIds=(
+                    watchedProtocolDbIds
+                ),
+            )
+
+            self.dependencyEventListener = (
+                listener
+            )
+
+            logger.debug(
+                "Listening for PostgreSQL "
+                "dependency events. "
+                "projectId=%s protocolId=%s "
+                "watchedProtocolIds=%s "
+                "watchedProtocolDbIds=%s",
+                self.projectId,
+                self.protocolId,
+                sorted(
+                    watchedProtocolIds
+                ),
+                sorted(
+                    watchedProtocolDbIds
+                ),
+            )
+
+            return listener
+
+        except Exception:
+            listener.close()
+
+            logger.warning(
+                "PostgreSQL runtime event "
+                "listener is unavailable. "
+                "The scheduler will use its "
+                "periodic fallback. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+                exc_info=True,
+            )
+
+            return None
+
+    def waitForDependencyChange(
+            self,
+            timeoutSeconds: float,
+    ):
+        listener = (
+            self.openDependencyEventListener()
+        )
+
+        if listener is None:
+            time.sleep(
+                min(
+                    float(timeoutSeconds),
+                    FALLBACK_RUNTIME_POLL_SECONDS,
+                )
+            )
+
+            return None
+
+        try:
+            return listener.wait(
+                timeoutSeconds
+            )
+
+        except Exception:
+            logger.warning(
+                "PostgreSQL dependency event "
+                "wait failed. Falling back to "
+                "periodic checking. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+                exc_info=True,
+            )
+
+            listener.close()
+            self.dependencyEventListener = None
+
+            time.sleep(
+                min(
+                    float(timeoutSeconds),
+                    FALLBACK_RUNTIME_POLL_SECONDS,
+                )
+            )
+
+            return None
 
     def validateProtocolInputs(
             self,
@@ -1108,6 +1306,18 @@ class RuntimePostgresqlProtocolWorker:
 
         lastReportedAt = -30.0
 
+        eventWaitSeconds = float(
+            os.environ.get(
+                "SCIPION_POSTGRESQL_EVENT_WAIT_SECONDS",
+                str(
+                    DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
+                ),
+            )
+            or DEFAULT_RUNTIME_EVENT_WAIT_SECONDS
+        )
+
+        self.openDependencyEventListener()
+
         while True:
             readiness = (
                 self.getReadinessState()
@@ -1244,7 +1454,22 @@ class RuntimePostgresqlProtocolWorker:
 
                 lastReportedAt = elapsed
 
-            time.sleep(2)
+            dependencyEvent = (
+                self.waitForDependencyChange(
+                    eventWaitSeconds
+                )
+            )
+
+            if dependencyEvent is not None:
+                logger.debug(
+                    "Received PostgreSQL "
+                    "dependency event. "
+                    "projectId=%s protocolId=%s "
+                    "event=%s",
+                    self.projectId,
+                    self.protocolId,
+                    dependencyEvent,
+                )
 
     def restoreExecutionInputs(
             self,
@@ -1529,6 +1754,22 @@ class RuntimePostgresqlProtocolWorker:
         )
 
         self.runtimeMapper.commit()
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.mapper.db,
+            projectId=self.projectId,
+            eventType=(
+                "protocol_changed"
+            ),
+            protocolId=self.protocolId,
+            protocolDbId=(
+                self.getProtocolDbId()
+            ),
+            status=str(
+                self.protocol.getStatus()
+                or ""
+            ),
+        )
 
     def markFailed(self, error) -> None:
         logger.exception(
