@@ -1300,16 +1300,28 @@ def resetProtocolFrom(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False if usePostgresqlRuntimeProject else True,
-        checkPid=False,
-        loadWorkflowFromPostgresql=usePostgresqlRuntimeProject,
-        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
-        usePostgresqlRuntimeWriteFallback=usePostgresqlRuntimeProject,
-    )
+    if usePostgresqlRuntimeProject:
+        project = (
+            service
+            .loadPostgresqlRuntimeProjectForMutation(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                enableWriteFallback=False,
+            )
+        )
+
+    else:
+        project = service.getProjectById(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            refresh=True,
+            checkPid=False,
+            loadWorkflowFromPostgresql=False,
+            usePostgresqlRuntimeProject=False,
+            usePostgresqlRuntimeWriteFallback=False,
+        )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,

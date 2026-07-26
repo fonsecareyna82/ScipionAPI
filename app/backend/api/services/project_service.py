@@ -6781,7 +6781,8 @@ class ProjectService:
         )
 
         return (
-            runtimeProtocolResetService.resetProtocolSubworkflow(
+            runtimeProtocolResetService
+            .resetProtocolSubworkflow(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
@@ -6790,11 +6791,10 @@ class ProjectService:
                 getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
                 getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
                 workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
+                stopPostgresqlProtocolsCallback=self.stopProtocol,
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                syncPostgresqlRuntimeProtocolsAfterMutationCallback=self._syncPostgresqlRuntimeProtocolsAfterMutation,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             )
         )
 

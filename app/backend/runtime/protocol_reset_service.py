@@ -24,16 +24,703 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List, Tuple
 
 from fastapi import HTTPException, status
+from pyworkflow.object import (
+    Pointer,
+    PointerList,
+)
+from pyworkflow.protocol import (
+    MODE_RESTART,
+    STATUS_SAVED,
+)
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
+
+from app.backend.runtime.protocol_identity import (
+    ProtocolIdentityResolver,
+)
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolResetService:
-    """Orchestrate reset of a protocol and its downstream subworkflow."""
+    """
+    Reset a selected protocol and its downstream subworkflow.
+
+    PostgreSQL runtime mode never uses project.sqlite,
+    run.db or steps.sqlite.
+    """
+
+    @staticmethod
+    def _workflowItems(
+            workflowProtocolMap,
+    ) -> List[Tuple[Any, int]]:
+        items = []
+
+        values = (
+            workflowProtocolMap.values()
+            if isinstance(
+                workflowProtocolMap,
+                dict,
+            )
+            else workflowProtocolMap or []
+        )
+
+        for value in values:
+            if (
+                    isinstance(
+                        value,
+                        (
+                            tuple,
+                            list,
+                        ),
+                    )
+                    and value
+            ):
+                protocol = value[0]
+
+                level = int(
+                    value[1]
+                    if len(value) > 1
+                    else 0
+                )
+
+            else:
+                protocol = value
+                level = 0
+
+            if protocol is not None:
+                items.append(
+                    (
+                        protocol,
+                        level,
+                    )
+                )
+
+        items.sort(
+            key=lambda item: (
+                item[1],
+                int(
+                    item[0].getObjId()
+                ),
+            )
+        )
+
+        return items
+
+    @staticmethod
+    def _getProtocolStatus(
+            protocol,
+    ) -> str:
+        try:
+            return str(
+                protocol.getStatus()
+                or ""
+            ).strip().lower()
+
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _detachOutputs(
+            protocol,
+    ) -> None:
+        """
+        Remove only outputs owned by the protocol being reset.
+
+        Parent protocol outputs are never attached, replaced
+        or modified.
+        """
+        outputNames = [
+            outputName
+            for outputName, _
+            in list(
+                protocol
+                .iterOutputAttributes()
+            )
+        ]
+
+        for outputName in outputNames:
+            if hasattr(
+                    protocol,
+                    outputName,
+            ):
+                delattr(
+                    protocol,
+                    outputName,
+                )
+
+        outputs = getattr(
+            protocol,
+            "_outputs",
+            None,
+        )
+
+        if outputs is not None:
+            outputs.clear()
+
+    @staticmethod
+    def _detachRuntimeInputPointers(
+            protocol,
+    ) -> None:
+        """
+        Detach in-memory pointer objects before persisting
+        the reset protocol.
+
+        Authoritative protocol_input_refs rows are deliberately
+        preserved. No parent protocol or parent output is changed.
+        """
+        definition = protocol.getDefinition()
+
+        for paramName, param in (
+                definition.iterParams()
+        ):
+            if isinstance(
+                    param,
+                    MultiPointerParam,
+            ):
+                setattr(
+                    protocol,
+                    paramName,
+                    PointerList(),
+                )
+
+            elif isinstance(
+                    param,
+                    (
+                        PointerParam,
+                        RelationParam,
+                    ),
+            ):
+                setattr(
+                    protocol,
+                    paramName,
+                    Pointer(),
+                )
+
+    @staticmethod
+    def _setScalarValue(
+            protocol,
+            attributeName: str,
+            value,
+    ) -> None:
+        attribute = getattr(
+            protocol,
+            attributeName,
+            None,
+        )
+
+        setter = getattr(
+            attribute,
+            "set",
+            None,
+        )
+
+        if callable(setter):
+            setter(
+                value
+            )
+
+    def _validatePostgresqlSubworkflow(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+            currentProject,
+    ) -> Dict[str, Any]:
+        runtimeMapper = (
+            currentProject
+            .getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "PostgreSQL runtime mapper "
+                "is not available"
+            )
+
+        identityResolver = (
+            ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+            )
+        )
+
+        resetItems = []
+        skippedItems = []
+        errors = []
+        seenProtocolIds = set()
+
+        for protocol, level in (
+                self._workflowItems(
+                    workflowProtocolMap
+                )
+        ):
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            try:
+                protocolId = int(
+                    protocolId
+                )
+
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                errors.append({
+                    "protocolId": (
+                        str(protocolId)
+                        if protocolId is not None
+                        else None
+                    ),
+                    "error": (
+                        "Protocol does not have "
+                        "a valid runtime id"
+                    ),
+                })
+
+                continue
+
+            if protocolId in seenProtocolIds:
+                continue
+
+            seenProtocolIds.add(
+                protocolId
+            )
+
+            protocolDbId = (
+                identityResolver
+                .resolvePostgresqlProtocolDbId(
+                    protocolId
+                )
+            )
+
+            if protocolDbId is None:
+                errors.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "error": (
+                        "Protocol was not found "
+                        "in PostgreSQL"
+                    ),
+                })
+
+                continue
+
+            item = {
+                "protocol": protocol,
+                "protocolId": protocolId,
+                "protocolDbId": int(
+                    protocolDbId
+                ),
+                "level": int(
+                    level
+                ),
+                "status": (
+                    self._getProtocolStatus(
+                        protocol
+                    )
+                ),
+            }
+
+            if (
+                    item["status"]
+                    == str(
+                        STATUS_SAVED
+                    ).strip().lower()
+            ):
+                skippedItems.append({
+                    "protocolId": str(
+                        protocolId
+                    ),
+                    "protocolDbId": int(
+                        protocolDbId
+                    ),
+                    "level": int(
+                        level
+                    ),
+                    "status": item[
+                        "status"
+                    ],
+                    "reason": (
+                        "protocol_already_saved"
+                    ),
+                })
+
+                continue
+
+            resetItems.append(
+                item
+            )
+
+        return {
+            "runtimeMapper": runtimeMapper,
+            "resetItems": resetItems,
+            "skipped": skippedItems,
+            "errors": errors,
+            "parentProtocolsModified": False,
+        }
+
+    def _resetPostgresqlProtocol(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            runtimeMapper,
+            item,
+    ) -> Dict[str, Any]:
+        protocol = item[
+            "protocol"
+        ]
+
+        protocolId = int(
+            item["protocolId"]
+        )
+
+        protocolDbId = int(
+            item["protocolDbId"]
+        )
+
+        # Only the selected protocol subtree is modified.
+        self._detachOutputs(
+            protocol
+        )
+
+        # Preserve authoritative input refs while avoiding
+        # persistent object graphs containing parent protocols.
+        self._detachRuntimeInputPointers(
+            protocol
+        )
+
+        protocol.setSaved()
+
+        protocol.runMode.set(
+            MODE_RESTART
+        )
+
+        protocol.cleanExecutionAttributes()
+
+        protocol._steps = []
+
+        self._setScalarValue(
+            protocol,
+            "_stepsDone",
+            0,
+        )
+
+        self._setScalarValue(
+            protocol,
+            "_numberOfSteps",
+            0,
+        )
+
+        self._setScalarValue(
+            protocol,
+            "_cpuTime",
+            0,
+        )
+
+        protocol.cleanWorkingDir()
+        protocol.makeWorkingDir()
+
+        # Delete only relations created by this protocol.
+        runtimeMapper.deleteRelations(
+            protocol
+        )
+
+        mapper.deleteProtocolSteps(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        mapper.db.execute(
+            """
+            UPDATE protocols
+               SET "relationsSynchronized" = FALSE,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND id = %s
+            """,
+            (
+                int(projectId),
+                protocolDbId,
+            ),
+        )
+
+        protocol.setStatus(
+            STATUS_SAVED
+        )
+
+        runtimeMapper.store(
+            protocol
+        )
+
+        runtimeMapper.commit()
+
+        runtimeMetadata = (
+            RuntimeProtocolStatusSyncService()
+            .resetProtocolRuntimeMetadata(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        return {
+            "protocolId": str(
+                protocolId
+            ),
+            "protocolDbId": (
+                protocolDbId
+            ),
+            "level": int(
+                item["level"]
+            ),
+            "statusBefore": item[
+                "status"
+            ],
+            "statusAfter": str(
+                STATUS_SAVED
+            ),
+            "runMode": "restart",
+            "stepsDeleted": True,
+            "outputsDetached": True,
+            "workingDirectoryCleaned": True,
+            "runtimeMetadata": (
+                runtimeMetadata
+            ),
+            "parentProtocolsModified": False,
+        }
+
+    def _resetPostgresqlSubworkflow(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+            currentProject,
+            stopPostgresqlProtocolsCallback: Callable,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
+            buildProtocolMutationResultCallback: Callable,
+    ) -> Dict[str, Any]:
+        validationInfo = (
+            self
+            ._validatePostgresqlSubworkflow(
+                mapper=mapper,
+                projectId=projectId,
+                workflowProtocolMap=(
+                    workflowProtocolMap
+                ),
+                currentProject=(
+                    currentProject
+                ),
+            )
+        )
+
+        if validationInfo.get(
+                "errors"
+        ):
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                detail=validationInfo[
+                    "errors"
+                ],
+            )
+
+        resetItems = list(
+            validationInfo.get(
+                "resetItems"
+            )
+            or []
+        )
+
+        protocolsToReset = [
+            item["protocol"]
+            for item in resetItems
+        ]
+
+        activeProtocolIds = [
+            str(
+                item["protocolId"]
+            )
+            for item in resetItems
+            if (
+                    item["status"]
+                    in RuntimeProtocolStatusSyncService
+                    .ACTIVE_STATUS_TEXTS
+            )
+        ]
+
+        stopInfo = None
+
+        if activeProtocolIds:
+            # Reuse the already validated PostgreSQL-native
+            # process/SLURM stop implementation.
+            stopInfo = (
+                stopPostgresqlProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolIds=(
+                        activeProtocolIds
+                    ),
+                )
+            )
+
+            stopErrors = list(
+                (
+                    stopInfo
+                    or {}
+                ).get(
+                    "errors"
+                )
+                or []
+            )
+
+            if stopErrors:
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail=stopErrors,
+                )
+
+        cleanupInfo = (
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=(
+                    protocolsToReset
+                ),
+            )
+            if protocolsToReset
+            else {
+                "protocolsCount": 0,
+                "setsDeleted": 0,
+                "objectsDeleted": 0,
+                "items": [],
+            }
+        )
+
+        refCleanupInfo = (
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=(
+                    protocolsToReset
+                ),
+            )
+            if protocolsToReset
+            else {
+                "updated": 0,
+                "parentProtocolDbIds": [],
+            }
+        )
+
+        runtimeMapper = validationInfo[
+            "runtimeMapper"
+        ]
+
+        resetReports = []
+
+        for item in resetItems:
+            try:
+                resetReports.append(
+                    self
+                    ._resetPostgresqlProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        runtimeMapper=(
+                            runtimeMapper
+                        ),
+                        item=item,
+                    )
+                )
+
+            except Exception as error:
+                protocolId = item.get(
+                    "protocolId"
+                )
+
+                logger.exception(
+                    "Failed to reset PostgreSQL "
+                    "runtime protocol. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status
+                        .HTTP_500_INTERNAL_SERVER_ERROR
+                    ),
+                    detail={
+                        "message": (
+                            "Failed to reset "
+                            "PostgreSQL runtime protocol"
+                        ),
+                        "protocolId": str(
+                            protocolId
+                        ),
+                        "error": str(
+                            error
+                        ),
+                    },
+                ) from error
+
+        return (
+            buildProtocolMutationResultCallback(
+                "Protocol subtree reset successfully",
+                protocolsCount=len(
+                    resetReports
+                ),
+                dependenciesCount=0,
+                postgresqlRuntimeReset=True,
+                postgresqlOnly=True,
+                usesProjectSqlite=False,
+                usesRunDb=False,
+                usesStepsSqlite=False,
+                parentProtocolsModified=False,
+                postgresqlStop=stopInfo,
+                postgresqlCleanup=(
+                    cleanupInfo
+                ),
+                postgresqlInputRefCleanup=(
+                    refCleanupInfo
+                ),
+                postgresqlReset={
+                    "items": (
+                        resetReports
+                    ),
+                    "skipped": (
+                        validationInfo.get(
+                            "skipped"
+                        )
+                        or []
+                    ),
+                },
+            )
+        )
 
     def resetProtocolSubworkflow(
             self,
@@ -46,19 +733,11 @@ class RuntimeProtocolResetService:
             getScipionProtocolForRuntimeCallback: Callable,
             getPostgresqlRuntimeSubworkflowCallback: Callable,
             workflowProtocolMapToProtocolsCallback: Callable,
-            restorePostgresqlRuntimePointersForProtocolsCallback: Callable,
+            stopPostgresqlProtocolsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
-            syncPostgresqlRuntimeProtocolsAfterMutationCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ) -> Dict[str, Any]:
-        """
-        Reset the selected protocol and its downstream subworkflow.
-
-        SQLite execution mirrors are reset first using Scipion's native
-        behaviour. PostgreSQL outputs and references are cleaned only after
-        every runtime protocol has been reset successfully.
-        """
         protocol = (
             getScipionProtocolForRuntimeCallback(
                 mapper=mapper,
@@ -76,6 +755,7 @@ class RuntimeProtocolResetService:
                         protocolId=protocolId,
                     )
                 )
+
             else:
                 (
                     workflowProtocolList,
@@ -86,22 +766,78 @@ class RuntimeProtocolResetService:
 
         except Exception as error:
             logger.exception(
-                "Failed to resolve subworkflow for reset-from. "
-                "projectId=%s protocolId=%s",
+                "Failed to resolve subworkflow for "
+                "reset-from. projectId=%s "
+                "protocolId=%s",
                 projectId,
                 protocolId,
             )
 
             raise HTTPException(
                 status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
                 ),
                 detail=(
-                        "Failed to resolve protocol "
-                        "subworkflow: %s"
-                        % str(error)
+                    "Failed to resolve protocol "
+                    "subworkflow: %s"
+                    % error
                 ),
             ) from error
+
+        if usingPostgresqlRuntime:
+            return (
+                self
+                ._resetPostgresqlSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    workflowProtocolMap=(
+                        workflowProtocolList
+                    ),
+                    currentProject=(
+                        currentProject
+                    ),
+                    stopPostgresqlProtocolsCallback=(
+                        stopPostgresqlProtocolsCallback
+                    ),
+                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                        deletePersistedProtocolOutputsForRuntimeProtocolsCallback
+                    ),
+                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback
+                    ),
+                    buildProtocolMutationResultCallback=(
+                        buildProtocolMutationResultCallback
+                    ),
+                )
+            )
+
+        errorProtocols = (
+            currentProject.resetWorkFlow(
+                workflowProtocolList
+            )
+            or []
+        )
+
+        if errorProtocols:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=[
+                    (
+                        "Failed to reset protocol %s"
+                        % getattr(
+                            protocolToReset,
+                            "getObjId",
+                            lambda: "unknown",
+                        )()
+                    )
+                    for protocolToReset
+                    in errorProtocols
+                ],
+            )
 
         workflowProtocols = (
             workflowProtocolMapToProtocolsCallback(
@@ -109,123 +845,13 @@ class RuntimeProtocolResetService:
             )
         )
 
-        protocolsAfterReset = []
-
-        for (
-                protocolToReset,
-                _protocolLevel,
-        ) in workflowProtocolList.values():
-            if protocolToReset.isSaved():
-                protocolsAfterReset.append(
-                    protocolToReset
-                )
-                continue
-
-            runtimeProtocolId = getattr(
-                protocolToReset,
-                "getObjId",
-                lambda: None,
-            )()
-
-            try:
-                resetProtocol = (
-                    currentProject.resetProtocol(
-                        protocolToReset
-                    )
-                )
-
-                protocolsAfterReset.append(
-                    resetProtocol
-                    or protocolToReset
-                )
-
-            except Exception as error:
-                logger.exception(
-                    "Failed to reset runtime protocol. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    runtimeProtocolId,
-                )
-
-                raise HTTPException(
-                    status_code=(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    detail={
-                        "message": (
-                            "Failed to reset runtime protocol"
-                        ),
-                        "protocolId": (
-                            str(runtimeProtocolId)
-                            if runtimeProtocolId
-                               not in (None, "")
-                            else None
-                        ),
-                        "error": str(error),
-                    },
-                ) from error
-
-        cleanupInfo = (
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=workflowProtocols,
+        return (
+            buildProtocolMutationResultCallback(
+                "Protocol subtree reset successfully",
+                protocolsCount=len(
+                    workflowProtocols
+                ),
+                dependenciesCount=0,
+                postgresqlRuntimeReset=False,
             )
-        )
-
-        refCleanupInfo = None
-
-        if usingPostgresqlRuntime:
-            refCleanupInfo = (
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=workflowProtocols,
-                )
-            )
-
-        logger.info(
-            "Reset runtime protocol subtree and deleted "
-            "persisted PostgreSQL outputs. "
-            "projectId=%s protocolId=%s "
-            "cleanup=%s refCleanup=%s",
-            projectId,
-            protocolId,
-            cleanupInfo,
-            refCleanupInfo,
-        )
-
-        postgresqlSync = None
-
-        if usingPostgresqlRuntime:
-            postgresqlSync = (
-                syncPostgresqlRuntimeProtocolsAfterMutationCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protocolsAfterReset,
-                    registerOutputs=False,
-                    syncRelations=False,
-                    authoritativeProtocolState=True,
-                )
-            )
-
-        return buildProtocolMutationResultCallback(
-            "Protocol subtree reset successfully",
-            protocolsCount=(
-                int(
-                    postgresqlSync.get(
-                        "protocolsCount",
-                        0,
-                    ) or 0
-                )
-                if postgresqlSync
-                else len(protocolsAfterReset)
-            ),
-            dependenciesCount=0,
-            postgresqlCleanup=cleanupInfo,
-            postgresqlInputRefCleanup=(
-                refCleanupInfo
-            ),
-            postgresqlRuntimeReset=True,
-            postgresqlRuntimeSync=postgresqlSync,
         )
