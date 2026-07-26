@@ -2206,14 +2206,14 @@ class RuntimePostgresqlProtocolWorker:
                 })
                 continue
 
-            outputObject = (
+            sourceOutputObject = (
                 self.runtimeMapper
                 .selectRuntimeInputObjectById(
                     int(runtimeObjectId)
                 )
             )
 
-            if outputObject is None:
+            if sourceOutputObject is None:
                 errors.append({
                     **row,
                     "outputName": outputName,
@@ -2227,9 +2227,139 @@ class RuntimePostgresqlProtocolWorker:
                 })
                 continue
 
+            outputObject = (
+                sourceOutputObject
+            )
+
+            writableMirror = False
+
+            if isinstance(
+                    sourceOutputObject,
+                    Set,
+            ):
+                materializer = getattr(
+                    sourceOutputObject,
+                    "_postgresqlSqliteMaterializer",
+                    None,
+                )
+
+                openWritable = getattr(
+                    materializer,
+                    "openWritable",
+                    None,
+                )
+
+                if not callable(
+                        openWritable
+                ):
+                    errors.append({
+                        **row,
+                        "outputName": outputName,
+                        "runtimeObjectId": (
+                            runtimeObjectId
+                        ),
+                        "error": (
+                            "PostgreSQL Set output "
+                            "does not provide a writable "
+                            "execution materializer"
+                        ),
+                    })
+
+                    continue
+
+                try:
+                    outputObject = (
+                        openWritable(
+                            sourceOutputObject
+                        )
+                    )
+
+                except Exception as error:
+                    errors.append({
+                        **row,
+                        "outputName": outputName,
+                        "runtimeObjectId": (
+                            runtimeObjectId
+                        ),
+                        "error": (
+                            "Could not open writable "
+                            "execution Set: %s"
+                            % error
+                        ),
+                    })
+
+                    continue
+
+                writableMirror = True
+
+                runtimeSetFactory = getattr(
+                    self.runtimeMapper,
+                    "runtimeSetFactory",
+                    None,
+                )
+
+                evictRuntimeSet = getattr(
+                    runtimeSetFactory,
+                    "evictRuntimeSet",
+                    None,
+                )
+
+                if callable(
+                        evictRuntimeSet
+                ):
+                    try:
+                        evictRuntimeSet(
+                            projectId=(
+                                self.projectId
+                            ),
+                            runtimeObjectId=int(
+                                runtimeObjectId
+                            ),
+                            runtimeSet=(
+                                sourceOutputObject
+                            ),
+                        )
+
+                    except Exception:
+                        logger.debug(
+                            "Could not evict read-only "
+                            "PostgreSQL resume output. "
+                            "projectId=%s protocolId=%s "
+                            "runtimeObjectId=%s",
+                            self.projectId,
+                            self.protocolId,
+                            runtimeObjectId,
+                            exc_info=True,
+                        )
+
+                else:
+                    closeSourceOutput = getattr(
+                        sourceOutputObject,
+                        "close",
+                        None,
+                    )
+
+                    if callable(
+                            closeSourceOutput
+                    ):
+                        closeSourceOutput()
+
             # This is the protocol being resumed.
             # No external parent protocol or parent
             # output is attached or modified here.
+            setOutputName = getattr(
+                outputObject,
+                "setName",
+                None,
+            )
+
+            if callable(
+                    setOutputName
+            ):
+                setOutputName(
+                    outputName
+                )
+
             outputObject._objParent = (
                 self.protocol
             )
@@ -2314,6 +2444,9 @@ class RuntimePostgresqlProtocolWorker:
                     .__name__
                 ),
                 "streamReopened": reopened,
+                "writableMirror": (
+                    writableMirror
+                ),
                 "ownerProtocolId": (
                     self.protocolId
                 ),

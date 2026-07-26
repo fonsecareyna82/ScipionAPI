@@ -491,3 +491,118 @@ def test_MaterializeCopiesNestedLogicalItems(
             sourceNestedSet._mapper = None
 
         sourceSet.close()
+
+
+def test_OpenWritableReturnsNativeAppendableSet(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "resume-output.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 51,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+        runtimeProperties={
+            "fileName": str(
+                sourcePath
+            ),
+        },
+    )
+
+    sourceSet.setObjId(
+        500
+    )
+
+    sourceSet.setName(
+        "outputSet"
+    )
+
+    sourceSet.close()
+
+    materializer = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+    )
+
+    writableSet = (
+        materializer.openWritable(
+            sourceSet
+        )
+    )
+
+    try:
+        assert isinstance(
+            writableSet,
+            ExampleSet,
+        )
+
+        assert writableSet.getObjId() == (
+            500
+        )
+
+        assert writableSet.getObjName() == (
+            "outputSet"
+        )
+
+        assert writableSet.getSize() == 1
+        assert writableSet.getSamplingRate() == 1.5
+
+        newItem = ExampleItem()
+        newItem.setObjId(
+            8
+        )
+
+        newItem._name.set(
+            "particle-8"
+        )
+
+        writableSet.append(
+            newItem
+        )
+
+        writableSet.write()
+
+        assert writableSet.getSize() == 2
+
+    finally:
+        writableSet.close()
+
+    reopenedSet = _openSet(
+        ExampleSet,
+        sourcePath,
+    )
+
+    try:
+        assert reopenedSet.getSize() == 2
+
+        restoredItem = (
+            reopenedSet.getItem(
+                "id",
+                8,
+            )
+        )
+
+        assert restoredItem._name.get() == (
+            "particle-8"
+        )
+
+    finally:
+        reopenedSet.close()
+
+
