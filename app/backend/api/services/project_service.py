@@ -6026,6 +6026,277 @@ class ProjectService:
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
+    def _resolveProtocolWorkingDirectoryForDelete(
+            self,
+            protocol,
+    ) -> Path:
+        projectPathValue = (
+            self._getCurrentProjectPath()
+        )
+
+        if not projectPathValue:
+            raise RuntimeError(
+                "Current project path is not available"
+            )
+
+        projectPath = Path(
+            projectPathValue
+        ).expanduser().resolve()
+
+        runsPath = Path(
+            os.path.abspath(
+                str(
+                    projectPath
+                    / "Runs"
+                )
+            )
+        )
+
+        rawWorkingDir = getattr(
+            protocol,
+            "getWorkingDir",
+            lambda: None,
+        )()
+
+        if not rawWorkingDir:
+            raise RuntimeError(
+                "Protocol %s does not expose "
+                "a working directory"
+                % getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+            )
+
+        workingDir = Path(
+            str(
+                rawWorkingDir
+            )
+        ).expanduser()
+
+        if not workingDir.is_absolute():
+            workingDir = (
+                projectPath
+                / workingDir
+            )
+
+        workingDir = Path(
+            os.path.abspath(
+                str(
+                    workingDir
+                )
+            )
+        )
+
+        try:
+            workingDir.relative_to(
+                runsPath
+            )
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Refusing to delete protocol path "
+                "outside the project Runs directory: %s"
+                % workingDir
+            ) from error
+
+        if workingDir == runsPath:
+            raise RuntimeError(
+                "Refusing to delete the complete "
+                "project Runs directory"
+            )
+
+        # Do not follow a protocol-directory symlink.
+        if workingDir.is_symlink():
+            return workingDir
+
+        resolvedRunsPath = (
+            runsPath.resolve(
+                strict=False
+            )
+        )
+
+        resolvedWorkingDir = (
+            workingDir.resolve(
+                strict=False
+            )
+        )
+
+        try:
+            resolvedWorkingDir.relative_to(
+                resolvedRunsPath
+            )
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Refusing to follow protocol path "
+                "outside the project Runs directory: %s"
+                % workingDir
+            ) from error
+
+        return workingDir
+
+    def _cleanupPostgresqlRuntimeProtocolDelete(
+            self,
+            *,
+            projectId: int,
+            protocols,
+            deleteInfo,
+    ) -> Dict[str, Any]:
+        deletedProtocolIds = {
+            str(
+                protocolId
+            )
+            for protocolId in (
+                deleteInfo.get(
+                    "deletedProtocolIds"
+                )
+                or []
+            )
+        }
+
+        cleanupProtocols = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if str(
+                    protocolId
+            ) not in deletedProtocolIds:
+                continue
+
+            cleanupProtocols.append(
+                protocol
+            )
+
+        runtimeMapper = None
+
+        try:
+            runtimeMapper = (
+                self.currentProject
+                .getPostgresqlRuntimeMapper()
+            )
+
+        except Exception:
+            runtimeMapper = None
+
+        cacheCleanup = None
+
+        if runtimeMapper is not None:
+            cacheCleanup = (
+                runtimeMapper
+                .evictDeletedRuntimeArtifacts(
+                    protocolIds=list(
+                        deletedProtocolIds
+                    ),
+                    runtimeSetObjectIds=(
+                        deleteInfo.get(
+                            "runtimeSetObjectIds"
+                        )
+                        or []
+                    ),
+                )
+            )
+
+        deletedDirectories = []
+        missingDirectories = []
+        errors = []
+
+        for protocol in cleanupProtocols:
+            protocolId = str(
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+            )
+
+            try:
+                workingDir = (
+                    self
+                    ._resolveProtocolWorkingDirectoryForDelete(
+                        protocol
+                    )
+                )
+
+                if workingDir.is_symlink():
+                    workingDir.unlink()
+
+                    deletedDirectories.append({
+                        "protocolId": protocolId,
+                        "path": str(
+                            workingDir
+                        ),
+                        "kind": "symlink",
+                    })
+
+                    continue
+
+                if not workingDir.exists():
+                    missingDirectories.append({
+                        "protocolId": protocolId,
+                        "path": str(
+                            workingDir
+                        ),
+                    })
+
+                    continue
+
+                if not workingDir.is_dir():
+                    raise RuntimeError(
+                        "Protocol working path is "
+                        "not a directory: %s"
+                        % workingDir
+                    )
+
+                shutil.rmtree(
+                    workingDir
+                )
+
+                deletedDirectories.append({
+                    "protocolId": protocolId,
+                    "path": str(
+                        workingDir
+                    ),
+                    "kind": "directory",
+                })
+
+            except Exception as error:
+                logger.exception(
+                    "Could not delete PostgreSQL "
+                    "protocol working directory. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                errors.append({
+                    "protocolId": protocolId,
+                    "error": str(
+                        error
+                    ),
+                })
+
+        return {
+            "postgresqlOnly": True,
+            "usesProjectSqlite": False,
+            "usesRunDb": False,
+            "usesStepsSqlite": False,
+            "cacheCleanup": cacheCleanup,
+            "deletedDirectories": (
+                deletedDirectories
+            ),
+            "missingDirectories": (
+                missingDirectories
+            ),
+            "errors": errors,
+        }
+
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
 
@@ -6040,7 +6311,7 @@ class ProjectService:
             syncProjectProtocolsAndDependenciesCallback=(
                 self.syncProjectProtocolsAndDependencies
             ),
-            cleanupExecutionMirrorsCallback=getattr(self.currentProject, "cleanupProtocolExecutionMirrors", None),
+            cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
         )
 
     def _syncPostgresqlRuntimeProtocolsAfterMutation(

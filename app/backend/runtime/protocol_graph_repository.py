@@ -1157,27 +1157,375 @@ class ProtocolGraphRepository:
 
         return self._rowsToDicts(rows)
 
+    @staticmethod
+    def _normalizePositiveIntIds(
+            values,
+    ) -> List[int]:
+        result = []
+        seen = set()
+
+        for value in values or []:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+
+            if value <= 0 or value in seen:
+                continue
+
+            seen.add(value)
+            result.append(value)
+
+        return result
+
+    def _lockProtocolRowsForDelete(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbIds: List[int],
+    ) -> List[Dict[str, Any]]:
+        if not protocolDbIds:
+            return []
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                id AS "protocolDbId",
+                "protocolId",
+                status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND id = ANY(%s)
+             ORDER BY id
+             FOR UPDATE
+            """,
+            (
+                int(projectId),
+                protocolDbIds,
+            ),
+        )
+
+        return self._rowsToDicts(rows)
+
+    def _lockProtocolDbIds(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbIds: List[int],
+    ) -> List[int]:
+        protocolDbIds = self._normalizePositiveIntIds(
+            protocolDbIds
+        )
+
+        if not protocolDbIds:
+            return []
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT id
+              FROM protocols
+             WHERE "projectId" = %s
+               AND id = ANY(%s)
+             ORDER BY id
+             FOR UPDATE
+            """,
+            (
+                int(projectId),
+                protocolDbIds,
+            ),
+        )
+
+        return [
+            int(row["id"])
+            for row in rows or []
+            if row.get("id") not in (None, "")
+        ]
+
+    def _loadProtocolRuntimeIdentities(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbIds: List[int],
+    ) -> Dict[str, List[int]]:
+        if not protocolDbIds:
+            return {
+                "runtimeObjectIds": [],
+                "runtimeSetObjectIds": [],
+            }
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT DISTINCT
+                o."scipionObjId"
+                    AS "runtimeObjectId",
+                EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."projectId" = o."projectId"
+                       AND s."objectId" = o.id
+                ) AS "isSet"
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = ANY(%s)
+               AND o."scipionObjId" IS NOT NULL
+             ORDER BY o."scipionObjId"
+            """,
+            (
+                int(projectId),
+                protocolDbIds,
+            ),
+        )
+
+        runtimeObjectIds = []
+        runtimeSetObjectIds = []
+
+        for row in rows or []:
+            runtimeObjectId = row.get(
+                "runtimeObjectId"
+            )
+
+            if runtimeObjectId in (
+                    None,
+                    "",
+            ):
+                continue
+
+            runtimeObjectId = int(
+                runtimeObjectId
+            )
+
+            if runtimeObjectId not in runtimeObjectIds:
+                runtimeObjectIds.append(
+                    runtimeObjectId
+                )
+
+            if (
+                    bool(
+                        row.get(
+                            "isSet"
+                        )
+                    )
+                    and runtimeObjectId
+                    not in runtimeSetObjectIds
+            ):
+                runtimeSetObjectIds.append(
+                    runtimeObjectId
+                )
+
+        return {
+            "runtimeObjectIds": runtimeObjectIds,
+            "runtimeSetObjectIds": runtimeSetObjectIds,
+        }
+
+    def _deleteRuntimeRelationsForIdentities(
+            self,
+            mapper,
+            projectId: int,
+            runtimeObjectIds: List[int],
+    ) -> int:
+        runtimeObjectIds = self._normalizePositiveIntIds(
+            runtimeObjectIds
+        )
+
+        if not runtimeObjectIds:
+            return 0
+
+        cursor = mapper.db.execute(
+            """
+            DELETE FROM scipion_relations
+             WHERE "projectId" = %s
+               AND (
+                    "creatorObjId" = ANY(%s)
+                    OR "parentObjId" = ANY(%s)
+                    OR "childObjId" = ANY(%s)
+               )
+            """,
+            (
+                int(projectId),
+                runtimeObjectIds,
+                runtimeObjectIds,
+                runtimeObjectIds,
+            ),
+            commit=False,
+        )
+
+        return int(
+            getattr(
+                cursor,
+                "rowcount",
+                0,
+            )
+            or 0
+        )
+
+    def loadParentGraphForChildProtocol(
+            self,
+            mapper,
+            projectId: int,
+            childProtocolDbId: int,
+    ) -> Dict[str, Any]:
+        """
+        Load every surviving parent represented by either the dependency
+        graph or authoritative input references.
+        """
+        rows = mapper.db.fetchAll(
+            """
+            WITH parent_graph AS (
+                SELECT
+                    d."parentProtocolDbId"
+                  FROM protocol_dependencies d
+                 WHERE d."projectId" = %s
+                   AND d."childProtocolDbId" = %s
+
+                UNION
+
+                SELECT
+                    r."parentProtocolDbId"
+                  FROM protocol_input_refs r
+                 WHERE r."projectId" = %s
+                   AND r."protocolDbId" = %s
+                   AND r."parentProtocolDbId"
+                       IS NOT NULL
+            )
+            SELECT
+                parent.id
+                    AS "parentProtocolDbId",
+                parent."protocolId"
+                    AS "parentProtocolId"
+              FROM parent_graph graph
+              JOIN protocols parent
+                ON parent."projectId" = %s
+               AND parent.id =
+                   graph."parentProtocolDbId"
+             ORDER BY parent.id
+            """,
+            (
+                int(projectId),
+                int(childProtocolDbId),
+                int(projectId),
+                int(childProtocolDbId),
+                int(projectId),
+            ),
+        )
+
+        parentProtocolDbIds = []
+        parentProtocolIds = []
+
+        for row in rows or []:
+            parentProtocolDbId = row.get(
+                "parentProtocolDbId"
+            )
+
+            parentProtocolId = row.get(
+                "parentProtocolId"
+            )
+
+            if parentProtocolDbId not in (
+                    None,
+                    "",
+            ):
+                parentProtocolDbIds.append(
+                    int(parentProtocolDbId)
+                )
+
+            try:
+                parentProtocolId = int(
+                    parentProtocolId
+                )
+            except (TypeError, ValueError):
+                continue
+
+            parentProtocolIds.append(
+                parentProtocolId
+            )
+
+        return {
+            "parentProtocolDbIds": (
+                parentProtocolDbIds
+            ),
+            "parentProtocolIds": (
+                parentProtocolIds
+            ),
+        }
+
     def loadAffectedChildProtocolDbIdsForDeletedParents(
             self,
             mapper,
             projectId: int,
             parentProtocolDbIds: List[int],
+            parentProtocolIds: Optional[
+                List[int]
+            ] = None,
     ) -> List[int]:
+        parentProtocolDbIds = (
+            self._normalizePositiveIntIds(
+                parentProtocolDbIds
+            )
+        )
+
+        parentProtocolIds = (
+            self._normalizePositiveIntIds(
+                parentProtocolIds
+            )
+        )
+
         if not parentProtocolDbIds:
             return []
 
         rows = mapper.db.fetchAll(
             """
-            SELECT DISTINCT "protocolDbId"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "parentProtocolDbId" = ANY(%s)
-               AND NOT ("protocolDbId" = ANY(%s))
-             ORDER BY "protocolDbId"
+            WITH affected_children
+                     AS (
+                SELECT
+                    r."protocolDbId"
+                  FROM protocol_input_refs r
+                 WHERE r."projectId" = %s
+                   AND r."parentProtocolDbId"
+                       = ANY(%s)
+
+                UNION
+
+                SELECT
+                    d."childProtocolDbId"
+                        AS "protocolDbId"
+                  FROM protocol_dependencies d
+                 WHERE d."projectId" = %s
+                   AND d."parentProtocolDbId"
+                       = ANY(%s)
+
+                UNION
+
+                SELECT
+                    p.id AS "protocolDbId"
+                  FROM protocols p
+                 WHERE p."projectId" = %s
+                   AND COALESCE(
+                           p."parentIds",
+                           ARRAY[]::INTEGER[]
+                       ) && %s
+            )
+            SELECT DISTINCT
+                affected."protocolDbId"
+              FROM affected_children affected
+              JOIN protocols child
+                ON child."projectId" = %s
+               AND child.id =
+                   affected."protocolDbId"
+             WHERE NOT (
+                 affected."protocolDbId"
+                 = ANY(%s)
+             )
+             ORDER BY
+                 affected."protocolDbId"
             """,
             (
                 int(projectId),
                 parentProtocolDbIds,
+                int(projectId),
+                parentProtocolDbIds,
+                int(projectId),
+                parentProtocolIds,
+                int(projectId),
                 parentProtocolDbIds,
             ),
         )
@@ -1185,7 +1533,12 @@ class ProtocolGraphRepository:
         return [
             int(row["protocolDbId"])
             for row in rows or []
-            if row.get("protocolDbId") not in (None, "")
+            if row.get(
+                "protocolDbId"
+            ) not in (
+                           None,
+                           "",
+                       )
         ]
 
     def loadInputRefPointerValue(
@@ -1405,59 +1758,109 @@ class ProtocolGraphRepository:
             mapper,
             projectId: int,
             childProtocolDbIds: List[int],
+            commit: bool = True,
     ) -> Dict[str, Any]:
-        refreshed = []
-
-        cleanChildDbIds = []
-        seen = set()
-
-        for childDbId in childProtocolDbIds or []:
-            try:
-                childDbId = int(childDbId)
-            except Exception:
-                continue
-
-            if childDbId <= 0 or childDbId in seen:
-                continue
-
-            seen.add(childDbId)
-            cleanChildDbIds.append(childDbId)
-
-        for childDbId in cleanChildDbIds:
-            parentRefs = self.loadParentRefsForChildProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                childProtocolDbId=childDbId,
+        cleanChildDbIds = (
+            self._normalizePositiveIntIds(
+                childProtocolDbIds
             )
+        )
 
-            parentDbIds = parentRefs.get("parentProtocolDbIds") or []
-            parentProtocolIds = parentRefs.get("parentProtocolIds") or []
+        def refresh():
+            refreshed = []
 
-            dependenciesSaved = self.replaceDependenciesForProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                childProtocolDbId=int(childDbId),
-                parentProtocolDbIds=parentDbIds,
-            )
+            for childProtocolDbId in (
+                    cleanChildDbIds
+            ):
+                parentGraph = (
+                    self
+                    .loadParentGraphForChildProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        childProtocolDbId=(
+                            childProtocolDbId
+                        ),
+                    )
+                )
 
-            self.updateProtocolParentIds(
-                mapper=mapper,
-                projectId=projectId,
-                protocolDbId=int(childDbId),
-                parentProtocolIds=parentProtocolIds,
-            )
+                parentProtocolDbIds = (
+                        parentGraph.get(
+                            "parentProtocolDbIds"
+                        )
+                        or []
+                )
 
-            refreshed.append({
-                "childProtocolDbId": int(childDbId),
-                "parentProtocolDbIds": parentDbIds,
-                "parentProtocolIds": parentProtocolIds,
-                "dependenciesSaved": dependenciesSaved,
-            })
+                parentProtocolIds = (
+                        parentGraph.get(
+                            "parentProtocolIds"
+                        )
+                        or []
+                )
 
-        return {
-            "refreshed": refreshed,
-            "count": len(refreshed),
-        }
+                dependenciesSaved = (
+                    self
+                    .replaceDependenciesForProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        childProtocolDbId=(
+                            childProtocolDbId
+                        ),
+                        parentProtocolDbIds=(
+                            parentProtocolDbIds
+                        ),
+                        commit=False,
+                    )
+                )
+
+                updatedProtocols = (
+                    self
+                    .updateProtocolParentIds(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolDbId=(
+                            childProtocolDbId
+                        ),
+                        parentProtocolIds=(
+                            parentProtocolIds
+                        ),
+                        commit=False,
+                    )
+                )
+
+                if updatedProtocols != 1:
+                    raise RuntimeError(
+                        "Could not refresh surviving "
+                        "child protocol %s after delete."
+                        % childProtocolDbId
+                    )
+
+                refreshed.append({
+                    "childProtocolDbId": (
+                        childProtocolDbId
+                    ),
+                    "parentProtocolDbIds": (
+                        parentProtocolDbIds
+                    ),
+                    "parentProtocolIds": (
+                        parentProtocolIds
+                    ),
+                    "dependenciesSaved": (
+                        dependenciesSaved
+                    ),
+                })
+
+            return {
+                "refreshed": refreshed,
+                "count": len(
+                    refreshed
+                ),
+            }
+
+        if not commit:
+            return refresh()
+
+        with mapper.db.transaction():
+            return refresh()
 
     def clearInputRefObjectIdsForParentProtocols(
             self,
@@ -1489,16 +1892,22 @@ class ProtocolGraphRepository:
             mapper,
             projectId: int,
             protocolDbIds: List[int],
+            blockedStatusTexts=None,
     ) -> Dict[str, Any]:
-        protocolDbIds = [
-            int(protocolDbId)
-            for protocolDbId in protocolDbIds or []
-            if protocolDbId not in (None, "")
-        ]
+        protocolDbIds = (
+            self._normalizePositiveIntIds(
+                protocolDbIds
+            )
+        )
 
         if not protocolDbIds:
             return {
+                "deletedProtocolIds": [],
                 "deletedProtocolDbIds": [],
+                "deletedCount": 0,
+                "runtimeObjectIds": [],
+                "runtimeSetObjectIds": [],
+                "relationsDeleted": 0,
                 "affectedChildren": [],
                 "parentsRefresh": {
                     "refreshed": [],
@@ -1506,34 +1915,345 @@ class ProtocolGraphRepository:
                 },
             }
 
-        affectedChildDbIds = self.loadAffectedChildProtocolDbIdsForDeletedParents(
-            mapper=mapper,
-            projectId=projectId,
-            parentProtocolDbIds=protocolDbIds,
-        )
+        blockedStatusTexts = {
+            str(statusValue)
+            .strip()
+            .lower()
+            for statusValue in (
+                    blockedStatusTexts or []
+            )
+        }
 
         with mapper.db.transaction():
-            # Deleting from protocols is enough for protocol_input_refs,
-            # protocol_dependencies, scipion_sets and scipion_objects because
-            # the schema has ON DELETE CASCADE. Keep this operation focused:
-            # do not rebuild the whole graph from SQLite.
-            self.deleteProtocolsByDbIds(
-                mapper=mapper,
-                projectId=projectId,
-                protocolDbIds=protocolDbIds,
-                commit=False,
+            selectedRows = (
+                self
+                ._lockProtocolRowsForDelete(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbIds=(
+                        protocolDbIds
+                    ),
+                )
             )
 
-        parentsRefresh = self.refreshParentsForChildren(
-            mapper=mapper,
-            projectId=projectId,
-            childProtocolDbIds=affectedChildDbIds,
-        )
+            selectedRowsByDbId = {
+                int(row["protocolDbId"]): row
+                for row in selectedRows
+            }
+
+            missingProtocolDbIds = [
+                protocolDbId
+                for protocolDbId
+                in protocolDbIds
+                if protocolDbId
+                   not in selectedRowsByDbId
+            ]
+
+            if missingProtocolDbIds:
+                raise RuntimeError(
+                    "PostgreSQL delete was aborted "
+                    "because protocol rows disappeared "
+                    "or do not belong to project %s: %s"
+                    % (
+                        projectId,
+                        missingProtocolDbIds,
+                    )
+                )
+
+            blockedSelectedProtocols = []
+
+            for row in selectedRows:
+                statusText = str(
+                    row.get(
+                        "status"
+                    )
+                    or ""
+                ).strip().lower()
+
+                if (
+                        statusText
+                        in blockedStatusTexts
+                ):
+                    blockedSelectedProtocols.append({
+                        "protocolDbId": int(
+                            row[
+                                "protocolDbId"
+                            ]
+                        ),
+                        "protocolId": str(
+                            row[
+                                "protocolId"
+                            ]
+                        ),
+                        "status": statusText,
+                    })
+
+            if blockedSelectedProtocols:
+                raise RuntimeError(
+                    "PostgreSQL delete was aborted "
+                    "because selected protocols became "
+                    "active: %s"
+                    % blockedSelectedProtocols
+                )
+
+            deletedProtocolIds = [
+                str(
+                    selectedRowsByDbId[
+                        protocolDbId
+                    ][
+                        "protocolId"
+                    ]
+                )
+                for protocolDbId
+                in protocolDbIds
+            ]
+
+            numericProtocolIds = (
+                self
+                ._normalizePositiveIntIds(
+                    deletedProtocolIds
+                )
+            )
+
+            affectedChildDbIds = (
+                self
+                .loadAffectedChildProtocolDbIdsForDeletedParents(
+                    mapper=mapper,
+                    projectId=projectId,
+                    parentProtocolDbIds=(
+                        protocolDbIds
+                    ),
+                    parentProtocolIds=(
+                        numericProtocolIds
+                    ),
+                )
+            )
+
+            self._lockProtocolDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbIds=(
+                    affectedChildDbIds
+                ),
+            )
+
+            externalDescendants = (
+                self
+                .loadExternalDescendantsForDeleteValidation(
+                    mapper=mapper,
+                    projectId=projectId,
+                    selectedProtocolDbIds=(
+                        protocolDbIds
+                    ),
+                )
+            )
+
+            externalProtocolDbIds = [
+                int(
+                    row[
+                        "protocolDbId"
+                    ]
+                )
+                for row in (
+                        externalDescendants
+                        or []
+                )
+                if row.get(
+                    "protocolDbId"
+                ) not in (
+                       None,
+                       "",
+                   )
+            ]
+
+            self._lockProtocolDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbIds=(
+                    externalProtocolDbIds
+                ),
+            )
+
+            # Re-run validation after locks were acquired.
+            externalDescendants = (
+                self
+                .loadExternalDescendantsForDeleteValidation(
+                    mapper=mapper,
+                    projectId=projectId,
+                    selectedProtocolDbIds=(
+                        protocolDbIds
+                    ),
+                )
+            )
+
+            blockedExternalDescendants = []
+
+            for row in (
+                    externalDescendants
+                    or []
+            ):
+                statusText = str(
+                    row.get(
+                        "status"
+                    )
+                    or ""
+                ).strip().lower()
+
+                setsCount = int(
+                    row.get(
+                        "setsCount"
+                    )
+                    or 0
+                )
+
+                objectsCount = int(
+                    row.get(
+                        "objectsCount"
+                    )
+                    or 0
+                )
+
+                if (
+                        statusText
+                        not in blockedStatusTexts
+                        and setsCount == 0
+                        and objectsCount == 0
+                ):
+                    continue
+
+                blockedExternalDescendants.append({
+                    "protocolDbId": int(
+                        row[
+                            "protocolDbId"
+                        ]
+                    ),
+                    "protocolId": str(
+                        row[
+                            "protocolId"
+                        ]
+                    ),
+                    "status": statusText,
+                    "setsCount": setsCount,
+                    "objectsCount": (
+                        objectsCount
+                    ),
+                })
+
+            if blockedExternalDescendants:
+                raise RuntimeError(
+                    "PostgreSQL delete validation "
+                    "changed while acquiring locks. "
+                    "Blocked descendants: %s"
+                    % blockedExternalDescendants
+                )
+
+            runtimeIdentityInfo = (
+                self
+                ._loadProtocolRuntimeIdentities(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbIds=(
+                        protocolDbIds
+                    ),
+                )
+            )
+
+            runtimeObjectIds = list(
+                runtimeIdentityInfo.get(
+                    "runtimeObjectIds"
+                )
+                or []
+            )
+
+            runtimeSetObjectIds = list(
+                runtimeIdentityInfo.get(
+                    "runtimeSetObjectIds"
+                )
+                or []
+            )
+
+            relationRuntimeIds = (
+                self
+                ._normalizePositiveIntIds(
+                    numericProtocolIds
+                    + runtimeObjectIds
+                )
+            )
+
+            relationsDeleted = (
+                self
+                ._deleteRuntimeRelationsForIdentities(
+                    mapper=mapper,
+                    projectId=projectId,
+                    runtimeObjectIds=(
+                        relationRuntimeIds
+                    ),
+                )
+            )
+
+            deletedCount = (
+                self
+                .deleteProtocolsByDbIds(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbIds=(
+                        protocolDbIds
+                    ),
+                    commit=False,
+                )
+            )
+
+            if deletedCount != len(
+                    protocolDbIds
+            ):
+                raise RuntimeError(
+                    "PostgreSQL protocol delete "
+                    "affected %s rows, expected %s."
+                    % (
+                        deletedCount,
+                        len(
+                            protocolDbIds
+                        ),
+                    )
+                )
+
+            parentsRefresh = (
+                self
+                .refreshParentsForChildren(
+                    mapper=mapper,
+                    projectId=projectId,
+                    childProtocolDbIds=(
+                        affectedChildDbIds
+                    ),
+                    commit=False,
+                )
+            )
 
         return {
-            "deletedProtocolDbIds": protocolDbIds,
-            "affectedChildren": affectedChildDbIds,
-            "parentsRefresh": parentsRefresh,
+            "deletedProtocolIds": (
+                deletedProtocolIds
+            ),
+            "deletedProtocolDbIds": (
+                protocolDbIds
+            ),
+            "deletedCount": (
+                deletedCount
+            ),
+            "runtimeObjectIds": (
+                runtimeObjectIds
+            ),
+            "runtimeSetObjectIds": (
+                runtimeSetObjectIds
+            ),
+            "relationsDeleted": (
+                relationsDeleted
+            ),
+            "affectedChildren": (
+                affectedChildDbIds
+            ),
+            "parentsRefresh": (
+                parentsRefresh
+            ),
         }
 
     def deleteProtocolsByDbIds(
@@ -1616,26 +2336,15 @@ class ProtocolGraphRepository:
             projectId: int,
             protocolDbId: int,
             parentProtocolIds: List[int],
-    ) -> None:
-        cleanParentIds = []
-        seen = set()
+            commit: bool = True,
+    ) -> int:
+        cleanParentIds = (
+            self._normalizePositiveIntIds(
+                parentProtocolIds
+            )
+        )
 
-        for parentId in parentProtocolIds or []:
-            try:
-                parentId = int(parentId)
-            except Exception:
-                continue
-
-            if parentId <= 0:
-                continue
-
-            if parentId in seen:
-                continue
-
-            seen.add(parentId)
-            cleanParentIds.append(parentId)
-
-        mapper.db.execute(
+        cursor = mapper.db.execute(
             """
             UPDATE protocols
                SET "parentIds" = %s,
@@ -1648,6 +2357,16 @@ class ProtocolGraphRepository:
                 int(projectId),
                 int(protocolDbId),
             ),
+            commit=commit,
+        )
+
+        return int(
+            getattr(
+                cursor,
+                "rowcount",
+                0,
+            )
+            or 0
         )
 
     def replaceInputGraphForProtocol(
@@ -1691,46 +2410,55 @@ class ProtocolGraphRepository:
             projectId: int,
             childProtocolDbId: int,
             parentProtocolDbIds: List[int],
+            commit: bool = True,
     ) -> int:
         cleanParentDbIds = []
-        seen = set()
 
-        for parentDbId in parentProtocolDbIds or []:
-            try:
-                parentDbId = int(parentDbId)
-            except Exception:
+        for parentDbId in (
+                self._normalizePositiveIntIds(
+                    parentProtocolDbIds
+                )
+        ):
+            if parentDbId == int(
+                    childProtocolDbId
+            ):
                 continue
 
-            if parentDbId <= 0:
-                continue
+            cleanParentDbIds.append(
+                parentDbId
+            )
 
-            if parentDbId == int(childProtocolDbId):
-                continue
-
-            if parentDbId in seen:
-                continue
-
-            seen.add(parentDbId)
-            cleanParentDbIds.append(parentDbId)
-
-        with mapper.db.transaction():
+        def replaceDependencies():
             mapper.db.execute(
                 """
                 DELETE FROM protocol_dependencies
                  WHERE "projectId" = %s
                    AND "childProtocolDbId" = %s
                 """,
-                (projectId, childProtocolDbId),
+                (
+                    int(projectId),
+                    int(childProtocolDbId),
+                ),
                 commit=False,
             )
 
             if not cleanParentDbIds:
                 return 0
 
-            valuesSql = ",".join(["(%s, %s, %s)"] * len(cleanParentDbIds))
+            valuesSql = ",".join(
+                [
+                    "(%s, %s, %s)"
+                ]
+                * len(
+                    cleanParentDbIds
+                )
+            )
+
             params = []
 
-            for parentDbId in cleanParentDbIds:
+            for parentDbId in (
+                    cleanParentDbIds
+            ):
                 params.extend([
                     int(projectId),
                     int(parentDbId),
@@ -1750,7 +2478,15 @@ class ProtocolGraphRepository:
                 commit=False,
             )
 
-        return len(cleanParentDbIds)
+            return len(
+                cleanParentDbIds
+            )
+
+        if not commit:
+            return replaceDependencies()
+
+        with mapper.db.transaction():
+            return replaceDependencies()
 
     def replaceInputRefsForProtocol(
             self,

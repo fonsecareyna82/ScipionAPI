@@ -619,6 +619,59 @@ class PostgresqlRuntimeMapper(Mapper):
             "count": len(evictedProtocolIds),
         }
 
+    def evictDeletedRuntimeArtifacts(
+            self,
+            protocolIds,
+            runtimeSetObjectIds=None,
+    ):
+        """
+        Remove deleted protocols and every cached Set/pointer target.
+
+        Clearing Set caches is deliberately global for this mapper:
+        delete is uncommon, and retaining one pointer to a deleted
+        PostgreSQL Set is more dangerous than rebuilding unrelated
+        read-only runtime Sets.
+        """
+        protocolEviction = (
+            self.evictRuntimeProtocols(
+                protocolIds
+            )
+        )
+
+        runtimeSetObjectIds = [
+            int(runtimeObjectId)
+            for runtimeObjectId in (
+                runtimeSetObjectIds or []
+            )
+            if runtimeObjectId
+            not in (
+                None,
+                "",
+            )
+        ]
+
+        clearCaches = getattr(
+            self.runtimeSetFactory,
+            "clearCaches",
+            None,
+        )
+
+        cachesCleared = False
+
+        if callable(clearCaches):
+            clearCaches()
+            cachesCleared = True
+
+        return {
+            "protocols": protocolEviction,
+            "runtimeSetObjectIds": (
+                runtimeSetObjectIds
+            ),
+            "runtimeSetCachesCleared": (
+                cachesCleared
+            ),
+        }
+
     def _existsInWriteFallback(self, objId) -> bool:
         if self.writeFallbackMapper is None or objId is None:
             return False
