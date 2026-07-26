@@ -345,7 +345,42 @@ class ResumeOutputProtocolStub:
         )
 
 
-def test_ResumeRestoresAndReopensOwnOutputs():
+class WritableMaterializerStub:
+    def __init__(
+            self,
+            writableSet,
+    ):
+        self.writableSet = (
+            writableSet
+        )
+
+        self.calls = []
+
+    def openWritable(
+            self,
+            runtimeSet,
+    ):
+        self.calls.append(
+            runtimeSet
+        )
+
+        return self.writableSet
+
+
+class RuntimeSetFactoryStub:
+    def __init__(self):
+        self.evictCalls = []
+
+    def evictRuntimeSet(
+            self,
+            **kwargs,
+    ):
+        self.evictCalls.append(
+            kwargs
+        )
+
+
+def test_ResumeRestoresOwnOutputsAsWritableSets():
     worker = RuntimePostgresqlProtocolWorker(
         projectId=7,
         protocolId=10,
@@ -358,9 +393,28 @@ def test_ResumeRestoresAndReopensOwnOutputs():
         ResumeOutputProtocolStub()
     )
 
-    outputSet = Set()
-    outputSet.setObjId(
+    readOnlyOutput = Set()
+    readOnlyOutput.setObjId(
         500
+    )
+
+    writableOutput = Set()
+    writableOutput.setObjId(
+        500
+    )
+
+    materializer = (
+        WritableMaterializerStub(
+            writableOutput
+        )
+    )
+
+    readOnlyOutput._postgresqlSqliteMaterializer = (
+        materializer
+    )
+
+    runtimeSetFactory = (
+        RuntimeSetFactoryStub()
     )
 
     objectMapper = SimpleNamespace(
@@ -380,9 +434,12 @@ def test_ResumeRestoresAndReopensOwnOutputs():
 
     runtimeMapper = SimpleNamespace(
         objectMapper=objectMapper,
+        runtimeSetFactory=(
+            runtimeSetFactory
+        ),
         selectRuntimeInputObjectById=(
             lambda runtimeObjectId: (
-                outputSet
+                readOnlyOutput
                 if runtimeObjectId == 500
                 else None
             )
@@ -390,7 +447,10 @@ def test_ResumeRestoresAndReopensOwnOutputs():
     )
 
     worker.protocol = protocol
-    worker.runtimeMapper = runtimeMapper
+    worker.runtimeMapper = (
+        runtimeMapper
+    )
+
     worker.getProtocolDbId = (
         lambda: 110
     )
@@ -401,19 +461,33 @@ def test_ResumeRestoresAndReopensOwnOutputs():
 
     assert report["errors"] == []
     assert report["restored"] == 1
+
     assert report[
         "parentProtocolsModified"
     ] is False
 
     assert protocol.outputSet is (
-        outputSet
+        writableOutput
     )
 
-    assert outputSet._objParent is (
+    assert protocol.outputSet is not (
+        readOnlyOutput
+    )
+
+    assert materializer.calls == [
+        readOnlyOutput,
+    ]
+
+    assert writableOutput._objParent is (
         protocol
     )
 
-    assert outputSet.isStreamOpen()
+    assert writableOutput.isStreamOpen()
+
+    assert writableOutput.getObjName() == (
+        "outputSet"
+    )
+
     assert "outputSet" in (
         protocol._outputs
     )
@@ -423,6 +497,22 @@ def test_ResumeRestoresAndReopensOwnOutputs():
         ._useOutputList
         .get()
         is True
+    )
+
+    assert report["items"][0][
+        "writableMirror"
+    ] is True
+
+    assert len(
+        runtimeSetFactory.evictCalls
+    ) == 1
+
+    assert (
+        runtimeSetFactory
+        .evictCalls[0][
+            "runtimeObjectId"
+        ]
+        == 500
     )
 
 

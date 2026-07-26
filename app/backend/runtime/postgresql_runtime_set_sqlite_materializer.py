@@ -79,6 +79,69 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             self._rememberMaterializedPath(runtimeSet, materializedPath)
             return materializedPath
 
+    def openWritable(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> ScipionSet:
+        """
+        Open a native writable execution Set from a PostgreSQL snapshot.
+
+        The returned object does not use PostgresqlRuntimeSetMixin and
+        therefore supports append(), update(), write() and enableAppend().
+        """
+        materializedPath = (
+            self.materialize(
+                runtimeSet
+            )
+        )
+
+        classes = (
+            self._getRuntimeClasses(
+                runtimeSet
+            )
+        )
+
+        nativeSetClass = (
+            self._getNativeSetClass(
+                runtimeSet
+            )
+        )
+
+        writableSet = self._openSet(
+            setClass=nativeSetClass,
+            fileName=materializedPath,
+            classes=classes,
+        )
+
+        try:
+            mapper = (
+                writableSet._getMapper()
+            )
+
+            # Empty native sets may not have a
+            # Properties table yet.
+            if mapper.hasProperty(
+                    "self"
+            ):
+                writableSet.loadAllProperties()
+
+            self._copyRuntimeIdentity(
+                sourceSet=runtimeSet,
+                targetSet=writableSet,
+            )
+
+            writableSet.enableAppend()
+
+            return writableSet
+
+        except Exception:
+            try:
+                writableSet.close()
+            except Exception:
+                pass
+
+            raise
+
     def _getCachedPath(self, runtimeSet: ScipionSet) -> Optional[str]:
         cachedPath = getattr(
             runtimeSet,
@@ -648,6 +711,113 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             if isinstance(objectClass, type):
                 return objectClass
         return sourceObject.__class__
+
+    def _copyRuntimeIdentity(
+            self,
+            sourceSet: ScipionSet,
+            targetSet: ScipionSet,
+    ) -> None:
+        getObjId = getattr(
+            sourceSet,
+            "getObjId",
+            None,
+        )
+
+        if callable(getObjId):
+            objId = getObjId()
+
+            if objId is not None:
+                targetSet.setObjId(
+                    objId
+                )
+
+        getObjName = getattr(
+            sourceSet,
+            "getObjName",
+            None,
+        )
+
+        setName = getattr(
+            targetSet,
+            "setName",
+            None,
+        )
+
+        if (
+                callable(getObjName)
+                and callable(setName)
+        ):
+            objName = getObjName()
+
+            if objName:
+                setName(
+                    str(objName)
+                )
+
+        getLabel = getattr(
+            sourceSet,
+            "getObjLabel",
+            None,
+        )
+
+        setLabel = getattr(
+            targetSet,
+            "setObjLabel",
+            None,
+        )
+
+        if (
+                callable(getLabel)
+                and callable(setLabel)
+        ):
+            setLabel(
+                getLabel() or ""
+            )
+
+        getComment = getattr(
+            sourceSet,
+            "getObjComment",
+            None,
+        )
+
+        setComment = getattr(
+            targetSet,
+            "setObjComment",
+            None,
+        )
+
+        if (
+                callable(getComment)
+                and callable(setComment)
+        ):
+            setComment(
+                getComment() or ""
+            )
+
+        getCreation = getattr(
+            sourceSet,
+            "getObjCreation",
+            None,
+        )
+
+        setCreation = getattr(
+            targetSet,
+            "setObjCreation",
+            None,
+        )
+
+        if (
+                callable(getCreation)
+                and callable(setCreation)
+        ):
+            setCreation(
+                getCreation()
+            )
+
+        self._copyEnabled(
+            sourceSet,
+            targetSet,
+        )
 
     def _copyEnabled(self, source, target) -> None:
         isEnabled = getattr(source, "isEnabled", None)
