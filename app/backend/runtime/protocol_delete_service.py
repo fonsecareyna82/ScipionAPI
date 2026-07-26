@@ -264,20 +264,71 @@ class RuntimeProtocolDeleteService:
         if protocolGraphRepository is None:
             protocolGraphRepository = ProtocolGraphRepository()
 
-        deleteGraphInfo = protocolGraphRepository.deleteProtocolsAndRefreshChildren(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbIds=protocolDbIds,
+        deleteGraphInfo = (
+            protocolGraphRepository
+            .deleteProtocolsAndRefreshChildren(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbIds=protocolDbIds,
+                blockedStatusTexts=(
+                    self
+                    .getRuntimeBlockedStatusTexts()
+                ),
+            )
         )
 
         return {
-            "deletedProtocolIds": protocolIds,
-            "deletedProtocolDbIds": deleteGraphInfo.get("deletedProtocolDbIds") or [],
-            "affectedChildren": deleteGraphInfo.get("affectedChildren") or [],
-            "parentsRefresh": deleteGraphInfo.get("parentsRefresh") or {
-                "refreshed": [],
-                "count": 0,
-            },
+            "deletedProtocolIds": (
+                    deleteGraphInfo.get(
+                        "deletedProtocolIds"
+                    )
+                    or []
+            ),
+            "deletedProtocolDbIds": (
+                    deleteGraphInfo.get(
+                        "deletedProtocolDbIds"
+                    )
+                    or []
+            ),
+            "deletedCount": int(
+                deleteGraphInfo.get(
+                    "deletedCount"
+                )
+                or 0
+            ),
+            "runtimeObjectIds": (
+                    deleteGraphInfo.get(
+                        "runtimeObjectIds"
+                    )
+                    or []
+            ),
+            "runtimeSetObjectIds": (
+                    deleteGraphInfo.get(
+                        "runtimeSetObjectIds"
+                    )
+                    or []
+            ),
+            "relationsDeleted": int(
+                deleteGraphInfo.get(
+                    "relationsDeleted"
+                )
+                or 0
+            ),
+            "affectedChildren": (
+                    deleteGraphInfo.get(
+                        "affectedChildren"
+                    )
+                    or []
+            ),
+            "parentsRefresh": (
+                    deleteGraphInfo.get(
+                        "parentsRefresh"
+                    )
+                    or {
+                        "refreshed": [],
+                        "count": 0,
+                    }
+            ),
         }
 
     @staticmethod
@@ -287,14 +338,44 @@ class RuntimeProtocolDeleteService:
     ) -> Dict[str, Any]:
         return {
             "status": 0,
-            "message": "Protocol deleted successfully",
-            "protocolsCount": len(deleteInfo.get("deletedProtocolDbIds", [])),
+            "errors": [],
+            "message": (
+                "Protocol deleted successfully"
+            ),
+            "protocolsCount": len(
+                deleteInfo.get(
+                    "deletedProtocolDbIds",
+                    [],
+                )
+            ),
             "dependenciesCount": sum(
-                int(item.get("dependenciesSaved", 0) or 0)
-                for item in deleteInfo.get("parentsRefresh", {}).get("refreshed", [])
+                int(
+                    item.get(
+                        "dependenciesSaved",
+                        0,
+                    )
+                    or 0
+                )
+                for item in (
+                    deleteInfo
+                    .get(
+                        "parentsRefresh",
+                        {},
+                    )
+                    .get(
+                        "refreshed",
+                        [],
+                    )
+                )
             ),
             "postgresqlRuntimeDelete": True,
-            "deleteValidationInfo": deleteValidationInfo,
+            "postgresqlOnly": True,
+            "usesProjectSqlite": False,
+            "usesRunDb": False,
+            "usesStepsSqlite": False,
+            "deleteValidationInfo": (
+                deleteValidationInfo
+            ),
             "deleteInfo": deleteInfo,
         }
 
@@ -333,7 +414,7 @@ class RuntimeProtocolDeleteService:
             currentProjectDeleteProtocolCallback,
             mapperDeleteProtocolCallback,
             syncProjectProtocolsAndDependenciesCallback,
-            cleanupExecutionMirrorsCallback=None,
+            cleanupPostgresqlRuntimeDeleteCallback=None,
     ):
         try:
             protList = []
@@ -435,21 +516,76 @@ class RuntimeProtocolDeleteService:
                     deleteValidationInfo=deleteValidationInfo,
                 )
 
-                mirrorCleanup = None
+                runtimeCleanup = None
+                cleanupErrors = []
 
-                if cleanupExecutionMirrorsCallback is not None:
+                if (
+                        cleanupPostgresqlRuntimeDeleteCallback
+                        is not None
+                ):
                     try:
-                        mirrorCleanup = cleanupExecutionMirrorsCallback(
-                            selectedProtocolIds
+                        runtimeCleanup = (
+                            cleanupPostgresqlRuntimeDeleteCallback(
+                                projectId=projectId,
+                                protocols=protList,
+                                deleteInfo=(
+                                    result.get(
+                                        "deleteInfo"
+                                    )
+                                    or {}
+                                ),
+                            )
                         )
+
+                        cleanupErrors = list(
+                            (
+                                runtimeCleanup
+                                or {}
+                            ).get(
+                                "errors"
+                            )
+                            or []
+                        )
+
                     except Exception as error:
-                        mirrorCleanup = {
-                            "requestedProtocolIds": selectedProtocolIds,
-                            "deletedProtocolIds": [],
-                            "errors": [str(error)],
+                        cleanupErrors = [{
+                            "error": str(
+                                error
+                            ),
+                        }]
+
+                        runtimeCleanup = {
+                            "postgresqlOnly": True,
+                            "usesProjectSqlite": False,
+                            "errors": (
+                                cleanupErrors
+                            ),
                         }
 
-                result["executionMirrorCleanup"] = mirrorCleanup
+                result[
+                    "runtimeCleanup"
+                ] = runtimeCleanup
+
+                if cleanupErrors:
+                    result["status"] = 1
+                    result["errors"] = [
+                        (
+                            "Protocols were deleted from "
+                            "PostgreSQL, but runtime cleanup "
+                            "failed: %s"
+                            % cleanupError
+                        )
+                        for cleanupError
+                        in cleanupErrors
+                    ]
+
+                    result["message"] = (
+                        "Protocols were deleted from "
+                        "PostgreSQL, but filesystem "
+                        "cleanup was incomplete"
+                    )
+
+                return result
 
                 return result
 

@@ -1062,9 +1062,24 @@ def deleteProtocol(
                 workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
+            "status": result.get(
+                "status",
+                0,
+            ),
+            "errors": result.get(
+                "errors",
+                [],
+            ),
             "workflow": workflow,
+            "message": result.get(
+                "message"
+            ),
+            "deleteInfo": result.get(
+                "deleteInfo"
+            ),
+            "runtimeCleanup": result.get(
+                "runtimeCleanup"
+            ),
         }
 
         return _appendProtocolSyncCounts(response, result)
