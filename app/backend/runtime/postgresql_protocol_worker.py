@@ -2581,6 +2581,38 @@ class RuntimePostgresqlProtocolWorker:
             ),
         )
 
+    def markProtocolExecutionLaunched(
+            self,
+    ) -> Dict[str, Any]:
+        statusService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        baseElapsedTimeSeconds = (
+            statusService
+            .getStoredElapsedTimeSeconds(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+            )
+        )
+
+        return (
+            statusService
+            .markProtocolLaunched(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+                baseElapsedTimeSeconds=(
+                    baseElapsedTimeSeconds
+                ),
+                resetElapsed=(
+                    self.runMode
+                    == POSTGRESQL_RUN_MODE_RESTART
+                ),
+            )
+        )
+
     def registerCoordinatorProcess(
             self,
     ) -> None:
@@ -2669,15 +2701,7 @@ class RuntimePostgresqlProtocolWorker:
 
         self.storeProtocol()
 
-        RuntimeProtocolStatusSyncService().markProtocolLaunched(
-            mapper=self.mapper,
-            projectId=self.projectId,
-            protocolId=self.protocolId,
-            resetElapsed=(
-                    self.runMode
-                    == POSTGRESQL_RUN_MODE_RESTART
-            ),
-        )
+        self.markProtocolExecutionLaunched()
 
         return 0
 
@@ -2755,15 +2779,7 @@ class RuntimePostgresqlProtocolWorker:
 
         self.storeProtocol()
 
-        RuntimeProtocolStatusSyncService().markProtocolLaunched(
-            mapper=self.mapper,
-            projectId=self.projectId,
-            protocolId=self.protocolId,
-            resetElapsed=(
-                    self.runMode
-                    == POSTGRESQL_RUN_MODE_RESTART
-            ),
-        )
+        self.markProtocolExecutionLaunched()
 
         self.protocol.setStepsExecutor(
             self.buildStepsExecutor()
