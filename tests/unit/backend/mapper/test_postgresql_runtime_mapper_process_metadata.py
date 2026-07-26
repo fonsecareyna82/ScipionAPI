@@ -136,3 +136,133 @@ def test_EmptyRuntimeIdentityClearsPreviousValues():
     assert protocol.getJobIds() == []
 
 
+class FakeHostConfig:
+    pass
+
+
+class FakeProject:
+    def __init__(self):
+        self.hostConfig = FakeHostConfig()
+        self.requestedHostNames = []
+
+    def getHostConfig(
+            self,
+            hostName,
+    ):
+        self.requestedHostNames.append(
+            hostName
+        )
+
+        return self.hostConfig
+
+
+class FakeProtocolWithHost:
+    def __init__(self):
+        self.protocolId = 48
+        self.hostName = "localhost"
+        self.hostConfig = None
+        self.mapper = None
+        self.project = None
+
+    def getObjId(self):
+        return self.protocolId
+
+    def setMapper(
+            self,
+            mapper,
+    ):
+        self.mapper = mapper
+
+    def setProject(
+            self,
+            project,
+    ):
+        self.project = project
+
+    def getHostName(self):
+        return self.hostName
+
+    def getHostConfig(self):
+        if self.hostConfig is None:
+            raise AttributeError(
+                "hostConfig"
+            )
+
+        return self.hostConfig
+
+    def setHostConfig(
+            self,
+            hostConfig,
+    ):
+        self.hostConfig = hostConfig
+
+def test_RuntimeContextRestoresHostConfig():
+    mapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 342
+    mapper.project = FakeProject()
+
+    protocol = (
+        FakeProtocolWithHost()
+    )
+
+    result = (
+        mapper._attachRuntimeContext(
+            protocol
+        )
+    )
+
+    assert result is protocol
+    assert protocol.mapper is mapper
+    assert protocol.project is mapper.project
+
+    assert (
+        protocol.getHostConfig()
+        is mapper.project.hostConfig
+    )
+
+    assert (
+        mapper.project.requestedHostNames
+        == [
+            "localhost",
+        ]
+    )
+
+
+def test_PostgresqlProtocolHostConfigIsRestored():
+    mapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 342
+    mapper.project = FakeProject()
+
+    protocol = (
+        FakeProtocolWithHost()
+    )
+
+    attached = (
+        mapper
+        ._attachProtocolHostConfig(
+            protocol
+        )
+    )
+
+    assert attached is True
+
+    assert (
+        protocol.getHostConfig()
+        is mapper.project.hostConfig
+    )
+
+    assert (
+        mapper.project.requestedHostNames
+        == [
+            "localhost",
+        ]
+    )
+
+
+
