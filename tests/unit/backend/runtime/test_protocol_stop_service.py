@@ -27,6 +27,7 @@ from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
+from pyworkflow.object import CsvList
 from pyworkflow.protocol import STATUS_ABORTED
 
 import app.backend.runtime.protocol_stop_service as stopModule
@@ -279,6 +280,67 @@ def buildResult(
         "message": message,
         **extra,
     }
+
+
+def test_GetProtocolJobIdsSupportsScipionCsvList():
+    protocol = FakeProtocol(
+        protocolId=10,
+        protocolStatus="running",
+        pid=1234,
+    )
+
+    protocol._jobId = CsvList()
+    protocol._jobId.append(
+        "77"
+    )
+    protocol._jobId.append(
+        "78"
+    )
+
+    # Scipion's Protocol.getJobIds() returns
+    # the CsvList object itself.
+    protocol.getJobIds = (
+        lambda: protocol._jobId
+    )
+
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    assert (
+        service._getProtocolJobIds(
+            protocol
+        )
+        == [
+            "77",
+            "78",
+        ]
+    )
+
+
+def test_GetProtocolJobIdsSupportsEmptyScipionCsvList():
+    protocol = FakeProtocol(
+        protocolId=10,
+        protocolStatus="running",
+        pid=1234,
+    )
+
+    protocol._jobId = CsvList()
+
+    protocol.getJobIds = (
+        lambda: protocol._jobId
+    )
+
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    assert (
+        service._getProtocolJobIds(
+            protocol
+        )
+        == []
+    )
 
 
 def test_PostgresqlStopKillsWorkerAndPersistsAbort(

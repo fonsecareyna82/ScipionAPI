@@ -179,16 +179,16 @@ class RuntimeProtocolStopService:
                 )
             )
 
-        if rawJobIds in (
-                None,
-                "",
-        ):
+        if rawJobIds is None:
             return []
 
         if isinstance(
                 rawJobIds,
                 str,
         ):
+            if not rawJobIds.strip():
+                return []
+
             rawValues = (
                 rawJobIds
                 .replace(";", ",")
