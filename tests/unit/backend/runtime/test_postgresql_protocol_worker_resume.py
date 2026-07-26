@@ -478,8 +478,31 @@ def test_ResumeRestoresOwnOutputsAsWritableSets():
         readOnlyOutput,
     ]
 
-    assert writableOutput._objParent is (
-        protocol
+    assert writableOutput._objParent is None
+
+    assert (
+            writableOutput
+            ._postgresqlRuntimeParentRef()
+            is protocol
+    )
+
+    assert (
+            writableOutput.getObjParentId()
+            == 10
+    )
+
+    # The protocol already references writableOutput through
+    # protocol.outputSet. Serializing the Set must not traverse
+    # back into the protocol.
+    outputProperties = (
+        writableOutput.getObjDict()
+    )
+
+    assert all(
+        "_objParent"
+        not in str(propertyPath)
+        for propertyPath
+        in outputProperties
     )
 
     assert writableOutput.isStreamOpen()
