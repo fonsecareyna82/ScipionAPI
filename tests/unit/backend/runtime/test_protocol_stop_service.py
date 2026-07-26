@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -791,4 +792,126 @@ def test_StopDoesNotAbortWhenStoredPidIsDead(
     assert protocol.getStatus() == (
         "scheduled"
     )
+
+def test_ProcessGroupWithOnlyZombieIsNotAlive(
+        monkeypatch,
+):
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    monkeypatch.setattr(
+        stopModule.os,
+        "killpg",
+        lambda processGroupId, signalNumber: None,
+    )
+
+    monkeypatch.setattr(
+        stopModule.os,
+        "getpgid",
+        lambda pid: 1234,
+    )
+
+    zombieProcess = SimpleNamespace(
+        pid=1234,
+        info={
+            "status": (
+                stopModule
+                .psutil
+                .STATUS_ZOMBIE
+            ),
+        },
+    )
+
+    monkeypatch.setattr(
+        stopModule.psutil,
+        "process_iter",
+        lambda attributes: [
+            zombieProcess,
+        ],
+    )
+
+    assert (
+        service
+        ._isProcessGroupAlive(
+            1234
+        )
+        is False
+    )
+
+def test_ProcessGroupWithRunningMemberIsAlive(
+        monkeypatch,
+):
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    monkeypatch.setattr(
+        stopModule.os,
+        "killpg",
+        lambda processGroupId, signalNumber: None,
+    )
+
+    monkeypatch.setattr(
+        stopModule.os,
+        "getpgid",
+        lambda pid: 1234,
+    )
+
+    runningProcess = SimpleNamespace(
+        pid=1234,
+        info={
+            "status": (
+                stopModule
+                .psutil
+                .STATUS_RUNNING
+            ),
+        },
+    )
+
+    monkeypatch.setattr(
+        stopModule.psutil,
+        "process_iter",
+        lambda attributes: [
+            runningProcess,
+        ],
+    )
+
+    assert (
+        service
+        ._isProcessGroupAlive(
+            1234
+        )
+        is True
+    )
+
+
+def test_ReapChildProcessIgnoresNonChild(
+        monkeypatch,
+):
+    service = (
+        RuntimeProtocolStopService()
+    )
+
+    def raiseNotChild(
+            pid,
+            options,
+    ):
+        raise ChildProcessError()
+
+    monkeypatch.setattr(
+        stopModule.os,
+        "waitpid",
+        raiseNotChild,
+    )
+
+    assert (
+        service
+        ._reapChildProcess(
+            1234
+        )
+        is False
+    )
+
+
 
