@@ -256,3 +256,81 @@ def test_PersistProtocolProcessIdentityPreservesRuntimeMetadata():
     }
 
 
+def test_ResetProtocolRuntimeMetadataClearsExecutionState():
+    mapper = FakeMapper()
+
+    mapper.row["params"] = {
+        (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        ): {
+            "cpuTimeSeconds": 21.0,
+            "elapsedTimeSeconds": 92.5,
+            "elapsedUpdatedAtEpochSeconds": 12345.0,
+            "finalSyncPending": True,
+            "pid": 4321,
+            "jobIds": [
+                "77",
+                "78",
+            ],
+        },
+    }
+
+    result = (
+        RuntimeProtocolStatusSyncService()
+        .resetProtocolRuntimeMetadata(
+            mapper=mapper,
+            projectId=1,
+            protocolId=10,
+        )
+    )
+
+    params = (
+        RuntimeProtocolStatusSyncService()
+        .normalizeParams(
+            mapper.row["params"]
+        )
+    )
+
+    metadata = params[
+        (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+    ]
+
+    assert metadata[
+        "cpuTimeSeconds"
+    ] == 0.0
+
+    assert metadata[
+        "elapsedTimeSeconds"
+    ] == 0.0
+
+    assert metadata[
+        "pid"
+    ] is None
+
+    assert metadata[
+        "jobIds"
+    ] == []
+
+    assert (
+        "elapsedUpdatedAtEpochSeconds"
+        not in metadata
+    )
+
+    assert (
+        "finalSyncPending"
+        not in metadata
+    )
+
+    assert result == {
+        "protocolId": "10",
+        "cpuTimeSeconds": 0.0,
+        "elapsedTimeSeconds": 0.0,
+        "pid": None,
+        "jobIds": [],
+    }
+
+

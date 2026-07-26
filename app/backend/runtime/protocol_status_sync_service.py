@@ -286,6 +286,106 @@ class RuntimeProtocolStatusSyncService:
             ),
         }
 
+    def resetProtocolRuntimeMetadata(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Any]:
+        """
+        Clear execution-specific PostgreSQL metadata after
+        resetting a protocol to SAVED.
+
+        Reset-from does not launch a new worker, so elapsed
+        metadata cannot be deferred to markProtocolLaunched().
+        """
+        row = (
+            mapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot reset protocol runtime metadata: "
+                "protocol row was not found. "
+                "projectId=%s protocolId=%s"
+                % (
+                    projectId,
+                    protocolId,
+                )
+            )
+
+        params = self.normalizeParams(
+            row.get(
+                "params"
+            )
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(
+            runtimeMetadata
+        )
+
+        runtimeMetadata[
+            "cpuTimeSeconds"
+        ] = 0.0
+
+        runtimeMetadata[
+            "elapsedTimeSeconds"
+        ] = 0.0
+
+        runtimeMetadata[
+            "pid"
+        ] = None
+
+        runtimeMetadata[
+            "jobIds"
+        ] = []
+
+        runtimeMetadata.pop(
+            self.ELAPSED_UPDATED_AT_KEY,
+            None,
+        )
+
+        runtimeMetadata.pop(
+            self.FINAL_SYNC_PENDING_KEY,
+            None,
+        )
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "params": json.dumps(
+                params,
+                ensure_ascii=False,
+            ),
+        })
+
+        return {
+            "protocolId": str(
+                protocolId
+            ),
+            "cpuTimeSeconds": 0.0,
+            "elapsedTimeSeconds": 0.0,
+            "pid": None,
+            "jobIds": [],
+        }
+
     def toSeconds(self, value: Any) -> Optional[float]:
         value = self.scalarValue(value)
 
