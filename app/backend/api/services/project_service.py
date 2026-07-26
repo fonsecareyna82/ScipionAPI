@@ -5613,6 +5613,66 @@ class ProjectService:
             storeProtocolCallback=None,
         )
 
+    def _resolvePostgresqlRuntimeInputObject(
+            self,
+            runtimeObjectId,
+    ):
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            raise RuntimeError(
+                "PostgreSQL runtime project "
+                "is not loaded"
+            )
+
+        runtimeMapper = (
+            currentProject
+            .getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "PostgreSQL runtime mapper "
+                "is not available"
+            )
+
+        resolver = getattr(
+            runtimeMapper,
+            "selectRuntimeInputObjectById",
+            None,
+        )
+
+        if not callable(
+                resolver
+        ):
+            raise RuntimeError(
+                "PostgreSQL runtime mapper cannot "
+                "reconstruct input objects"
+            )
+
+        try:
+            runtimeObjectId = int(
+                runtimeObjectId
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ) as error:
+            raise ValueError(
+                "Invalid PostgreSQL runtime "
+                "object id: %s"
+                % runtimeObjectId
+            ) from error
+
+        return resolver(
+            runtimeObjectId
+        )
+
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
             self,
             mapper,
@@ -5625,14 +5685,29 @@ class ProjectService:
     ) -> Dict[str, Any]:
         runtimeProtocolLaunchPrepareService = RuntimeProtocolLaunchPrepareService()
 
-        return runtimeProtocolLaunchPrepareService.preparePointerOutputsForLaunch(
-            mapper=mapper,
-            projectId=projectId,
-            protocol=protocol,
-            allowMissingParentOutputs=allowMissingParentOutputs,
-            parentProtocolsById=parentProtocolsById,
-            getProtocolIdCallback=self._getScipionObjectId,
-            getParentProtocolCallback=self._getParentProtocolForPointer,
+        return (
+            runtimeProtocolLaunchPrepareService
+            .preparePointerOutputsForLaunch(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                allowMissingParentOutputs=(
+                    allowMissingParentOutputs
+                ),
+                parentProtocolsById=(
+                    parentProtocolsById
+                ),
+                getProtocolIdCallback=(
+                    self._getScipionObjectId
+                ),
+                getParentProtocolCallback=(
+                    self._getParentProtocolForPointer
+                ),
+                resolveRuntimeInputObjectCallback=(
+                    self
+                    ._resolvePostgresqlRuntimeInputObject
+                ),
+            )
         )
 
     def _repairPostgresqlRuntimeSetMapperInfo(
