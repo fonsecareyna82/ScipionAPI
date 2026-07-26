@@ -295,16 +295,39 @@ class FakeProjectService:
         self.lastDeleteProtocolCall = None
 
         self.restartProtocolAllError = None
-        self.restartProtocolAllResult = []
+        self.restartProtocolAllResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastRestartProtocolAllCall = None
 
         self.continueProtocolAllError = None
+        self.continueProtocolAllResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastContinueProtocolAllCall = None
 
         self.resetProtocolFromError = None
+        self.resetProtocolFromResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastResetProtocolFromCall = None
 
         self.stopProtocolError = None
+        self.stopProtocolResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastStopProtocolCall = None
         self.volumeItemsResult = [
             {
@@ -1004,33 +1027,58 @@ class FakeProjectService:
             raise self.restartProtocolAllError
         return self.restartProtocolAllResult
 
-    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+    def continueProtocolAll(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            currentUser,
+    ):
         self.lastContinueProtocolAllCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
             "currentUser": currentUser,
         }
+
         if self.continueProtocolAllError is not None:
             raise self.continueProtocolAllError
 
-    def resetProtocolFrom(self, mapper, projectId, protocolId):
+        return self.continueProtocolAllResult
+
+    def resetProtocolFrom(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+    ):
         self.lastResetProtocolFromCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
         }
+
         if self.resetProtocolFromError is not None:
             raise self.resetProtocolFromError
 
-    def stopProtocol(self, mapper, projectId, protocolIds):
+        return self.resetProtocolFromResult
+
+    def stopProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolIds,
+    ):
         self.lastStopProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolIds": protocolIds,
         }
+
         if self.stopProtocolError is not None:
             raise self.stopProtocolError
+
+        return self.stopProtocolResult
 
     def listOutputVolumesService(
             self,
