@@ -211,6 +211,7 @@ def test_HydratedItemCloneDoesNotPersistRuntimeParentGraph(
         classesDict={
             "ExampleItem": ExampleItem,
             "ExampleSet": ExampleSet,
+            "String": String,
         },
     )
 
