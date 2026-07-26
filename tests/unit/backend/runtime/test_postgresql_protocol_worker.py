@@ -406,3 +406,62 @@ def test_MissingPrerequisiteIsReported():
             ),
         },
     ]
+
+
+class DependencyEventListenerStub:
+    def __init__(
+            self,
+            event=None,
+    ):
+        self.event = event
+        self.waitCalls = []
+
+    def wait(
+            self,
+            timeoutSeconds,
+    ):
+        self.waitCalls.append(
+            timeoutSeconds
+        )
+
+        return self.event
+
+
+def test_WaitForDependencyChangeUsesEventListener():
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    listener = (
+        DependencyEventListenerStub(
+            event={
+                "eventType": (
+                    "protocol_changed"
+                ),
+                "projectId": 1,
+                "protocolId": 2,
+            }
+        )
+    )
+
+    worker.dependencyEventListener = (
+        listener
+    )
+
+    event = worker.waitForDependencyChange(
+        90
+    )
+
+    assert event == {
+        "eventType": (
+            "protocol_changed"
+        ),
+        "projectId": 1,
+        "protocolId": 2,
+    }
+
+    assert listener.waitCalls == [
+        90,
+    ]
+
