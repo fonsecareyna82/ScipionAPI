@@ -23,8 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import threading
+
 from app.backend.runtime.postgresql_protocol_worker import (
-    RuntimePostgresqlProtocolWorker,
+    RuntimePostgresqlProtocolWorker, RuntimePostgresqlStepAdapter,
 )
 
 
@@ -493,3 +495,77 @@ def test_StreamingProtocolWaitsForScheduledParent():
     assert readiness[
         "missingInputs"
     ] == []
+
+
+
+class ProtocolJobStoreStub:
+    def __init__(self):
+        self._jobId = []
+        self._lock = threading.RLock()
+        self.originalStoreCalls = []
+
+    def _store(
+            self,
+            *objects,
+    ):
+        self.originalStoreCalls.append(
+            objects
+        )
+
+
+def test_StepAdapterPersistsQueueJobIdsInsteadOfChildObject():
+    protocol = (
+        ProtocolJobStoreStub()
+    )
+
+    adapter = object.__new__(
+        RuntimePostgresqlStepAdapter
+    )
+
+    adapter.protocol = protocol
+
+    persistedJobIds = []
+
+    adapter.persistProtocolProcessIdentity = (
+        lambda: persistedJobIds.append(
+            list(
+                protocol._jobId
+            )
+        )
+    )
+
+    adapter.install()
+
+    protocol._jobId.append(
+        "77"
+    )
+
+    protocol._store(
+        protocol._jobId
+    )
+
+    assert persistedJobIds == [
+        [
+            "77",
+        ],
+    ]
+
+    assert (
+        protocol.originalStoreCalls
+        == []
+    )
+
+    otherObject = object()
+
+    protocol._store(
+        otherObject
+    )
+
+    assert (
+        protocol.originalStoreCalls
+        == [
+            (
+                otherObject,
+            ),
+        ]
+    )

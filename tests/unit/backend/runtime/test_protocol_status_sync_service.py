@@ -184,3 +184,75 @@ def test_BuildRuntimeMetadataIncludesProcessIdentity():
         "77",
         "78",
     ]
+
+
+def test_PersistProtocolProcessIdentityPreservesRuntimeMetadata():
+    mapper = FakeMapper()
+
+    mapper.row["params"] = {
+        (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        ): {
+            "elapsedTimeSeconds": 18.5,
+            "cpuTimeSeconds": 7.0,
+            "pid": 1111,
+            "jobIds": [
+                "old-job",
+            ],
+        },
+    }
+
+    protocol = (
+        FakeActiveRuntimeProtocol()
+    )
+
+    result = (
+        RuntimeProtocolStatusSyncService()
+        .persistProtocolProcessIdentity(
+            mapper=mapper,
+            projectId=1,
+            protocolId=10,
+            protocol=protocol,
+        )
+    )
+
+    params = (
+        RuntimeProtocolStatusSyncService()
+        .normalizeParams(
+            mapper.row["params"]
+        )
+    )
+
+    metadata = params[
+        (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+    ]
+
+    assert metadata[
+        "elapsedTimeSeconds"
+    ] == 18.5
+
+    assert metadata[
+        "cpuTimeSeconds"
+    ] == 7.0
+
+    assert metadata["pid"] == 4321
+
+    assert metadata["jobIds"] == [
+        "77",
+        "78",
+    ]
+
+    assert result == {
+        "protocolId": "10",
+        "pid": 4321,
+        "jobIds": [
+            "77",
+            "78",
+        ],
+    }
+
+

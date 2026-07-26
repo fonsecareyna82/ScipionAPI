@@ -259,6 +259,10 @@ class RuntimePostgresqlStepAdapter:
     def install(self) -> None:
         adapter = self
 
+        originalStore = (
+            self.protocol._store
+        )
+
         def loadSteps(protocolSelf):
             return (
                 adapter
@@ -314,6 +318,33 @@ class RuntimePostgresqlStepAdapter:
                 updater(step)
                 adapter.upsertStep(step)
 
+        def store(
+                protocolSelf,
+                *objects,
+        ):
+            jobIdsObject = getattr(
+                protocolSelf,
+                "_jobId",
+                None,
+            )
+
+            if (
+                    len(objects) == 1
+                    and objects[0]
+                    is jobIdsObject
+            ):
+                # Protocol._store normally provides this lock.
+                # Preserve the same synchronization because
+                # QueueStepExecutor may run several step threads.
+                with protocolSelf._lock:
+                    adapter.persistProtocolProcessIdentity()
+
+                return
+
+            return originalStore(
+                *objects
+            )
+
         self.protocol.loadSteps = MethodType(
             loadSteps,
             self.protocol,
@@ -334,6 +365,13 @@ class RuntimePostgresqlStepAdapter:
         self.protocol._updateSteps = MethodType(
             updateSteps,
             self.protocol,
+        )
+
+        self.protocol._store = (
+            MethodType(
+                store,
+                self.protocol,
+            )
         )
 
     def loadPreviousSteps(
@@ -628,6 +666,19 @@ class RuntimePostgresqlStepAdapter:
             protocolDbId=self.protocolDbId,
             protocolId=self.protocolId,
             step=stepSnapshot,
+        )
+
+    def persistProtocolProcessIdentity(
+            self,
+    ) -> Dict[str, Any]:
+        return (
+            RuntimeProtocolStatusSyncService()
+            .persistProtocolProcessIdentity(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+                protocol=self.protocol,
+            )
         )
 
 
