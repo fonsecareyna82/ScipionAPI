@@ -29,6 +29,7 @@ import os
 import psutil
 from typing import Any, Dict, Optional
 
+import pyworkflow as pw
 from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
 from pyworkflow.project.project import REGEX_NUMBER_ENDING
@@ -164,6 +165,65 @@ class PostgresqlProject(ScipionProject):
 
     def usingPostgresqlRuntimeMapper(self) -> bool:
         return isinstance(self.mapper, PostgresqlRuntimeMapper)
+
+    def _updateProtocol(
+            self,
+            protocol: Protocol,
+            tries=0,
+            checkPid=False,
+    ):
+        """
+        Refresh a PostgreSQL runtime protocol from PostgreSQL only.
+
+        Scipion's native implementation reads logs/run.db and checks the
+        protocol PID or queue job. Those sources do not belong to protocols
+        executed by the PostgreSQL worker and must never change their status.
+
+        Reading or refreshing a project must therefore remain read-only with
+        respect to protocol execution state.
+        """
+        if not self.usingPostgresqlRuntimeMapper():
+            return super()._updateProtocol(
+                protocol,
+                tries=tries,
+                checkPid=checkPid,
+            )
+
+        if protocol is None:
+            return pw.NOT_UPDATED_UNNECESSARY
+
+        previousStatus = str(
+            protocol.getStatus()
+            or ""
+        ).strip().lower()
+
+        try:
+            self.mapper.updateFrom(
+                protocol
+            )
+        except Exception:
+            logger.exception(
+                "Could not refresh PostgreSQL runtime protocol. "
+                "projectId=%s protocolId=%s",
+                self.postgresqlProjectId,
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )(),
+            )
+
+            return pw.NOT_UPDATED_ERROR
+
+        currentStatus = str(
+            protocol.getStatus()
+            or ""
+        ).strip().lower()
+
+        if currentStatus != previousStatus:
+            return pw.PROTOCOL_UPDATED
+
+        return pw.NOT_UPDATED_UNNECESSARY
 
     def _normalizeSqlitePath(self, sqliteFn) -> Optional[str]:
         if not sqliteFn:
