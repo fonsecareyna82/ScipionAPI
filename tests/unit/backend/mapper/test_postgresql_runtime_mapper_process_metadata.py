@@ -29,6 +29,7 @@ from app.backend.mapper.postgresql_runtime_mapper import (
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
+from pyworkflow.protocol.protocol import Protocol
 
 
 class FakePid:
@@ -137,7 +138,16 @@ def test_EmptyRuntimeIdentityClearsPreviousValues():
 
 
 class FakeHostConfig:
-    pass
+    def __init__(self):
+        self.store = True
+
+    def setStore(
+            self,
+            value,
+    ):
+        self.store = bool(
+            value
+        )
 
 
 class FakeProject:
@@ -156,45 +166,26 @@ class FakeProject:
         return self.hostConfig
 
 
-class FakeProtocolWithHost:
+class FakeProtocolWithHost(
+        Protocol
+):
+    def _defineParams(
+            self,
+            form,
+    ):
+        pass
+
     def __init__(self):
-        self.protocolId = 48
-        self.hostName = "localhost"
-        self.hostConfig = None
-        self.mapper = None
-        self.project = None
+        super().__init__()
 
-    def getObjId(self):
-        return self.protocolId
+        self.setObjId(
+            48
+        )
 
-    def setMapper(
-            self,
-            mapper,
-    ):
-        self.mapper = mapper
+        self.setHostName(
+            "localhost"
+        )
 
-    def setProject(
-            self,
-            project,
-    ):
-        self.project = project
-
-    def getHostName(self):
-        return self.hostName
-
-    def getHostConfig(self):
-        if self.hostConfig is None:
-            raise AttributeError(
-                "hostConfig"
-            )
-
-        return self.hostConfig
-
-    def setHostConfig(
-            self,
-            hostConfig,
-    ):
-        self.hostConfig = hostConfig
 
 def test_RuntimeContextRestoresHostConfig():
     mapper = object.__new__(
@@ -215,8 +206,22 @@ def test_RuntimeContextRestoresHostConfig():
     )
 
     assert result is protocol
-    assert protocol.mapper is mapper
-    assert protocol.project is mapper.project
+    assert (
+            protocol.getMapper()
+            is mapper
+    )
+
+    assert (
+            protocol.getProject()
+            is mapper.project
+    )
+
+    assert (
+        mapper.project
+        .hostConfig
+        .store
+        is False
+    )
 
     assert (
         protocol.getHostConfig()
