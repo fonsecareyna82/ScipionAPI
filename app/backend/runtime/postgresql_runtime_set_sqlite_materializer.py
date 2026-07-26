@@ -8,6 +8,9 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import Set as ScipionSet
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    getPostgresqlRuntimeParent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -628,7 +631,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 break
             visited.add(currentId)
 
-            parent = getattr(current, "_objParent", None)
+            parent = (
+                getPostgresqlRuntimeParent(
+                    current
+                )
+            )
             if parent is None:
                 break
 
