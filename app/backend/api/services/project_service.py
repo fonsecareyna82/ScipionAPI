@@ -127,6 +127,7 @@ from app.backend.runtime import (
     RuntimeProtocolStopService,
     RuntimeProtocolRenameService,
     RuntimePostgresqlRestartLauncherService,
+    RuntimePostgresqlContinueLauncherService,
 )
 from app.backend.runtime.project_import_service import (
     RuntimeProjectImportService,
@@ -6641,6 +6642,46 @@ class ProjectService:
             currentProject=self.currentProject,
         )
 
+    def _buildPostgresqlContinuePlan(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlContinueLauncherService()
+        )
+
+        return service.buildContinuePlan(
+            mapper=mapper,
+            projectId=projectId,
+            workflowProtocolMap=(
+                workflowProtocolMap
+            ),
+        )
+
+    def _launchPostgresqlContinueSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            plan,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlContinueLauncherService()
+        )
+
+        return (
+            service
+            .launchContinueSubworkflow(
+                mapper=mapper,
+                projectId=projectId,
+                currentProject=(
+                    self.currentProject
+                ),
+                plan=plan,
+            )
+        )
+
     def restartProtocolAll(
             self,
             mapper,
@@ -6687,27 +6728,44 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                restorePostgresqlRuntimePointersForProtocolsCallback=self._restorePostgresqlRuntimePointersForProtocols,
-                preparePostgresqlExecutionMirrorsCallback=(
-                    self._preparePostgresqlRuntimeExecutionMirrors
+                usingPostgresqlRuntime=(
+                    self
+                    ._currentProjectUsesPostgresqlRuntimeMapper()
+                ),
+                currentProject=(
+                    self.currentProject
+                ),
+                getScipionProtocolForRuntimeCallback=(
+                    self
+                    ._getScipionProtocolForRuntime
+                ),
+                getPostgresqlRuntimeSubworkflowCallback=(
+                    self
+                    ._getPostgresqlRuntimeSubworkflow
+                ),
+                workflowProtocolMapToProtocolsCallback=(
+                    self
+                    ._workflowProtocolMapToProtocols
+                ),
+                buildPostgresqlContinuePlanCallback=(
+                    self
+                    ._buildPostgresqlContinuePlan
+                ),
+                launchPostgresqlContinueSubworkflowCallback=(
+                    self
+                    ._launchPostgresqlContinueSubworkflow
                 ),
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                    self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+                    self
+                    ._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
                 ),
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-                    self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+                    self
+                    ._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
                 ),
-                syncPostgresqlRuntimeProtocolsAfterMutationCallback=(
-                    self._syncPostgresqlRuntimeProtocolsAfterMutation
-                ),
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-                refreshPostgresqlRuntimeProtocolForResumeCallback=(
-                    self._refreshPostgresqlRuntimeProtocolForResume
+                buildProtocolMutationResultCallback=(
+                    self
+                    ._buildProtocolMutationResult
                 ),
             )
         )

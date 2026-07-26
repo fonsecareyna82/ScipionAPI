@@ -1,0 +1,439 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+from types import SimpleNamespace
+
+from pyworkflow.protocol import (
+    MODE_RESUME,
+    STATUS_SCHEDULED,
+)
+
+import app.backend.runtime.protocol_postgresql_continue_launcher_service as continueModule
+
+from app.backend.runtime.protocol_postgresql_continue_launcher_service import (
+    CONTINUE_ACTION_RESTART,
+    CONTINUE_ACTION_RESUME,
+    CONTINUE_ACTION_SKIP,
+    RuntimePostgresqlContinueLauncherService,
+)
+
+
+class ScalarStub:
+    def __init__(self, value=None):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class ProtocolStub:
+    def __init__(
+            self,
+            protocolId,
+            *,
+            status="finished",
+            streaming=False,
+            interactive=False,
+    ):
+        self.protocolId = int(
+            protocolId
+        )
+
+        self.status = status
+        self.streaming = streaming
+        self.interactive = interactive
+
+        self.runMode = ScalarStub()
+        self._jobId = []
+        self._steps = ["old-step"]
+        self._stepsDone = ScalarStub(4)
+        self._numberOfSteps = ScalarStub(4)
+        self._cpuTime = ScalarStub(90)
+
+        self.pid = 999
+        self.makeWorkingDirCalls = 0
+        self.cleanWorkingDirCalls = 0
+
+    def getObjId(self):
+        return self.protocolId
+
+    def getStatus(self):
+        return self.status
+
+    def setStatus(self, status):
+        self.status = status
+
+    def worksInStreaming(self):
+        return self.streaming
+
+    def isSaved(self):
+        return self.status == "saved"
+
+    def isScheduled(self):
+        return self.status == "scheduled"
+
+    def isInteractive(self):
+        return self.interactive
+
+    def setPid(self, pid):
+        self.pid = pid
+
+    def makeWorkingDir(self):
+        self.makeWorkingDirCalls += 1
+
+    def cleanWorkingDir(self):
+        self.cleanWorkingDirCalls += 1
+
+
+class IdentityResolverStub:
+    def __init__(self, **kwargs):
+        pass
+
+    def resolvePostgresqlProtocolDbId(
+            self,
+            protocolId,
+    ):
+        return 100 + int(
+            protocolId
+        )
+
+
+class GraphRepositoryStub:
+    def __init__(self):
+        self.refsByProtocolDbId = {}
+
+    def loadInputRefsForProtocol(
+            self,
+            *,
+            protocolDbId,
+            **kwargs,
+    ):
+        return list(
+            self.refsByProtocolDbId.get(
+                int(protocolDbId),
+                [],
+            )
+        )
+
+    def getPostgresqlRuntimeOutputInfo(
+            self,
+            **kwargs,
+    ):
+        return {
+            "exists": True,
+            "runtimeObjectId": 500,
+        }
+
+
+class CursorStub:
+    def __init__(self, rowcount=0):
+        self.rowcount = rowcount
+
+
+class DbStub:
+    def __init__(self):
+        self.calls = []
+
+    def execute(
+            self,
+            sql,
+            params,
+    ):
+        self.calls.append({
+            "sql": sql,
+            "params": params,
+        })
+
+        if "UPDATE protocol_steps" in sql:
+            return CursorStub(
+                rowcount=3
+            )
+
+        return CursorStub()
+
+
+class RuntimeMapperStub:
+    def __init__(self):
+        self.storeCalls = []
+        self.commitCalls = 0
+
+    def store(self, protocol):
+        self.storeCalls.append(
+            protocol
+        )
+
+    def commit(self):
+        self.commitCalls += 1
+
+
+def installPlanStubs(
+        monkeypatch,
+):
+    graphRepository = (
+        GraphRepositoryStub()
+    )
+
+    monkeypatch.setattr(
+        continueModule,
+        "ProtocolIdentityResolver",
+        IdentityResolverStub,
+    )
+
+    monkeypatch.setattr(
+        continueModule,
+        "ProtocolGraphRepository",
+        lambda: graphRepository,
+    )
+
+    return graphRepository
+
+
+def test_ContinuePlanClassifiesMixedWorkflow(
+        monkeypatch,
+):
+    installPlanStubs(
+        monkeypatch
+    )
+
+    streamingFinished = ProtocolStub(
+        1,
+        status="finished",
+        streaming=True,
+    )
+
+    nonStreamingFinished = ProtocolStub(
+        2,
+        status="finished",
+        streaming=False,
+    )
+
+    streamingSaved = ProtocolStub(
+        3,
+        status="saved",
+        streaming=True,
+    )
+
+    alreadyScheduled = ProtocolStub(
+        4,
+        status="scheduled",
+        streaming=True,
+    )
+
+    interactive = ProtocolStub(
+        5,
+        status="interactive",
+        streaming=True,
+        interactive=True,
+    )
+
+    workflow = {
+        "1": (
+            streamingFinished,
+            0,
+        ),
+        "2": (
+            nonStreamingFinished,
+            1,
+        ),
+        "3": (
+            streamingSaved,
+            1,
+        ),
+        "4": (
+            alreadyScheduled,
+            2,
+        ),
+        "5": (
+            interactive,
+            2,
+        ),
+    }
+
+    plan = (
+        RuntimePostgresqlContinueLauncherService()
+        .buildContinuePlan(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            workflowProtocolMap=workflow,
+        )
+    )
+
+    assert plan["errors"] == []
+
+    actions = {
+        str(entry["protocolId"]): (
+            entry["action"]
+        )
+        for entry in plan["entries"]
+    }
+
+    assert actions == {
+        "1": CONTINUE_ACTION_RESUME,
+        "2": CONTINUE_ACTION_RESTART,
+        "3": CONTINUE_ACTION_RESTART,
+        "4": CONTINUE_ACTION_SKIP,
+        "5": CONTINUE_ACTION_SKIP,
+    }
+
+    assert plan["summary"][
+        "resumeProtocolIds"
+    ] == [
+        "1",
+    ]
+
+    assert plan["summary"][
+        "restartProtocolIds"
+    ] == [
+        "2",
+        "3",
+    ]
+
+
+def test_ContinuePlanRejectsActiveProtocol(
+        monkeypatch,
+):
+    installPlanStubs(
+        monkeypatch
+    )
+
+    protocol = ProtocolStub(
+        1,
+        status="running",
+        streaming=True,
+    )
+
+    plan = (
+        RuntimePostgresqlContinueLauncherService()
+        .buildContinuePlan(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            workflowProtocolMap={
+                "1": (
+                    protocol,
+                    0,
+                ),
+            },
+        )
+    )
+
+    assert len(
+        plan["errors"]
+    ) == 1
+
+    assert plan["errors"][0][
+        "protocolId"
+    ] == "1"
+
+    assert plan["errors"][0][
+        "status"
+    ] == "running"
+
+
+def test_ResumePreparationPreservesOutputsAndCpuTime():
+    protocol = ProtocolStub(
+        1,
+        status="failed",
+        streaming=True,
+    )
+
+    db = DbStub()
+    mapper = SimpleNamespace(
+        db=db
+    )
+
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    entry = {
+        "protocol": protocol,
+        "protocolId": 1,
+        "protocolDbId": 101,
+        "level": 0,
+        "action": (
+            CONTINUE_ACTION_RESUME
+        ),
+    }
+
+    service = (
+        RuntimePostgresqlContinueLauncherService()
+    )
+
+    result = (
+        service._prepareResumeProtocol(
+            mapper=mapper,
+            projectId=7,
+            entry=entry,
+            runtimeMapper=runtimeMapper,
+        )
+    )
+
+    assert protocol.runMode.get() == (
+        MODE_RESUME
+    )
+
+    assert protocol.status == (
+        STATUS_SCHEDULED
+    )
+
+    assert protocol.pid == 0
+    assert protocol._jobId == []
+    assert protocol._steps == []
+
+    assert protocol._stepsDone.get() == 0
+    assert protocol._numberOfSteps.get() == 0
+
+    # Resume must preserve accumulated CPU time.
+    assert protocol._cpuTime.get() == 90
+
+    assert protocol.makeWorkingDirCalls == 1
+    assert protocol.cleanWorkingDirCalls == 0
+
+    assert result["outputsPreserved"] is True
+    assert result[
+        "workingDirectoryPreserved"
+    ] is True
+
+    assert result["stepsPrepared"] == 3
+
+    assert runtimeMapper.storeCalls == [
+        protocol,
+    ]
+
+    assert runtimeMapper.commitCalls == 1
+
+    stepUpdate = next(
+        call
+        for call in db.calls
+        if "UPDATE protocol_steps"
+        in call["sql"]
+    )
+
+    assert stepUpdate["params"][1] == (
+        "continue_resume"
+    )
