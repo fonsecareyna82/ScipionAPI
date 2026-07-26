@@ -38,6 +38,7 @@ from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import (
     LegacyProtocol,
     MODE_RESTART,
+    Set,
     STATUS_ABORTED,
     STATUS_FAILED,
     STATUS_FINISHED,
@@ -77,16 +78,23 @@ WORKER_MODULE = (
     "app.backend.runtime.postgresql_protocol_worker"
 )
 
-READY_PARENT_STATUSES = {
-    STATUS_FINISHED,
-    STATUS_INTERACTIVE,
+FINISHED_INPUT_PARENT_STATUSES = {
+    str(STATUS_FINISHED).strip().lower(),
     "finished",
-    "interactive",
 }
 
-FAILED_PARENT_STATUSES = {
-    STATUS_FAILED,
-    STATUS_ABORTED,
+FAILED_INPUT_PARENT_STATUSES = {
+    str(STATUS_FAILED).strip().lower(),
+    str(STATUS_ABORTED).strip().lower(),
+    "failed",
+    "aborted",
+}
+
+TERMINAL_PREREQUISITE_STATUSES = {
+    str(STATUS_FINISHED).strip().lower(),
+    str(STATUS_FAILED).strip().lower(),
+    str(STATUS_ABORTED).strip().lower(),
+    "finished",
     "failed",
     "aborted",
 }
@@ -547,21 +555,182 @@ class RuntimePostgresqlProtocolWorker:
     def getPrerequisiteProtocolIds(
             self,
     ):
+        rawPrerequisites = (
+            self.protocol
+            .getPrerequisites()
+            or []
+        )
+
+        if isinstance(
+                rawPrerequisites,
+                str,
+        ):
+            rawValues = [
+                rawPrerequisites,
+            ]
+
+        else:
+            try:
+                rawValues = list(
+                    rawPrerequisites
+                )
+
+            except TypeError:
+                rawValues = [
+                    rawPrerequisites,
+                ]
+
         result = set()
 
-        for protocolId in (
-                self.protocol
-                .getPrerequisites()
-                or []
-        ):
+        for rawValue in rawValues:
+            tokens = re.split(
+                r"[\s,;]+",
+                str(
+                    rawValue
+                    or ""
+                ).strip(),
+            )
+
+            for token in tokens:
+                if not token:
+                    continue
+
+                try:
+                    result.add(
+                        int(token)
+                    )
+
+                except (
+                        TypeError,
+                        ValueError,
+                ):
+                    logger.warning(
+                        "Ignoring invalid prerequisite "
+                        "protocol id. projectId=%s "
+                        "protocolId=%s value=%s",
+                        self.projectId,
+                        self.protocolId,
+                        token,
+                    )
+
+        return result
+
+    def loadPrerequisiteStatuses(
+            self,
+            prerequisiteIds,
+    ) -> Dict[int, Dict[str, Any]]:
+        normalizedIds = sorted({
+            int(protocolId)
+            for protocolId
+            in prerequisiteIds or []
+        })
+
+        if not normalizedIds:
+            return {}
+
+        placeholders = ", ".join(
+            "%s"
+            for _
+            in normalizedIds
+        )
+
+        rows = self.mapper.db.fetchAll(
+            f"""
+            SELECT
+                id AS "protocolDbId",
+                "protocolId",
+                status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" IN (
+                   {placeholders}
+               )
+            """,
+            tuple(
+                [
+                    self.projectId,
+                ]
+                + [
+                    str(protocolId)
+                    for protocolId
+                    in normalizedIds
+                ]
+            ),
+        )
+
+        result = {}
+
+        for row in rows or []:
             try:
-                result.add(
-                    int(protocolId)
+                protocolId = int(
+                    row["protocolId"]
                 )
+
             except Exception:
                 continue
 
+            result[protocolId] = dict(
+                row
+            )
+
         return result
+
+    def validateProtocolInputs(
+            self,
+    ) -> List[str]:
+        try:
+            validationErrors = (
+                self.protocol.validate()
+                or []
+            )
+
+        except Exception as error:
+            return [
+                "Protocol input validation failed: %s"
+                % error
+            ]
+
+        return [
+            str(error)
+            for error
+            in validationErrors
+            if str(
+                error
+                or ""
+            ).strip()
+        ]
+
+    def validateAvailableInputs(
+            self,
+    ) -> Dict[str, Any]:
+        inputReport = (
+            self.restoreExecutionInputs(
+                persistResolvedRefs=False
+            )
+        )
+
+        inputRestoreErrors = list(
+            inputReport.get(
+                "errors"
+            )
+            or []
+        )
+
+        validationErrors = []
+
+        if not inputRestoreErrors:
+            validationErrors = (
+                self.validateProtocolInputs()
+            )
+
+        return {
+            "inputRestoreErrors": (
+                inputRestoreErrors
+            ),
+            "validationErrors": (
+                validationErrors
+            ),
+        }
 
     def getReadinessState(
             self,
@@ -584,6 +753,12 @@ class RuntimePostgresqlProtocolWorker:
             .getPrerequisiteProtocolIds()
         )
 
+        prerequisiteRowsById = (
+            self.loadPrerequisiteStatuses(
+                prerequisiteIds
+            )
+        )
+
         parentRowsByDbId = {}
 
         for row in parentRows:
@@ -591,13 +766,19 @@ class RuntimePostgresqlProtocolWorker:
                 parentRowsByDbId[
                     int(row["protocolDbId"])
                 ] = row
+
             except Exception:
                 continue
 
         failedParents = []
         pendingParents = []
         missingInputs = []
+        missingPrerequisites = []
+        inputRestoreErrors = []
+        validationErrors = []
+
         pendingKeys = set()
+        failedKeys = set()
         inputParentDbIds = set()
 
         def addPending(
@@ -616,7 +797,9 @@ class RuntimePostgresqlProtocolWorker:
             if key in pendingKeys:
                 return
 
-            pendingKeys.add(key)
+            pendingKeys.add(
+                key
+            )
 
             pendingParents.append({
                 "protocolDbId": (
@@ -631,50 +814,69 @@ class RuntimePostgresqlProtocolWorker:
                 "reason": reason,
             })
 
-        for row in parentRows:
-            parentStatus = str(
-                row.get("status")
+        def addFailed(
+                row,
+        ):
+            protocolDbId = row.get(
+                "protocolDbId"
+            )
+
+            key = str(
+                protocolDbId
+            )
+
+            if key in failedKeys:
+                return
+
+            failedKeys.add(
+                key
+            )
+
+            failedParents.append(
+                dict(row)
+            )
+
+        # Prerequisites are independent from input dependencies.
+        # They may reference any protocol in the project.
+        for prerequisiteId in sorted(
+                prerequisiteIds
+        ):
+            prerequisiteRow = (
+                prerequisiteRowsById.get(
+                    prerequisiteId
+                )
+            )
+
+            if prerequisiteRow is None:
+                missingPrerequisites.append({
+                    "protocolId": (
+                        prerequisiteId
+                    ),
+                    "reason": (
+                        "prerequisite_not_found"
+                    ),
+                })
+
+                continue
+
+            prerequisiteStatus = str(
+                prerequisiteRow.get(
+                    "status"
+                )
                 or ""
             ).strip().lower()
 
             if (
-                    parentStatus
-                    in FAILED_PARENT_STATUSES
-            ):
-                failedParents.append(
-                    dict(row)
-                )
-
-        for row in parentRows:
-            try:
-                parentProtocolId = int(
-                    row["protocolId"]
-                )
-            except Exception:
-                continue
-
-            parentStatus = str(
-                row.get("status")
-                or ""
-            ).strip().lower()
-
-            if (
-                    parentStatus
-                    in FAILED_PARENT_STATUSES
-            ):
-                continue
-
-            if (
-                    parentProtocolId
-                    in prerequisiteIds
-                    and parentStatus
-                    not in READY_PARENT_STATUSES
+                    prerequisiteStatus
+                    not in
+                    TERMINAL_PREREQUISITE_STATUSES
             ):
                 addPending(
-                    row,
-                    "prerequisite_not_finished",
+                    prerequisiteRow,
+                    "prerequisite_not_terminal",
                 )
 
+        # Check every parent required by an input pointer.
         for inputRef in inputRefs:
             try:
                 parentProtocolDbId = int(
@@ -682,6 +884,7 @@ class RuntimePostgresqlProtocolWorker:
                         "parentProtocolDbId"
                     ]
                 )
+
             except Exception:
                 missingInputs.append({
                     **dict(inputRef),
@@ -689,6 +892,7 @@ class RuntimePostgresqlProtocolWorker:
                         "missing_parent_protocol"
                     ),
                 })
+
                 continue
 
             inputParentDbIds.add(
@@ -701,45 +905,50 @@ class RuntimePostgresqlProtocolWorker:
                 )
             )
 
+            if parentRow is None:
+                missingInputs.append({
+                    **dict(inputRef),
+                    "reason": (
+                        "parent_protocol_not_found"
+                    ),
+                })
+
+                continue
+
             parentStatus = str(
-                (
-                    parentRow
-                    or {}
-                ).get("status")
+                parentRow.get(
+                    "status"
+                )
                 or ""
             ).strip().lower()
 
             if (
                     parentStatus
-                    in FAILED_PARENT_STATUSES
+                    in FAILED_INPUT_PARENT_STATUSES
             ):
+                addFailed(
+                    parentRow
+                )
+
                 continue
 
-            if not streaming:
-                if (
-                        parentRow is None
-                        or parentStatus
-                        not in READY_PARENT_STATUSES
-                ):
-                    addPending(
-                        parentRow or {
-                            "protocolDbId": (
-                                parentProtocolDbId
-                            ),
-                            "protocolId": (
-                                inputRef.get(
-                                    "parentProtocolId"
-                                )
-                            ),
-                            "status": (
-                                parentStatus
-                            ),
-                        },
-                        "input_parent_not_finished",
-                    )
+            # A non-streaming protocol waits until every
+            # input parent is really finished.
+            if (
+                    not streaming
+                    and parentStatus
+                    not in
+                    FINISHED_INPUT_PARENT_STATUSES
+            ):
+                addPending(
+                    parentRow,
+                    "input_parent_not_finished",
+                )
 
-                    continue
+                continue
 
+            # A streaming child does not need the parent to
+            # finish, but the concrete output must already exist.
             outputInfo = (
                 self.getRuntimeOutputInfo(
                     inputRef
@@ -788,6 +997,8 @@ class RuntimePostgresqlProtocolWorker:
                     ),
                 })
 
+        # Preserve any dependency that is not represented by
+        # an input pointer or by the explicit prerequisites field.
         for row in parentRows:
             try:
                 parentProtocolDbId = int(
@@ -797,6 +1008,7 @@ class RuntimePostgresqlProtocolWorker:
                 parentProtocolId = int(
                     row["protocolId"]
                 )
+
             except Exception:
                 continue
 
@@ -809,20 +1021,55 @@ class RuntimePostgresqlProtocolWorker:
                 continue
 
             parentStatus = str(
-                row.get("status")
+                row.get(
+                    "status"
+                )
                 or ""
             ).strip().lower()
 
             if (
                     parentStatus
-                    not in READY_PARENT_STATUSES
-                    and parentStatus
-                    not in FAILED_PARENT_STATUSES
+                    in FAILED_INPUT_PARENT_STATUSES
+            ):
+                addFailed(
+                    row
+                )
+
+            elif (
+                    parentStatus
+                    not in
+                    FINISHED_INPUT_PARENT_STATUSES
             ):
                 addPending(
                     row,
                     "dependency_not_finished",
                 )
+
+        # Once outputs exist and dependencies are satisfied,
+        # reconstruct the actual inputs and run Scipion validation.
+        if (
+                not failedParents
+                and not pendingParents
+                and not missingInputs
+                and not missingPrerequisites
+        ):
+            validationReport = (
+                self.validateAvailableInputs()
+            )
+
+            inputRestoreErrors = list(
+                validationReport.get(
+                    "inputRestoreErrors"
+                )
+                or []
+            )
+
+            validationErrors = list(
+                validationReport.get(
+                    "validationErrors"
+                )
+                or []
+            )
 
         return {
             "streaming": streaming,
@@ -834,6 +1081,15 @@ class RuntimePostgresqlProtocolWorker:
             ),
             "missingInputs": (
                 missingInputs
+            ),
+            "missingPrerequisites": (
+                missingPrerequisites
+            ),
+            "inputRestoreErrors": (
+                inputRestoreErrors
+            ),
+            "validationErrors": (
+                validationErrors
             ),
         }
 
@@ -864,8 +1120,9 @@ class RuntimePostgresqlProtocolWorker:
             if failedParents:
                 raise RuntimeError(
                     "Cannot execute protocol %s "
-                    "because parent protocol(s) "
-                    "failed or aborted: %s"
+                    "because input parent "
+                    "protocol(s) failed or "
+                    "aborted: %s"
                     % (
                         self.protocolId,
                         ", ".join(
@@ -880,6 +1137,29 @@ class RuntimePostgresqlProtocolWorker:
                     )
                 )
 
+            missingPrerequisites = readiness[
+                "missingPrerequisites"
+            ]
+
+            if missingPrerequisites:
+                raise RuntimeError(
+                    "Cannot execute protocol %s "
+                    "because prerequisite "
+                    "protocol(s) do not exist: %s"
+                    % (
+                        self.protocolId,
+                        ", ".join(
+                            str(
+                                item.get(
+                                    "protocolId"
+                                )
+                            )
+                            for item
+                            in missingPrerequisites
+                        ),
+                    )
+                )
+
             pendingParents = readiness[
                 "pendingParents"
             ]
@@ -888,9 +1168,19 @@ class RuntimePostgresqlProtocolWorker:
                 "missingInputs"
             ]
 
+            inputRestoreErrors = readiness[
+                "inputRestoreErrors"
+            ]
+
+            validationErrors = readiness[
+                "validationErrors"
+            ]
+
             if (
                     not pendingParents
                     and not missingInputs
+                    and not inputRestoreErrors
+                    and not validationErrors
             ):
                 logger.info(
                     "PostgreSQL protocol is ready. "
@@ -918,11 +1208,15 @@ class RuntimePostgresqlProtocolWorker:
                     "PostgreSQL protocol inputs. "
                     "protocolId=%s "
                     "pendingParents=%s "
-                    "missingInputs=%s"
+                    "missingInputs=%s "
+                    "inputRestoreErrors=%s "
+                    "validationErrors=%s"
                     % (
                         self.protocolId,
                         pendingParents,
                         missingInputs,
+                        inputRestoreErrors,
+                        validationErrors,
                     )
                 )
 
@@ -936,19 +1230,26 @@ class RuntimePostgresqlProtocolWorker:
                     "scheduled. projectId=%s "
                     "protocolId=%s streaming=%s "
                     "pendingParents=%s "
-                    "missingInputs=%s",
+                    "missingInputs=%s "
+                    "inputRestoreErrors=%s "
+                    "validationErrors=%s",
                     self.projectId,
                     self.protocolId,
                     readiness["streaming"],
                     pendingParents,
                     missingInputs,
+                    inputRestoreErrors,
+                    validationErrors,
                 )
 
                 lastReportedAt = elapsed
 
             time.sleep(2)
 
-    def restoreExecutionInputs(self) -> Dict[str, Any]:
+    def restoreExecutionInputs(
+            self,
+            persistResolvedRefs: bool = True,
+    ) -> Dict[str, Any]:
         protocolDbId = self.getProtocolDbId()
 
         graphRepository = (
@@ -1112,33 +1413,34 @@ class RuntimePostgresqlProtocolWorker:
                     pointer,
                 )
 
-            self.mapper.db.execute(
-                """
-                UPDATE protocol_input_refs
-                   SET "objectId" = %s,
-                       "objectClassName" = %s,
-                       "updatedAt" = NOW()
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
-                   AND "inputName" = %s
-                   AND "itemIndex" = %s
-                """,
-                (
-                    str(runtimeObjectId),
-                    outputInfo.get(
-                        "className"
+            if persistResolvedRefs:
+                self.mapper.db.execute(
+                    """
+                    UPDATE protocol_input_refs
+                       SET "objectId" = %s,
+                           "objectClassName" = %s,
+                           "updatedAt" = NOW()
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND "inputName" = %s
+                       AND "itemIndex" = %s
+                    """,
+                    (
+                        str(runtimeObjectId),
+                        outputInfo.get(
+                            "className"
+                        ),
+                        self.projectId,
+                        protocolDbId,
+                        inputName,
+                        int(
+                            ref.get(
+                                "itemIndex"
+                            )
+                            or 0
+                        ),
                     ),
-                    self.projectId,
-                    protocolDbId,
-                    inputName,
-                    int(
-                        ref.get(
-                            "itemIndex"
-                        )
-                        or 0
-                    ),
-                ),
-            )
+                )
 
             restored.append({
                 "inputName": inputName,
@@ -1315,6 +1617,16 @@ class RuntimePostgresqlProtocolWorker:
                 "Could not restore PostgreSQL "
                 "execution inputs: %s"
                 % inputReport["errors"]
+            )
+
+        validationErrors = (
+            self.validateProtocolInputs()
+        )
+
+        if validationErrors:
+            raise RuntimeError(
+                "Protocol inputs are not ready: %s"
+                % validationErrors
             )
 
         self.configureRunLogging()

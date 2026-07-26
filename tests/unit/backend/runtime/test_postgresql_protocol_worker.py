@@ -36,7 +36,9 @@ class ProtocolStub:
     ):
         self.streaming = streaming
         self.prerequisites = (
-            prerequisites or []
+            []
+            if prerequisites is None
+            else prerequisites
         )
 
     def worksInStreaming(self):
@@ -51,6 +53,9 @@ def buildWorker(
         parentStatus="running",
         outputExists=True,
         prerequisites=None,
+        prerequisiteStatuses=None,
+        validationErrors=None,
+        inputRestoreErrors=None,
 ):
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -91,6 +96,54 @@ def buildWorker(
         }
     )
 
+    prerequisiteStatuses = (
+        prerequisiteStatuses
+        or {}
+    )
+
+    def loadPrerequisiteStatuses(
+            protocolIds,
+    ):
+        result = {}
+
+        for protocolId in protocolIds:
+            if (
+                    protocolId
+                    not in prerequisiteStatuses
+            ):
+                continue
+
+            result[protocolId] = {
+                "protocolDbId": (
+                    100 + protocolId
+                ),
+                "protocolId": protocolId,
+                "status": (
+                    prerequisiteStatuses[
+                        protocolId
+                    ]
+                ),
+            }
+
+        return result
+
+    worker.loadPrerequisiteStatuses = (
+        loadPrerequisiteStatuses
+    )
+
+    worker.validateAvailableInputs = (
+        lambda: {
+            "inputRestoreErrors": list(
+                inputRestoreErrors
+                or []
+            ),
+            "validationErrors": list(
+                validationErrors
+                or []
+            ),
+        }
+    )
+
     return worker
 
 
@@ -98,16 +151,11 @@ def test_NonStreamingProtocolWaitsForRunningParent():
     worker = buildWorker(
         streaming=False,
         parentStatus="running",
-        outputExists=True,
     )
 
     readiness = (
         worker.getReadinessState()
     )
-
-    assert readiness[
-        "missingInputs"
-    ] == []
 
     assert readiness[
         "pendingParents"
@@ -123,10 +171,34 @@ def test_NonStreamingProtocolWaitsForRunningParent():
     ]
 
 
-def test_StreamingProtocolStartsWhenParentOutputExists():
+def test_NonStreamingProtocolWaitsForInteractiveParent():
     worker = buildWorker(
-        streaming=True,
-        parentStatus="running",
+        streaming=False,
+        parentStatus="interactive",
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "interactive",
+            "reason": (
+                "input_parent_not_finished"
+            ),
+        },
+    ]
+
+
+def test_NonStreamingProtocolStartsAfterParentFinished():
+    worker = buildWorker(
+        streaming=False,
+        parentStatus="finished",
         outputExists=True,
     )
 
@@ -144,6 +216,35 @@ def test_StreamingProtocolStartsWhenParentOutputExists():
 
     assert readiness[
         "missingInputs"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
+    ] == []
+
+
+def test_StreamingProtocolStartsWhenInputsValidate():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        outputExists=True,
+        validationErrors=[],
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "missingInputs"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
     ] == []
 
 
@@ -178,12 +279,62 @@ def test_StreamingProtocolWaitsUntilParentOutputExists():
     ]
 
 
-def test_StreamingProtocolStillWaitsForExplicitPrerequisite():
+def test_StreamingProtocolWaitsWhileValidationFails():
     worker = buildWorker(
         streaming=True,
         parentStatus="running",
         outputExists=True,
-        prerequisites=[2],
+        validationErrors=[
+            "Input set does not contain enough items",
+        ],
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "missingInputs"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
+    ] == [
+        "Input set does not contain enough items",
+    ]
+
+
+def test_CommaSeparatedPrerequisitesAreParsed():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        prerequisites="5, 8; 13",
+    )
+
+    assert (
+        worker
+        .getPrerequisiteProtocolIds()
+        == {
+            5,
+            8,
+            13,
+        }
+    )
+
+
+def test_PrerequisiteIsCheckedWhenNotInputParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        outputExists=True,
+        prerequisites="9",
+        prerequisiteStatuses={
+            9: "running",
+        },
     )
 
     readiness = (
@@ -194,11 +345,64 @@ def test_StreamingProtocolStillWaitsForExplicitPrerequisite():
         "pendingParents"
     ] == [
         {
-            "protocolDbId": 20,
-            "protocolId": 2,
+            "protocolDbId": 109,
+            "protocolId": 9,
             "status": "running",
             "reason": (
-                "prerequisite_not_finished"
+                "prerequisite_not_terminal"
+            ),
+        },
+    ]
+
+
+def test_FailedPrerequisiteDoesNotBlockProtocol():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        outputExists=True,
+        prerequisites="9",
+        prerequisiteStatuses={
+            9: "failed",
+        },
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "failedParents"
+    ] == []
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "missingPrerequisites"
+    ] == []
+
+
+def test_MissingPrerequisiteIsReported():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        outputExists=True,
+        prerequisites="9",
+        prerequisiteStatuses={},
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "missingPrerequisites"
+    ] == [
+        {
+            "protocolId": 9,
+            "reason": (
+                "prerequisite_not_found"
             ),
         },
     ]
