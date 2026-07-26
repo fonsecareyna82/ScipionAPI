@@ -46,6 +46,8 @@ from pyworkflow.protocol import (
     STATUS_FINISHED,
     STATUS_INTERACTIVE,
     STATUS_LAUNCHED,
+    STATUS_SAVED,
+    STATUS_SCHEDULED,
 )
 from pyworkflow.protocol.constants import UNKNOWN_JOBID
 from pyworkflow.protocol.executor import (
@@ -147,6 +149,13 @@ TERMINAL_PREREQUISITE_STATUSES = {
     "aborted",
 }
 
+STREAMING_PARENT_NOT_STARTED_STATUSES = {
+    str(STATUS_SAVED).strip().lower(),
+    str(STATUS_SCHEDULED).strip().lower(),
+    "new",
+    "saved",
+    "scheduled",
+}
 
 def buildPostgresqlWorkerCommand(
         projectId: int,
@@ -1463,6 +1472,24 @@ class RuntimePostgresqlProtocolWorker:
             ):
                 addFailed(
                     parentRow
+                )
+
+                continue
+
+            # A resumed streaming child must not consume an
+            # output left by a previous execution while its
+            # parent is still only scheduled or saved.
+            #
+            # Once the parent reaches launched/running, normal
+            # streaming concurrency is allowed again.
+            if (
+                    streaming
+                    and parentStatus
+                    in STREAMING_PARENT_NOT_STARTED_STATUSES
+            ):
+                addPending(
+                    parentRow,
+                    "streaming_input_parent_not_started",
                 )
 
                 continue

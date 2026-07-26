@@ -82,12 +82,23 @@ class PostgresqlSetRuntimeMapper:
                 Callable[[Dict[str, Any]], Any]
             ] = None,
             tableId: Optional[int] = None,
+            tableIdResolver: Optional[
+                Callable[[], Optional[int]]
+            ] = None,
     ):
         if db is None:
             raise ValueError("db is required")
 
         if not callable(itemBuilder):
             raise ValueError("itemBuilder must be callable")
+
+        if (
+                tableIdResolver is not None
+                and not callable(tableIdResolver)
+        ):
+            raise ValueError(
+                "tableIdResolver must be callable or None"
+            )
 
         hasSetId = setId is not None
         hasTableId = tableId is not None
@@ -96,6 +107,19 @@ class PostgresqlSetRuntimeMapper:
             raise ValueError(
                 "Exactly one of setId or tableId is required"
             )
+
+        if (
+                hasSetId
+                and tableIdResolver is not None
+        ):
+            raise ValueError(
+                "tableIdResolver is only supported "
+                "for logical-table mappers"
+            )
+
+        self.tableIdResolver = (
+            tableIdResolver
+        )
 
         self.db = db
 
@@ -134,6 +158,51 @@ class PostgresqlSetRuntimeMapper:
 
         self._columns = self._loadColumns()
 
+    def _refreshLogicalTableScope(
+            self,
+    ) -> bool:
+        if (
+                self.tableId is None
+                or not callable(
+                    self.tableIdResolver
+                )
+        ):
+            return False
+
+        currentTableId = (
+            self.tableIdResolver()
+        )
+
+        if currentTableId in (
+                None,
+                "",
+        ):
+            return False
+
+        currentTableId = int(
+            currentTableId
+        )
+
+        if currentTableId == int(
+                self.tableId
+        ):
+            return False
+
+        self.tableId = currentTableId
+        self._scopeId = currentTableId
+
+        # The recreated logical table can have new
+        # properties and column rows as well.
+        self._tableProperties = (
+            self._loadLogicalTableProperties()
+        )
+
+        self._columns = (
+            self._loadColumns()
+        )
+
+        return True
+
     # ------------------------------------------------------------------
     # pyworkflow.object.Set read contract
     # ------------------------------------------------------------------
@@ -147,6 +216,8 @@ class PostgresqlSetRuntimeMapper:
             iterate=True,
             rowFilter=None,
     ):
+        self._refreshLogicalTableScope()
+
         whereSql, whereParams = self._buildWhere(
             where
         )
@@ -210,6 +281,8 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def selectById(self, itemId):
+        self._refreshLogicalTableScope()
+
         query = (
             self._buildItemsSelectQuery()
             + """
@@ -240,6 +313,8 @@ class PostgresqlSetRuntimeMapper:
             objectFilter=None,
             **conditions,
     ):
+        self._refreshLogicalTableScope()
+
         if not conditions:
             return self.selectAll(
                 iterate=iterate,
@@ -299,6 +374,7 @@ class PostgresqlSetRuntimeMapper:
         return items
 
     def exists(self, itemId):
+        self._refreshLogicalTableScope()
         query = """
             SELECT 1
               FROM {itemsTable}
@@ -321,6 +397,7 @@ class PostgresqlSetRuntimeMapper:
         return row is not None
 
     def count(self):
+        self._refreshLogicalTableScope()
         query = """
             SELECT COUNT(*) AS count
               FROM {itemsTable}
@@ -342,6 +419,7 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def maxId(self):
+        self._refreshLogicalTableScope()
         query = """
             SELECT MAX("scipionItemId") AS "maxItemId"
               FROM {itemsTable}
@@ -371,6 +449,7 @@ class PostgresqlSetRuntimeMapper:
     # ------------------------------------------------------------------
 
     def hasProperty(self, key):
+        self._refreshLogicalTableScope()
         if self.tableId is not None:
             return (
                 str(key)
@@ -398,6 +477,7 @@ class PostgresqlSetRuntimeMapper:
             key,
             defaultValue=None,
     ):
+        self._refreshLogicalTableScope()
         if self.tableId is not None:
             return self._tableProperties.get(
                 str(key),
@@ -425,6 +505,7 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def getPropertyKeys(self):
+        self._refreshLogicalTableScope()
         if self.tableId is not None:
             return sorted(
                 self._tableProperties
@@ -465,6 +546,7 @@ class PostgresqlSetRuntimeMapper:
             attributes,
             where=None,
     ):
+        self._refreshLogicalTableScope()
         if isinstance(
                 attributes,
                 str,

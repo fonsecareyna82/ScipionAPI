@@ -716,6 +716,63 @@ class PostgresqlRuntimeSetFactory:
 
         return result
 
+    def _resolveCurrentLogicalTableId(
+            self,
+            *,
+            setMapper,
+            setId: int,
+            parentItemId: int,
+    ) -> Optional[int]:
+        matchingTables = []
+
+        for table in (
+                setMapper.listStoredSetTables(
+                    int(setId)
+                )
+                or []
+        ):
+            if (
+                    table.get("tableKind")
+                    != "child"
+            ):
+                continue
+
+            storedParentItemId = (
+                self._toOptionalInt(
+                    table.get(
+                        "parentItemId"
+                    )
+                )
+            )
+
+            if (
+                    storedParentItemId
+                    != int(parentItemId)
+            ):
+                continue
+
+            matchingTables.append(
+                dict(table)
+            )
+
+        if len(matchingTables) > 1:
+            raise ValueError(
+                "More than one PostgreSQL logical "
+                "table was found for set %s and "
+                "parent item %s."
+                % (
+                    setId,
+                    parentItemId,
+                )
+            )
+
+        if not matchingTables:
+            return None
+
+        return self._toOptionalInt(
+            matchingTables[0].get("id")
+        )
+
     def _attachLogicalTableMapper(
             self,
             db,
@@ -809,10 +866,57 @@ class PostgresqlRuntimeSetFactory:
             nestedProperties
         )
 
+        setId = self._toOptionalInt(
+            table.get("setId")
+        )
+
+        if setId is None:
+            raise ValueError(
+                "Logical table %s does not expose setId"
+                % tableId
+            )
+
+        def resolveCurrentTableId():
+            currentTableId = (
+                self._resolveCurrentLogicalTableId(
+                    setMapper=setMapper,
+                    setId=int(setId),
+                    parentItemId=int(itemId),
+                )
+            )
+
+            if currentTableId is None:
+                currentTableId = int(
+                    tableId
+                )
+
+            runtimeInfo = getattr(
+                item,
+                "_postgresqlRuntimeInfo",
+                None,
+            )
+
+            if isinstance(
+                    runtimeInfo,
+                    dict,
+            ):
+                runtimeInfo["tableId"] = int(
+                    currentTableId
+                )
+
+            return int(
+                currentTableId
+            )
+
         def mapperFactory():
+            currentTableId = (
+                resolveCurrentTableId()
+            )
+
             childColumns = (
-                setMapper.getStoredSetTableColumns(
-                    int(tableId)
+                setMapper
+                .getStoredSetTableColumns(
+                    currentTableId
                 )
             )
 
@@ -836,7 +940,10 @@ class PostgresqlRuntimeSetFactory:
 
             return PostgresqlSetRuntimeMapper(
                 db=db,
-                tableId=int(tableId),
+                tableId=currentTableId,
+                tableIdResolver=(
+                    resolveCurrentTableId
+                ),
                 itemBuilder=childHydrator,
             )
 
