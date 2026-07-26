@@ -1336,8 +1336,13 @@ class RuntimeProtocolStopService:
                 raise RuntimeError(
                     "Cannot mark PostgreSQL protocol %s "
                     "as aborted because no local process "
-                    "or queue job termination was confirmed."
-                    % protocolId
+                    "or queue job termination was confirmed. "
+                    "pid=%s jobIds=%s"
+                    % (
+                        protocolId,
+                        pid,
+                        jobIds,
+                    )
                 )
 
             self._markProtocolAbortedInMemory(

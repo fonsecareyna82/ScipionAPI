@@ -2342,8 +2342,20 @@ class PostgresqlRuntimeMapper(Mapper):
             self._setObjId(protocol, protocolId)
 
         self._attachRuntimeContext(protocol)
-        self._applyStoredProtocolStatus(protocol, row.get("status"))
-        self._ensureProtocolWorkingDir(protocol)
+
+        self._applyStoredProtocolStatus(
+            protocol,
+            row.get("status"),
+        )
+
+        self._applyStoredProtocolRuntimeMetadata(
+            protocol,
+            row.get("params") or {},
+        )
+
+        self._ensureProtocolWorkingDir(
+            protocol
+        )
 
         return protocol
 
@@ -5274,6 +5286,162 @@ class PostgresqlRuntimeMapper(Mapper):
                     exc_info=True,
                 )
 
+    def _applyStoredProtocolRuntimeMetadata(
+            self,
+            protocol,
+            rawParams,
+    ) -> None:
+        params = (
+            self._normalizeStoredProtocolParams(
+                rawParams
+            )
+        )
+
+        runtimeMetadata = params.get(
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            return
+
+        if "pid" in runtimeMetadata:
+            storedPid = (
+                self._toOptionalInt(
+                    runtimeMetadata.get(
+                        "pid"
+                    )
+                )
+                or 0
+            )
+
+            setPid = getattr(
+                protocol,
+                "setPid",
+                None,
+            )
+
+            if callable(setPid):
+                setPid(
+                    storedPid
+                )
+
+            else:
+                pidAttribute = getattr(
+                    protocol,
+                    "_pid",
+                    None,
+                )
+
+                pidSetter = getattr(
+                    pidAttribute,
+                    "set",
+                    None,
+                )
+
+                if callable(pidSetter):
+                    pidSetter(
+                        storedPid
+                    )
+
+        if "jobIds" not in runtimeMetadata:
+            return
+
+        rawJobIds = runtimeMetadata.get(
+            "jobIds"
+        )
+
+        if rawJobIds is None:
+            rawValues = []
+
+        elif isinstance(
+                rawJobIds,
+                str,
+        ):
+            rawValues = (
+                rawJobIds
+                .replace(";", ",")
+                .split(",")
+            )
+
+        else:
+            try:
+                rawValues = list(
+                    rawJobIds
+                )
+
+            except TypeError:
+                rawValues = [
+                    rawJobIds,
+                ]
+
+        jobIds = []
+        seen = set()
+
+        for rawValue in rawValues:
+            jobId = str(
+                rawValue or ""
+            ).strip()
+
+            if (
+                    not jobId
+                    or jobId == "0"
+                    or jobId in seen
+            ):
+                continue
+
+            seen.add(
+                jobId
+            )
+
+            jobIds.append(
+                jobId
+            )
+
+        jobIdAttribute = getattr(
+            protocol,
+            "_jobId",
+            None,
+        )
+
+        clearJobIds = getattr(
+            jobIdAttribute,
+            "clear",
+            None,
+        )
+
+        if callable(clearJobIds):
+            clearJobIds()
+
+        appendJobId = getattr(
+            protocol,
+            "appendJobId",
+            None,
+        )
+
+        if callable(appendJobId):
+            for jobId in jobIds:
+                appendJobId(
+                    jobId
+                )
+
+            return
+
+        appendToAttribute = getattr(
+            jobIdAttribute,
+            "append",
+            None,
+        )
+
+        if callable(appendToAttribute):
+            for jobId in jobIds:
+                appendToAttribute(
+                    jobId
+                )
+
     def _applyStoredProtocolParams(
             self,
             protocol,
@@ -5285,7 +5453,19 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
+        self._applyStoredProtocolRuntimeMetadata(
+            protocol,
+            params,
+        )
+
+        runtimeMetadataKey = (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+
         for key, storedValue in params.items():
+            if key == runtimeMetadataKey:
+                continue
             value = (
                 self
                 ._extractStoredProtocolParamValue(

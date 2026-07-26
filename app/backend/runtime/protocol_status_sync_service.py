@@ -95,6 +95,110 @@ class RuntimeProtocolStatusSyncService:
 
         return value
 
+    def getProtocolPid(
+            self,
+            protocol,
+    ) -> Optional[int]:
+        pid = self.safeCall(
+            protocol,
+            "getPid",
+            None,
+        )
+
+        if pid is None:
+            pid = self.scalarValue(
+                getattr(
+                    protocol,
+                    "_pid",
+                    None,
+                )
+            )
+
+        try:
+            pid = int(
+                pid
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return None
+
+        return (
+            pid
+            if pid > 0
+            else None
+        )
+
+    def getProtocolJobIds(
+            self,
+            protocol,
+    ):
+        rawJobIds = self.safeCall(
+            protocol,
+            "getJobIds",
+            None,
+        )
+
+        if rawJobIds is None:
+            rawJobIds = self.scalarValue(
+                getattr(
+                    protocol,
+                    "_jobId",
+                    None,
+                )
+            )
+
+        if rawJobIds is None:
+            return []
+
+        if isinstance(
+                rawJobIds,
+                str,
+        ):
+            rawValues = (
+                rawJobIds
+                .replace(";", ",")
+                .split(",")
+            )
+
+        else:
+            try:
+                rawValues = list(
+                    rawJobIds
+                )
+
+            except TypeError:
+                rawValues = [
+                    rawJobIds,
+                ]
+
+        jobIds = []
+        seen = set()
+
+        for rawValue in rawValues:
+            jobId = str(
+                rawValue or ""
+            ).strip()
+
+            if (
+                    not jobId
+                    or jobId == "0"
+                    or jobId in seen
+            ):
+                continue
+
+            seen.add(
+                jobId
+            )
+
+            jobIds.append(
+                jobId
+            )
+
+        return jobIds
+
     def toSeconds(self, value: Any) -> Optional[float]:
         value = self.scalarValue(value)
 
@@ -531,6 +635,12 @@ class RuntimeProtocolStatusSyncService:
                     None,
                 )
             ),
+            "pid": self.getProtocolPid(
+                protocol
+            ),
+            "jobIds": self.getProtocolJobIds(
+                protocol
+            ),
         }
 
     def mergeRuntimeMetadata(
@@ -561,6 +671,19 @@ class RuntimeProtocolStatusSyncService:
         runtimeMetadata = dict(storedMetadata)
         currentMetadata = self.buildRuntimeMetadata(
             protocol
+        )
+
+        runtimeMetadata["pid"] = (
+            currentMetadata.get(
+                "pid"
+            )
+        )
+
+        runtimeMetadata["jobIds"] = list(
+            currentMetadata.get(
+                "jobIds"
+            )
+            or []
         )
 
         cpuTimeSeconds = currentMetadata.get(
