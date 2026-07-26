@@ -32,6 +32,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pyworkflow.object as pwobject
 from pyworkflow.mapper.mapper import Mapper
+from pyworkflow.mapper.sqlite import (
+    SqliteFlatMapper,
+)
 from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project.project import (
     PROJECT_CREATION_TIME,
@@ -4459,17 +4462,178 @@ class PostgresqlRuntimeMapper(Mapper):
                 steps=steps,
             )
 
-    def _storeSetObject(self, scipionSet):
-        ownerProtocol = self._findOwnerProtocol(scipionSet)
-        protocolDbId = self._resolveProtocolDbIdFromObject(ownerProtocol)
-        outputName = self._getObjectName(scipionSet) or self._getClassName(scipionSet)
+    def _prepareNativeSetForPostgresqlSnapshot(
+            self,
+            scipionSet,
+    ) -> Dict[str, Any]:
+        """
+        Reopen a newly-created native SQLite Set before iterating it.
 
-        if protocolDbId is None or not outputName:
+        A SqliteFlatMapper created for a new file does not build
+        _objColumns during construction. Once the first item creates
+        the tables, reopening the mapper loads the final schema and
+        makes the Set safe to iterate for PostgreSQL snapshotting.
+        """
+        runtimeChecker = getattr(
+            scipionSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if callable(runtimeChecker):
+            try:
+                if runtimeChecker():
+                    return {
+                        "reopened": False,
+                        "reason": (
+                            "postgresql_runtime_set"
+                        ),
+                    }
+
+            except Exception:
+                pass
+
+        currentMapper = getattr(
+            scipionSet,
+            "_mapper",
+            None,
+        )
+
+        if not isinstance(
+                currentMapper,
+                SqliteFlatMapper,
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "not_native_sqlite_set"
+                ),
+            }
+
+        # An empty new Set has no item schema yet.
+        # iterItems() already handles that case.
+        if getattr(
+                currentMapper,
+                "doCreateTables",
+                False,
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "empty_native_set"
+                ),
+            }
+
+        if hasattr(
+                currentMapper,
+                "_objColumns",
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "mapper_schema_ready"
+                ),
+            }
+
+        fileName = scipionSet.getFileName()
+
+        if not fileName:
+            raise RuntimeError(
+                "Cannot prepare native output Set "
+                "without a mapper filename."
+            )
+
+        # Commit items/properties before replacing
+        # the current mapper instance.
+        scipionSet.write()
+        scipionSet.close()
+        scipionSet.load()
+
+        reopenedMapper = getattr(
+            scipionSet,
+            "_mapper",
+            None,
+        )
+
+        if (
+                not isinstance(
+                    reopenedMapper,
+                    SqliteFlatMapper,
+                )
+                or not hasattr(
+                    reopenedMapper,
+                    "_objColumns",
+                )
+        ):
+            raise RuntimeError(
+                "Native output Set mapper schema "
+                "could not be initialized after "
+                "reopening %s."
+                % fileName
+            )
+
+        return {
+            "reopened": True,
+            "reason": (
+                "native_mapper_schema_initialized"
+            ),
+            "fileName": str(
+                fileName
+            ),
+        }
+
+    def _storeSetObject(self, scipionSet):
+        ownerProtocol = (
+            self._findOwnerProtocol(
+                scipionSet
+            )
+        )
+
+        protocolDbId = (
+            self
+            ._resolveProtocolDbIdFromObject(
+                ownerProtocol
+            )
+        )
+
+        outputName = (
+                self._getObjectName(
+                    scipionSet
+                )
+                or self._getClassName(
+            scipionSet
+        )
+        )
+
+        if (
+                protocolDbId is None
+                or not outputName
+        ):
             logger.debug(
-                "Skipping runtime set persistence without owner/outputName: %s",
+                "Skipping runtime set persistence "
+                "without owner/outputName: %s",
                 scipionSet,
             )
+
             return
+
+        preparationReport = (
+            self
+            ._prepareNativeSetForPostgresqlSnapshot(
+                scipionSet
+            )
+        )
+
+        logger.debug(
+            "Prepared runtime Set for PostgreSQL "
+            "snapshot. projectId=%s "
+            "protocolDbId=%s outputName=%s "
+            "report=%s",
+            self.projectId,
+            protocolDbId,
+            outputName,
+            preparationReport,
+        )
 
         self.setMapper.storeSet(
             projectId=self.projectId,
