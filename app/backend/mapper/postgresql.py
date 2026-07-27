@@ -33,6 +33,33 @@ class PostgresqlDb:
             self.conn.commit()
         return self.cursor
 
+    def executeReturningOne(
+            self,
+            query: str,
+            params: Optional[tuple] = None,
+    ) -> Optional[Dict]:
+        """
+        Execute a write statement with RETURNING and commit it.
+
+        The returned row is fetched before committing so this
+        also works safely with PostgreSQL cursors.
+        """
+        try:
+            self.cursor.execute(
+                query,
+                params,
+            )
+
+            row = self.cursor.fetchone()
+
+            self.conn.commit()
+
+            return row
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
     @contextmanager
     def transaction(self) -> Iterator["PostgresqlDb"]:
         # transaction
@@ -2212,7 +2239,7 @@ class PostgresqlFlatMapper(Mapper):
             stepIndex: int,
             stepStatus: str,
     ) -> Optional[Dict[str, Any]]:
-        return self.db.fetchOne(
+        return self.db.executeReturningOne(
             """
             UPDATE protocol_steps
                SET status = %s,

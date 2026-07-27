@@ -28,21 +28,27 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 class FakeDb:
     def __init__(self):
-        self.fetchOneCalls = []
-        self.fetchOneResult = {
+        self.executeReturningOneCalls = []
+
+        self.executeReturningOneResult = {
             "index": 2,
             "name": "processStep",
             "status": "finished",
         }
 
-    def fetchOne(self, query, params):
-        self.fetchOneCalls.append(
+    def executeReturningOne(
+            self,
+            query,
+            params,
+    ):
+        self.executeReturningOneCalls.append(
             {
                 "query": query,
                 "params": params,
             },
         )
-        return self.fetchOneResult
+
+        return self.executeReturningOneResult
 
 
 def test_UpdateProtocolStepStatusUpdatesSelectedStepAndReturnsRow():
@@ -61,9 +67,18 @@ def test_UpdateProtocolStepStatusUpdatesSelectedStepAndReturnsRow():
         "name": "processStep",
         "status": "finished",
     }
-    assert len(mapper.db.fetchOneCalls) == 1
+    assert (
+            len(
+                mapper.db
+                .executeReturningOneCalls
+            )
+            == 1
+    )
 
-    call = mapper.db.fetchOneCalls[0]
+    call = (
+        mapper.db
+        .executeReturningOneCalls[0]
+    )
     assert "UPDATE protocol_steps" in call["query"]
     assert "SET status = %s" in call["query"]
     assert '"updatedAt" = NOW()' in call["query"]
