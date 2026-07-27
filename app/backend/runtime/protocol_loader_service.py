@@ -25,7 +25,7 @@
 # ******************************************************************************
 import logging
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from pyworkflow.protocol.protocol import getProtocolFromDb
 
@@ -109,20 +109,26 @@ class RuntimeProtocolLoaderService:
             currentProject,
             getProtocolByRuntimeIdCallback: Callable,
             protocol=None,
+            projectPaths: Optional[
+                Iterable[str]
+            ] = None,
     ):
         """
-        Load the real runtime protocol from logs/run.db.
+        Load the authoritative protocol from logs/run.db.
 
-        This is the source of truth after launch, because the external Scipion
-        runner updates that database while the protocol is executing.
+        Explicit project paths are checked first. This allows project imports
+        to read runtime databases from both the managed copy and the untouched
+        source project.
         """
         if currentProject is None:
             return None
 
         if protocol is None:
             try:
-                protocol = getProtocolByRuntimeIdCallback(
-                    protocolId
+                protocol = (
+                    getProtocolByRuntimeIdCallback(
+                        protocolId
+                    )
                 )
             except Exception:
                 protocol = None
@@ -130,44 +136,96 @@ class RuntimeProtocolLoaderService:
         if protocol is None:
             return None
 
-        projectPath = self.resolveCurrentProjectPath(currentProject)
+        candidateProjectPaths = []
 
-        runDbPath = self.resolveProtocolRunDbPath(
-            protocol=protocol,
-            projectPath=projectPath,
+        def addProjectPath(value):
+            if not value:
+                return
+
+            normalizedPath = os.path.abspath(
+                os.path.expanduser(
+                    str(value)
+                )
+            )
+
+            if (
+                    normalizedPath
+                    not in candidateProjectPaths
+            ):
+                candidateProjectPaths.append(
+                    normalizedPath
+                )
+
+        if isinstance(
+                projectPaths,
+                (
+                        str,
+                        os.PathLike,
+                ),
+        ):
+            projectPaths = [
+                projectPaths,
+            ]
+
+        for projectPath in (
+                projectPaths or []
+        ):
+            addProjectPath(
+                projectPath
+            )
+
+        addProjectPath(
+            self.resolveCurrentProjectPath(
+                currentProject
+            )
         )
 
-        if not runDbPath:
-            return protocol
-
-        if not os.path.exists(str(runDbPath)):
-            logger.debug(
-                "Runtime db does not exist yet. protocolId=%s runDbPath=%s",
-                protocolId,
-                runDbPath,
-            )
-            return protocol
-
-        if not projectPath:
-            return protocol
-
-        try:
-            runtimeProtocol = getProtocolFromDb(
-                projectPath,
-                str(runDbPath),
-                int(protocolId),
-                chdir=False,
+        for projectPath in candidateProjectPaths:
+            runDbPath = (
+                self.resolveProtocolRunDbPath(
+                    protocol=protocol,
+                    projectPath=projectPath,
+                )
             )
 
-            if runtimeProtocol is not None:
-                return runtimeProtocol
-
-        except Exception:
-            logger.debug(
-                "Could not load protocol from runtime db. protocolId=%s runDbPath=%s",
-                protocolId,
-                runDbPath,
-                exc_info=True,
+            if (
+                    not runDbPath
+                    or not os.path.exists(
+                str(runDbPath)
             )
+            ):
+                continue
+
+            try:
+                runtimeProtocol = getProtocolFromDb(
+                    projectPath,
+                    str(runDbPath),
+                    int(protocolId),
+                    chdir=False,
+                )
+
+                if runtimeProtocol is not None:
+                    logger.debug(
+                        "Loaded authoritative protocol "
+                        "from runtime database. "
+                        "protocolId=%s projectPath=%s "
+                        "runDbPath=%s",
+                        protocolId,
+                        projectPath,
+                        runDbPath,
+                    )
+
+                    return runtimeProtocol
+
+            except Exception:
+                logger.debug(
+                    "Could not load protocol from runtime "
+                    "database. protocolId=%s "
+                    "projectPath=%s runDbPath=%s",
+                    protocolId,
+                    projectPath,
+                    runDbPath,
+                    exc_info=True,
+                )
 
         return protocol
