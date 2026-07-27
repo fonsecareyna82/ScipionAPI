@@ -42,17 +42,27 @@ class FakeDb:
         self.runtimeProtocolIdByDbId = {}
         self.fetchOneCalls = []
 
-    def fetchOne(self, query, params):
+    def fetchOne(
+            self,
+            query,
+            params,
+    ):
         self.fetchOneCalls.append({
             "query": query,
             "params": params,
         })
 
-        if len(params) < 3:
+        if len(params) < 2:
             return None
 
         protocolDbId = params[1]
-        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+
+        runtimeProtocolId = (
+            self.runtimeProtocolIdByDbId.get(
+                int(protocolDbId)
+            )
+        )
+
         if runtimeProtocolId is None:
             return None
 
@@ -184,7 +194,7 @@ def test_ListProtocolStepsResolvesPostgresqlProtocolId(service, mapper):
             "protocolId": 10,
         }
     ]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
 def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
@@ -219,13 +229,12 @@ def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
     )
 
     assert (
-        mapper.db.fetchOneCalls[0]["params"]
-        ==
-        (
-            1,
-            500,
-            "500",
-        )
+            mapper.db.fetchOneCalls[0]["params"]
+            ==
+            (
+                1,
+                500,
+            )
     )
 
     assert (
