@@ -187,45 +187,6 @@ def test_ListProtocolStepsResolvesPostgresqlProtocolId(service, mapper):
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
 
-def test_UpdateProtocolStepStatusUpdatesScipionAndPostgres(
-    projectServiceModule,
-    service,
-    mapper,
-    monkeypatch,
-):
-    monkeypatch.setattr(projectServiceModule, "STATUS_FINISHED", "finished")
-
-    stepA = FakeStep(index=1, objId=101)
-    stepB = FakeStep(index=2, objId=102)
-    protocol = FakeProtocolWithSteps([stepA, stepB])
-    service.currentProject.protocols[10] = protocol
-    mapper.updateProtocolStepStatusResult = {
-        "index": 2,
-        "name": "processStep",
-        "status": "finished",
-    }
-
-    result = service.updateProtocolStepStatusService(
-        mapper=mapper,
-        projectId=1,
-        protocolId=10,
-        stepIndex=2,
-        stepStatus="finished",
-    )
-
-    assert result == mapper.updateProtocolStepStatusResult
-    assert protocol.updateStepsCalls == [{"where": "id='102'"}]
-    assert stepA.status is None
-    assert stepB.status == "finished"
-    assert mapper.updateProtocolStepStatusCalls == [
-        {
-            "projectId": 1,
-            "protocolId": 10,
-            "stepIndex": 2,
-            "stepStatus": "finished",
-        },
-    ]
-
 
 def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
     projectServiceModule,
@@ -269,36 +230,6 @@ def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
     ]
 
 
-def test_UpdateProtocolStepStatusAcceptsObjIdHolderFallback(
-    projectServiceModule,
-    service,
-    mapper,
-    monkeypatch,
-):
-    monkeypatch.setattr(projectServiceModule, "STATUS_NEW", "new")
-
-    step = FakeStep(
-        index=3,
-        objId=FakeValueHolder(333),
-        raiseGetObjId=True,
-    )
-    protocol = FakeProtocolWithSteps([step])
-    service.currentProject.protocols[10] = protocol
-    mapper.updateProtocolStepStatusResult = {"index": 3, "status": "new"}
-
-    result = service.updateProtocolStepStatusService(
-        mapper=mapper,
-        projectId=1,
-        protocolId=10,
-        stepIndex=3,
-        stepStatus="new",
-    )
-
-    assert result == {"index": 3, "status": "new"}
-    assert protocol.updateStepsCalls == [{"where": "id='333'"}]
-    assert step.status == "new"
-
-
 def test_UpdateProtocolStepStatusRejectsInvalidStatus(service, mapper):
     with pytest.raises(HTTPException) as exc:
         service.updateProtocolStepStatusService(
@@ -311,53 +242,6 @@ def test_UpdateProtocolStepStatusRejectsInvalidStatus(service, mapper):
 
     assert exc.value.status_code == 422
     assert exc.value.detail == "Invalid step status. Allowed values: new, finished"
-
-
-def test_UpdateProtocolStepStatusRaisesWhenCurrentProjectIsMissing(service, mapper):
-    service.currentProject = None
-
-    with pytest.raises(HTTPException) as exc:
-        service.updateProtocolStepStatusService(
-            mapper=mapper,
-            projectId=1,
-            protocolId=10,
-            stepIndex=1,
-            stepStatus="finished",
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "No current Scipion project loaded"
-
-
-def test_UpdateProtocolStepStatusRaisesWhenProtocolIsMissing(service, mapper):
-    with pytest.raises(HTTPException) as exc:
-        service.updateProtocolStepStatusService(
-            mapper=mapper,
-            projectId=1,
-            protocolId=99,
-            stepIndex=1,
-            stepStatus="finished",
-        )
-
-    assert exc.value.status_code == 404
-    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime: 99")
-
-
-def test_UpdateProtocolStepStatusRaisesWhenStepIsMissing(service, mapper):
-    protocol = FakeProtocolWithSteps([FakeStep(index=1, objId=101)])
-    service.currentProject.protocols[10] = protocol
-
-    with pytest.raises(HTTPException) as exc:
-        service.updateProtocolStepStatusService(
-            mapper=mapper,
-            projectId=1,
-            protocolId=10,
-            stepIndex=2,
-            stepStatus="finished",
-        )
-
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "Step not found: 2"
 
 
 def test_UpdateProtocolStepStatusRaisesWhenPostgresRowIsMissing(service, mapper):
@@ -375,3 +259,51 @@ def test_UpdateProtocolStepStatusRaisesWhenPostgresRowIsMissing(service, mapper)
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Protocol step not found in PostgreSQL: 1"
+
+
+def test_UpdateProtocolStepStatusUpdatesPostgresqlOnly(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        projectServiceModule,
+        "STATUS_FINISHED",
+        "finished",
+    )
+
+    mapper.updateProtocolStepStatusResult = {
+        "index": 2,
+        "name": "processStep",
+        "status": "finished",
+        "event": "manual-status-update",
+    }
+
+    service.currentProject = None
+
+    result = (
+        service
+        .updateProtocolStepStatusService(
+            mapper=mapper,
+            projectId=1,
+            protocolId=10,
+            stepIndex=2,
+            stepStatus="finished",
+        )
+    )
+
+    assert result == (
+        mapper
+        .updateProtocolStepStatusResult
+    )
+
+    assert (
+        mapper
+        .updateProtocolStepStatusCalls
+    ) == [{
+        "projectId": 1,
+        "protocolId": 10,
+        "stepIndex": 2,
+        "stepStatus": "finished",
+    }]

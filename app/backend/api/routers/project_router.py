@@ -455,26 +455,46 @@ def listProtocolSteps(
     return service.listProtocolStepsService(mapper, projectId, protocolId)
 
 
-@router.patch("/{projectId}/protocols/{protocolId}/steps/{stepIndex}/status", response_model=Any)
+@router.patch(
+    "/{projectId}/protocols/{protocolId}/steps/{stepIndex}/status",
+    response_model=Any,
+)
 def updateProtocolStepStatus(
-    projectId: int,
-    protocolId: int,
-    stepIndex: int,
-    payload: ProtocolStepStatusUpdate,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        projectId: int,
+        protocolId: int,
+        stepIndex: int,
+        payload: ProtocolStepStatusUpdate,
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
-    return service.updateProtocolStepStatusService(
+    project = service.getProjectDbRow(
         mapper=mapper,
         projectId=projectId,
-        protocolId=protocolId,
-        stepIndex=stepIndex,
-        stepStatus=payload.status,
+        currentUser=currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+            ),
+            detail="Project not found",
+        )
+
+    return (
+        service
+        .updateProtocolStepStatusService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            stepIndex=stepIndex,
+            stepStatus=payload.status,
+        )
     )
 
 

@@ -72,68 +72,45 @@ class RuntimeProtocolStepStatusService:
             stepIndex: int,
             stepStatus: str,
             resolveScipionProtocolIdCallback: Callable,
-            getProtocolByRuntimeIdCallback: Callable,
     ) -> Dict[str, Any]:
+        """
+        Update one persisted protocol step directly in PostgreSQL.
+
+        This operation does not load a Scipion project or protocol
+        and does not access project.sqlite or steps.sqlite.
+        """
         statusMap = {
             "new": STATUS_NEW,
             "finished": STATUS_FINISHED,
         }
 
-        normalizedStatus = str(stepStatus or "").strip().lower()
+        normalizedStatus = str(
+            stepStatus
+            or ""
+        ).strip().lower()
 
         if normalizedStatus not in statusMap:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Invalid step status. Allowed values: new, finished",
+                status_code=(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                detail=(
+                    "Invalid step status. "
+                    "Allowed values: new, finished"
+                ),
             )
 
-        targetStatus = statusMap[normalizedStatus]
+        targetStatus = statusMap[
+            normalizedStatus
+        ]
 
-        scipionProtocolId = resolveScipionProtocolIdCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+        scipionProtocolId = (
+            resolveScipionProtocolIdCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
         )
-
-        protocol = getProtocolByRuntimeIdCallback(scipionProtocolId)
-
-        try:
-            steps = protocol.loadSteps() or []
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to load protocol steps: {e}",
-            )
-
-        targetStep = self._findStepByIndex(
-            steps=steps,
-            stepIndex=stepIndex,
-        )
-
-        if targetStep is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Step not found: {stepIndex}",
-            )
-
-        stepObjId = self._resolveStepObjId(targetStep)
-
-        if stepObjId is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not resolve object id for step {stepIndex}",
-            )
-
-        try:
-            protocol._updateSteps(
-                lambda step: step.setStatus(targetStatus),
-                where="id='%s'" % stepObjId,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update Scipion step status: {e}",
-            )
 
         row = mapper.updateProtocolStepStatus(
             projectId=projectId,
@@ -144,47 +121,14 @@ class RuntimeProtocolStepStatusService:
 
         if not row:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol step not found in PostgreSQL: {stepIndex}",
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
+                detail=(
+                    "Protocol step not found "
+                    f"in PostgreSQL: {stepIndex}"
+                ),
             )
 
         return row
 
-    @staticmethod
-    def _findStepByIndex(
-            *,
-            steps,
-            stepIndex: int,
-    ):
-        for fallbackIndex, step in enumerate(steps, start=1):
-            rawIndex = getattr(step, "_index", None) or fallbackIndex
-
-            try:
-                if int(rawIndex) == int(stepIndex):
-                    return step
-            except Exception:
-                continue
-
-        return None
-
-    @staticmethod
-    def _resolveStepObjId(step):
-        stepObjId = None
-
-        try:
-            stepObjId = step.getObjId()
-        except Exception:
-            stepObjId = None
-
-        if stepObjId is not None:
-            return stepObjId
-
-        stepObjId = getattr(step, "_objId", None)
-
-        try:
-            if hasattr(stepObjId, "get"):
-                stepObjId = stepObjId.get()
-        except Exception:
-            pass
-
-        return stepObjId
