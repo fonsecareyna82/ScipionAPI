@@ -32,6 +32,10 @@ import psycopg2.extras
 class ScipionObjectPostgresqlMapper:
     """Register and store Scipion data objects in PostgreSQL."""
 
+    RUNTIME_ONLY_ATTRIBUTE_NAMES = frozenset({
+        "_objParent",
+    })
+
     def __init__(self, db):
         self.db = db
 
@@ -741,12 +745,26 @@ class ScipionObjectPostgresqlMapper:
                     visited=visited,
                 )
 
-    def _getAttributesToStore(self, scipionObj: Any) -> List[Tuple[str, Any]]:
-        getter = getattr(scipionObj, "getAttributesToStore", None)
+    def _getAttributesToStore(
+            self,
+            scipionObj: Any,
+    ) -> List[Tuple[str, Any]]:
+        getter = getattr(
+            scipionObj,
+            "getAttributesToStore",
+            None,
+        )
+
         if not callable(getter):
             return []
+
         try:
-            return [(str(name), value) for name, value in getter()]
+            return [
+                (str(name), value)
+                for name, value in getter()
+                if str(name)
+                   not in self.RUNTIME_ONLY_ATTRIBUTE_NAMES
+            ]
         except Exception:
             return []
 

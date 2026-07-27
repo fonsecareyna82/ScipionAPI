@@ -315,24 +315,39 @@ class RuntimeProtocolOutputPersistenceService:
             if not includeNestedProperties:
                 return
 
-            attributesGetter = getattr(
-                runtimeObject,
-                "getAttributesToStore",
+            attributesReader = getattr(
+                objectMapper,
+                "_getAttributesToStore",
                 None,
             )
 
-            if not callable(
-                    attributesGetter
-            ):
-                return
-
-            try:
-                attributes = list(
-                    attributesGetter()
-                    or []
+            if callable(attributesReader):
+                try:
+                    attributes = list(
+                        attributesReader(
+                            runtimeObject
+                        )
+                        or []
+                    )
+                except Exception:
+                    return
+            else:
+                attributesGetter = getattr(
+                    runtimeObject,
+                    "getAttributesToStore",
+                    None,
                 )
-            except Exception:
-                return
+
+                if not callable(attributesGetter):
+                    return
+
+                try:
+                    attributes = list(
+                        attributesGetter()
+                        or []
+                    )
+                except Exception:
+                    return
 
             for attributeName, childObject in attributes:
                 childPath = "%s.%s" % (

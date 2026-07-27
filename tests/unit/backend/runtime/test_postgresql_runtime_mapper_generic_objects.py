@@ -28,10 +28,18 @@ from datetime import datetime
 from unittest.mock import Mock
 
 from pyworkflow.object import (
+    CsvList,
+    Float,
     Integer,
     Object,
     Pointer,
     String,
+)
+
+from pwem.objects import Volume
+
+from app.backend.mapper.scipion_object_mapper import (
+    ScipionObjectPostgresqlMapper,
 )
 
 from app.backend.mapper.postgresql_runtime_mapper import (
@@ -49,6 +57,30 @@ class FakeComposite(Object):
 
 class FakeDerivedComposite(FakeComposite):
     pass
+
+
+def test_ObjectTreePersistenceExcludesRuntimeParentReference():
+    outputObject = FakeComposite()
+    parentObject = FakeComposite()
+
+    outputObject._objParent = parentObject
+
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    attributes = mapper._getAttributesToStore(
+        outputObject
+    )
+
+    attributeNames = {
+        name
+        for name, _ in attributes
+    }
+
+    assert "title" in attributeNames
+    assert "count" in attributeNames
+    assert "_objParent" not in attributeNames
 
 
 class FakeObjectMapper:
@@ -340,6 +372,162 @@ def test_SelectGenericObjectRejectsPointerTree():
     )
 
     assert result is None
+
+
+def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
+    rows = [
+        {
+            "id": 10,
+            "scipionObjId": 700,
+            "parentObjectId": None,
+            "name": "outputVolume",
+            "path": "outputVolume",
+            "className": "Volume",
+            "value": None,
+            "label": "Output volume",
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 0,
+        },
+        {
+            "id": 11,
+            "scipionObjId": 701,
+            "parentObjectId": 10,
+            "name": "_filename",
+            "path": "outputVolume._filename",
+            "className": "String",
+            "value": "/tmp/output-volume.mrc",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 12,
+            "scipionObjId": 702,
+            "parentObjectId": 10,
+            "name": "_samplingRate",
+            "path": "outputVolume._samplingRate",
+            "className": "Float",
+            "value": "1.5",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 13,
+            "scipionObjId": 703,
+            "parentObjectId": 10,
+            "name": "_halfMapFilenames",
+            "path": "outputVolume._halfMapFilenames",
+            "className": "CsvList",
+            "value": (
+                "/tmp/half-map-1.mrc,"
+                "/tmp/half-map-2.mrc"
+            ),
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 20,
+            "scipionObjId": 101,
+            "parentObjectId": 10,
+            "name": "_objParent",
+            "path": "outputVolume._objParent",
+            "className": (
+                "ProtCryosparcNonUniformRefine"
+            ),
+            "value": None,
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 21,
+            "scipionObjId": 704,
+            "parentObjectId": 20,
+            "name": "status",
+            "path": (
+                "outputVolume."
+                "_objParent.status"
+            ),
+            "className": "String",
+            "value": "finished",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+    ]
+
+    mapper = buildRuntimeMapper(rows)
+
+    mapper.dictClasses.update({
+        "Volume": Volume,
+        "CsvList": CsvList,
+        "Float": Float,
+    })
+
+    mapper._selectSetByIdFromPostgresql = (
+        lambda *args, **kwargs: None
+    )
+
+    result = (
+        mapper
+        .selectRuntimeInputObjectById(
+            700
+        )
+    )
+
+    assert isinstance(result, Volume)
+
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+
+    assert result.getFileName() == (
+        "/tmp/output-volume.mrc"
+    )
+
+    assert result.getSamplingRate() == 1.5
+
+    assert list(
+        result.getHalfMaps(
+            asList=True
+        )
+    ) == [
+        "/tmp/half-map-1.mrc",
+        "/tmp/half-map-2.mrc",
+    ]
+
+    assert result._objParent is None
 
 
 def test_SelectByIdUsesGenericPostgresqlObject():
