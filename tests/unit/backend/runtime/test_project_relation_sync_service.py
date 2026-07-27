@@ -52,6 +52,43 @@ class FakeOutput(ScipionObject):
         self.setObjId(objectId)
 
 
+class FakeRelationEndpoint:
+    def __init__(
+            self,
+            producerProtocolId,
+            objectName,
+    ):
+        self.producerProtocolId = (
+            producerProtocolId
+        )
+
+        self.objectName = objectName
+
+    def getObjParentId(self):
+        return self.producerProtocolId
+
+    def getObjName(self):
+        return self.objectName
+
+
+class FakeRelationMapper:
+    def __init__(
+            self,
+            objectsById,
+    ):
+        self.objectsById = dict(
+            objectsById
+        )
+
+    def selectById(
+            self,
+            objectId,
+    ):
+        return self.objectsById.get(
+            int(objectId)
+        )
+
+
 class FinalOutputProtocol(FakeProtocol):
     def __init__(
             self,
@@ -732,6 +769,86 @@ def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
             "relations": 1,
         },
     ]
+
+    assert result["errors"] == []
+
+
+def test_CollectProtocolRelationsEnrichesDuplicateEndpointsFromFallback():
+    relation = {
+        "id": 1,
+        "parent_id": 79,
+        "name": "relation_datasource",
+        "object_parent_id": 58,
+        "object_child_id": 146,
+        "object_parent_extended": "",
+        "object_child_extended": None,
+    }
+
+    runtimeProtocol = FakeProtocol([
+        relation,
+    ])
+
+    runtimeProtocol.mapper = FakeRelationMapper(
+        {}
+    )
+
+    fallbackProtocol = FakeProtocol([
+        relation,
+    ])
+
+    fallbackProtocol.mapper = FakeRelationMapper({
+        58: FakeRelationEndpoint(
+            producerProtocolId=2,
+            objectName="2.outputParticles",
+        ),
+        146: FakeRelationEndpoint(
+            producerProtocolId=79,
+            objectName="79.outputCoordinates",
+        ),
+    })
+
+    result = (
+        RuntimeProjectRelationSyncService()
+        .collectProtocolRelations([
+            (
+                "runtime_db",
+                runtimeProtocol,
+            ),
+            (
+                "project_sqlite_isolated",
+                fallbackProtocol,
+            ),
+        ])
+    )
+
+    assert len(result["relations"]) == 1
+
+    collectedRelation = result[
+        "relations"
+    ][0]
+
+    assert collectedRelation[
+        "_parentEndpoint"
+    ] == {
+        "runtimeObjectId": 58,
+        "producerProtocolId": 2,
+        "outputName": "outputParticles",
+        "className": "FakeRelationEndpoint",
+    }
+
+    assert collectedRelation[
+        "_childEndpoint"
+    ] == {
+        "runtimeObjectId": 146,
+        "producerProtocolId": 79,
+        "outputName": "outputCoordinates",
+        "className": "FakeRelationEndpoint",
+    }
+
+    assert result["sources"] == [{
+        "source": "runtime_db",
+        "relations": 1,
+    }]
 
     assert result["errors"] == []
 
