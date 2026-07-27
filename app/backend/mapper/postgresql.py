@@ -2216,16 +2216,20 @@ class PostgresqlFlatMapper(Mapper):
             """
             UPDATE protocol_steps
                SET status = %s,
+                   event = 'manual-status-update',
                    "updatedAt" = NOW()
              WHERE "projectId" = %s
                AND "protocolId" = %s
                AND "stepIndex" = %s
             RETURNING
                 "stepIndex" AS index,
+                "stepClassName",
                 name,
                 status,
                 prerequisites,
                 args,
+                "argsText",
+                "resultFiles",
                 "initTime",
                 "endTime",
                 "elapsedSeconds",
@@ -2233,9 +2237,15 @@ class PostgresqlFlatMapper(Mapper):
                 interactive,
                 "needsGpu",
                 event,
+                "schemaVersion",
                 "updatedAt"
             """,
-            (stepStatus, projectId, str(protocolId), stepIndex),
+            (
+                stepStatus,
+                projectId,
+                str(protocolId),
+                stepIndex,
+            ),
         )
 
     def getProjectProtocolStepsByProtocolId(self, projectId: int) -> Dict[str, List[Dict[str, Any]]]:

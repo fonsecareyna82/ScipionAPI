@@ -6060,16 +6060,22 @@ class ProjectService:
             stepIndex: int,
             stepStatus: str,
     ):
-        runtimeProtocolStepStatusService = RuntimeProtocolStepStatusService()
+        runtimeProtocolStepStatusService = (
+            RuntimeProtocolStepStatusService()
+        )
 
-        return runtimeProtocolStepStatusService.updateProtocolStepStatus(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            stepIndex=stepIndex,
-            stepStatus=stepStatus,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
-            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        return (
+            runtimeProtocolStepStatusService
+            .updateProtocolStepStatus(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                stepIndex=stepIndex,
+                stepStatus=stepStatus,
+                resolveScipionProtocolIdCallback=(
+                    self._resolveScipionProtocolId
+                ),
+            )
         )
 
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
