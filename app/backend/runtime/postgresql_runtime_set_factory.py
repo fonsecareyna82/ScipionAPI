@@ -54,6 +54,7 @@ from app.backend.runtime.protocol_graph_repository import (
 
 logger = logging.getLogger(__name__)
 
+
 class PostgresqlRuntimeSetMixin:
     """
     Runtime behavior added to native Scipion SetOf... classes.
@@ -149,18 +150,20 @@ class PostgresqlRuntimeSetMixin:
 
     def clone(
             self,
-            copyEnable=False,
+            *args,
+            **kwargs,
     ):
         """
         Clone a PostgreSQL runtime Set while preserving its
         read-only mapper and SQLite compatibility infrastructure.
 
-        Native Scipion Object.clone() copies only persistent Object
-        attributes. Runtime callables, dictionaries and weak parent
-        references must be restored explicitly.
+        Preserve the native clone() contract of each Scipion Set
+        implementation. Some Sets accept copyEnable, while others,
+        such as TiltSeries, accept ignoreAttrs.
         """
         runtimeClone = super().clone(
-            copyEnable=copyEnable
+            *args,
+            **kwargs
         )
 
         sourceMapperFactory = getattr(
