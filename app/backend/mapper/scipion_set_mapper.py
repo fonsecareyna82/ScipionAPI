@@ -34,6 +34,7 @@ import psycopg2.extras
 from pyworkflow.object import (
     Pointer,
     PointerList,
+    Set as ScipionSet,
 )
 
 from app.backend.mapper.scipion_object_mapper import (
@@ -52,7 +53,7 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 17
+NESTED_LOGICAL_TABLES_VERSION = 18
 SET_PROPERTIES_VERSION = 3
 
 
@@ -732,13 +733,37 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     )
                 )
 
-                self._upsertNestedLogicalTablesForItem(
-                    setId=setId,
-                    parentTableId=tableId,
-                    parentItem=item,
-                    parentItemId=itemId,
-                    batchSize=batchSize,
+                nestedTableId = (
+                    self
+                    ._upsertNestedLogicalTablesForItem(
+                        setId=setId,
+                        parentTableId=tableId,
+                        parentItem=item,
+                        parentItemId=itemId,
+                        batchSize=batchSize,
+                    )
                 )
+
+                if (
+                        self
+                                ._hasNestedLogicalItems(
+                            item
+                        )
+                        and nestedTableId is None
+                ):
+                    raise RuntimeError(
+                        "Nested PostgreSQL Set table "
+                        "was not persisted. "
+                        "setId=%s parentItemId=%s "
+                        "parentClass=%s"
+                        % (
+                            setId,
+                            itemId,
+                            self._getClassName(
+                                item
+                            ),
+                        )
+                    )
 
             itemsCount += 1
 
@@ -765,17 +790,17 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             parentItem: Any,
             parentItemId: int,
             batchSize: int,
-    ) -> None:
+    ) -> Optional[int]:
         """
-        Persist child logical tables for complex Scipion set items.
+        Persist the logical table owned by one nested Set item.
 
-        Supported examples:
-        - Class2D/Class3D items expose class members.
-        - TiltSeries items expose tilt images.
-        - Any item exposing iterItems() can expose a child logical table.
+        Every nested Scipion Set must produce a PostgreSQL logical
+        table, including empty sets.
         """
-        if not self._hasNestedLogicalItems(parentItem):
-            return
+        if not self._hasNestedLogicalItems(
+                parentItem
+        ):
+            return None
 
         childIterator = iter(
             self._iterNestedItems(
@@ -792,19 +817,27 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             childColumns = []
 
             childItemClassName = (
-                self._getDeclaredItemClassName(
+                self
+                ._getDeclaredItemClassName(
                     parentItem
                 )
             )
 
             if not childItemClassName:
-                logger.warning(
-                    "Cannot persist empty nested set without ITEM_TYPE. "
-                    "parentItemId=%s parentClass=%s",
-                    parentItemId,
-                    self._getClassName(parentItem),
+                raise RuntimeError(
+                    "Cannot persist empty nested "
+                    "PostgreSQL Set without ITEM_TYPE. "
+                    "setId=%s parentItemId=%s "
+                    "parentClass=%s"
+                    % (
+                        setId,
+                        parentItemId,
+                        self._getClassName(
+                            parentItem
+                        ),
+                    )
                 )
-                return
+
         else:
             childSchema = self._getItemSchema(
                 firstChild
@@ -822,8 +855,19 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 )
             )
 
-        tableName = self._getNestedLogicalTableName(parentItem, parentItemId)
-        tableAlias = self._getNestedLogicalTableAlias(tableName, childItemClassName)
+        tableName = (
+            self._getNestedLogicalTableName(
+                parentItem,
+                parentItemId,
+            )
+        )
+
+        tableAlias = (
+            self._getNestedLogicalTableAlias(
+                tableName,
+                childItemClassName,
+            )
+        )
 
         childTableId = self._upsertSetTable(
             setId=setId,
@@ -835,12 +879,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             itemClassName=childItemClassName,
             properties={
                 "source": "postgresql",
-                "parentItemId": parentItemId,
-                "parentClassName": self._getClassName(parentItem),
+                "parentItemId": (
+                    parentItemId
+                ),
+                "parentClassName": (
+                    self._getClassName(
+                        parentItem
+                    )
+                ),
             },
         )
 
-        self._upsertSetTableColumns(childTableId, childColumns)
+        self._upsertSetTableColumns(
+            childTableId,
+            childColumns,
+        )
 
         if firstChild is not None:
             self._upsertLogicalTableItems(
@@ -851,12 +904,32 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 batchSize=batchSize,
             )
 
-    def _hasNestedLogicalItems(self, item: Any) -> bool:
+        return int(
+            childTableId
+        )
+
+    def _hasNestedLogicalItems(
+            self,
+            item: Any,
+    ) -> bool:
         if item is None:
             return False
 
-        iterItems = getattr(item, "iterItems", None)
-        return callable(iterItems)
+        if isinstance(
+                item,
+                ScipionSet,
+        ):
+            return True
+
+        iterItems = getattr(
+            item,
+            "iterItems",
+            None,
+        )
+
+        return callable(
+            iterItems
+        )
 
     def _iterNestedItems(self, item: Any) -> Iterable[Any]:
         iterItems = getattr(item, "iterItems", None)
@@ -868,18 +941,67 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return iter(())
 
-    def _getNestedLogicalTableName(self, parentItem: Any, parentItemId: int) -> str:
-        className = self._getClassName(parentItem) or parentItem.__class__.__name__
-
-        if str(className).startswith("Class"):
-            return self._getNestedClassTableName(parentItemId)
-
-        stableName = self._getNestedItemStableName(
-            parentItem=parentItem,
-            parentItemId=parentItemId,
-            className=className,
+    def _getNestedLogicalTableName(
+            self,
+            parentItem: Any,
+            parentItemId: int,
+    ) -> str:
+        className = (
+                self._getClassName(
+                    parentItem
+                )
+                or parentItem.__class__.__name__
         )
-        return "%s_Objects" % self._sanitizeLogicalTableNamePart(stableName)
+
+        if str(className).startswith(
+                "Class"
+        ):
+            return (
+                self
+                ._getNestedClassTableName(
+                    parentItemId
+                )
+            )
+
+        stableName = (
+            self._getNestedItemStableName(
+                parentItem=parentItem,
+                parentItemId=parentItemId,
+                className=className,
+            )
+        )
+
+        cleanName = (
+            self
+            ._sanitizeLogicalTableNamePart(
+                stableName
+            )
+        )
+
+        try:
+            itemIdText = str(
+                int(parentItemId)
+            )
+        except Exception:
+            itemIdText = (
+                self
+                ._sanitizeLogicalTableNamePart(
+                    parentItemId
+                )
+            )
+
+        if (
+                cleanName != itemIdText
+                and not cleanName.endswith(
+            "_" + itemIdText
+        )
+        ):
+            cleanName = "%s_%s" % (
+                cleanName,
+                itemIdText,
+            )
+
+        return "%s_Objects" % cleanName
 
     def _getNestedItemStableName(
             self,
@@ -1316,15 +1438,33 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         except Exception:
             return None
 
-    def _iterSetItems(self, scipionSet: Any) -> Iterable[Any]:
-        iterItems = getattr(scipionSet, "iterItems", None)
+    def _iterSetItems(
+            self,
+            scipionSet: Any,
+    ) -> Iterable[Any]:
+        iterItems = getattr(
+            scipionSet,
+            "iterItems",
+            None,
+        )
+
         if callable(iterItems):
-            return iterItems()
+            try:
+                return iterItems(
+                    iterate=False
+                )
+            except TypeError:
+                return iterItems()
 
         try:
-            return iter(scipionSet)
+            return iter(
+                scipionSet
+            )
         except TypeError:
-            raise ValueError("scipionSet must provide iterItems() or be iterable")
+            raise ValueError(
+                "scipionSet must provide "
+                "iterItems() or be iterable"
+            )
 
     def _getItemSchema(
             self,
