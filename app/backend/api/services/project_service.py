@@ -8300,6 +8300,156 @@ class ProjectService:
 
         return fileHandlers.previewProtocolImageFile(runtimeProtocolId, path, inline)
 
+    def _resolvePostgresqlOutputForPreview(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId,
+            outputName: str,
+    ) -> Tuple[
+        Optional[Any],
+        Dict[str, Any],
+    ]:
+        """
+        Reconstruct one persisted protocol output from PostgreSQL.
+
+        This is a strictly read-only operation:
+        - it does not attach the output to the protocol;
+        - it does not persist or register anything;
+        - it does not use project.sqlite or run.db.
+        """
+        if (
+                mapper is None
+                or projectId is None
+        ):
+            return None, {}
+
+        protocolDbId = (
+            self
+            ._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if protocolDbId is None:
+            return None, {
+                "exists": False,
+                "reason": (
+                    "protocol_not_found"
+                ),
+            }
+
+        outputInfo = (
+            self
+            ._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(
+                    protocolDbId
+                ),
+                outputName=outputName,
+            )
+        )
+
+        if not outputInfo.get(
+                "exists"
+        ):
+            return None, outputInfo
+
+        runtimeObjectId = (
+            outputInfo.get(
+                "runtimeObjectId"
+            )
+        )
+
+        if runtimeObjectId in (
+                None,
+                "",
+        ):
+            return None, {
+                **outputInfo,
+                "reason": (
+                    "runtime_object_id_missing"
+                ),
+            }
+
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "PostgreSQL runtime project "
+                    "is not loaded"
+                ),
+            )
+
+        runtimeMapper = (
+            currentProject
+            .getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "PostgreSQL runtime mapper "
+                    "is not available"
+                ),
+            )
+
+        try:
+            output = runtimeMapper.selectById(
+                int(runtimeObjectId)
+            )
+
+        except Exception as error:
+            logger.exception(
+                "Could not reconstruct PostgreSQL "
+                "output for preview. projectId=%s "
+                "protocolId=%s outputName=%s "
+                "runtimeObjectId=%s",
+                projectId,
+                protocolId,
+                outputName,
+                runtimeObjectId,
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Could not reconstruct output "
+                    f"'{outputName}' from PostgreSQL: "
+                    f"{error}"
+                ),
+            ) from error
+
+        if output is None:
+            return None, {
+                **outputInfo,
+                "reason": (
+                    "runtime_object_not_reconstructed"
+                ),
+            }
+
+        return output, outputInfo
+
     def outputPreview(
             self,
             protocolId: Union[int, str],
@@ -8320,63 +8470,220 @@ class ProjectService:
 
     def _outputPreviewRuntime(
             self,
-            protocolId: Union[int, str],
+            protocolId: Union[
+                int,
+                str,
+            ],
             outputName: str,
-            requestHeaders: Optional[Dict[str, Any]] = None,
+            requestHeaders: Optional[
+                Dict[str, Any]
+            ] = None,
             colormap: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
     ):
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
+        scipionProtocolId = (
+            self
+            ._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
         )
 
         if self.currentProject is None:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current project loaded",
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "No current project loaded"
+                ),
             )
 
         try:
-            protocol = self.currentProject.getProtocol(int(scipionProtocolId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol {scipionProtocolId} not found: {e}",
+            protocol = (
+                self.currentProject
+                .getProtocol(
+                    int(
+                        scipionProtocolId
+                    )
+                )
             )
 
-        output = getattr(protocol, outputName, None)
+        except Exception as error:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=(
+                    f"Protocol "
+                    f"{scipionProtocolId} "
+                    f"not found: {error}"
+                ),
+            ) from error
+
+        # Compatibility information only. A PostgreSQL protocol
+        # projection may not expose persisted outputs as attributes.
+        output = getattr(
+            protocol,
+            outputName,
+            None,
+        )
+
+        outputInfo: Dict[
+            str,
+            Any,
+        ] = {}
+
+        if (
+                mapper is not None
+                and projectId is not None
+                and (
+                self
+                        ._currentProjectUsesPostgresqlRuntimeMapper()
+        )
+        ):
+            postgresqlOutput, outputInfo = (
+                self
+                ._resolvePostgresqlOutputForPreview(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=(
+                        scipionProtocolId
+                    ),
+                    outputName=outputName,
+                )
+            )
+
+            if postgresqlOutput is not None:
+                output = postgresqlOutput
+
         if output is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output '{outputName}' not found in protocol {scipionProtocolId}",
+            reason = outputInfo.get(
+                "reason"
             )
 
+            detail = (
+                f"Output '{outputName}' "
+                f"not found in protocol "
+                f"{scipionProtocolId}"
+            )
+
+            if reason:
+                detail = (
+                    f"{detail}: {reason}"
+                )
+
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=detail,
+            )
+
+        previewService = OutputsPreview(
+            self.currentProject,
+            protocol,
+            output,
+            requestHeaders=(
+                requestHeaders
+            ),
+            colormapOverride=colormap,
+        )
+
+        # SetOf... outputs persisted in PostgreSQL must be
+        # previewed using the PostgreSQL metadata DAO.
+        #
+        # Never attempt to reopen their removed legacy SQLite file.
+        if outputInfo.get(
+                "kind"
+        ) == "set":
+            with _metadataLock:
+                objectManager = (
+                    self
+                    ._getMetadataObjectManagerForOutput(
+                        projectId=int(
+                            projectId
+                        ),
+                        protocolId=int(
+                            scipionProtocolId
+                        ),
+                        outputName=outputName,
+                        mapper=mapper,
+                    )
+                )
+
+                return (
+                    previewService
+                    .getPreviewOutput(
+                        objectManager
+                    )
+                )
+
+        # Tree/object outputs such as Volume are reconstructed from
+        # PostgreSQL, but their actual binary artifact remains on disk.
         outputPath = None
-        getFileName = getattr(output, "getFileName", None)
+
+        getFileName = getattr(
+            output,
+            "getFileName",
+            None,
+        )
+
         if callable(getFileName):
             try:
-                outputPath = getFileName()
+                outputPath = (
+                    getFileName()
+                )
             except Exception:
                 outputPath = None
 
         if not outputPath:
-            outputPath = str(output)
+            try:
+                outputPath = str(
+                    output
+                )
+            except Exception:
+                outputPath = None
 
-        objMgr = self._createObjectManager()
+        if not outputPath:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=(
+                    f"Output '{outputName}' "
+                    "does not expose a previewable "
+                    "artifact"
+                ),
+            )
 
-        return OutputsPreview(
-            self.currentProject,
-            protocol,
-            output,
-            requestHeaders=requestHeaders,
-            colormapOverride=colormap,
-        ).preview(
+        if not os.path.isabs(
+                str(outputPath)
+        ):
+            projectPath = (
+                self.currentProject
+                .getPath()
+            )
+
+            outputPath = os.path.join(
+                projectPath,
+                str(outputPath),
+            )
+
+        objectManager = (
+            self._createObjectManager()
+        )
+
+        return previewService.preview(
             int(scipionProtocolId),
-            outputPath,
-            objMgr,
+            str(outputPath),
+            objectManager,
         )
 
     def buildProtocolThumbnail(
