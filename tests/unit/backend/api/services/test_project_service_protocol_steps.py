@@ -187,47 +187,56 @@ def test_ListProtocolStepsResolvesPostgresqlProtocolId(service, mapper):
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
 
 
-
 def test_UpdateProtocolStepStatusResolvesPostgresqlProtocolId(
-    projectServiceModule,
-    service,
-    mapper,
-    monkeypatch,
+        service,
+        mapper,
 ):
-    monkeypatch.setattr(projectServiceModule, "STATUS_FINISHED", "finished")
+    mapper.db.runtimeProtocolIdByDbId[
+        500
+    ] = 10
 
-    step = FakeStep(index=2, objId=102)
-    protocol = FakeProtocolWithSteps([step])
-
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
     mapper.updateProtocolStepStatusResult = {
         "index": 2,
         "name": "processStep",
         "status": "finished",
+        "event": "manual-status-update",
     }
 
-    result = service.updateProtocolStepStatusService(
-        mapper=mapper,
-        projectId=1,
-        protocolId=500,
-        stepIndex=2,
-        stepStatus="finished",
+    result = (
+        service
+        .updateProtocolStepStatusService(
+            mapper=mapper,
+            projectId=1,
+            protocolId=500,
+            stepIndex=2,
+            stepStatus="finished",
+        )
     )
 
-    assert result == mapper.updateProtocolStepStatusResult
-    assert protocol.updateStepsCalls == [{"where": "id='102'"}]
-    assert step.status == "finished"
+    assert result == (
+        mapper
+        .updateProtocolStepStatusResult
+    )
 
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
-    assert mapper.updateProtocolStepStatusCalls == [
-        {
-            "projectId": 1,
-            "protocolId": 10,
-            "stepIndex": 2,
-            "stepStatus": "finished",
-        },
-    ]
+    assert (
+        mapper.db.fetchOneCalls[0]["params"]
+        ==
+        (
+            1,
+            500,
+            "500",
+        )
+    )
+
+    assert (
+        mapper
+        .updateProtocolStepStatusCalls
+    ) == [{
+        "projectId": 1,
+        "protocolId": 10,
+        "stepIndex": 2,
+        "stepStatus": "finished",
+    }]
 
 
 def test_UpdateProtocolStepStatusRejectsInvalidStatus(service, mapper):
@@ -262,16 +271,9 @@ def test_UpdateProtocolStepStatusRaisesWhenPostgresRowIsMissing(service, mapper)
 
 
 def test_UpdateProtocolStepStatusUpdatesPostgresqlOnly(
-        projectServiceModule,
         service,
         mapper,
-        monkeypatch,
 ):
-    monkeypatch.setattr(
-        projectServiceModule,
-        "STATUS_FINISHED",
-        "finished",
-    )
 
     mapper.updateProtocolStepStatusResult = {
         "index": 2,

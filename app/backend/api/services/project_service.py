@@ -6040,16 +6040,26 @@ class ProjectService:
             ),
         )
 
-    def listProtocolStepsService(self, mapper, projectId: int, protocolId: int):
-        runtimeProtocolStepStatusService = RuntimeProtocolStepStatusService()
+    def listProtocolStepsService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ):
+        runtimeProtocolStepStatusService = (
+            RuntimeProtocolStepStatusService()
+        )
 
-        return runtimeProtocolStepStatusService.listProtocolSteps(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
-            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+        return (
+            runtimeProtocolStepStatusService
+            .listProtocolSteps(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                resolveScipionProtocolIdCallback=(
+                    self._resolveScipionProtocolId
+                ),
+            )
         )
 
     def updateProtocolStepStatusService(

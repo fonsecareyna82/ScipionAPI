@@ -43,25 +43,20 @@ class RuntimeProtocolStepStatusService:
             mapper,
             projectId: int,
             protocolId: int,
-            usesPostgresqlRuntimeCallback: Callable[[], bool],
-            syncPostgresqlRuntimeProtocolCallback: Callable,
             resolveScipionProtocolIdCallback: Callable,
     ):
-        scipionProtocolId = resolveScipionProtocolIdCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        if usesPostgresqlRuntimeCallback():
-            syncPostgresqlRuntimeProtocolCallback(
+        scipionProtocolId = (
+            resolveScipionProtocolIdCallback(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                registerOutputs=False,
             )
+        )
 
-        return mapper.listProtocolSteps(projectId, scipionProtocolId)
+        return mapper.listProtocolSteps(
+            projectId=projectId,
+            protocolId=scipionProtocolId,
+        )
 
     def updateProtocolStepStatus(
             self,
@@ -73,12 +68,6 @@ class RuntimeProtocolStepStatusService:
             stepStatus: str,
             resolveScipionProtocolIdCallback: Callable,
     ) -> Dict[str, Any]:
-        """
-        Update one persisted protocol step directly in PostgreSQL.
-
-        This operation does not load a Scipion project or protocol
-        and does not access project.sqlite or steps.sqlite.
-        """
         statusMap = {
             "new": STATUS_NEW,
             "finished": STATUS_FINISHED,
@@ -100,10 +89,6 @@ class RuntimeProtocolStepStatusService:
                 ),
             )
 
-        targetStatus = statusMap[
-            normalizedStatus
-        ]
-
         scipionProtocolId = (
             resolveScipionProtocolIdCallback(
                 mapper=mapper,
@@ -116,7 +101,9 @@ class RuntimeProtocolStepStatusService:
             projectId=projectId,
             protocolId=scipionProtocolId,
             stepIndex=stepIndex,
-            stepStatus=targetStatus,
+            stepStatus=statusMap[
+                normalizedStatus
+            ],
         )
 
         if not row:
@@ -126,7 +113,8 @@ class RuntimeProtocolStepStatusService:
                 ),
                 detail=(
                     "Protocol step not found "
-                    f"in PostgreSQL: {stepIndex}"
+                    "in PostgreSQL: "
+                    f"{stepIndex}"
                 ),
             )
 
