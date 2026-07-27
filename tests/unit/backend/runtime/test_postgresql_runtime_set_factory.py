@@ -565,6 +565,19 @@ class ExampleNestedSet(Set):
         super().__init__(**kwargs)
         self._name = String()
 
+    def clone(
+            self,
+            ignoreAttrs=(),
+    ):
+        clone = self.getClass()()
+
+        clone.copy(
+            self,
+            ignoreAttrs=ignoreAttrs,
+        )
+
+        return clone
+
 
 def buildNestedRuntimeSet(
         extraPath=None,
