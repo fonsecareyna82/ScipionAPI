@@ -309,6 +309,44 @@ class RuntimeProtocolLaunchPrepareService:
                             )
                         )
 
+                    itemReport.update({
+                        "runtimeObjectId": int(
+                            runtimeObjectId
+                        ),
+                        "objectClassName": (
+                            outputInfo.get(
+                                "className"
+                            )
+                        ),
+                        "outputInfo": {
+                            "kind": outputInfo.get(
+                                "kind"
+                            ),
+                            "setId": outputInfo.get(
+                                "setId"
+                            ),
+                            "objectId": outputInfo.get(
+                                "objectId"
+                            ),
+                            "runtimeObjectId": int(
+                                runtimeObjectId
+                            ),
+                            "className": outputInfo.get(
+                                "className"
+                            ),
+                            "itemClassName": (
+                                outputInfo.get(
+                                    "itemClassName"
+                                )
+                            ),
+                            "itemsCount": (
+                                outputInfo.get(
+                                    "itemsCount"
+                                )
+                            ),
+                        },
+                    })
+
                     outputObject = (
                         resolveRuntimeInputObjectCallback(
                             int(
@@ -361,43 +399,8 @@ class RuntimeProtocolLaunchPrepareService:
                         )
 
                     itemReport.update({
-                        "runtimeObjectId": int(
-                            runtimeObjectId
-                        ),
-                        "objectClassName": (
-                            outputInfo.get(
-                                "className"
-                            )
-                        ),
                         "directOutputPointer": True,
                         "pointerResolved": True,
-                        "outputInfo": {
-                            "kind": outputInfo.get(
-                                "kind"
-                            ),
-                            "setId": outputInfo.get(
-                                "setId"
-                            ),
-                            "objectId": outputInfo.get(
-                                "objectId"
-                            ),
-                            "runtimeObjectId": int(
-                                runtimeObjectId
-                            ),
-                            "className": outputInfo.get(
-                                "className"
-                            ),
-                            "itemClassName": (
-                                outputInfo.get(
-                                    "itemClassName"
-                                )
-                            ),
-                            "itemsCount": (
-                                outputInfo.get(
-                                    "itemsCount"
-                                )
-                            ),
-                        },
                     })
 
                 elif allowMissingParentOutputs:
