@@ -2204,28 +2204,7 @@ class ProjectService:
                 migrationReport=migrationReport,
             )
 
-            dbProject = mapper.getProject(
-                projectId=projectId,
-                userId=ownerId,
-            )
-
-            if not dbProject:
-                raise RuntimeError(
-                    "Imported project could not be loaded for PostgreSQL-only reconstruction"
-                )
-
-            loadedProject = self.loadProjectFromPostgresql(
-                dbProj=dbProject,
-                mapper=mapper,
-            )
-
-            postgresqlLoadAudit = auditService.auditLoadedProject(
-                loadedProject=loadedProject,
-                migrationReport=migrationReport,
-            )
-
             migrationReport["audit"] = auditReport
-            migrationReport["postgresqlLoadAudit"] = postgresqlLoadAudit
 
             closeMapper = getattr(
                 project,
@@ -2244,29 +2223,100 @@ class ProjectService:
 
             self.clearCurrentProject()
 
-            lifecycleService = (
-                RuntimeProjectLifecycleService()
-            )
+            lifecycleService = RuntimeProjectLifecycleService()
 
-            cleanupReport = (
-                lifecycleService
-                .removeLegacyProjectDatabase(
+            projectDatabaseCleanup = (
+                lifecycleService.removeLegacyProjectDatabase(
                     projectPath=projectPath,
                     projectDbPath=sqliteDbPath,
                 )
             )
 
+            runDatabaseCleanup = (
+                lifecycleService.removeLegacyRunDatabases(
+                    projectPath=projectPath,
+                )
+            )
+
             migrationReport[
                 "legacyProjectDatabaseCleanup"
-            ] = cleanupReport
+            ] = projectDatabaseCleanup
 
             migrationReport[
-                "postgresqlOnly"
-            ] = True
+                "legacyRunDatabaseCleanup"
+            ] = runDatabaseCleanup
+
+            dbProject = mapper.getProject(
+                projectId=projectId,
+                userId=ownerId,
+            )
+
+            if not dbProject:
+                raise RuntimeError(
+                    "Imported project could not be loaded "
+                    "for PostgreSQL-only reconstruction"
+                )
+
+            postgresqlProject = None
+
+            try:
+                postgresqlProject = (
+                    self._loadPostgresqlRuntimeProject(
+                        mapper=mapper,
+                        projectId=projectId,
+                        projectPath=projectPath,
+                        enableWriteFallback=False,
+                    )
+                )
+
+                postgresqlRuntimeAudit = (
+                    auditService.auditRuntimeProject(
+                        runtimeProject=postgresqlProject,
+                        projectPath=projectPath,
+                    )
+                )
+
+                loadedProject = (
+                    self.loadProjectFromPostgresql(
+                        dbProj=dbProject,
+                        mapper=mapper,
+                    )
+                )
+
+                postgresqlLoadAudit = (
+                    auditService.auditLoadedProject(
+                        loadedProject=loadedProject,
+                        migrationReport=migrationReport,
+                    )
+                )
+
+            finally:
+                if postgresqlProject is not None:
+                    try:
+                        postgresqlProject.closeMapper()
+                    except Exception:
+                        logger.debug(
+                            "Could not close PostgreSQL-only "
+                            "project after import audit. "
+                            "projectId=%s path=%s",
+                            projectId,
+                            projectPath,
+                            exc_info=True,
+                        )
+
+                self.clearCurrentProject()
 
             migrationReport[
-                "usesProjectSqlite"
-            ] = False
+                "postgresqlRuntimeAudit"
+            ] = postgresqlRuntimeAudit
+
+            migrationReport[
+                "postgresqlLoadAudit"
+            ] = postgresqlLoadAudit
+
+            migrationReport["postgresqlOnly"] = True
+            migrationReport["usesProjectSqlite"] = False
+            migrationReport["usesLegacyRunDatabases"] = False
 
             return migrationReport
 
