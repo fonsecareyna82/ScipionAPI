@@ -307,11 +307,44 @@ class RuntimeProjectGraphSyncService:
         }
 
         if syncRelations:
-            relationReport = runtimeProjectRelationSyncService.syncProjectRelations(
-                mapper=mapper,
-                projectId=projectId,
-                protocolsByScipionId=protocolsByScipionId,
-                protocolDbIdByScipionId=protocolDbIdByScipionId,
+            relationsByScipionId = {}
+
+            for protocolIdText, protocol in (
+                    protocolsByScipionId.items()
+            ):
+                relationSnapshot = (
+                    runtimeProjectRelationSyncService
+                    .collectRuntimeProtocolRelations(
+                        currentProject=currentProject,
+                        protocolId=protocolIdText,
+                        runtimeProtocol=protocol,
+                    )
+                )
+
+                relationsByScipionId[
+                    protocolIdText
+                ] = list(
+                    relationSnapshot.get(
+                        "relations"
+                    )
+                    or []
+                )
+
+            relationReport = (
+                runtimeProjectRelationSyncService
+                .syncProjectRelations(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolsByScipionId=(
+                        protocolsByScipionId
+                    ),
+                    protocolDbIdByScipionId=(
+                        protocolDbIdByScipionId
+                    ),
+                    relationsByScipionId=(
+                        relationsByScipionId
+                    ),
+                )
             )
 
         fatalErrors = []

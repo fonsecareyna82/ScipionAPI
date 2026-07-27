@@ -579,6 +579,34 @@ class RuntimeProjectRelationSyncService:
             ),
         }
 
+    @staticmethod
+    def _mergeRelationEndpoint(
+            currentEndpoint,
+            candidateEndpoint,
+    ):
+        if (
+                not isinstance(candidateEndpoint, dict)
+                or not candidateEndpoint
+        ):
+            return currentEndpoint
+
+        if (
+                not isinstance(currentEndpoint, dict)
+                or not currentEndpoint
+        ):
+            return dict(candidateEndpoint)
+
+        mergedEndpoint = dict(currentEndpoint)
+
+        for key, value in candidateEndpoint.items():
+            if (
+                    mergedEndpoint.get(key) in (None, "")
+                    and value not in (None, "")
+            ):
+                mergedEndpoint[key] = value
+
+        return mergedEndpoint
+
     def collectProtocolRelations(
             self,
             protocolCandidates,
@@ -591,7 +619,7 @@ class RuntimeProjectRelationSyncService:
         Deleted output generations are pruned later during synchronization.
         """
         relations = []
-        relationKeys = set()
+        relationsByKey = {}
         sources = []
         errors = []
 
@@ -671,10 +699,36 @@ class RuntimeProjectRelationSyncService:
                     ),
                 )
 
-                if relationKey in relationKeys:
+                existingRelation = relationsByKey.get(
+                    relationKey
+                )
+
+                if existingRelation is not None:
+                    existingRelation[
+                        "_parentEndpoint"
+                    ] = self._mergeRelationEndpoint(
+                        existingRelation.get(
+                            "_parentEndpoint"
+                        ),
+                        relation.get(
+                            "_parentEndpoint"
+                        ),
+                    )
+
+                    existingRelation[
+                        "_childEndpoint"
+                    ] = self._mergeRelationEndpoint(
+                        existingRelation.get(
+                            "_childEndpoint"
+                        ),
+                        relation.get(
+                            "_childEndpoint"
+                        ),
+                    )
+
                     continue
 
-                relationKeys.add(relationKey)
+                relationsByKey[relationKey] = relation
                 relations.append(relation)
                 sourceAdded += 1
 
