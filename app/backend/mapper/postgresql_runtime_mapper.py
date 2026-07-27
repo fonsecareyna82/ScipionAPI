@@ -2613,6 +2613,17 @@ class PostgresqlRuntimeMapper(Mapper):
             rows
         )
 
+    @staticmethod
+    def _isRuntimeOnlyGenericObjectRow(
+            row,
+    ) -> bool:
+        objectPath = str(
+            (row or {}).get("path")
+            or ""
+        )
+
+        return "_objParent" in objectPath.split(".")
+
     def _buildGenericObjectFromPostgresqlRows(
             self,
             rows,
@@ -2625,6 +2636,11 @@ class PostgresqlRuntimeMapper(Mapper):
         rootObject = None
 
         for row in rows or []:
+            if self._isRuntimeOnlyGenericObjectRow(
+                    row
+            ):
+                continue
+
             rowId = self._toOptionalInt(
                 row.get("id")
             )
