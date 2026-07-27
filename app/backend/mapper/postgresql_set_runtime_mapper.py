@@ -536,9 +536,247 @@ class PostgresqlSetRuntimeMapper:
             operationLabel,
             groupByLabels=None,
     ):
-        raise NotImplementedError(
-            "PostgreSQL set aggregate() will be implemented after the "
-            "read and native-object hydration contract is validated."
+        """
+        Execute read-only aggregate queries over PostgreSQL Set snapshots.
+
+        The returned rows follow the SqliteFlatMapper contract used by
+        pyworkflow.object.Set.aggregate().
+        """
+        self._refreshLogicalTableScope()
+
+        operations = self._normalizeAggregateArguments(
+            operations
+        )
+
+        operationLabels = (
+            self._normalizeAggregateArguments(
+                operationLabel
+            )
+        )
+
+        groupByLabels = (
+            self._normalizeAggregateArguments(
+                groupByLabels
+            )
+        )
+
+        if not operations:
+            raise ValueError(
+                "At least one aggregate operation is required"
+            )
+
+        if not operationLabels:
+            raise ValueError(
+                "At least one aggregate operation label is required"
+            )
+
+        selectParts = []
+        selectParams = []
+
+        for labelIndex, label in enumerate(
+                operationLabels
+        ):
+            label = str(label)
+
+            expression, expressionParams = (
+                self._fieldExpression(
+                    label
+                )
+            )
+
+            for operation in operations:
+                operationText = str(
+                    operation
+                ).strip()
+
+                normalizedOperation = (
+                    operationText.lower()
+                )
+
+                aggregateExpression = (
+                    self._buildAggregateExpression(
+                        operation=normalizedOperation,
+                        expression=expression,
+                    )
+                )
+
+                if labelIndex == 0:
+                    alias = operationText
+                else:
+                    alias = (
+                            operationText
+                            + label
+                    )
+
+                selectParts.append(
+                    "%s AS %s"
+                    % (
+                        aggregateExpression,
+                        self._quoteSqlIdentifier(
+                            alias
+                        ),
+                    )
+                )
+
+                selectParams.extend(
+                    expressionParams
+                )
+
+        aggregateColumnsCount = len(
+            selectParts
+        )
+
+        groupByOrdinals = []
+
+        for groupIndex, groupByLabel in enumerate(
+                groupByLabels
+        ):
+            groupByLabel = str(
+                groupByLabel
+            )
+
+            expression, expressionParams = (
+                self._fieldExpression(
+                    groupByLabel
+                )
+            )
+
+            selectParts.append(
+                "%s AS %s"
+                % (
+                    expression,
+                    self._quoteSqlIdentifier(
+                        groupByLabel
+                    ),
+                )
+            )
+
+            selectParams.extend(
+                expressionParams
+            )
+
+            groupByOrdinals.append(
+                aggregateColumnsCount
+                + groupIndex
+                + 1
+            )
+
+        query = """
+            SELECT {selectParts}
+              FROM {itemsTable}
+             WHERE "{scopeColumn}" = %s
+        """.format(
+            selectParts=", ".join(
+                selectParts
+            ),
+            itemsTable=self._itemsTable,
+            scopeColumn=self._scopeColumn,
+        )
+
+        params = list(
+            selectParams
+        )
+
+        params.append(
+            self._scopeId
+        )
+
+        if groupByOrdinals:
+            query += (
+                    "\n GROUP BY "
+                    + ", ".join(
+                str(ordinal)
+                for ordinal
+                in groupByOrdinals
+            )
+            )
+
+        rows = self.db.fetchAll(
+            query,
+            tuple(params),
+        )
+
+        return [
+            dict(row)
+            for row in rows or []
+        ]
+
+    @staticmethod
+    def _normalizeAggregateArguments(
+            value,
+    ) -> List[Any]:
+        if value is None:
+            return []
+
+        if isinstance(
+                value,
+                (list, tuple),
+        ):
+            return list(value)
+
+        return [value]
+
+    @staticmethod
+    def _quoteSqlIdentifier(
+            value,
+    ) -> str:
+        identifier = str(
+            value
+        ).replace(
+            '"',
+            '""',
+        )
+
+        return '"%s"' % identifier
+
+    @staticmethod
+    def _buildAggregateExpression(
+            *,
+            operation,
+            expression,
+    ) -> str:
+        aggregateFunctions = {
+            "count": "COUNT",
+            "min": "MIN",
+            "max": "MAX",
+            "sum": "SUM",
+        }
+
+        functionName = aggregateFunctions.get(
+            operation
+        )
+
+        if functionName is not None:
+            return "%s(%s)" % (
+                functionName,
+                expression,
+            )
+
+        if operation == "avg":
+            return (
+                "AVG(%s)::DOUBLE PRECISION"
+                % expression
+            )
+
+        if operation == "total":
+            return (
+                "COALESCE(SUM(%s), 0)"
+                "::DOUBLE PRECISION"
+                % expression
+            )
+
+        if operation == "group_concat":
+            return (
+                "STRING_AGG("
+                "(%s)::TEXT, ','"
+                ")"
+                % expression
+            )
+
+        raise ValueError(
+            "Unsupported PostgreSQL aggregate "
+            "operation: %s"
+            % operation
         )
 
     def unique(

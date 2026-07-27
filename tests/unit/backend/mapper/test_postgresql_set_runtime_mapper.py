@@ -55,6 +55,12 @@ class FakeDb:
                     "valueType": "float",
                     "position": 1,
                 },
+                {
+                    "labelProperty": "_filename",
+                    "className": "String",
+                    "valueType": "text",
+                    "position": 2,
+                },
             ]
 
         return self.rows
@@ -420,6 +426,158 @@ def test_UniqueReturnsListForSingleAttribute():
         "_tomoId",
         31,
     )
+
+
+def test_AggregateGroupsSetItemsByFilename():
+    db = FakeDb(
+        rows=[
+            {
+                "count": 2,
+                "_filename": (
+                    "/data/particles-001.mrcs"
+                ),
+            },
+            {
+                "count": 3,
+                "_filename": (
+                    "/data/particles-002.mrcs"
+                ),
+            },
+        ]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.aggregate(
+        ["count"],
+        "_filename",
+        ["_filename"],
+    )
+
+    assert result == [
+        {
+            "count": 2,
+            "_filename": (
+                "/data/particles-001.mrcs"
+            ),
+        },
+        {
+            "count": 3,
+            "_filename": (
+                "/data/particles-002.mrcs"
+            ),
+        },
+    ]
+
+    assert (
+        'COUNT("values" ->> %s) '
+        'AS "count"'
+        in db.query
+    )
+
+    assert (
+        '"values" ->> %s '
+        'AS "_filename"'
+        in db.query
+    )
+
+    assert (
+        "FROM scipion_set_items"
+        in db.query
+    )
+
+    assert (
+        'WHERE "setId" = %s'
+        in db.query
+    )
+
+    assert "GROUP BY 2" in db.query
+
+    assert db.params == (
+        "_filename",
+        "_filename",
+        31,
+    )
+
+
+def test_AggregateSupportsMultipleNumericOperations():
+    db = FakeDb(
+        rows=[
+            {
+                "min": 0.25,
+                "max": 2.5,
+            },
+        ]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.aggregate(
+        [
+            "min",
+            "max",
+        ],
+        "_score",
+    )
+
+    assert result == [
+        {
+            "min": 0.25,
+            "max": 2.5,
+        },
+    ]
+
+    assert (
+        "MIN("
+        'NULLIF("values" ->> %s, \'\')'
+        "::DOUBLE PRECISION"
+        ') AS "min"'
+        in db.query
+    )
+
+    assert (
+        "MAX("
+        'NULLIF("values" ->> %s, \'\')'
+        "::DOUBLE PRECISION"
+        ') AS "max"'
+        in db.query
+    )
+
+    assert "GROUP BY" not in db.query
+
+    assert db.params == (
+        "_score",
+        "_score",
+        31,
+    )
+
+
+def test_AggregateRejectsUnsupportedOperation():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    with pytest.raises(
+            ValueError,
+            match=(
+                "Unsupported PostgreSQL "
+                "aggregate operation"
+            ),
+    ):
+        mapper.aggregate(
+            "median",
+            "_score",
+        )
 
 
 def test_LogicalTableMapperRefreshesRecreatedTableId():
