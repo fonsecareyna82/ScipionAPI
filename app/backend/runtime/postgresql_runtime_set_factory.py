@@ -37,6 +37,7 @@ from pyworkflow.object import (
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
     getPostgresqlRuntimeParent,
+    setPostgresqlRuntimeParentReference,
 )
 from app.backend.mapper.postgresql_set_runtime_mapper import (
     PostgresqlSetRuntimeMapper,
@@ -145,6 +146,181 @@ class PostgresqlRuntimeSetMixin:
 
     def isPostgresqlRuntimeOutput(self):
         return True
+
+    def clone(
+            self,
+            copyEnable=False,
+    ):
+        """
+        Clone a PostgreSQL runtime Set while preserving its
+        read-only mapper and SQLite compatibility infrastructure.
+
+        Native Scipion Object.clone() copies only persistent Object
+        attributes. Runtime callables, dictionaries and weak parent
+        references must be restored explicitly.
+        """
+        runtimeClone = super().clone(
+            copyEnable=copyEnable
+        )
+
+        sourceMapperFactory = getattr(
+            self,
+            "_postgresqlMapperFactory",
+            None,
+        )
+
+        if not callable(
+                sourceMapperFactory
+        ):
+            raise RuntimeError(
+                "Cannot clone PostgreSQL runtime set "
+                "without a mapper factory. "
+                "className=%s objectId=%s"
+                % (
+                    self.getClassName(),
+                    self.getObjId(),
+                )
+            )
+
+        sourceMaterializer = getattr(
+            self,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        if sourceMaterializer is None:
+            raise RuntimeError(
+                "Cannot clone PostgreSQL runtime set "
+                "without a SQLite materializer. "
+                "className=%s objectId=%s"
+                % (
+                    self.getClassName(),
+                    self.getObjId(),
+                )
+            )
+
+        for attributeName in (
+                "_postgresqlRuntimeInfo",
+                "_postgresqlRuntimeProperties",
+                "_postgresqlRuntimeClasses",
+                "_postgresqlRuntimeValues",
+        ):
+            value = getattr(
+                self,
+                attributeName,
+                {},
+            )
+
+            setattr(
+                runtimeClone,
+                attributeName,
+                (
+                    dict(value)
+                    if isinstance(value, dict)
+                    else {}
+                ),
+            )
+
+        classesDict = getattr(
+            self,
+            "_classesDict",
+            None,
+        )
+
+        if isinstance(
+                classesDict,
+                dict,
+        ):
+            runtimeClone._classesDict = dict(
+                classesDict
+            )
+
+        runtimeClone._postgresqlNativeSetClass = getattr(
+            self,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        runtimeClone._postgresqlSqliteMaterializer = (
+            sourceMaterializer
+        )
+
+        runtimeClone._postgresqlMaterializedFileName = getattr(
+            self,
+            "_postgresqlMaterializedFileName",
+            None,
+        )
+
+        runtimeClone._mapper = None
+
+        try:
+            runtimeClone.setName(
+                self.getObjName()
+            )
+        except Exception:
+            pass
+
+        try:
+            runtimeClone._objParentId = (
+                self.getObjParentId()
+            )
+        except Exception:
+            runtimeClone._objParentId = None
+
+        setPostgresqlRuntimeParentReference(
+            runtimeObject=runtimeClone,
+            parent=getPostgresqlRuntimeParent(
+                self
+            ),
+        )
+
+        def cloneMapperFactory():
+            mapper = sourceMapperFactory()
+
+            sourceItemBuilder = getattr(
+                mapper,
+                "itemBuilder",
+                None,
+            )
+
+            if not callable(
+                    sourceItemBuilder
+            ):
+                return mapper
+
+            def buildCloneItem(row):
+                item = sourceItemBuilder(
+                    row
+                )
+
+                if item is None:
+                    return None
+
+                setPostgresqlRuntimeParentReference(
+                    runtimeObject=item,
+                    parent=runtimeClone,
+                )
+
+                try:
+                    item._objParentId = (
+                        runtimeClone.getObjId()
+                    )
+                except Exception:
+                    pass
+
+                return item
+
+            mapper.itemBuilder = (
+                buildCloneItem
+            )
+
+            return mapper
+
+        runtimeClone._postgresqlMapperFactory = (
+            cloneMapperFactory
+        )
+
+        return runtimeClone
 
     def write(self, properties=True):
         raise RuntimeError(

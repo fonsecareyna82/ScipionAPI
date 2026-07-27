@@ -1726,6 +1726,88 @@ def test_NestedSetWithoutLogicalTableFailsExplicitly():
         )
 
 
+def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
+    parent, runtimeSet = buildRuntimeSet()
+
+    runtimeClone = runtimeSet.clone()
+
+    assert runtimeClone is not runtimeSet
+    assert runtimeClone._mapper is None
+
+    assert callable(
+        runtimeClone._postgresqlMapperFactory
+    )
+
+    assert (
+        runtimeClone
+        ._postgresqlSqliteMaterializer
+        is runtimeSet
+        ._postgresqlSqliteMaterializer
+    )
+
+    assert (
+        runtimeClone
+        .getPostgresqlRuntimeInfo()
+        == runtimeSet
+        .getPostgresqlRuntimeInfo()
+    )
+
+    assert (
+        runtimeClone
+        ._postgresqlRuntimeParentRef()
+        is parent
+    )
+
+    item = runtimeClone.getFirstItem()
+
+    assert item is not None
+    assert item.getObjId() == 7
+
+    assert (
+        item
+        ._postgresqlRuntimeParentRef()
+        is runtimeClone
+    )
+
+
+def test_NestedRuntimeSetCloneCanIterateChildren():
+    _, runtimeSet = buildNestedRuntimeSet()
+
+    nestedSet = runtimeSet.getFirstItem()
+    nestedClone = nestedSet.clone()
+
+    assert nestedClone is not nestedSet
+    assert nestedClone._mapper is None
+
+    assert callable(
+        nestedClone._postgresqlMapperFactory
+    )
+
+    assert (
+        nestedClone
+        ._postgresqlSqliteMaterializer
+        is nestedSet
+        ._postgresqlSqliteMaterializer
+    )
+
+    children = list(
+        nestedClone.iterItems()
+    )
+
+    assert len(children) == 1
+
+    assert children[0]._value.get() == (
+        "child-3"
+    )
+
+    assert (
+        children[0]
+        ._postgresqlRuntimeParentRef()
+        is nestedClone
+    )
+
+
+
 
 
 
