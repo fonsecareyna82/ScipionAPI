@@ -40,6 +40,9 @@ from app.backend.api.services.protocol_wizard_service import (
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
+from app.backend.runtime.protocol_output_persistence_service import (
+    RuntimeProtocolOutputPersistenceService,
+)
 
 
 class ProtocolContextService:
@@ -177,11 +180,36 @@ class ProtocolContextService:
             )
         )
 
+        persistedOutputs = {}
+
+        if (
+                usingPostgresqlRuntime
+                and mapper is not None
+        ):
+            protocolId = (
+                getScipionObjectIdCallback(
+                    protocol
+                )
+            )
+
+            if protocolId is not None:
+                persistedOutputs = (
+                    RuntimeProtocolOutputPersistenceService()
+                    .loadPersistedProtocolOutputs(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+
         info["outputs"] = (
             protocolFormSerializer
             .serializeProtocolOutputs(
                 protocol=protocol,
                 protocolName=protocolName,
+                persistedOutputs=(
+                    persistedOutputs
+                ),
             )
         )
 

@@ -1587,6 +1587,241 @@ class RuntimeProtocolOutputPersistenceService:
 
         return displayClass
 
+    def loadPersistedProtocolOutputs(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Load the PostgreSQL output summaries for one protocol.
+
+        This is a read-only path intended for the protocol form.
+        It does not reconstruct objects, register outputs or
+        reconcile persisted snapshots.
+        """
+        protocolIdentityResolver = (
+            ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+            )
+        )
+
+        protocolDbId = (
+            protocolIdentityResolver
+            .resolvePostgresqlProtocolDbId(
+                protocolId
+            )
+        )
+
+        if protocolDbId is None:
+            return {}
+
+        result: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+
+        setRows = mapper.db.fetchAll(
+            """
+            SELECT
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                s.id AS "setId",
+                s."objectId",
+                root."scipionObjId"
+              FROM scipion_sets s
+              LEFT JOIN scipion_objects root
+                ON root.id = s."objectId"
+             WHERE s."projectId" = %s
+               AND s."protocolDbId" = %s
+             ORDER BY s."outputName"
+            """,
+            (
+                projectId,
+                int(protocolDbId),
+            ),
+        ) or []
+
+        for row in setRows:
+            outputName = str(
+                row.get("outputName")
+                or ""
+            ).strip()
+
+            if not outputName:
+                continue
+
+            properties = (
+                row.get("properties")
+                or {}
+            )
+
+            if isinstance(
+                    properties,
+                    str,
+            ):
+                try:
+                    properties = json.loads(
+                        properties
+                    )
+                except Exception:
+                    properties = {}
+
+            if not isinstance(
+                    properties,
+                    dict,
+            ):
+                properties = {}
+
+            persistedOutput = {
+                "className": (
+                    row.get("setClassName")
+                ),
+                "itemClassName": (
+                    row.get("itemClassName")
+                ),
+                "itemsCount": (
+                    properties.get(
+                        "itemsCount"
+                    )
+                ),
+            }
+
+            result[outputName] = {
+                "outputName": outputName,
+                "mapperKind": (
+                    properties.get(
+                        "mapperKind"
+                    )
+                    or "flat_set"
+                ),
+                "className": (
+                    row.get("setClassName")
+                    or ""
+                ),
+                "itemClassName": (
+                    row.get("itemClassName")
+                    or ""
+                ),
+                "setId": row.get("setId"),
+                "rootObjectId": (
+                    row.get("objectId")
+                ),
+                "scipionObjId": (
+                    row.get("scipionObjId")
+                ),
+                "info": (
+                    self
+                    ._buildPersistedOutputInfo(
+                        outputName=outputName,
+                        persistedOutput=(
+                            persistedOutput
+                        ),
+                        properties=properties,
+                    )
+                ),
+            }
+
+        treeRows = mapper.db.fetchAll(
+            """
+            SELECT
+                COALESCE(
+                    NULLIF(o.path, ''),
+                    o.name
+                ) AS "outputName",
+                o.id AS "rootObjectId",
+                o."scipionObjId",
+                o."className",
+                o.value,
+                o.label,
+                o.comment,
+                o.metadata
+              FROM scipion_objects o
+             WHERE o."projectId" = %s
+               AND o."protocolDbId" = %s
+               AND o."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets s
+                     WHERE s."objectId" = o.id
+               )
+             ORDER BY "outputName"
+            """,
+            (
+                projectId,
+                int(protocolDbId),
+            ),
+        ) or []
+
+        for row in treeRows:
+            outputName = str(
+                row.get("outputName")
+                or ""
+            ).strip()
+
+            if not outputName:
+                continue
+
+            metadata = (
+                row.get("metadata")
+                or {}
+            )
+
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(
+                        metadata
+                    )
+                except Exception:
+                    metadata = {}
+
+            if not isinstance(
+                    metadata,
+                    dict,
+            ):
+                metadata = {}
+
+            className = str(
+                row.get("className")
+                or ""
+            )
+
+            displayText = (
+                metadata.get(
+                    "displayText"
+                )
+                or row.get("value")
+                or row.get("label")
+                or className
+                or outputName
+            )
+
+            result[outputName] = {
+                "outputName": outputName,
+                "mapperKind": (
+                    metadata.get(
+                        "mapperKind"
+                    )
+                    or "tree"
+                ),
+                "className": className,
+                "rootObjectId": (
+                    row.get("rootObjectId")
+                ),
+                "scipionObjId": (
+                    row.get("scipionObjId")
+                ),
+                "info": str(
+                    displayText
+                    or ""
+                ),
+            }
+
+        return result
+
     def loadPersistedOutputsByProtocolId(
             self,
             mapper: PostgresqlFlatMapper,
