@@ -940,25 +940,144 @@ class ProtocolFormSerializer:
             *,
             protocol,
             protocolName: str,
+            persistedOutputs: Dict[
+                str,
+                Dict[str, Any],
+            ] = None,
     ) -> List[Dict[str, Any]]:
-        """Serialize the protocol output attributes for the web context."""
-        outputs = []
+        """
+        Serialize protocol outputs for the web context.
 
-        for key, attr in protocol.iterOutputAttributes():
+        Runtime attributes are used when available. PostgreSQL
+        metadata is authoritative for outputs that are not attached
+        to the reconstructed protocol object.
+        """
+        outputs = []
+        outputsByName = {}
+
+        try:
+            parentId = protocol.getObjId()
+        except Exception:
+            parentId = None
+
+        for key, attr in (
+                protocol.iterOutputAttributes()
+        ):
+            outputName = str(
+                key
+                or ""
+            ).strip()
+
+            if not outputName:
+                continue
+
             outputData = {
-                "outputName": key,
+                "outputName": outputName,
                 "paramClass": "PointerParam",
-                "pointerClass": attr.__class__.__name__,
+                "pointerClass": (
+                    attr.__class__.__name__
+                ),
                 "info": "",
-                "value": f"{protocolName}.{key}",
-                "parentId": protocol.getObjId(),
+                "value": (
+                    f"{protocolName}."
+                    f"{outputName}"
+                ),
+                "parentId": parentId,
             }
 
             try:
-                outputData["info"] = str(attr)
+                outputData["info"] = str(
+                    attr
+                )
             except Exception:
                 outputData["info"] = ""
 
-            outputs.append(outputData)
+            outputs.append(
+                outputData
+            )
+
+            outputsByName[
+                outputName
+            ] = outputData
+
+        for outputName, persistedOutput in sorted(
+                (
+                        persistedOutputs
+                        or {}
+                ).items()
+        ):
+            normalizedOutputName = str(
+                outputName
+                or ""
+            ).strip()
+
+            if not normalizedOutputName:
+                continue
+
+            existingOutput = (
+                outputsByName.get(
+                    normalizedOutputName
+                )
+            )
+
+            persistedClassName = str(
+                persistedOutput.get(
+                    "className"
+                )
+                or persistedOutput.get(
+                    "rootObjectClassName"
+                )
+                or ""
+            )
+
+            persistedInfo = str(
+                persistedOutput.get(
+                    "info"
+                )
+                or ""
+            )
+
+            if existingOutput is not None:
+                if not existingOutput.get(
+                        "pointerClass"
+                ):
+                    existingOutput[
+                        "pointerClass"
+                    ] = persistedClassName
+
+                if not existingOutput.get(
+                        "info"
+                ):
+                    existingOutput[
+                        "info"
+                    ] = persistedInfo
+
+                continue
+
+            outputData = {
+                "outputName": (
+                    normalizedOutputName
+                ),
+                "paramClass": (
+                    "PointerParam"
+                ),
+                "pointerClass": (
+                    persistedClassName
+                ),
+                "info": persistedInfo,
+                "value": (
+                    f"{protocolName}."
+                    f"{normalizedOutputName}"
+                ),
+                "parentId": parentId,
+            }
+
+            outputs.append(
+                outputData
+            )
+
+            outputsByName[
+                normalizedOutputName
+            ] = outputData
 
         return outputs
