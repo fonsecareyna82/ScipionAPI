@@ -1820,6 +1820,62 @@ def test_NestedRuntimeSetCloneCanIterateChildren():
     )
 
 
+def test_RuntimeRootSetCanEnablePostgresqlWrite():
+    _, runtimeSet = buildRuntimeSet()
+
+    assert (
+        runtimeSet
+        .supportsPostgresqlNativeWrite()
+        is True
+    )
+
+    assert (
+        runtimeSet
+        .isPostgresqlWritable()
+        is False
+    )
+
+    result = (
+        runtimeSet
+        .enablePostgresqlWrite()
+    )
+
+    assert result is runtimeSet
+
+    assert (
+        runtimeSet
+        .isPostgresqlWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet
+        ._mapper
+        .isWritable()
+        is True
+    )
+
+    assert runtimeSet.getSize() == 1
+    assert runtimeSet._idCount == 7
+
+
+def test_NestedRuntimeSetKeepsCompatibilityFallback():
+    _, runtimeSet = (
+        buildNestedRuntimeSet()
+    )
+
+    assert (
+        runtimeSet
+        .supportsPostgresqlNativeWrite()
+        is False
+    )
+
+    with pytest.raises(
+            NotImplementedError,
+            match="nested PostgreSQL Sets",
+    ):
+        runtimeSet.enablePostgresqlWrite()
+
 
 
 

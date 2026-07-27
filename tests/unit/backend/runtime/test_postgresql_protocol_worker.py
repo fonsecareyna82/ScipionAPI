@@ -24,9 +24,17 @@
 # *
 # ******************************************************************************
 import threading
+from types import SimpleNamespace
+
+from pyworkflow.object import (
+    Object,
+    Set,
+)
 
 from app.backend.runtime.postgresql_protocol_worker import (
-    RuntimePostgresqlProtocolWorker, RuntimePostgresqlStepAdapter,
+    POSTGRESQL_RUN_MODE_RESUME,
+    RuntimePostgresqlProtocolWorker,
+    RuntimePostgresqlStepAdapter,
 )
 
 
@@ -568,4 +576,149 @@ def test_StepAdapterPersistsQueueJobIdsInsteadOfChildObject():
                 otherObject,
             ),
         ]
+    )
+
+
+class ResumeItemStub(Object):
+    pass
+
+
+class ResumeSetStub(Set):
+    ITEM_TYPE = ResumeItemStub
+
+    def __init__(self):
+        super().__init__()
+
+        self.enablePostgresqlWriteCalls = 0
+
+    def supportsPostgresqlNativeWrite(self):
+        return True
+
+    def enablePostgresqlWrite(self):
+        self.enablePostgresqlWriteCalls += 1
+        return self
+
+
+class ResumeObjectMapperStub:
+    def listProtocolStoredObjects(
+            self,
+            projectId,
+            protocolDbId,
+    ):
+        return [
+            {
+                "path": "outputParticles",
+                "name": "outputParticles",
+                "parentObjectId": None,
+                "scipionObjId": 44,
+            },
+        ]
+
+
+class ResumeRuntimeMapperStub:
+    def __init__(
+            self,
+            outputSet,
+    ):
+        self.outputSet = outputSet
+
+        self.objectMapper = (
+            ResumeObjectMapperStub()
+        )
+
+    def selectRuntimeInputObjectById(
+            self,
+            runtimeObjectId,
+    ):
+        assert runtimeObjectId == 44
+        return self.outputSet
+
+
+class ResumeProtocolStub:
+    def __init__(self):
+        self._outputs = []
+
+        self._useOutputList = (
+            SimpleNamespace(
+                set=lambda value: None
+            )
+        )
+
+
+def test_ResumeUsesNativePostgresqlWritableSet():
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+        runMode=(
+            POSTGRESQL_RUN_MODE_RESUME
+        ),
+    )
+
+    outputSet = ResumeSetStub()
+    outputSet.setObjId(44)
+
+    # The test must fail if the SQLite compatibility
+    # path is accidentally invoked.
+    outputSet._postgresqlSqliteMaterializer = (
+        SimpleNamespace(
+            openWritable=lambda runtimeSet: (
+                _ for _ in ()
+            ).throw(
+                AssertionError(
+                    "SQLite materializer must "
+                    "not be used"
+                )
+            )
+        )
+    )
+
+    worker.protocol = (
+        ResumeProtocolStub()
+    )
+
+    worker.runtimeMapper = (
+        ResumeRuntimeMapperStub(
+            outputSet
+        )
+    )
+
+    worker.getProtocolDbId = (
+        lambda: 20
+    )
+
+    report = (
+        worker.restoreResumeOutputs()
+    )
+
+    assert report["errors"] == []
+    assert report["restored"] == 1
+
+    assert (
+        outputSet
+        .enablePostgresqlWriteCalls
+        == 1
+    )
+
+    assert (
+        worker.protocol.outputParticles
+        is outputSet
+    )
+
+    assert (
+        report["items"][0][
+            "writablePostgresql"
+        ]
+        is True
+    )
+
+    assert (
+        report["items"][0][
+            "writableMirror"
+        ]
+        is False
+    )
+
+    assert (
+        outputSet.getStreamState()
+        == Set.STREAM_OPEN
     )

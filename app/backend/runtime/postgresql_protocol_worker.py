@@ -2313,117 +2313,185 @@ class RuntimePostgresqlProtocolWorker:
             )
 
             writableMirror = False
+            writablePostgresql = False
 
             if isinstance(
                     sourceOutputObject,
                     Set,
             ):
-                materializer = getattr(
+                supportsNativeWrite = getattr(
                     sourceOutputObject,
-                    "_postgresqlSqliteMaterializer",
+                    "supportsPostgresqlNativeWrite",
                     None,
                 )
 
-                openWritable = getattr(
-                    materializer,
-                    "openWritable",
-                    None,
+                nativeWriteSupported = (
+                    bool(
+                        supportsNativeWrite()
+                    )
+                    if callable(
+                        supportsNativeWrite
+                    )
+                    else False
                 )
 
-                if not callable(
-                        openWritable
-                ):
-                    errors.append({
-                        **row,
-                        "outputName": outputName,
-                        "runtimeObjectId": (
-                            runtimeObjectId
-                        ),
-                        "error": (
-                            "PostgreSQL Set output "
-                            "does not provide a writable "
-                            "execution materializer"
-                        ),
-                    })
-
-                    continue
-
-                try:
-                    outputObject = (
-                        openWritable(
-                            sourceOutputObject
-                        )
+                if nativeWriteSupported:
+                    enablePostgresqlWrite = getattr(
+                        sourceOutputObject,
+                        "enablePostgresqlWrite",
+                        None,
                     )
 
-                except Exception as error:
-                    errors.append({
-                        **row,
-                        "outputName": outputName,
-                        "runtimeObjectId": (
-                            runtimeObjectId
-                        ),
-                        "error": (
-                            "Could not open writable "
-                            "execution Set: %s"
-                            % error
-                        ),
-                    })
-
-                    continue
-
-                writableMirror = True
-
-                runtimeSetFactory = getattr(
-                    self.runtimeMapper,
-                    "runtimeSetFactory",
-                    None,
-                )
-
-                evictRuntimeSet = getattr(
-                    runtimeSetFactory,
-                    "evictRuntimeSet",
-                    None,
-                )
-
-                if callable(
-                        evictRuntimeSet
-                ):
-                    try:
-                        evictRuntimeSet(
-                            projectId=(
-                                self.projectId
-                            ),
-                            runtimeObjectId=int(
+                    if not callable(
+                            enablePostgresqlWrite
+                    ):
+                        errors.append({
+                            **row,
+                            "outputName": outputName,
+                            "runtimeObjectId": (
                                 runtimeObjectId
                             ),
-                            runtimeSet=(
-                                sourceOutputObject
+                            "error": (
+                                "PostgreSQL Set output declares "
+                                "native-write support but does not "
+                                "provide enablePostgresqlWrite()."
                             ),
+                        })
+
+                        continue
+
+                    try:
+                        outputObject = (
+                            enablePostgresqlWrite()
                         )
 
-                    except Exception:
-                        logger.debug(
-                            "Could not evict read-only "
-                            "PostgreSQL resume output. "
-                            "projectId=%s protocolId=%s "
-                            "runtimeObjectId=%s",
-                            self.projectId,
-                            self.protocolId,
-                            runtimeObjectId,
-                            exc_info=True,
-                        )
+                    except Exception as error:
+                        errors.append({
+                            **row,
+                            "outputName": outputName,
+                            "runtimeObjectId": (
+                                runtimeObjectId
+                            ),
+                            "error": (
+                                    "Could not enable native "
+                                    "PostgreSQL Set writing: %s"
+                                    % error
+                            ),
+                        })
+
+                        continue
+
+                    writablePostgresql = True
 
                 else:
-                    closeSourceOutput = getattr(
+                    # Temporary compatibility path for nested Sets.
+                    # These still need writable logical-table support.
+                    materializer = getattr(
                         sourceOutputObject,
-                        "close",
+                        "_postgresqlSqliteMaterializer",
+                        None,
+                    )
+
+                    openWritable = getattr(
+                        materializer,
+                        "openWritable",
+                        None,
+                    )
+
+                    if not callable(
+                            openWritable
+                    ):
+                        errors.append({
+                            **row,
+                            "outputName": outputName,
+                            "runtimeObjectId": (
+                                runtimeObjectId
+                            ),
+                            "error": (
+                                "PostgreSQL Set output does not "
+                                "provide a writable PostgreSQL "
+                                "mapper or execution materializer."
+                            ),
+                        })
+
+                        continue
+
+                    try:
+                        outputObject = (
+                            openWritable(
+                                sourceOutputObject
+                            )
+                        )
+
+                    except Exception as error:
+                        errors.append({
+                            **row,
+                            "outputName": outputName,
+                            "runtimeObjectId": (
+                                runtimeObjectId
+                            ),
+                            "error": (
+                                    "Could not open writable "
+                                    "execution Set: %s"
+                                    % error
+                            ),
+                        })
+
+                        continue
+
+                    writableMirror = True
+
+                    runtimeSetFactory = getattr(
+                        self.runtimeMapper,
+                        "runtimeSetFactory",
+                        None,
+                    )
+
+                    evictRuntimeSet = getattr(
+                        runtimeSetFactory,
+                        "evictRuntimeSet",
                         None,
                     )
 
                     if callable(
-                            closeSourceOutput
+                            evictRuntimeSet
                     ):
-                        closeSourceOutput()
+                        try:
+                            evictRuntimeSet(
+                                projectId=(
+                                    self.projectId
+                                ),
+                                runtimeObjectId=int(
+                                    runtimeObjectId
+                                ),
+                                runtimeSet=(
+                                    sourceOutputObject
+                                ),
+                            )
+
+                        except Exception:
+                            logger.debug(
+                                "Could not evict read-only "
+                                "PostgreSQL resume output. "
+                                "projectId=%s protocolId=%s "
+                                "runtimeObjectId=%s",
+                                self.projectId,
+                                self.protocolId,
+                                runtimeObjectId,
+                                exc_info=True,
+                            )
+
+                    else:
+                        closeSourceOutput = getattr(
+                            sourceOutputObject,
+                            "close",
+                            None,
+                        )
+
+                        if callable(
+                                closeSourceOutput
+                        ):
+                            closeSourceOutput()
 
             # This is the protocol being resumed.
             # No external parent protocol or parent
@@ -2537,6 +2605,9 @@ class RuntimePostgresqlProtocolWorker:
                 "streamReopened": reopened,
                 "writableMirror": (
                     writableMirror
+                ),
+                "writablePostgresql": (
+                    writablePostgresql
                 ),
                 "ownerProtocolId": (
                     self.protocolId
