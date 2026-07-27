@@ -40,10 +40,12 @@ class RuntimeProjectImportService:
             sourcePath: Path,
             targetPath: Path,
             projectsPath: Path,
-            copyProject: bool,
             description: str,
             statusValue: str,
-            migrateProjectCallback: Callable[[int, str], Dict[str, Any]],
+            migrateProjectCallback: Callable[
+                [int, str],
+                Dict[str, Any],
+            ],
     ) -> Dict[str, Any]:
         sourcePath = Path(sourcePath).expanduser().resolve(strict=True)
         targetPath = Path(targetPath).expanduser()
@@ -60,7 +62,6 @@ class RuntimeProjectImportService:
             self._materializeProject(
                 sourcePath=sourcePath,
                 targetPath=targetPath,
-                copyProject=copyProject,
             )
 
             dbProjectId = mapper.insertProject(
@@ -90,7 +91,7 @@ class RuntimeProjectImportService:
                 "project": dbProject,
                 "migration": migrationReport,
                 "projectPath": str(targetPath),
-                "copyProject": bool(copyProject),
+                "materialization": "managed-copy",
             }
 
         except Exception as error:
@@ -172,24 +173,17 @@ class RuntimeProjectImportService:
             *,
             sourcePath: Path,
             targetPath: Path,
-            copyProject: bool,
     ) -> None:
         targetPath.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        if copyProject:
-            shutil.copytree(
-                str(sourcePath),
-                str(targetPath),
-                symlinks=True,
-            )
-        else:
-            targetPath.symlink_to(
-                sourcePath,
-                target_is_directory=True,
-            )
+        shutil.copytree(
+            str(sourcePath),
+            str(targetPath),
+            symlinks=True,
+        )
 
     @staticmethod
     def _removeTargetPath(targetPath: Path) -> None:

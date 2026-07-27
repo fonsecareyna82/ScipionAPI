@@ -72,6 +72,9 @@ from pyworkflow.protocol.params import (
     RelationParam,
 )
 from pyworkflow.template import TemplateList
+from app.backend.runtime.project_lifecycle_service import (
+    RuntimeProjectLifecycleService,
+)
 
 try:
     from pyworkflow.viewer import DESKTOP_TKINTER
@@ -659,11 +662,50 @@ class ProjectService:
         project = None
         dbProjectId = None
         createAttempted = False
+        projectMapperClosed = False
 
         try:
             createAttempted = True
-            project = self.manager.createProject(sanitizedName)
-            project.setComment(description)
+
+            project = self.manager.createProject(
+                sanitizedName
+            )
+
+            projectDbPath = project.getDbPath()
+
+            closeMapper = getattr(
+                project,
+                "closeMapper",
+                None,
+            )
+
+            if not callable(closeMapper):
+                raise RuntimeError(
+                    "Created Scipion project does not expose "
+                    "closeMapper()"
+                )
+
+            closeMapper()
+            projectMapperClosed = True
+
+            lifecycleService = (
+                RuntimeProjectLifecycleService()
+            )
+
+            cleanupReport = (
+                lifecycleService
+                .removeLegacyProjectDatabase(
+                    projectPath=projectPath,
+                    projectDbPath=projectDbPath,
+                )
+            )
+
+            logger.info(
+                "Created PostgreSQL-only project. "
+                "path=%s cleanup=%s",
+                projectPath,
+                cleanupReport,
+            )
 
             dbProjectId = mapper.insertProject(
                 ownerId=currentUser["id"],
@@ -679,7 +721,8 @@ class ProjectService:
 
             if not dbProject:
                 raise RuntimeError(
-                    "Project was inserted but could not be read from PostgreSQL"
+                    "Project was inserted but could not "
+                    "be read from PostgreSQL"
                 )
 
             return self._buildProjectOutFromPostgresqlRow(
@@ -704,12 +747,16 @@ class ProjectService:
                         % rollbackError
                     )
 
-            if project is not None:
+            if (
+                    project is not None
+                    and not projectMapperClosed
+            ):
                 try:
                     project.closeMapper()
                 except Exception:
                     logger.debug(
-                        "Could not close project mapper during creation rollback. path=%s",
+                        "Could not close project mapper "
+                        "during creation rollback. path=%s",
                         projectPath,
                         exc_info=True,
                     )
@@ -726,19 +773,27 @@ class ProjectService:
                     )
 
             logger.exception(
-                "Failed to create project. name=%s path=%s rollbackErrors=%s",
+                "Failed to create project. "
+                "name=%s path=%s rollbackErrors=%s",
                 sanitizedName,
                 projectPath,
                 rollbackErrors,
             )
 
-            detail = "Failed to create project: %s" % error
+            detail = (
+                    "Failed to create project: %s"
+                    % error
+            )
 
             if rollbackErrors:
-                detail += ". " + "; ".join(rollbackErrors)
+                detail += ". " + "; ".join(
+                    rollbackErrors
+                )
 
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
                 detail=detail,
             )
 
@@ -1990,6 +2045,7 @@ class ProjectService:
             sourceProjectPath: Optional[str] = None,
     ) -> Dict[str, Any]:
         project = None
+        projectMapperClosed = False
 
         try:
             project = self.loadProjectForThumbnails({
@@ -2171,6 +2227,47 @@ class ProjectService:
             migrationReport["audit"] = auditReport
             migrationReport["postgresqlLoadAudit"] = postgresqlLoadAudit
 
+            closeMapper = getattr(
+                project,
+                "closeMapper",
+                None,
+            )
+
+            if not callable(closeMapper):
+                raise RuntimeError(
+                    "Imported Scipion project does not "
+                    "expose closeMapper()"
+                )
+
+            closeMapper()
+            projectMapperClosed = True
+
+            self.clearCurrentProject()
+
+            lifecycleService = (
+                RuntimeProjectLifecycleService()
+            )
+
+            cleanupReport = (
+                lifecycleService
+                .removeLegacyProjectDatabase(
+                    projectPath=projectPath,
+                    projectDbPath=sqliteDbPath,
+                )
+            )
+
+            migrationReport[
+                "legacyProjectDatabaseCleanup"
+            ] = cleanupReport
+
+            migrationReport[
+                "postgresqlOnly"
+            ] = True
+
+            migrationReport[
+                "usesProjectSqlite"
+            ] = False
+
             return migrationReport
 
         finally:
@@ -2180,7 +2277,10 @@ class ProjectService:
                 None,
             )
 
-            if projectToClose is not None:
+            if (
+                    projectToClose is not None
+                    and not projectMapperClosed
+            ):
                 try:
                     closeMapper = getattr(
                         projectToClose,
@@ -2266,8 +2366,6 @@ class ProjectService:
                 exc_info=True,
             )
 
-        copyProject = bool(getattr(projectData, "copyProject", True))
-
         requestedName = (getattr(projectData, "projectName", None) or "").strip()
         rawName = requestedName or sourcePath.name
         sanitizedName = self.sanitizeProjectName(rawName)
@@ -2328,26 +2426,31 @@ class ProjectService:
         runtimeProjectImportService = RuntimeProjectImportService()
 
         try:
-            importResult = runtimeProjectImportService.importProject(
-                mapper=mapper,
-                ownerId=currentUser["id"],
-                sourcePath=sourcePath,
-                targetPath=targetPath,
-                projectsPath=self.projectsPath,
-                copyProject=copyProject,
-                description=description,
-                statusValue=statusValue,
-                migrateProjectCallback=lambda projectId, projectPath: (
-                    self._migrateImportedProjectToPostgresql(
-                        mapper=mapper,
-                        projectId=projectId,
-                        projectPath=projectPath,
-                        ownerId=currentUser["id"],
-                        sourceProjectPath=str(
-                            sourcePath
-                        ),
-                    )
-                ),
+            importResult = (
+                runtimeProjectImportService
+                .importProject(
+                    mapper=mapper,
+                    ownerId=currentUser["id"],
+                    sourcePath=sourcePath,
+                    targetPath=targetPath,
+                    projectsPath=self.projectsPath,
+                    description=description,
+                    statusValue=statusValue,
+                    migrateProjectCallback=(
+                        lambda projectId, projectPath: (
+                            self
+                            ._migrateImportedProjectToPostgresql(
+                                mapper=mapper,
+                                projectId=projectId,
+                                projectPath=projectPath,
+                                ownerId=currentUser["id"],
+                                sourceProjectPath=str(
+                                    sourcePath
+                                ),
+                            )
+                        )
+                    ),
+                )
             )
         except Exception as error:
             logger.exception(
