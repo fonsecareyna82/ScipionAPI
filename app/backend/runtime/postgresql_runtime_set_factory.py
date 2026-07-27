@@ -161,10 +161,49 @@ class PostgresqlRuntimeSetMixin:
         implementation. Some Sets accept copyEnable, while others,
         such as TiltSeries, accept ignoreAttrs.
         """
-        runtimeClone = super().clone(
-            *args,
-            **kwargs
-        )
+        try:
+            runtimeClone = super().clone(
+                *args,
+                **kwargs
+            )
+
+        except TypeError as error:
+            genericSetCloneError = (
+                "copy() got an unexpected "
+                "keyword argument 'copyEnable'"
+            )
+
+            if genericSetCloneError not in str(
+                    error
+            ):
+                raise
+
+            # Object.clone(copyEnable=...) is not compatible
+            # with Set.copy(), whose signature does not accept
+            # copyEnable. Reproduce the native clone behavior
+            # explicitly for generic Scipion Sets.
+            runtimeClone = self.getClass()()
+
+            runtimeClone.copy(
+                self
+            )
+
+            copyEnable = (
+                kwargs.get(
+                    "copyEnable"
+                )
+                if "copyEnable" in kwargs
+                else (
+                    args[0]
+                    if args
+                    else False
+                )
+            )
+
+            if copyEnable:
+                runtimeClone.setEnabled(
+                    self.isEnabled()
+                )
 
         sourceMapperFactory = getattr(
             self,
