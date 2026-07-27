@@ -1785,12 +1785,14 @@ def _ensureProjectForFsRequest(
     if _isGlobalFsBrowserMode(projectId, protocolId):
         return None
 
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=refresh,
-        checkPid=checkPid,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            enableWriteFallback=False,
+        )
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -2084,7 +2086,15 @@ async def previewOutput(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            enableWriteFallback=False,
+        )
+    )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
