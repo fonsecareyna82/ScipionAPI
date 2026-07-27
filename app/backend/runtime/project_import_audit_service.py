@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import os
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -231,3 +233,82 @@ class RuntimeProjectImportAuditService:
             "actual": actual,
             "mismatches": [],
         }
+
+    def auditRuntimeProject(
+            self,
+            *,
+            runtimeProject,
+            projectPath: str,
+    ) -> Dict[str, Any]:
+        if runtimeProject is None:
+            raise RuntimeError(
+                "PostgreSQL runtime project was not loaded"
+            )
+
+        usingPostgresqlMapper = getattr(
+            runtimeProject,
+            "usingPostgresqlRuntimeMapper",
+            None,
+        )
+
+        if (
+                not callable(usingPostgresqlMapper)
+                or not usingPostgresqlMapper()
+        ):
+            raise RuntimeError(
+                "Imported project is not using "
+                "PostgresqlRuntimeMapper"
+            )
+
+        runtimeMapper = runtimeProject.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "Imported project does not expose "
+                "PostgresqlRuntimeMapper"
+            )
+
+        writeFallbackMapper = getattr(
+            runtimeMapper,
+            "writeFallbackMapper",
+            None,
+        )
+
+        if writeFallbackMapper is not None:
+            raise RuntimeError(
+                "Imported project unexpectedly enabled "
+                "the SQLite write fallback"
+            )
+
+        projectRoot = Path(projectPath)
+        projectDatabase = projectRoot / "project.sqlite"
+
+        remainingProjectDatabases = [
+            str(projectDatabase) + suffix
+            for suffix in (
+                "",
+                "-wal",
+                "-shm",
+                "-journal",
+            )
+            if os.path.lexists(
+                str(projectDatabase) + suffix
+            )
+        ]
+
+        if remainingProjectDatabases:
+            raise RuntimeError(
+                "PostgreSQL runtime project still has "
+                "legacy project databases: %s"
+                % remainingProjectDatabases
+            )
+
+        return {
+            "complete": True,
+            "runtimeMapper": (
+                runtimeMapper.__class__.__name__
+            ),
+            "writeFallbackEnabled": False,
+            "projectSqlitePresent": False,
+        }
+

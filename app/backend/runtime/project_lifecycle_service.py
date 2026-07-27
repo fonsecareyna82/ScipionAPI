@@ -32,6 +32,7 @@ class RuntimeProjectLifecycleService:
     """Finalize managed projects as PostgreSQL-only filesystem projects."""
 
     LEGACY_PROJECT_DATABASE_NAME = "project.sqlite"
+    LEGACY_RUN_DATABASE_NAME = "run.db"
 
     LEGACY_PROJECT_DATABASE_SUFFIXES = (
         "",
@@ -75,6 +76,69 @@ class RuntimeProjectLifecycleService:
                 "outside the managed project directory: %s"
                 % candidatePath
             )
+
+    def _findLegacyRunDatabaseArtifacts(
+            self,
+            projectRoot: Path,
+    ) -> List[Path]:
+        artifactNames = {
+            self.LEGACY_RUN_DATABASE_NAME + suffix
+            for suffix in self.LEGACY_PROJECT_DATABASE_SUFFIXES
+        }
+
+        artifacts = []
+
+        for rootPath, directoryNames, fileNames in os.walk(
+                projectRoot,
+                topdown=True,
+                followlinks=False,
+        ):
+            safeDirectoryNames = []
+
+            for directoryName in directoryNames:
+                directoryPath = Path(rootPath) / directoryName
+
+                if os.path.islink(directoryPath):
+                    if directoryName in artifactNames:
+                        artifacts.append(
+                            self._normalizeLexicalPath(directoryPath)
+                        )
+
+                    continue
+
+                if directoryName in artifactNames:
+                    raise RuntimeError(
+                        "Legacy protocol database path is unexpectedly "
+                        "a directory: %s"
+                        % directoryPath
+                    )
+
+                safeDirectoryNames.append(directoryName)
+
+            directoryNames[:] = safeDirectoryNames
+
+            for fileName in fileNames:
+                if fileName not in artifactNames:
+                    continue
+
+                databasePath = self._normalizeLexicalPath(
+                    Path(rootPath) / fileName
+                )
+
+                self._assertPathInsideProject(
+                    projectRoot=projectRoot,
+                    candidatePath=databasePath,
+                )
+
+                artifacts.append(databasePath)
+
+        return sorted(
+            {
+                str(databasePath): databasePath
+                for databasePath in artifacts
+            }.values(),
+            key=str,
+        )
 
     def removeLegacyProjectDatabase(
             self,
@@ -200,4 +264,75 @@ class RuntimeProjectLifecycleService:
             "missing": missingPaths,
             "projectSqliteRemoved": True,
             "postgresqlOnly": True,
+        }
+
+    def removeLegacyRunDatabases(
+            self,
+            *,
+            projectPath: Union[str, os.PathLike],
+    ) -> Dict[str, Any]:
+        projectRoot = self._normalizeLexicalPath(projectPath)
+
+        if os.path.islink(projectRoot):
+            raise RuntimeError(
+                "Refusing to finalize a project whose root "
+                "directory is a symbolic link: %s"
+                % projectRoot
+            )
+
+        if not projectRoot.exists() or not projectRoot.is_dir():
+            raise RuntimeError(
+                "Project directory does not exist: %s"
+                % projectRoot
+            )
+
+        databasePaths = self._findLegacyRunDatabaseArtifacts(
+            projectRoot
+        )
+
+        deletedPaths = []
+
+        for databasePath in databasePaths:
+            self._assertPathInsideProject(
+                projectRoot=projectRoot,
+                candidatePath=databasePath,
+            )
+
+            databaseText = str(databasePath)
+
+            if not os.path.lexists(databaseText):
+                continue
+
+            if (
+                    not os.path.islink(databaseText)
+                    and os.path.isdir(databaseText)
+            ):
+                raise RuntimeError(
+                    "Legacy protocol database path is unexpectedly "
+                    "a directory: %s"
+                    % databasePath
+                )
+
+            os.unlink(databaseText)
+            deletedPaths.append(databaseText)
+
+        remainingPaths = [
+            str(databasePath)
+            for databasePath in self._findLegacyRunDatabaseArtifacts(
+                projectRoot
+            )
+        ]
+
+        if remainingPaths:
+            raise RuntimeError(
+                "Legacy protocol database cleanup was incomplete: %s"
+                % remainingPaths
+            )
+
+        return {
+            "projectPath": str(projectRoot),
+            "deleted": deletedPaths,
+            "deletedCount": len(deletedPaths),
+            "remaining": [],
+            "legacyRunDatabasesRemoved": True,
         }
