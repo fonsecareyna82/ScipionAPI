@@ -74,134 +74,217 @@ class RuntimeProtocolStepPersistenceService:
         except Exception:
             return str(value)
 
-    def loadProtocolStepsForPostgresql(self, protocol: Any) -> List[Any]:
-        for methodName in ("loadSteps", "getSteps"):
-            try:
-                method = getattr(protocol, methodName, None)
-                if not callable(method):
-                    continue
+    def loadProtocolStepsForPostgresql(
+            self,
+            protocol: Any,
+    ) -> List[Any]:
+        """
+        Return only the currently defined in-memory steps.
 
-                steps = method() or []
-                steps = list(steps)
-
-                if steps:
-                    return steps
-
-            except Exception:
-                logger.debug(
-                    "Could not load protocol steps using %s.",
-                    methodName,
-                    exc_info=True,
-                )
-
-        for attrName in ("_steps", "steps"):
-            try:
-                steps = getattr(protocol, attrName, None)
-
-                if not steps:
-                    continue
-
-                if isinstance(steps, dict):
-                    steps = list(steps.values())
-                else:
-                    steps = list(steps)
-
-                if steps:
-                    return steps
-
-            except Exception:
-                logger.debug(
-                    "Could not load protocol steps from attribute %s.",
-                    attrName,
-                    exc_info=True,
-                )
-
-        return []
-
-    def buildProtocolStepsForPostgresql(self, protocol: Any) -> List[Dict[str, Any]]:
-        result: List[Dict[str, Any]] = []
-
-        steps = self.loadProtocolStepsForPostgresql(protocol)
+        PostgreSQL synchronization must never read steps.sqlite.
+        """
+        steps = getattr(
+            protocol,
+            "_steps",
+            None,
+        )
 
         if not steps:
-            return result
+            return []
 
-        for step in steps:
-            try:
-                stepIndex = self.safeProtocolStepCall(step, "getIndex", None)
+        if isinstance(
+                steps,
+                dict,
+        ):
+            return list(
+                steps.values()
+            )
 
-                if stepIndex is None:
-                    continue
+        return list(
+            steps
+        )
 
-                elapsedSeconds = None
-                elapsed = self.safeProtocolStepCall(step, "getElapsedTime", None)
+    def buildProtocolStepForPostgresql(
+            self,
+            step: Any,
+            *,
+            event: str = "snapshot",
+    ) -> Dict[str, Any]:
+        stepIndex = self.safeProtocolStepCall(
+            step,
+            "getIndex",
+            None,
+        )
 
-                try:
-                    if elapsed is not None:
-                        elapsedSeconds = elapsed.total_seconds()
-                except Exception:
-                    elapsedSeconds = None
+        if stepIndex is None:
+            raise ValueError(
+                "Protocol step has no index."
+            )
 
-                stepName = self.safeProtocolStepValue(
-                    getattr(step, "funcName", None),
+        rawArgs = self.safeProtocolStepValue(
+            getattr(
+                step,
+                "argsStr",
+                None,
+            ),
+            None,
+        )
+
+        rawResultFiles = (
+            self.safeProtocolStepValue(
+                getattr(
+                    step,
+                    "_resultFiles",
                     None,
-                )
+                ),
+                None,
+            )
+        )
 
-                if not stepName:
-                    stepName = self.safeProtocolStepCall(step, "getClassName", "")
-
-                prerequisites = []
-                rawPrerequisites = self.safeProtocolStepCall(
+        rawPrerequisites = (
+                self.safeProtocolStepCall(
                     step,
                     "getPrerequisites",
                     [],
                 )
+                or []
+        )
 
-                try:
-                    prerequisites = [
-                        int(prerequisite)
-                        for prerequisite in (rawPrerequisites or [])
-                    ]
-                except Exception:
-                    prerequisites = []
+        elapsedSeconds = None
 
-                rawArgs = self.safeProtocolStepValue(
-                    getattr(step, "argsStr", None),
+        elapsed = self.safeProtocolStepCall(
+            step,
+            "getElapsedTime",
+            None,
+        )
+
+        try:
+            if elapsed is not None:
+                elapsedSeconds = (
+                    elapsed.total_seconds()
+                )
+        except Exception:
+            elapsedSeconds = None
+
+        stepName = self.safeProtocolStepValue(
+            getattr(
+                step,
+                "funcName",
+                None,
+            ),
+            None,
+        )
+
+        if not stepName:
+            stepName = (
+                self.safeProtocolStepCall(
+                    step,
+                    "getClassName",
+                    "",
+                )
+            )
+
+        needsGpu = self.safeProtocolStepCall(
+            step,
+            "needsGPU",
+            True,
+        )
+
+        return {
+            "index": int(stepIndex),
+            "stepClassName": (
+                step.__class__.__name__
+            ),
+            "name": str(
+                stepName
+                or ""
+            ),
+            "status": (
+                self.safeProtocolStepCall(
+                    step,
+                    "getStatus",
+                    "",
+                )
+            ),
+            "prerequisites": [
+                int(prerequisite)
+                for prerequisite
+                in rawPrerequisites
+            ],
+            "args": (
+                self.safeProtocolStepJsonValue(
+                    rawArgs
+                )
+            ),
+            "argsText": (
+                str(rawArgs)
+                if rawArgs is not None
+                else None
+            ),
+            "resultFiles": (
+                self.safeProtocolStepJsonValue(
+                    rawResultFiles
+                )
+            ),
+            "initTime": (
+                self.safeProtocolStepValue(
+                    getattr(
+                        step,
+                        "initTime",
+                        None,
+                    ),
                     None,
                 )
-
-                needsGpu = self.safeProtocolStepCall(step, "needsGPU", None)
-
-                if needsGpu is None:
-                    needsGpu = True
-
-                result.append({
-                    "index": int(stepIndex),
-                    "name": str(stepName or ""),
-                    "status": self.safeProtocolStepCall(step, "getStatus", ""),
-                    "prerequisites": prerequisites,
-                    "args": self.safeProtocolStepJsonValue(rawArgs),
-                    "initTime": self.safeProtocolStepValue(
-                        getattr(step, "initTime", None),
+            ),
+            "endTime": (
+                self.safeProtocolStepValue(
+                    getattr(
+                        step,
+                        "endTime",
                         None,
                     ),
-                    "endTime": self.safeProtocolStepValue(
-                        getattr(step, "endTime", None),
-                        None,
-                    ),
-                    "elapsedSeconds": elapsedSeconds,
-                    "error": self.safeProtocolStepCall(step, "getErrorMessage", None),
-                    "interactive": bool(
-                        self.safeProtocolStepCall(step, "isInteractive", False)
-                    ),
-                    "needsGpu": bool(needsGpu),
-                    "event": "snapshot",
-                })
-
-            except Exception:
-                logger.debug(
-                    "Could not serialize protocol step for PostgreSQL.",
-                    exc_info=True,
+                    None,
                 )
+            ),
+            "elapsedSeconds": (
+                elapsedSeconds
+            ),
+            "error": (
+                self.safeProtocolStepCall(
+                    step,
+                    "getErrorMessage",
+                    None,
+                )
+            ),
+            "interactive": bool(
+                self.safeProtocolStepCall(
+                    step,
+                    "isInteractive",
+                    False,
+                )
+            ),
+            "needsGpu": bool(
+                needsGpu
+            ),
+            "event": event,
+            "schemaVersion": 2,
+        }
 
-        return result
+    def buildProtocolStepsForPostgresql(
+            self,
+            protocol: Any,
+    ) -> List[Dict[str, Any]]:
+        steps = (
+            self
+            .loadProtocolStepsForPostgresql(
+                protocol
+            )
+        )
+
+        return [
+            self.buildProtocolStepForPostgresql(
+                step,
+                event="snapshot",
+            )
+            for step in steps
+        ]

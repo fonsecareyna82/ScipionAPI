@@ -2059,48 +2059,144 @@ class PostgresqlFlatMapper(Mapper):
         for step in steps or []:
             self.upsertProtocolStep(projectId, protocolDbId, protocolId, step)
 
-    def upsertProtocolStep(self, projectId: int, protocolDbId: int, protocolId: int, step: Dict[str, Any]) -> None:
+    def upsertProtocolStep(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            protocolId: int,
+            step: Dict[str, Any],
+    ) -> None:
         self.db.execute(
             """
             INSERT INTO protocol_steps (
-                "projectId", "protocolDbId", "protocolId", "stepIndex",
-                name, status, prerequisites, args, "initTime", "endTime",
-                "elapsedSeconds", error, interactive, "needsGpu", event
+                "projectId",
+                "protocolDbId",
+                "protocolId",
+                "stepIndex",
+                "stepClassName",
+                name,
+                status,
+                prerequisites,
+                args,
+                "argsText",
+                "resultFiles",
+                "initTime",
+                "endTime",
+                "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "schemaVersion"
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT ("projectId", "protocolDbId", "stepIndex")
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s::jsonb,
+                %s::jsonb, %s, %s::jsonb,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s
+            )
+            ON CONFLICT (
+                "projectId",
+                "protocolDbId",
+                "stepIndex"
+            )
             DO UPDATE SET
+                "stepClassName" =
+                    EXCLUDED."stepClassName",
                 name = EXCLUDED.name,
                 status = EXCLUDED.status,
-                prerequisites = EXCLUDED.prerequisites,
+                prerequisites =
+                    EXCLUDED.prerequisites,
                 args = EXCLUDED.args,
-                "initTime" = EXCLUDED."initTime",
-                "endTime" = EXCLUDED."endTime",
-                "elapsedSeconds" = EXCLUDED."elapsedSeconds",
+                "argsText" =
+                    EXCLUDED."argsText",
+                "resultFiles" =
+                    EXCLUDED."resultFiles",
+                "initTime" =
+                    EXCLUDED."initTime",
+                "endTime" =
+                    EXCLUDED."endTime",
+                "elapsedSeconds" =
+                    EXCLUDED."elapsedSeconds",
                 error = EXCLUDED.error,
-                interactive = EXCLUDED.interactive,
-                "needsGpu" = EXCLUDED."needsGpu",
+                interactive =
+                    EXCLUDED.interactive,
+                "needsGpu" =
+                    EXCLUDED."needsGpu",
                 event = EXCLUDED.event,
+                "schemaVersion" =
+                    EXCLUDED."schemaVersion",
                 "updatedAt" = NOW()
             """,
             (
-                projectId, protocolDbId, str(protocolId), step["index"],
-                step["name"], step["status"],
-                json.dumps(step.get("prerequisites") or []),
-                json.dumps(step.get("args")),
-                step.get("initTime"), step.get("endTime"),
-                step.get("elapsedSeconds"), step.get("error"),
-                bool(step.get("interactive")), bool(step.get("needsGpu", True)),
-                step.get("event"),
+                projectId,
+                protocolDbId,
+                str(protocolId),
+                step["index"],
+                step.get(
+                    "stepClassName"
+                ),
+                step["name"],
+                step["status"],
+                json.dumps(
+                    step.get(
+                        "prerequisites"
+                    )
+                    or []
+                ),
+                json.dumps(
+                    step.get("args")
+                ),
+                step.get(
+                    "argsText"
+                ),
+                json.dumps(
+                    step.get(
+                        "resultFiles"
+                    )
+                ),
+                step.get(
+                    "initTime"
+                ),
+                step.get(
+                    "endTime"
+                ),
+                step.get(
+                    "elapsedSeconds"
+                ),
+                step.get(
+                    "error"
+                ),
+                bool(
+                    step.get(
+                        "interactive"
+                    )
+                ),
+                bool(
+                    step.get(
+                        "needsGpu",
+                        True,
+                    )
+                ),
+                step.get(
+                    "event"
+                ),
+                int(
+                    step.get(
+                        "schemaVersion",
+                        2,
+                    )
+                ),
             ),
         )
 
     def listProtocolSteps(self, projectId: int, protocolId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
             """
-            SELECT "stepIndex" AS index, name, status, prerequisites, args,
-                   "initTime", "endTime", "elapsedSeconds", error,
-                   interactive, "needsGpu", event, "updatedAt"
+            SELECT "stepIndex" AS index, "stepClassName", name, status, prerequisites, args,
+                   "argsText", "resultFiles", "initTime", "endTime", "elapsedSeconds", error,
+                   interactive, "needsGpu", event, "schemaVersion", "updatedAt"
               FROM protocol_steps
              WHERE "projectId" = %s
                AND "protocolId" = %s
