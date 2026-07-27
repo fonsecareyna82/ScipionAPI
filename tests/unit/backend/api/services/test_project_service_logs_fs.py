@@ -52,21 +52,37 @@ class FakeProtocol:
         return self._scheduleLog
 
 class FakeDb:
-    def __init__(self, runtimeProtocolIdByDbId=None):
-        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+    def __init__(
+            self,
+            runtimeProtocolIdByDbId=None,
+    ):
+        self.runtimeProtocolIdByDbId = (
+            runtimeProtocolIdByDbId
+            or {}
+        )
         self.fetchCalls = []
 
-    def fetchOne(self, query, params):
+    def fetchOne(
+            self,
+            query,
+            params,
+    ):
         self.fetchCalls.append({
             "query": query,
             "params": params,
         })
 
-        if len(params) < 3:
+        if len(params) < 2:
             return None
 
         protocolDbId = params[1]
-        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
+
+        runtimeProtocolId = (
+            self.runtimeProtocolIdByDbId.get(
+                int(protocolDbId)
+            )
+        )
+
         if runtimeProtocolId is None:
             return None
 
@@ -342,7 +358,7 @@ def test_ListProtocolLogChannelsServiceResolvesPostgresqlProtocolId(service, tmp
         {"id": "stderr", "label": "Errors", "order": 2},
         {"id": "schedule", "label": "Schedule", "order": 3},
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_PollProtocolLogsServiceResolvesPostgresqlProtocolId(service, tmp_path):
@@ -387,7 +403,7 @@ def test_PollProtocolLogsServiceResolvesPostgresqlProtocolId(service, tmp_path):
         "content": "sched2\n",
         "offset": 14,
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_GetProtocolLogsResolvesPostgresqlProtocolId(service, tmp_path):
@@ -424,7 +440,7 @@ def test_GetProtocolLogsResolvesPostgresqlProtocolId(service, tmp_path):
         "scheduleLog": "SCH2\n",
         "scheduleOffset": 10,
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_GetProtocolPathReturnsGlobalBrowserPayload(service, monkeypatch, tmp_path):
@@ -620,7 +636,7 @@ def test_GetProtocolPathResolvesPostgresqlProtocolId(service, tmp_path):
         "startPath": "Runs/000010_ProtImport",
         "protocolRoot": "Runs/000010_ProtImport",
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_ListProtocolDirResolvesPostgresqlProtocolId(
@@ -647,7 +663,7 @@ def test_ListProtocolDirResolvesPostgresqlProtocolId(
     assert FakeFileHandlers.lastInstance.calls == [
         ("listProtocolDir", "10", "extra"),
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_PreviewProtocolTextFileResolvesPostgresqlProtocolId(
@@ -674,7 +690,7 @@ def test_PreviewProtocolTextFileResolvesPostgresqlProtocolId(
     assert FakeFileHandlers.lastInstance.calls == [
         ("previewProtocolTextFile", "10", "notes.txt"),
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_PreviewRemoteEntryResolvesPostgresqlProtocolId(
@@ -701,7 +717,7 @@ def test_PreviewRemoteEntryResolvesPostgresqlProtocolId(
     assert FakeFileHandlers.lastInstance.calls == [
         ("previewProtocolRemoteEntry", "10", "image.png"),
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_PreviewProtocolImageFileResolvesPostgresqlProtocolId(
@@ -730,7 +746,7 @@ def test_PreviewProtocolImageFileResolvesPostgresqlProtocolId(
     assert FakeFileHandlers.lastInstance.calls == [
         ("previewProtocolImageFile", "10", "preview.webp", False),
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_WriteRemoteFileServiceResolvesPostgresqlProtocolId(service, tmp_path):
@@ -762,7 +778,7 @@ def test_WriteRemoteFileServiceResolvesPostgresqlProtocolId(service, tmp_path):
         "size": targetPath.stat().st_size,
         "mimeType": "application/json",
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_GetProtocolLogsNormalizesNegativeOffsets(service, tmp_path):
