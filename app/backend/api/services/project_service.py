@@ -88,7 +88,7 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Any, Union, Tuple, Dict, Set as TypingSet, Sequence
+from typing import List, Optional, Any, Union, Tuple, Dict, Set as TypingSet, Sequence, Callable
 from fastapi import HTTPException, status, Response
 from pathlib import Path as FsPath
 import mimetypes
@@ -1940,6 +1940,8 @@ class ProjectService:
                 Sequence[str]
             ] = None,
             allowDetachedSetOutputs: bool = False,
+            prepareProtocolForOutputPersistenceCallback:
+            Optional[Callable] = None,
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
@@ -2169,8 +2171,38 @@ class ProjectService:
                 strict=True,
                 syncRelations=True,
                 outputProjectPaths=outputProjectPaths,
-                allowDetachedSetOutputs=True,
+                allowDetachedSetOutputs=False,
+                prepareProtocolForOutputPersistenceCallback=(
+                    prepareImportedProtocolOutputs
+                ),
             )
+
+            runtimeProtocolLoaderService = (
+                RuntimeProtocolLoaderService()
+            )
+
+            def prepareImportedProtocolOutputs(
+                    *,
+                    protocolId,
+                    protocol,
+            ):
+                return (
+                    runtimeProtocolLoaderService
+                    .loadProtocolFromRuntimeDb(
+                        protocolId=int(
+                            protocolId
+                        ),
+                        currentProject=project,
+                        getProtocolByRuntimeIdCallback=(
+                            self
+                            ._getScipionProtocolByRuntimeId
+                        ),
+                        protocol=protocol,
+                        projectPaths=(
+                            outputProjectPaths
+                        ),
+                    )
+                )
 
             migrationReport[
                 "sqliteIdentity"

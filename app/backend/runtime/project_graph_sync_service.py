@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Callable, Dict, List, Set as TypingSet, Tuple
+from typing import Any, Callable, Dict, List, Set as TypingSet, Tuple, Optional
 
 from app.backend.runtime.project_relation_sync_service import RuntimeProjectRelationSyncService
 from app.backend.runtime.protocol_output_persistence_service import (
@@ -53,6 +53,8 @@ class RuntimeProjectGraphSyncService:
             getScipionObjectIdCallback: Callable,
             registerOutputCallback: Callable,
             shouldPreservePostgresqlOnlyProtocolsCallback: Callable,
+            prepareProtocolForOutputPersistenceCallback:
+            Optional[Callable] = None,
             refresh: bool = False,
             checkPid: bool = False,
             strict: bool = False,
@@ -138,13 +140,72 @@ class RuntimeProjectGraphSyncService:
                     nodeIdText,
                 )
 
+            outputProtocol = protocol
+
+            if callable(
+                    prepareProtocolForOutputPersistenceCallback
+            ):
+                try:
+                    preparedProtocol = (
+                        prepareProtocolForOutputPersistenceCallback(
+                            protocolId=nodeIdText,
+                            protocol=protocol,
+                        )
+                    )
+
+                    if preparedProtocol is not None:
+                        preparedProtocolId = (
+                            getScipionObjectIdCallback(
+                                preparedProtocol
+                            )
+                        )
+
+                        if (
+                                preparedProtocolId is None
+                                or str(
+                                    preparedProtocolId
+                                ) != nodeIdText
+                        ):
+                            raise RuntimeError(
+                                "Prepared output protocol identity "
+                                "does not match graph protocol. "
+                                "expected=%s actual=%s"
+                                % (
+                                    nodeIdText,
+                                    preparedProtocolId,
+                                )
+                            )
+
+                        outputProtocol = (
+                            preparedProtocol
+                        )
+
+                except Exception as error:
+                    outputSyncErrors.append({
+                        "protocolId": (
+                            nodeIdText
+                        ),
+                        "operation": (
+                            "prepare_output_protocol"
+                        ),
+                        "error": str(error),
+                    })
+
+                    logger.exception(
+                        "Could not prepare authoritative "
+                        "protocol for output persistence. "
+                        "projectId=%s protocolId=%s",
+                        projectId,
+                        nodeIdText,
+                    )
+
             if runtimeProtocolOutputPersistenceService.shouldSyncProtocolOutputs(
-                    protocol=protocol,
+                    protocol=outputProtocol,
             ):
                 try:
                     outputReport = registerOutputCallback(
                         projectId=projectId,
-                        protocol=protocol,
+                        protocol=outputProtocol,
                         mapper=mapper,
                         returnReport=True,
                     )
@@ -163,6 +224,50 @@ class RuntimeProjectGraphSyncService:
 
                     declaredOutputs = outputReport.get("declared") or []
                     persistedOutputs = outputReport.get("persisted") or []
+                    if strict:
+                        for persistedOutput in (
+                                persistedOutputs
+                        ):
+                            outputClassName = str(
+                                persistedOutput.get(
+                                    "outputClassName"
+                                )
+                                or ""
+                            )
+
+                            mapperKind = str(
+                                persistedOutput.get(
+                                    "mapperKind"
+                                )
+                                or ""
+                            )
+
+                            if (
+                                    outputClassName.startswith(
+                                        "SetOf"
+                                    )
+                                    and mapperKind
+                                    != "flat_set"
+                            ):
+                                outputSyncErrors.append({
+                                    "protocolId": (
+                                        nodeIdText
+                                    ),
+                                    "outputName": (
+                                        persistedOutput.get(
+                                            "outputName"
+                                        )
+                                    ),
+                                    "outputClassName": (
+                                        outputClassName
+                                    ),
+                                    "mapperKind": (
+                                        mapperKind
+                                    ),
+                                    "reason": (
+                                        "set_output_not_fully_migrated"
+                                    ),
+                                })
                     skippedOutputs = outputReport.get("skipped") or []
                     erroredOutputs = outputReport.get("errors") or []
 

@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import os
+import app.backend.runtime.protocol_loader_service as loader_module
 
 from app.backend.runtime.protocol_loader_service import (
     RuntimeProtocolLoaderService,
@@ -67,3 +68,88 @@ def test_LoadProtocolFromRuntimeDbUsesProvidedProtocol(
     )
 
     assert result is protocol
+
+
+def test_LoadProtocolFromRuntimeDbSearchesImportedSource(
+        monkeypatch,
+        tmp_path,
+):
+    service = RuntimeProtocolLoaderService()
+    protocol = FakeProtocol()
+
+    managedProject = (
+        tmp_path
+        / "managed"
+    )
+
+    sourceProject = (
+        tmp_path
+        / "source"
+    )
+
+    sourceRunDb = (
+        sourceProject
+        / "Runs"
+        / "001_TestProtocol"
+        / "logs"
+        / "run.db"
+    )
+
+    sourceRunDb.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sourceRunDb.touch()
+
+    runtimeProtocol = object()
+    calls = []
+
+    def fakeGetProtocolFromDb(
+            projectPath,
+            runDbPath,
+            protocolId,
+            chdir=False,
+    ):
+        calls.append({
+            "projectPath": projectPath,
+            "runDbPath": runDbPath,
+            "protocolId": protocolId,
+            "chdir": chdir,
+        })
+
+        return runtimeProtocol
+
+    monkeypatch.setattr(
+        loader_module,
+        "getProtocolFromDb",
+        fakeGetProtocolFromDb,
+    )
+
+    result = service.loadProtocolFromRuntimeDb(
+        protocolId=1298,
+        currentProject=FakeProject(),
+        getProtocolByRuntimeIdCallback=(
+            lambda protocolId: protocol
+        ),
+        protocol=protocol,
+        projectPaths=[
+            managedProject,
+            sourceProject,
+        ],
+    )
+
+    assert result is runtimeProtocol
+
+    assert calls == [{
+        "projectPath": str(
+            sourceProject
+        ),
+        "runDbPath": str(
+            sourceRunDb
+        ),
+        "protocolId": 1298,
+        "chdir": False,
+    }]
+
+
