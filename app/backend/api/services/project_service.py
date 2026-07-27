@@ -2186,6 +2186,10 @@ class ProjectService:
                 )
             )
 
+            runtimeProtocolLoaderService = (
+                RuntimeProtocolLoaderService()
+            )
+
             def prepareImportedProtocolOutputs(
                     *,
                     protocolId,
@@ -2209,22 +2213,23 @@ class ProjectService:
                     )
                 )
 
-            migrationReport = self.syncProjectProtocolsAndDependencies(
-                mapper=mapper,
-                projectId=projectId,
-                refresh=False,
-                checkPid=False,
-                strict=True,
-                syncRelations=True,
-                outputProjectPaths=outputProjectPaths,
-                allowDetachedSetOutputs=False,
-                prepareProtocolForOutputPersistenceCallback=(
-                    prepareImportedProtocolOutputs
-                ),
-            )
-
-            runtimeProtocolLoaderService = (
-                RuntimeProtocolLoaderService()
+            migrationReport = (
+                self
+                .syncProjectProtocolsAndDependencies(
+                    mapper=mapper,
+                    projectId=projectId,
+                    refresh=False,
+                    checkPid=False,
+                    strict=True,
+                    syncRelations=True,
+                    outputProjectPaths=(
+                        outputProjectPaths
+                    ),
+                    allowDetachedSetOutputs=True,
+                    prepareProtocolForOutputPersistenceCallback=(
+                        prepareImportedProtocolOutputs
+                    ),
+                )
             )
 
             migrationReport[
