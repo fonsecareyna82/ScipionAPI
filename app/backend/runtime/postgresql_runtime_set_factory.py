@@ -148,6 +148,143 @@ class PostgresqlRuntimeSetMixin:
     def isPostgresqlRuntimeOutput(self):
         return True
 
+    def supportsPostgresqlNativeWrite(self) -> bool:
+        return bool(
+            getattr(
+                self,
+                "_postgresqlSupportsNativeWrite",
+                False,
+            )
+        )
+
+    def isPostgresqlWritable(self) -> bool:
+        mapper = getattr(
+            self,
+            "_mapper",
+            None,
+        )
+
+        if mapper is None:
+            return False
+
+        checker = getattr(
+            mapper,
+            "isWritable",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        return bool(
+            checker()
+        )
+
+    def enablePostgresqlWrite(self):
+        """
+        Replace the current read-only mapper with a writable
+        PostgreSQL mapper for this runtime Set.
+        """
+        if not self.supportsPostgresqlNativeWrite():
+            raise NotImplementedError(
+                "Native PostgreSQL writing is not yet "
+                "supported for nested PostgreSQL Sets."
+            )
+
+        if self.isPostgresqlWritable():
+            return self
+
+        mapperFactory = getattr(
+            self,
+            "_postgresqlMapperFactory",
+            None,
+        )
+
+        if not callable(mapperFactory):
+            raise RuntimeError(
+                "PostgreSQL runtime Set does not "
+                "have a mapper factory."
+            )
+
+        currentMapper = getattr(
+            self,
+            "_mapper",
+            None,
+        )
+
+        if currentMapper is not None:
+            closeMapper = getattr(
+                currentMapper,
+                "close",
+                None,
+            )
+
+            if callable(closeMapper):
+                closeMapper()
+
+        self._mapper = mapperFactory(
+            writable=True
+        )
+
+        self._size.set(
+            self._mapper.count()
+        )
+
+        self._idCount = (
+            self._mapper.maxId()
+        )
+
+        self._postgresqlWritable = True
+
+        return self
+
+    def append(
+            self,
+            item,
+    ) -> None:
+        """
+        Append through PostgreSQL so item-id allocation is
+        atomic and safe across concurrent workers.
+        """
+        mapper = self._getMapper()
+
+        if not self.isPostgresqlWritable():
+            raise RuntimeError(
+                "PostgreSQL runtime Set is read-only."
+            )
+
+        appendItem = getattr(
+            mapper,
+            "appendItem",
+            None,
+        )
+
+        if not callable(appendItem):
+            raise RuntimeError(
+                "Writable PostgreSQL mapper does not "
+                "provide appendItem()."
+            )
+
+        itemId = int(
+            appendItem(
+                item
+            )
+        )
+
+        self._idCount = max(
+            int(
+                self._idCount
+                or 0
+            ),
+            itemId,
+        )
+
+        # Do not increment optimistically. Another worker
+        # may have inserted items concurrently.
+        self._size.set(
+            mapper.count()
+        )
+
     def clone(
             self,
             *args,
@@ -293,6 +430,11 @@ class PostgresqlRuntimeSetMixin:
             None,
         )
 
+        # A clone must not become writable implicitly.
+        # Resume explicitly enables writing on the canonical output.
+        runtimeClone._postgresqlSupportsNativeWrite = False
+        runtimeClone._postgresqlWritable = False
+
         runtimeClone._mapper = None
 
         try:
@@ -364,9 +506,17 @@ class PostgresqlRuntimeSetMixin:
 
         return runtimeClone
 
-    def write(self, properties=True):
-        raise RuntimeError(
-            "PostgreSQL runtime input sets are read-only."
+    def write(
+            self,
+            properties=True,
+    ):
+        if not self.isPostgresqlWritable():
+            raise RuntimeError(
+                "PostgreSQL runtime Set is read-only."
+            )
+
+        return super().write(
+            properties=properties
         )
 
 
@@ -835,12 +985,40 @@ class PostgresqlRuntimeSetFactory:
 
             return item
 
-        def mapperFactory():
+        def serializeItem(
+                item,
+        ):
+            return (
+                setMapper
+                .serializeRuntimeItem(
+                    item=item,
+                    scipionSet=runtimeSet,
+                )
+            )
+
+        def mapperFactory(
+                writable=False,
+        ):
             return PostgresqlSetRuntimeMapper(
                 db=db,
                 setId=int(setId),
                 itemBuilder=buildItem,
+                itemSerializer=serializeItem,
+                writable=bool(
+                    writable
+                ),
             )
+
+        # Root Sets containing normal items can now write
+        # directly into scipion_set_items.
+        #
+        # Sets whose items are themselves Sets still require
+        # writable logical-table support.
+        runtimeSet._postgresqlSupportsNativeWrite = (
+            not nestedSetItemClass
+        )
+
+        runtimeSet._postgresqlWritable = False
 
         runtimeSet._postgresqlMapperFactory = (
             mapperFactory
@@ -922,6 +1100,8 @@ class PostgresqlRuntimeSetFactory:
         )
 
         runtimeSet._postgresqlMaterializedFileName = None
+        runtimeSet._postgresqlSupportsNativeWrite = False
+        runtimeSet._postgresqlWritable = False
 
     def _loadLogicalTablesByParentItemId(
             self,
