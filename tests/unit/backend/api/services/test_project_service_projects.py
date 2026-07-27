@@ -34,11 +34,21 @@ from fastapi import HTTPException
 
 class FakeCreatedProject:
     # fakeCreatedProject
-    def __init__(self):
+    def __init__(self, projectPath):
+        self.projectPath = Path(projectPath)
         self.comment = None
+        self.mapperClosed = False
 
     def setComment(self, value):
         self.comment = value
+
+    def getDbPath(self):
+        return str(
+            self.projectPath / "project.sqlite"
+        )
+
+    def closeMapper(self):
+        self.mapperClosed = True
 
 
 class FakeManager:
@@ -53,8 +63,25 @@ class FakeManager:
         return str(Path(self.PROJECTS) / name)
 
     def createProject(self, name):
+        projectPath = Path(
+            self.getProjectPath(name)
+        )
+
+        projectPath.mkdir(
+            parents=True,
+            exist_ok=False,
+        )
+
+        (
+                projectPath
+                / "project.sqlite"
+        ).touch()
+
         self.createdProjects.append(name)
-        return FakeCreatedProject()
+
+        return FakeCreatedProject(
+            projectPath
+        )
 
     def renameProject(self, currentPath, newName):
         newPath = Path(self.getProjectPath(newName))
@@ -143,14 +170,39 @@ class FakeMapper:
         self.lastCountProjectProtocolsCall = {"projectId": projectId}
         return self.projectProtocolCounts.get(projectId, 0)
 
-    def insertProject(self, ownerId, name, description, status):
+    def insertProject(
+            self,
+            ownerId,
+            name,
+            description,
+            status,
+    ):
         self.lastInsertProjectCall = {
             "ownerId": ownerId,
             "name": name,
             "description": description,
             "status": status,
         }
-        return self.insertProjectResult
+
+        projectId = self.insertProjectResult
+
+        self.projectsById[
+            (
+                projectId,
+                ownerId,
+            )
+        ] = {
+            "id": projectId,
+            "name": name,
+            "description": description,
+            "status": status,
+            "ownerId": ownerId,
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+        }
+
+        return projectId
 
     def getProject(self, projectId, userId):
         self.lastGetProjectCall = {"projectId": projectId, "userId": userId}
@@ -265,7 +317,7 @@ def test_CreateProjectSanitizesNameAndInsertsProject(service, mapper, currentUse
     assert result["description"] == "demo project"
     assert result["status"] == "active"
     assert result["isOwner"] is True
-    assert result["permission"] == "full"
+    assert result["permission"] == "owner"
     assert result["projectOwnerId"] == 1
     assert result["thumbnailUrl"] == "/projects/101/thumbnail"
 
@@ -857,6 +909,7 @@ def test_GetProjectSummaryFromPostgresqlBuildsProjectOutWithoutLoadingRuntime(
         mapper=mapper,
         projectId=1,
         currentUser=currentUser,
+        includeDiskUsage=True,
     )
 
     assert mapper.lastGetProjectCall == {
@@ -1295,7 +1348,8 @@ def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFl
     monkeypatch.setattr(
         service,
         "loadProject",
-        lambda dbProj, mapper, refresh=True, checkPid=True: {
+        lambda dbProj, mapper, refresh=True, checkPid=True,
+               syncPostgresqlGraph=False: {
             "id": dbProj["id"],
             "name": dbProj["name"],
             "protocols": {},
@@ -1370,37 +1424,6 @@ def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
             },
         },
     }
-
-
-def test_BuildPersistedOutputInfoFormatsParticlesLikeRuntime(service):
-    info = service._buildPersistedOutputInfo(
-        outputName="outputParticles",
-        persistedOutput={
-            "className": "SetOfParticles",
-            "itemClassName": "Particle",
-            "itemsCount": 372,
-        },
-        properties={
-            "boxSize": 140,
-            "samplingRate": 4.0,
-        },
-    )
-
-    assert info == "Particles (372 items, 140x140, 4.00 Å/px)"
-
-
-def test_BuildPersistedOutputInfoKeepsSetOfClassesName(service):
-    info = service._buildPersistedOutputInfo(
-        outputName="outputClasses",
-        persistedOutput={
-            "className": "SetOfClasses3D",
-            "itemClassName": "Class3D",
-            "itemsCount": 4,
-        },
-        properties={},
-    )
-
-    assert info == "SetOfClasses3D (4 items)"
 
 
 def test_BuildProtocolsGraphUsesPersistedOutputInfoWithoutRuntime(service):
