@@ -1945,11 +1945,16 @@ class ProjectService:
     ) -> Dict[str, Any]:
         if self.currentProject is None:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
                 detail="No current project loaded",
             )
 
-        runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
+        runtimeProjectGraphSyncService = (
+            RuntimeProjectGraphSyncService()
+        )
 
         registerOutputCallback = (
             self.registerOutput
@@ -1994,19 +1999,37 @@ class ProjectService:
                     ),
                 )
 
-        return runtimeProjectGraphSyncService.syncProjectProtocolsAndDependencies(
-            mapper=mapper,
-            projectId=projectId,
-            currentProject=self.currentProject,
-            buildProtocolContextCallback=self._buildProtocolContext,
-            tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
-            getScipionObjectIdCallback=self._getScipionObjectId,
-            registerOutputCallback=registerOutputCallback,
-            shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
-            refresh=refresh,
-            checkPid=checkPid,
-            strict=strict,
-            syncRelations=syncRelations,
+        return (
+            runtimeProjectGraphSyncService
+            .syncProjectProtocolsAndDependencies(
+                mapper=mapper,
+                projectId=projectId,
+                currentProject=self.currentProject,
+                buildProtocolContextCallback=(
+                    self._buildProtocolContext
+                ),
+                tryGetScipionProtocolByRuntimeIdCallback=(
+                    self
+                    ._tryGetScipionProtocolByRuntimeId
+                ),
+                getScipionObjectIdCallback=(
+                    self._getScipionObjectId
+                ),
+                registerOutputCallback=(
+                    registerOutputCallback
+                ),
+                shouldPreservePostgresqlOnlyProtocolsCallback=(
+                    self
+                    ._shouldPreservePostgresqlOnlyProtocols
+                ),
+                prepareProtocolForOutputPersistenceCallback=(
+                    prepareProtocolForOutputPersistenceCallback
+                ),
+                refresh=refresh,
+                checkPid=checkPid,
+                strict=strict,
+                syncRelations=syncRelations,
+            )
         )
 
     def syncProjectGraphAfterMutation(
