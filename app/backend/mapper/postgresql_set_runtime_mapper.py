@@ -1444,38 +1444,6 @@ class PostgresqlSetRuntimeMapper:
         return result
 
     # ------------------------------------------------------------------
-    # Read-only lifecycle
-    # ------------------------------------------------------------------
-
-    def commit(self):
-        pass
-
-    def close(self):
-        pass
-
-    def insert(self, item):
-        raise RuntimeError(
-            "PostgresqlSetRuntimeMapper is read-only. "
-            "Set snapshots are persisted by ScipionSetPostgresqlMapper."
-        )
-
-    def update(self, item):
-        raise RuntimeError(
-            "PostgresqlSetRuntimeMapper is read-only. "
-            "Set snapshots are persisted by ScipionSetPostgresqlMapper."
-        )
-
-    def clear(self):
-        raise RuntimeError(
-            "PostgresqlSetRuntimeMapper is read-only."
-        )
-
-    def enableAppend(self):
-        raise RuntimeError(
-            "PostgresqlSetRuntimeMapper does not support appending."
-        )
-
-    # ------------------------------------------------------------------
     # Storage-scope helpers
     # ------------------------------------------------------------------
 
