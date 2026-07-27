@@ -36,6 +36,10 @@ class FakeProtocolRouterService:
     # fakeProtocolRouterService
     def __init__(self):
         self.projectByIdResult: Any = {"id": 1, "name": "Demo Project"}
+        self.projectDbRowResult: Any = {
+            "id": 1,
+            "name": "Demo Project",
+        }
         self.protocolParamsResult: Any = {
             "protocolId": "10",
             "protocolClassName": "ProtClass",
@@ -55,6 +59,9 @@ class FakeProtocolRouterService:
         self.saveError = None  # type: Optional[Exception]
 
         self.lastGetProjectByIdCall: Optional[Dict[str, Any]] = None
+        self.lastGetProjectDbRowCall: Optional[
+            Dict[str, Any]
+        ] = None
         self.lastGetProtocolParamsCall: Optional[Dict[str, Any]] = None
         self.lastGetNewProtocolParamsCall: Optional[Dict[str, Any]] = None
         self.lastLaunchProtocolCall: Optional[Dict[str, Any]] = None
@@ -92,6 +99,20 @@ class FakeProtocolRouterService:
             "currentUser": currentUser,
         }
         return self.projectByIdResult
+
+    def getProjectDbRow(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.lastGetProjectDbRowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+
+        return self.projectDbRowResult
 
     def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
@@ -291,30 +312,89 @@ def test_SaveProtocolEndpointIsDisabled(protocolClient):
     assert response.status_code == 404
 
 
-def test_GetProtocolLogsReturns404WhenProjectMissing(protocolClient, fakeProtocolRouterService):
-    fakeProtocolRouterService.projectByIdResult = None
+def test_GetProtocolLogsReturns404WhenProjectMissing(
+        protocolClient,
+        fakeProtocolRouterService,
+        fakeProjectMapper,
+):
+    fakeProtocolRouterService.projectDbRowResult = None
 
-    response = protocolClient.get("/protocols/logs/1/10/0/0/0")
+    response = protocolClient.get(
+        "/protocols/logs/1/10/0/0/0"
+    )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Project not found"
+    assert response.json()["detail"] == (
+        "Project not found"
+    )
+
+    assert (
+        fakeProtocolRouterService
+        .lastGetProjectDbRowCall
+    ) == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+    assert (
+        fakeProtocolRouterService
+        .lastGetProjectByIdCall
+    ) is None
+
+    assert (
+        fakeProtocolRouterService
+        .lastGetProtocolLogsCall
+    ) is None
 
 
-def test_GetProtocolLogsReturnsPayload(protocolClient, fakeProtocolRouterService):
-    response = protocolClient.get("/protocols/logs/1/10/5/7/9")
+def test_GetProtocolLogsReturnsPayload(
+        protocolClient,
+        fakeProtocolRouterService,
+        fakeProjectMapper,
+):
+    response = protocolClient.get(
+        "/protocols/logs/1/10/5/7/9"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "output": "stdout text",
         "errors": "stderr text",
         "schedule": "schedule text",
     }
 
-    assert fakeProtocolRouterService.lastGetProtocolLogsCall == {
+    assert (
+        fakeProtocolRouterService
+        .lastGetProjectDbRowCall
+    ) == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+
+    assert (
+        fakeProtocolRouterService
+        .lastGetProjectByIdCall
+    ) is None
+
+    assert (
+        fakeProtocolRouterService
+        .lastGetProtocolLogsCall
+    ) == {
         "projectId": 1,
         "protocolId": 10,
         "offset": 5,
         "errOffset": 7,
         "scheduleOffset": 9,
-        "mapper": fakeProtocolRouterService.lastGetProtocolLogsCall["mapper"],
+        "mapper": fakeProjectMapper,
     }
