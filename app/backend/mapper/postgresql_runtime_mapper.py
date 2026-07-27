@@ -2571,6 +2571,7 @@ class PostgresqlRuntimeMapper(Mapper):
     def _selectGenericObjectByIdFromPostgresql(
             self,
             objId,
+            allowPartialTree: bool = False,
     ):
         """
         Reconstruct one detached, generic Scipion object from PostgreSQL.
@@ -2610,7 +2611,8 @@ class PostgresqlRuntimeMapper(Mapper):
             return None
 
         return self._buildGenericObjectFromPostgresqlRows(
-            rows
+            rows,
+            allowPartialTree=allowPartialTree,
         )
 
     @staticmethod
@@ -2627,23 +2629,77 @@ class PostgresqlRuntimeMapper(Mapper):
     def _buildGenericObjectFromPostgresqlRows(
             self,
             rows,
+            allowPartialTree: bool = False,
     ):
         """
-        Build an independent object tree without modifying or attaching it to
-        the owner protocol.
+        Build an independent PostgreSQL object tree.
+
+        Normal mapper reads remain strict. Runtime input preparation may skip
+        unsupported nested nodes, but the root object must always be rebuilt
+        completely enough to preserve its identity and concrete class.
         """
         objectsByRowId = {}
+        skippedRowIds = set()
         rootObject = None
 
-        for row in rows or []:
-            if self._isRuntimeOnlyGenericObjectRow(
-                    row
-            ):
-                continue
+        def rejectOrSkip(
+                row,
+                rowId,
+                depth,
+                reason,
+        ) -> bool:
+            objectPath = str(
+                row.get("path")
+                or row.get("name")
+                or ""
+            ).strip()
 
+            className = str(
+                row.get("className")
+                or ""
+            ).strip()
+
+            if (
+                    allowPartialTree
+                    and depth > 0
+            ):
+                skippedRowIds.add(
+                    rowId
+                )
+
+                logger.warning(
+                    "Skipping unsupported nested PostgreSQL "
+                    "runtime object. projectId=%s "
+                    "runtimeObjectId=%s path=%s "
+                    "className=%s reason=%s",
+                    self.projectId,
+                    row.get("scipionObjId"),
+                    objectPath,
+                    className,
+                    reason,
+                )
+
+                return True
+
+            logger.warning(
+                "Could not reconstruct PostgreSQL generic "
+                "runtime object. projectId=%s "
+                "runtimeObjectId=%s path=%s "
+                "className=%s reason=%s",
+                self.projectId,
+                row.get("scipionObjId"),
+                objectPath,
+                className,
+                reason,
+            )
+
+            return False
+
+        for row in rows or []:
             rowId = self._toOptionalInt(
                 row.get("id")
             )
+
             depth = self._toOptionalInt(
                 row.get("depth")
             )
@@ -2652,7 +2708,93 @@ class PostgresqlRuntimeMapper(Mapper):
                     rowId is None
                     or depth is None
             ):
+                logger.warning(
+                    "Could not reconstruct PostgreSQL generic "
+                    "object because a stored row has no valid "
+                    "id/depth. projectId=%s row=%s",
+                    self.projectId,
+                    row,
+                )
+
                 return None
+
+            parentRowId = None
+
+            if depth > 0:
+                parentRowId = self._toOptionalInt(
+                    row.get("parentObjectId")
+                )
+
+            if self._isRuntimeOnlyGenericObjectRow(
+                    row
+            ):
+                skippedRowIds.add(
+                    rowId
+                )
+                continue
+
+            if (
+                    depth > 0
+                    and parentRowId
+                    in skippedRowIds
+            ):
+                skippedRowIds.add(
+                    rowId
+                )
+                continue
+
+            parentObject = None
+            attributeName = None
+            existingAttribute = None
+
+            if depth > 0:
+                if parentRowId is None:
+                    if rejectOrSkip(
+                            row,
+                            rowId,
+                            depth,
+                            "missing_parent_row_id",
+                    ):
+                        continue
+
+                    return None
+
+                parentObject = objectsByRowId.get(
+                    parentRowId
+                )
+
+                if parentObject is None:
+                    if rejectOrSkip(
+                            row,
+                            rowId,
+                            depth,
+                            "parent_not_reconstructed",
+                    ):
+                        continue
+
+                    return None
+
+                attributeName = str(
+                    row.get("name")
+                    or ""
+                ).strip()
+
+                if not attributeName:
+                    if rejectOrSkip(
+                            row,
+                            rowId,
+                            depth,
+                            "missing_attribute_name",
+                    ):
+                        continue
+
+                    return None
+
+                existingAttribute = getattr(
+                    parentObject,
+                    attributeName,
+                    None,
+                )
 
             metadata = (
                 self
@@ -2666,7 +2808,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 False,
             )
 
-            if (
+            isStoredPointer = (
                     pointerFlag is True
                     or str(pointerFlag)
                     .strip()
@@ -2677,7 +2819,17 @@ class PostgresqlRuntimeMapper(Mapper):
                         "yes",
                         "on",
                     }
-            ):
+            )
+
+            if isStoredPointer:
+                if rejectOrSkip(
+                        row,
+                        rowId,
+                        depth,
+                        "pointer_node",
+                ):
+                    continue
+
                 return None
 
             objectClass = (
@@ -2687,65 +2839,86 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
             )
 
-            if not self._isSupportedGenericRuntimeObjectClass(
-                    objectClass
+            # Some nested plugin classes are not present in dictClasses,
+            # although the parent constructor already created the correct
+            # concrete attribute. Reuse that class when its name matches.
+            if (
+                    objectClass is None
+                    and isinstance(
+                existingAttribute,
+                ScipionObject,
+            )
             ):
-                return None
-
-            parentObject = None
-            attributeName = None
-
-            if depth > 0:
-                parentRowId = self._toOptionalInt(
-                    row.get("parentObjectId")
-                )
-
-                parentObject = objectsByRowId.get(
-                    parentRowId
-                )
-
-                if parentObject is None:
-                    return None
-
-                attributeName = str(
-                    row.get("name")
+                storedClassName = str(
+                    row.get("className")
                     or ""
                 ).strip()
 
-                if not attributeName:
-                    return None
+                existingClassName = str(
+                    self._getClassName(
+                        existingAttribute
+                    )
+                    or ""
+                ).strip()
+
+                if (
+                        not storedClassName
+                        or storedClassName
+                        == existingClassName
+                ):
+                    objectClass = (
+                        existingAttribute
+                        .__class__
+                    )
+
+            if not self._isSupportedGenericRuntimeObjectClass(
+                    objectClass
+            ):
+                if rejectOrSkip(
+                        row,
+                        rowId,
+                        depth,
+                        "unsupported_class",
+                ):
+                    continue
+
+                return None
 
             scipionObject = None
 
-            if parentObject is not None:
-                existingAttribute = getattr(
-                    parentObject,
-                    attributeName,
-                    None,
+            if isinstance(
+                    existingAttribute,
+                    objectClass,
+            ):
+                scipionObject = (
+                    existingAttribute
                 )
-
-                if isinstance(
-                        existingAttribute,
-                        objectClass,
-                ):
-                    scipionObject = (
-                        existingAttribute
-                    )
 
             if scipionObject is None:
                 try:
-                    scipionObject = objectClass()
+                    scipionObject = (
+                        objectClass()
+                    )
+
                 except Exception:
                     logger.debug(
                         "Could not instantiate PostgreSQL "
-                        "generic object. "
-                        "projectId=%s className=%s "
-                        "runtimeObjectId=%s",
+                        "generic object. projectId=%s "
+                        "className=%s runtimeObjectId=%s",
                         self.projectId,
                         row.get("className"),
                         row.get("scipionObjId"),
                         exc_info=True,
                     )
+
+                    if rejectOrSkip(
+                            row,
+                            rowId,
+                            depth,
+                            "instantiation_failed",
+                    ):
+                        continue
+
                     return None
 
             if self._call(
@@ -2753,12 +2926,40 @@ class PostgresqlRuntimeMapper(Mapper):
                     "isPointer",
                     False,
             ):
+                if rejectOrSkip(
+                        row,
+                        rowId,
+                        depth,
+                        "runtime_pointer_object",
+                ):
+                    continue
+
                 return None
+
+            stateSnapshot = (
+                self
+                ._captureRuntimeObjectState(
+                    scipionObject
+                )
+            )
 
             if not self._restoreGenericObjectStateFromPostgresqlRow(
                     scipionObject,
                     row,
             ):
+                self._restoreRuntimeObjectState(
+                    scipionObject,
+                    stateSnapshot,
+                )
+
+                if rejectOrSkip(
+                        row,
+                        rowId,
+                        depth,
+                        "state_restore_failed",
+                ):
+                    continue
+
                 return None
 
             objectsByRowId[
@@ -2791,17 +2992,34 @@ class PostgresqlRuntimeMapper(Mapper):
                 continue
 
             if rootObject is not None:
+                logger.warning(
+                    "Could not reconstruct PostgreSQL generic "
+                    "object because the stored subtree contains "
+                    "more than one root. projectId=%s "
+                    "runtimeObjectId=%s",
+                    self.projectId,
+                    row.get("scipionObjId"),
+                )
+
                 return None
 
             rootObject = scipionObject
 
-            parentRuntimeObjectId = self._toOptionalInt(
-                row.get("rootParentScipionObjId")
+            parentRuntimeObjectId = (
+                self._toOptionalInt(
+                    row.get(
+                        "rootParentScipionObjId"
+                    )
+                )
             )
 
             if parentRuntimeObjectId is None:
-                parentRuntimeObjectId = self._toOptionalInt(
-                    row.get("ownerProtocolId")
+                parentRuntimeObjectId = (
+                    self._toOptionalInt(
+                        row.get(
+                            "ownerProtocolId"
+                        )
+                    )
                 )
 
             if parentRuntimeObjectId is not None:
@@ -3390,7 +3608,8 @@ class PostgresqlRuntimeMapper(Mapper):
         return (
             self
             ._selectGenericObjectByIdFromPostgresql(
-                runtimeObjectId
+                runtimeObjectId,
+                allowPartialTree=True,
             )
         )
 

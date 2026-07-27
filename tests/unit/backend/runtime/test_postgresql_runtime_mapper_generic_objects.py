@@ -448,6 +448,68 @@ def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
             "depth": 1,
         },
         {
+            "id": 14,
+            "scipionObjId": 704,
+            "parentObjectId": 10,
+            "name": "_sourcePointer",
+            "path": (
+                "outputVolume."
+                "_sourcePointer"
+            ),
+            "className": "Pointer",
+            "value": "900",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": True,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 15,
+            "scipionObjId": 705,
+            "parentObjectId": 14,
+            "name": "_extended",
+            "path": (
+                "outputVolume."
+                "_sourcePointer._extended"
+            ),
+            "className": "String",
+            "value": "outputParticles",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+        {
+            "id": 16,
+            "scipionObjId": 706,
+            "parentObjectId": 10,
+            "name": "_pluginRuntimeState",
+            "path": (
+                "outputVolume."
+                "_pluginRuntimeState"
+            ),
+            "className": (
+                "MissingPluginRuntimeState"
+            ),
+            "value": None,
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
             "id": 20,
             "scipionObjId": 101,
             "parentObjectId": 10,
@@ -528,6 +590,15 @@ def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
     ]
 
     assert result._objParent is None
+    assert not hasattr(
+        result,
+        "_sourcePointer",
+    )
+
+    assert not hasattr(
+        result,
+        "_pluginRuntimeState",
+    )
 
 
 def test_SelectByIdUsesGenericPostgresqlObject():
