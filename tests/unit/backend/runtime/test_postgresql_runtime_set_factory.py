@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
 from pathlib import Path
 from pyworkflow.object import (
     Float,
@@ -567,13 +568,18 @@ class ExampleNestedSet(Set):
 
 def buildNestedRuntimeSet(
         extraPath=None,
+        db=None,
 ):
     parent = FakeParent(
         extraPath=extraPath
     )
     parent.setObjId(5)
 
-    db = FakeNestedSetDb()
+    db = (
+        db
+        if db is not None
+        else FakeNestedSetDb()
+    )
 
     runtimeSet = PostgresqlRuntimeSetFactory().build(
         db=db,
@@ -1684,6 +1690,40 @@ def test_NestedRuntimeSetResolvesProtocolThroughRuntimeParent():
         )
         == 4
     )
+
+def test_NestedSetWithoutLogicalTableFailsExplicitly():
+    db = FakeNestedSetDb()
+
+    db.rootItemRows.append({
+        "id": 602,
+        "setId": db.ROOT_SET_ID,
+        "scipionItemId": 8,
+        "parentItemId": None,
+        "enabled": True,
+        "label": "series-8",
+        "comment": "",
+        "creation": None,
+        "values": {
+            "_name": "series-8",
+        },
+        "createdAt": None,
+        "updatedAt": None,
+    })
+
+    _, runtimeSet = buildNestedRuntimeSet(
+        db=db
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match=(
+                "PostgreSQL nested set "
+                "snapshot is incomplete"
+            ),
+    ):
+        list(
+            runtimeSet.iterItems()
+        )
 
 
 

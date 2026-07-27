@@ -502,12 +502,13 @@ class PostgresqlRuntimeSetFactory:
             str(itemClassName)
         )
 
-        if (
-                logicalTablesByParentId
-                and self._isScipionSetClass(
-            nativeItemClass
+        nestedSetItemClass = (
+            self._isScipionSetClass(
+                nativeItemClass
+            )
         )
-        ):
+
+        if nestedSetItemClass:
             itemClassRegistry[
                 str(itemClassName)
             ] = self._getRuntimeSetClass(
@@ -537,6 +538,37 @@ class PostgresqlRuntimeSetFactory:
                 row or {}
             )
 
+            if nestedSetItemClass:
+                parentItemId = (
+                    self._toOptionalInt(
+                        row.get(
+                            "scipionItemId"
+                        )
+                    )
+                )
+
+                if (
+                        parentItemId is None
+                        or int(parentItemId)
+                        not in logicalTablesByParentId
+                ):
+                    raise RuntimeError(
+                        "PostgreSQL nested set snapshot "
+                        "is incomplete. "
+                        "setId=%s parentItemId=%s "
+                        "itemClassName=%s "
+                        "availableParentItemIds=%s"
+                        % (
+                            setId,
+                            parentItemId,
+                            itemClassName,
+                            sorted(
+                                logicalTablesByParentId
+                                .keys()
+                            ),
+                        )
+                    )
+
             item = itemHydrator.build(
                 row
             )
@@ -546,9 +578,7 @@ class PostgresqlRuntimeSetFactory:
                         item,
                         ScipionSet,
                     )
-                    and self._isScipionSetClass(
-                nativeItemClass
-            )
+                    and nestedSetItemClass
             ):
                 runtimeValues = getattr(
                     item,
