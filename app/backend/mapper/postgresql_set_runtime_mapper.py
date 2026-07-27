@@ -85,6 +85,10 @@ class PostgresqlSetRuntimeMapper:
             tableIdResolver: Optional[
                 Callable[[], Optional[int]]
             ] = None,
+            itemSerializer: Optional[
+                Callable[[Any], Dict[str, Any]]
+            ] = None,
+            writable: bool = False,
     ):
         if db is None:
             raise ValueError("db is required")
@@ -102,6 +106,23 @@ class PostgresqlSetRuntimeMapper:
 
         hasSetId = setId is not None
         hasTableId = tableId is not None
+
+        if writable and hasTableId:
+            raise NotImplementedError(
+                "Writable PostgreSQL logical-table "
+                "Sets are not supported yet."
+            )
+
+        if (
+                writable
+                and not callable(
+            itemSerializer
+        )
+        ):
+            raise ValueError(
+                "itemSerializer is required for "
+                "writable PostgreSQL Sets."
+            )
 
         if hasSetId == hasTableId:
             raise ValueError(
@@ -136,6 +157,13 @@ class PostgresqlSetRuntimeMapper:
         )
 
         self.itemBuilder = itemBuilder
+
+        self.itemSerializer = (
+            itemSerializer
+        )
+        self.writable = bool(
+            writable
+        )
 
         if self.setId is not None:
             self._scopeId = self.setId
@@ -442,6 +470,521 @@ class PostgresqlSetRuntimeMapper:
 
         return int(
             row["maxItemId"]
+        )
+
+    # ------------------------------------------------------------------
+    # PostgreSQL write contract
+    # ------------------------------------------------------------------
+
+    def isWritable(self) -> bool:
+        return self.writable
+
+    def enableAppend(self) -> None:
+        self._requireWritable()
+
+    def appendItem(
+            self,
+            item,
+    ) -> int:
+        """
+        Atomically allocate an item id and persist the item.
+
+        The advisory transaction lock prevents two workers
+        from allocating the same maxId + 1 concurrently.
+        """
+        self._requireWritable()
+
+        with self.db.transaction():
+            self.db.fetchOne(
+                """
+                SELECT pg_advisory_xact_lock(
+                    %s
+                ) AS locked
+                """,
+                (
+                    int(self.setId),
+                ),
+            )
+
+            itemId = self._getItemId(
+                item
+            )
+
+            if itemId is None:
+                row = self.db.fetchOne(
+                    """
+                    SELECT
+                        COALESCE(
+                            MAX("scipionItemId"),
+                            0
+                        ) + 1 AS "nextItemId"
+                      FROM scipion_set_items
+                     WHERE "setId" = %s
+                    """,
+                    (
+                        int(self.setId),
+                    ),
+                )
+
+                itemId = int(
+                    row["nextItemId"]
+                )
+
+                self._setItemId(
+                    item,
+                    itemId,
+                )
+
+            self._upsertItem(
+                item,
+            )
+
+            self._refreshSetCounters()
+
+        return int(
+            itemId
+        )
+
+    def insert(
+            self,
+            item,
+    ) -> None:
+        """
+        Insert an item whose id has already been assigned.
+
+        Normal PostgreSQL appends should use appendItem()
+        so id allocation remains concurrency-safe.
+        """
+        self._requireWritable()
+
+        if self._getItemId(item) is None:
+            raise ValueError(
+                "PostgreSQL Set insert requires "
+                "an existing item id. Use appendItem()."
+            )
+
+        with self.db.transaction():
+            self._upsertItem(
+                item
+            )
+            self._refreshSetCounters()
+
+    def update(
+            self,
+            item,
+    ) -> None:
+        self._requireWritable()
+
+        if self._getItemId(item) is None:
+            raise ValueError(
+                "PostgreSQL Set update requires "
+                "an existing item id."
+            )
+
+        with self.db.transaction():
+            self._upsertItem(
+                item
+            )
+            self._refreshSetCounters()
+
+    def delete(
+            self,
+            item,
+    ) -> None:
+        self._requireWritable()
+
+        itemId = self._getItemId(
+            item
+        )
+
+        if itemId is None:
+            raise ValueError(
+                "PostgreSQL Set delete requires "
+                "an existing item id."
+            )
+
+        with self.db.transaction():
+            self.db.execute(
+                """
+                DELETE FROM scipion_set_items
+                 WHERE "setId" = %s
+                   AND "scipionItemId" = %s
+                """,
+                (
+                    int(self.setId),
+                    int(itemId),
+                ),
+                commit=False,
+            )
+
+            self._refreshSetCounters()
+
+    def clear(self) -> None:
+        self._requireWritable()
+
+        with self.db.transaction():
+            self.db.execute(
+                """
+                DELETE FROM scipion_set_items
+                 WHERE "setId" = %s
+                """,
+                (
+                    int(self.setId),
+                ),
+                commit=False,
+            )
+
+            self._refreshSetCounters()
+
+    def setProperty(
+            self,
+            key,
+            value,
+    ) -> None:
+        self._requireWritable()
+
+        jsonValue = json.dumps(
+            value,
+            default=str,
+        )
+
+        self.db.execute(
+            """
+            INSERT INTO scipion_set_properties (
+                "setId",
+                key,
+                value
+            )
+            VALUES (
+                %s,
+                %s,
+                %s::jsonb
+            )
+            ON CONFLICT (
+                "setId",
+                key
+            )
+            DO UPDATE SET
+                value = EXCLUDED.value,
+                "updatedAt" = NOW()
+            """,
+            (
+                int(self.setId),
+                str(key),
+                jsonValue,
+            ),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_sets
+               SET properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           %s,
+                           %s::jsonb
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (
+                str(key),
+                jsonValue,
+                int(self.setId),
+            ),
+            commit=False,
+        )
+
+    def deleteProperty(
+            self,
+            key,
+    ) -> None:
+        self._requireWritable()
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_properties
+             WHERE "setId" = %s
+               AND key = %s
+            """,
+            (
+                int(self.setId),
+                str(key),
+            ),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_sets
+               SET properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       - %s
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (
+                str(key),
+                int(self.setId),
+            ),
+            commit=False,
+        )
+
+    def commit(self) -> None:
+        self._requireWritable()
+        self.db.conn.commit()
+
+    def close(self) -> None:
+        """
+        The PostgreSQL connection belongs to the project mapper.
+
+        Closing one runtime Set must not close the shared
+        project-level PostgreSQL connection.
+        """
+        return None
+
+    def _requireWritable(self) -> None:
+        if not self.writable:
+            raise RuntimeError(
+                "PostgreSQL runtime Set is read-only."
+            )
+
+        if self.setId is None:
+            raise RuntimeError(
+                "Only root PostgreSQL Sets are "
+                "writable in this migration phase."
+            )
+
+    def _getItemId(
+            self,
+            item,
+    ) -> Optional[int]:
+        getter = getattr(
+            item,
+            "getObjId",
+            None,
+        )
+
+        if not callable(getter):
+            return None
+
+        value = getter()
+
+        if value in (
+                None,
+                "",
+        ):
+            return None
+
+        return int(
+            value
+        )
+
+    def _setItemId(
+            self,
+            item,
+            itemId: int,
+    ) -> None:
+        setter = getattr(
+            item,
+            "setObjId",
+            None,
+        )
+
+        if not callable(setter):
+            raise TypeError(
+                "Runtime Set item does not expose "
+                "setObjId()."
+            )
+
+        setter(
+            int(itemId)
+        )
+
+    def _serializeItem(
+            self,
+            item,
+    ) -> Dict[str, Any]:
+        self._requireWritable()
+
+        serialized = dict(
+            self.itemSerializer(
+                item
+            )
+            or {}
+        )
+
+        itemId = serialized.get(
+            "scipionItemId"
+        )
+
+        if itemId in (
+                None,
+                "",
+        ):
+            raise ValueError(
+                "Serialized PostgreSQL Set item "
+                "does not contain scipionItemId."
+            )
+
+        serialized[
+            "scipionItemId"
+        ] = int(
+            itemId
+        )
+
+        serialized[
+            "values"
+        ] = dict(
+            serialized.get(
+                "values"
+            )
+            or {}
+        )
+
+        return serialized
+
+    def _upsertItem(
+            self,
+            item,
+    ) -> None:
+        serialized = self._serializeItem(
+            item
+        )
+
+        self.db.execute(
+            """
+            INSERT INTO scipion_set_items (
+                "setId",
+                "scipionItemId",
+                enabled,
+                label,
+                comment,
+                creation,
+                "values"
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s::jsonb
+            )
+            ON CONFLICT (
+                "setId",
+                "scipionItemId"
+            )
+            DO UPDATE SET
+                enabled = EXCLUDED.enabled,
+                label = EXCLUDED.label,
+                comment = EXCLUDED.comment,
+                creation = EXCLUDED.creation,
+                "values" = EXCLUDED."values",
+                "updatedAt" = NOW()
+            """,
+            (
+                int(self.setId),
+                int(
+                    serialized[
+                        "scipionItemId"
+                    ]
+                ),
+                bool(
+                    serialized.get(
+                        "enabled",
+                        True,
+                    )
+                ),
+                serialized.get(
+                    "label"
+                ),
+                serialized.get(
+                    "comment"
+                ),
+                serialized.get(
+                    "creation"
+                ),
+                json.dumps(
+                    serialized.get(
+                        "values"
+                    )
+                    or {},
+                    default=str,
+                ),
+            ),
+            commit=False,
+        )
+
+    def _refreshSetCounters(
+            self,
+    ) -> None:
+        row = self.db.fetchOne(
+            """
+            SELECT
+                COUNT(*) AS "itemsCount",
+                MAX(
+                    "scipionItemId"
+                ) AS "maxItemId"
+              FROM scipion_set_items
+             WHERE "setId" = %s
+            """,
+            (
+                int(self.setId),
+            ),
+        ) or {}
+
+        itemsCount = int(
+            row.get(
+                "itemsCount"
+            )
+            or 0
+        )
+
+        maxItemId = row.get(
+            "maxItemId"
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_sets
+               SET properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'itemsCount',
+                           %s,
+                           'maxItemId',
+                           %s,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (
+                itemsCount,
+                (
+                    int(maxItemId)
+                    if maxItemId is not None
+                    else None
+                ),
+                int(self.setId),
+            ),
+            commit=False,
         )
 
     # ------------------------------------------------------------------

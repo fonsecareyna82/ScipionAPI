@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import pytest
+from contextlib import contextmanager
 
 from app.backend.mapper.postgresql_set_runtime_mapper import (
     PostgresqlSetRuntimeMapper,
@@ -69,6 +70,131 @@ class FakeDb:
         self.query = " ".join(str(query).split())
         self.params = params
         return self.row
+
+
+class FakeConnection:
+    def __init__(self):
+        self.commitCalls = 0
+
+    def commit(self):
+        self.commitCalls += 1
+
+
+class WritableFakeDb(FakeDb):
+    def __init__(
+            self,
+            nextItemId=8,
+    ):
+        super().__init__()
+
+        self.nextItemId = int(
+            nextItemId
+        )
+        self.executions = []
+        self.transactionCalls = 0
+        self.conn = FakeConnection()
+
+    @contextmanager
+    def transaction(self):
+        self.transactionCalls += 1
+        yield self
+
+    def fetchOne(
+            self,
+            query,
+            params=None,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        self.query = normalizedQuery
+        self.params = params
+
+        if (
+                "pg_advisory_xact_lock"
+                in normalizedQuery
+        ):
+            return {
+                "locked": None,
+            }
+
+        if (
+                'AS "nextItemId"'
+                in normalizedQuery
+        ):
+            return {
+                "nextItemId": (
+                    self.nextItemId
+                ),
+            }
+
+        if (
+                'AS "itemsCount"'
+                in normalizedQuery
+        ):
+            return {
+                "itemsCount": 1,
+                "maxItemId": (
+                    self.nextItemId
+                ),
+            }
+
+        return super().fetchOne(
+            query,
+            params,
+        )
+
+    def execute(
+            self,
+            query,
+            params=None,
+            commit=True,
+    ):
+        self.executions.append({
+            "query": " ".join(
+                str(query).split()
+            ),
+            "params": params,
+            "commit": commit,
+        })
+
+        return None
+
+
+class FakeWritableItem:
+    def __init__(
+            self,
+            itemId=None,
+    ):
+        self.itemId = itemId
+
+    def getObjId(self):
+        return self.itemId
+
+    def setObjId(
+            self,
+            itemId,
+    ):
+        self.itemId = int(
+            itemId
+        )
+
+def serializeWritableItem(
+        item,
+):
+    return {
+        "scipionItemId": (
+            item.getObjId()
+        ),
+        "enabled": True,
+        "label": "particle",
+        "comment": "",
+        "creation": None,
+        "values": {
+            "_score": 0.75,
+        },
+    }
 
 
 def buildItem(row):
@@ -616,3 +742,164 @@ def test_LogicalTableMapperRefreshesRecreatedTableId():
     assert mapper.tableId == 191
     assert mapper._scopeId == 191
     assert db.params == (191,)
+
+
+def test_WritableMapperRequiresSerializer():
+    with pytest.raises(
+            ValueError,
+            match="itemSerializer",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=WritableFakeDb(),
+            setId=31,
+            itemBuilder=buildItem,
+            writable=True,
+        )
+
+
+def test_WritableMapperRejectsLogicalTables():
+    with pytest.raises(
+            NotImplementedError,
+            match="logical-table",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=WritableFakeDb(),
+            tableId=91,
+            itemBuilder=buildItem,
+            itemSerializer=(
+                serializeWritableItem
+            ),
+            writable=True,
+        )
+
+
+def test_AppendItemAllocatesIdAtomically():
+    db = WritableFakeDb(
+        nextItemId=8
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    item = FakeWritableItem()
+
+    itemId = mapper.appendItem(
+        item
+    )
+
+    assert itemId == 8
+    assert item.getObjId() == 8
+    assert db.transactionCalls == 1
+
+    executedQueries = [
+        call["query"]
+        for call in db.executions
+    ]
+
+    assert any(
+        "INSERT INTO scipion_set_items"
+        in query
+        for query in executedQueries
+    )
+
+    assert any(
+        "UPDATE scipion_sets"
+        in query
+        for query in executedQueries
+    )
+
+
+def test_UpdateItemKeepsExistingId():
+    db = WritableFakeDb(
+        nextItemId=8
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    item = FakeWritableItem(
+        itemId=14
+    )
+
+    mapper.update(
+        item
+    )
+
+    insertCall = next(
+        call
+        for call in db.executions
+        if (
+            "INSERT INTO scipion_set_items"
+            in call["query"]
+        )
+    )
+
+    assert insertCall["params"][0] == 31
+    assert insertCall["params"][1] == 14
+    assert (
+        "ON CONFLICT"
+        in insertCall["query"]
+    )
+
+
+def test_SetPropertyWritesPostgresqlMetadata():
+    db = WritableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.setProperty(
+        "_streamState",
+        1,
+    )
+
+    assert len(
+        db.executions
+    ) == 2
+
+    assert (
+        "INSERT INTO scipion_set_properties"
+        in db.executions[0]["query"]
+    )
+
+    assert (
+        "UPDATE scipion_sets"
+        in db.executions[1]["query"]
+    )
+
+
+def test_ReadOnlyMapperRejectsWrites():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="read-only",
+    ):
+        mapper.appendItem(
+            FakeWritableItem()
+        )
