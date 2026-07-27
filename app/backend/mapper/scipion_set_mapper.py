@@ -60,6 +60,47 @@ SET_PROPERTIES_VERSION = 3
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
 
+    def serializeRuntimeItem(
+            self,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Serialize one native Scipion Set item using the
+        same representation used by PostgreSQL snapshots.
+        """
+        itemId = self._getSourceObjId(
+            item
+        )
+
+        if itemId is None:
+            raise ValueError(
+                "Runtime Set item must have "
+                "a Scipion object id."
+            )
+
+        return {
+            "scipionItemId": int(
+                itemId
+            ),
+            "enabled": self._getItemEnabled(
+                item
+            ),
+            "label": self._getObjectLabel(
+                item
+            ),
+            "comment": self._getObjectComment(
+                item
+            ),
+            "creation": self._getObjectCreation(
+                item
+            ),
+            "values": self._getItemValues(
+                item,
+                scipionSet=scipionSet,
+            ),
+        }
+
     def storeSet(
         self,
         projectId: int,
