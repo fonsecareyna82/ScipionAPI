@@ -81,6 +81,9 @@ class RuntimeProjectGraphSyncService:
         outputSyncRemoved: List[
             Dict[str, Any]
         ] = []
+        outputPreparationWarnings: List[
+            Dict[str, Any]
+        ] = []
 
         stepsSyncCount = 0
         stepsSyncProtocolsCount = 0
@@ -180,8 +183,9 @@ class RuntimeProjectGraphSyncService:
                             preparedProtocol
                         )
 
+
                 except Exception as error:
-                    outputSyncErrors.append({
+                    outputPreparationWarnings.append({
                         "protocolId": (
                             nodeIdText
                         ),
@@ -191,12 +195,16 @@ class RuntimeProjectGraphSyncService:
                         "error": str(error),
                     })
 
-                    logger.exception(
+                    logger.warning(
                         "Could not prepare authoritative "
                         "protocol for output persistence. "
-                        "projectId=%s protocolId=%s",
+                        "Falling back to project protocol. "
+                        "projectId=%s protocolId=%s "
+                        "error=%s",
                         projectId,
                         nodeIdText,
+                        error,
+                        exc_info=True,
                     )
 
             if runtimeProtocolOutputPersistenceService.shouldSyncProtocolOutputs(
@@ -224,50 +232,6 @@ class RuntimeProjectGraphSyncService:
 
                     declaredOutputs = outputReport.get("declared") or []
                     persistedOutputs = outputReport.get("persisted") or []
-                    if strict:
-                        for persistedOutput in (
-                                persistedOutputs
-                        ):
-                            outputClassName = str(
-                                persistedOutput.get(
-                                    "outputClassName"
-                                )
-                                or ""
-                            )
-
-                            mapperKind = str(
-                                persistedOutput.get(
-                                    "mapperKind"
-                                )
-                                or ""
-                            )
-
-                            if (
-                                    outputClassName.startswith(
-                                        "SetOf"
-                                    )
-                                    and mapperKind
-                                    != "flat_set"
-                            ):
-                                outputSyncErrors.append({
-                                    "protocolId": (
-                                        nodeIdText
-                                    ),
-                                    "outputName": (
-                                        persistedOutput.get(
-                                            "outputName"
-                                        )
-                                    ),
-                                    "outputClassName": (
-                                        outputClassName
-                                    ),
-                                    "mapperKind": (
-                                        mapperKind
-                                    ),
-                                    "reason": (
-                                        "set_output_not_fully_migrated"
-                                    ),
-                                })
                     skippedOutputs = outputReport.get("skipped") or []
                     erroredOutputs = outputReport.get("errors") or []
 
@@ -516,6 +480,9 @@ class RuntimeProjectGraphSyncService:
             "setItems": int(setItemsCount),
             "outputMissing": outputSyncMissing,
             "outputErrors": outputSyncErrors,
+            "outputPreparationWarnings": (
+                outputPreparationWarnings
+            ),
             "purgedProtocols": int(purgedProtocols or 0),
             "fatalErrors": fatalErrors,
             "complete": not fatalErrors,
