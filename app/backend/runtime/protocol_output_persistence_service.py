@@ -106,6 +106,29 @@ class RuntimeProtocolOutputPersistenceService:
         return bool(marker)
 
     @staticmethod
+    def _isPostgresqlRuntimeSetOutput(
+            outputObj: Any,
+    ) -> bool:
+        if outputObj is None:
+            return False
+
+        checker = getattr(
+            outputObj,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        try:
+            return bool(
+                checker()
+            )
+        except Exception:
+            return False
+
+    @staticmethod
     def _setScipionObjectId(
             obj: Any,
             objectId: Optional[int],
@@ -2679,17 +2702,27 @@ class RuntimeProtocolOutputPersistenceService:
             )
 
             isTreeOutput = (
-                not isSetOutput
-                and self.isPersistableNonSetOutput(
-                    outputObj
-                )
+                    not isSetOutput
+                    and self.isPersistableNonSetOutput(
+                outputObj
+            )
+            )
+
+            isPostgresqlRuntimeSet = (
+                    isSetOutput
+                    and self._isPostgresqlRuntimeSetOutput(
+                outputObj
+            )
             )
 
             identityPreparation = None
 
             try:
                 if (
-                        isSetOutput
+                        (
+                                isSetOutput
+                                and not isPostgresqlRuntimeSet
+                        )
                         or isTreeOutput
                 ):
                     identityPreparation = (
@@ -2711,6 +2744,31 @@ class RuntimeProtocolOutputPersistenceService:
                     )
 
                 if isSetOutput:
+                    if isPostgresqlRuntimeSet:
+                        syncInfo = (
+                            setMapper
+                            .finalizeRuntimeSetOutput(
+                                projectId=projectId,
+                                protocolDbId=int(
+                                    protocolDbId
+                                ),
+                                outputName=outputName,
+                                scipionSet=outputObj,
+                            )
+                        )
+
+                        persistedOutputs.append({
+                            "outputName": outputName,
+                            "outputClassName": (
+                                outputClassName
+                            ),
+                            "mapperKind": "flat_set",
+                            "postgresqlNativeOutput": True,
+                            **(syncInfo or {}),
+                        })
+
+                        continue
+
                     openedSetMapper = False
 
                     try:
