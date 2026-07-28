@@ -38,6 +38,9 @@ from app.backend.mapper.scipion_set_mapper import (
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
 )
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    getPostgresqlRuntimeParent,
+)
 
 
 class ExampleItem(Object):
@@ -694,15 +697,42 @@ def test_BuildReturnsNativeScipionSet():
         ExampleSet,
     )
 
-    assert runtimeSet.getClassName() == "ExampleSet"
+    assert (
+        runtimeSet.getClassName()
+        == "ExampleSet"
+    )
+
     assert runtimeSet.getObjId() == 44
     assert runtimeSet.getObjParentId() == 5
-    assert runtimeSet._objParent is parent
+
+    assert runtimeSet._objParent is None
+
+    assert (
+        runtimeSet
+        ._postgresqlRuntimeParentRef()
+        is parent
+    )
+
+    assert (
+        getPostgresqlRuntimeParent(
+            runtimeSet
+        )
+        is parent
+    )
 
     assert runtimeSet.getSamplingRate() == 1.5
-    assert runtimeSet.getStreamState() == Set.STREAM_CLOSED
+
+    assert (
+        runtimeSet.getStreamState()
+        == Set.STREAM_CLOSED
+    )
+
     assert runtimeSet.getSize() == 1
-    assert runtimeSet.getObjName() == "outputParticles"
+
+    assert (
+        runtimeSet.getObjName()
+        == "outputParticles"
+    )
 
 
 def test_IterItemsReturnsNativeScipionItems():
