@@ -185,6 +185,37 @@ class EmptySchemaWritableFakeDb(
             params,
         )
 
+class WritableLogicalTableFakeDb(
+        WritableFakeDb
+):
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        if (
+                "FROM scipion_set_table_columns"
+                in normalizedQuery
+        ):
+            return [
+                {
+                    "labelProperty": "_score",
+                    "className": "Float",
+                    "valueType": "float",
+                    "position": 0,
+                },
+            ]
+
+        return super().fetchAll(
+            query,
+            params,
+        )
+
+
 class FakeWritableItem:
     def __init__(
             self,
@@ -797,13 +828,13 @@ def test_WritableRootMapperRequiresRootTableId():
         )
 
 
-def test_WritableMapperRejectsLogicalTables():
+def test_WritableLogicalMapperRequiresParentItemId():
     with pytest.raises(
-            NotImplementedError,
-            match="logical-table",
+            ValueError,
+            match="parentItemId",
     ):
         PostgresqlSetRuntimeMapper(
-            db=WritableFakeDb(),
+            db=WritableLogicalTableFakeDb(),
             tableId=91,
             itemBuilder=buildItem,
             itemSerializer=(
@@ -1214,4 +1245,185 @@ def test_EmptyWritableSchemaRequiresSynchronizer():
         mapper.appendItem(
             FakeWritableItem()
         )
+
+
+def test_AppendLogicalItemWritesOnlyLogicalTable():
+    db = WritableLogicalTableFakeDb(
+        nextItemId=8
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        parentItemId=7,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    item = FakeWritableItem()
+
+    itemId = mapper.appendItem(
+        item
+    )
+
+    assert itemId == 8
+    assert item.getObjId() == 8
+    assert db.transactionCalls == 1
+
+    logicalInsert = next(
+        call
+        for call in db.executions
+        if (
+            "INSERT INTO "
+            "scipion_set_table_items"
+            in call["query"]
+        )
+    )
+
+    assert logicalInsert["params"][:3] == (
+        91,
+        8,
+        7,
+    )
+
+    assert not any(
+        "INSERT INTO scipion_set_items"
+        in call["query"]
+        for call in db.executions
+    )
+
+    assert any(
+        "UPDATE scipion_set_tables"
+        in call["query"]
+        for call in db.executions
+    )
+
+    assert not any(
+        "UPDATE scipion_sets"
+        in call["query"]
+        for call in db.executions
+    )
+
+
+def test_DeleteLogicalItemDoesNotTouchRootItems():
+    db = WritableLogicalTableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        parentItemId=7,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.delete(
+        FakeWritableItem(
+            itemId=14
+        )
+    )
+
+    deleteCalls = [
+        call
+        for call in db.executions
+        if "DELETE FROM" in call["query"]
+    ]
+
+    assert len(deleteCalls) == 1
+
+    assert (
+        "DELETE FROM "
+        "scipion_set_table_items"
+        in deleteCalls[0]["query"]
+    )
+
+    assert deleteCalls[0]["params"] == (
+        91,
+        14,
+    )
+
+    assert not any(
+        "DELETE FROM scipion_set_items"
+        in call["query"]
+        for call in db.executions
+    )
+
+
+def test_ClearLogicalTableDoesNotTouchRootItems():
+    db = WritableLogicalTableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        parentItemId=7,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.clear()
+
+    deleteCalls = [
+        call
+        for call in db.executions
+        if "DELETE FROM" in call["query"]
+    ]
+
+    assert len(deleteCalls) == 1
+
+    assert deleteCalls[0]["params"] == (
+        91,
+    )
+
+    assert (
+        "scipion_set_table_items"
+        in deleteCalls[0]["query"]
+    )
+
+
+def test_LogicalPropertyWritesTableMetadata():
+    db = WritableLogicalTableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        parentItemId=7,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.setProperty(
+        "_streamState",
+        1,
+    )
+
+    assert len(db.executions) == 1
+
+    assert (
+        "UPDATE scipion_set_tables"
+        in db.executions[0]["query"]
+    )
+
+    assert not any(
+        "scipion_set_properties"
+        in call["query"]
+        for call in db.executions
+    )
+
+    assert (
+        mapper.getProperty(
+            "_streamState"
+        )
+        == 1
+    )
 
