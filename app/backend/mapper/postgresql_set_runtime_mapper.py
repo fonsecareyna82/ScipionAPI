@@ -86,6 +86,7 @@ class PostgresqlSetRuntimeMapper:
             tableIdResolver: Optional[
                 Callable[[], Optional[int]]
             ] = None,
+            parentItemId: Optional[int] = None,
             itemSerializer: Optional[
                 Callable[[Any], Dict[str, Any]]
             ] = None,
@@ -142,10 +143,23 @@ class PostgresqlSetRuntimeMapper:
                 "writable PostgreSQL root Sets."
             )
 
-        if writable and hasTableId:
-            raise NotImplementedError(
-                "Writable PostgreSQL logical-table "
-                "Sets are not supported yet."
+        if (
+                parentItemId is not None
+                and not hasTableId
+        ):
+            raise ValueError(
+                "parentItemId is only supported for "
+                "PostgreSQL logical-table Sets."
+            )
+
+        if (
+                writable
+                and hasTableId
+                and parentItemId is None
+        ):
+            raise ValueError(
+                "parentItemId is required for writable "
+                "PostgreSQL logical-table Sets."
             )
 
         if (
@@ -194,6 +208,12 @@ class PostgresqlSetRuntimeMapper:
         self.tableId = (
             int(tableId)
             if hasTableId
+            else None
+        )
+
+        self.parentItemId = (
+            int(parentItemId)
+            if parentItemId is not None
             else None
         )
 
@@ -532,10 +552,11 @@ class PostgresqlSetRuntimeMapper:
             item,
     ) -> int:
         """
-        Atomically allocate an item id and persist the item.
+        Atomically allocate an item id and persist the item
+        inside the current PostgreSQL storage scope.
 
-        The advisory transaction lock prevents two workers
-        from allocating the same maxId + 1 concurrently.
+        Root Sets allocate ids inside scipion_set_items.
+        Nested Sets allocate ids inside their logical table.
         """
         self._requireWritable()
 
@@ -547,7 +568,7 @@ class PostgresqlSetRuntimeMapper:
                 ) AS locked
                 """,
                 (
-                    int(self.setId),
+                    self._getAdvisoryLockKey(),
                 ),
             )
 
@@ -556,18 +577,23 @@ class PostgresqlSetRuntimeMapper:
             )
 
             if itemId is None:
-                row = self.db.fetchOne(
-                    """
+                query = """
                     SELECT
                         COALESCE(
                             MAX("scipionItemId"),
                             0
                         ) + 1 AS "nextItemId"
-                      FROM scipion_set_items
-                     WHERE "setId" = %s
-                    """,
+                      FROM {itemsTable}
+                     WHERE "{scopeColumn}" = %s
+                """.format(
+                    itemsTable=self._itemsTable,
+                    scopeColumn=self._scopeColumn,
+                )
+
+                row = self.db.fetchOne(
+                    query,
                     (
-                        int(self.setId),
+                        int(self._scopeId),
                     ),
                 )
 
@@ -581,7 +607,7 @@ class PostgresqlSetRuntimeMapper:
                 )
 
             self._upsertItem(
-                item,
+                item
             )
 
             self._refreshSetCounters()
@@ -649,31 +675,46 @@ class PostgresqlSetRuntimeMapper:
             )
 
         with self.db.transaction():
-            self.db.execute(
-                """
-                DELETE FROM scipion_set_table_items
-                 WHERE "tableId" = %s
-                   AND "scipionItemId" = %s
-                """,
-                (
-                    int(self.rootTableId),
-                    int(itemId),
-                ),
-                commit=False,
-            )
+            if self.setId is not None:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" = %s
+                       AND "scipionItemId" = %s
+                    """,
+                    (
+                        int(self.rootTableId),
+                        int(itemId),
+                    ),
+                    commit=False,
+                )
 
-            self.db.execute(
-                """
-                DELETE FROM scipion_set_items
-                 WHERE "setId" = %s
-                   AND "scipionItemId" = %s
-                """,
-                (
-                    int(self.setId),
-                    int(itemId),
-                ),
-                commit=False,
-            )
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_items
+                     WHERE "setId" = %s
+                       AND "scipionItemId" = %s
+                    """,
+                    (
+                        int(self.setId),
+                        int(itemId),
+                    ),
+                    commit=False,
+                )
+
+            else:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" = %s
+                       AND "scipionItemId" = %s
+                    """,
+                    (
+                        int(self.tableId),
+                        int(itemId),
+                    ),
+                    commit=False,
+                )
 
             self._refreshSetCounters()
 
@@ -681,26 +722,40 @@ class PostgresqlSetRuntimeMapper:
         self._requireWritable()
 
         with self.db.transaction():
-            self.db.execute(
-                """
-                DELETE FROM scipion_set_table_items
-                 WHERE "tableId" = %s
-                """,
-                (
-                    int(self.rootTableId),
-                ),
-                commit=False,
-            )
-            self.db.execute(
-                """
-                DELETE FROM scipion_set_items
-                 WHERE "setId" = %s
-                """,
-                (
-                    int(self.setId),
-                ),
-                commit=False,
-            )
+            if self.setId is not None:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" = %s
+                    """,
+                    (
+                        int(self.rootTableId),
+                    ),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_items
+                     WHERE "setId" = %s
+                    """,
+                    (
+                        int(self.setId),
+                    ),
+                    commit=False,
+                )
+
+            else:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" = %s
+                    """,
+                    (
+                        int(self.tableId),
+                    ),
+                    commit=False,
+                )
 
             self._refreshSetCounters()
 
@@ -732,6 +787,37 @@ class PostgresqlSetRuntimeMapper:
                 else str(value)
             )
         )
+
+        if self.tableId is not None:
+            self.db.execute(
+                """
+                UPDATE scipion_set_tables
+                   SET properties = (
+                           COALESCE(
+                               properties,
+                               '{}'::jsonb
+                           )
+                           || jsonb_build_object(
+                               %s,
+                               %s::jsonb
+                           )
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                """,
+                (
+                    str(key),
+                    jsonValue,
+                    int(self.tableId),
+                ),
+                commit=False,
+            )
+
+            self._tableProperties[
+                str(key)
+            ] = value
+
+            return
 
         self.db.execute(
             """
@@ -790,6 +876,34 @@ class PostgresqlSetRuntimeMapper:
     ) -> None:
         self._requireWritable()
 
+        if self.tableId is not None:
+            self.db.execute(
+                """
+                UPDATE scipion_set_tables
+                   SET properties = (
+                           COALESCE(
+                               properties,
+                               '{}'::jsonb
+                           )
+                           - %s
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                """,
+                (
+                    str(key),
+                    int(self.tableId),
+                ),
+                commit=False,
+            )
+
+            self._tableProperties.pop(
+                str(key),
+                None,
+            )
+
+            return
+
         self.db.execute(
             """
             DELETE FROM scipion_set_properties
@@ -842,11 +956,50 @@ class PostgresqlSetRuntimeMapper:
                 "PostgreSQL runtime Set is read-only."
             )
 
-        if self.setId is None:
+        if self.tableId is not None:
+            self._refreshLogicalTableScope()
+
+        if self._scopeId is None:
             raise RuntimeError(
-                "Only root PostgreSQL Sets are "
-                "writable in this migration phase."
+                "Writable PostgreSQL Set does not "
+                "have an active storage scope."
             )
+
+        if (
+                self.setId is not None
+                and self.rootTableId is None
+        ):
+            raise RuntimeError(
+                "Writable PostgreSQL root Set does not "
+                "have a root logical table."
+            )
+
+        if (
+                self.tableId is not None
+                and self.parentItemId is None
+        ):
+            raise RuntimeError(
+                "Writable PostgreSQL logical-table Set "
+                "does not have a parent item id."
+            )
+
+    def _getAdvisoryLockKey(
+            self,
+    ) -> int:
+        """
+        Keep root and logical-table lock namespaces separate.
+
+        PostgreSQL identifiers are positive, so negative table
+        ids cannot collide with root Set ids.
+        """
+        if self.setId is not None:
+            return int(
+                self.setId
+            )
+
+        return -int(
+            self.tableId
+        )
 
     def _getItemId(
             self,
@@ -987,8 +1140,13 @@ class PostgresqlSetRuntimeMapper:
             self,
             item,
     ) -> None:
-        self._ensureItemSchema(item)
-        serialized = self._serializeItem(item)
+        self._ensureItemSchema(
+            item
+        )
+
+        serialized = self._serializeItem(
+            item
+        )
 
         itemId = int(
             serialized[
@@ -1023,7 +1181,36 @@ class PostgresqlSetRuntimeMapper:
             default=str,
         )
 
-        # Canonical root-item representation.
+        if self.setId is not None:
+            self._upsertRootItem(
+                itemId=itemId,
+                enabled=enabled,
+                label=label,
+                comment=comment,
+                creation=creation,
+                jsonValues=jsonValues,
+            )
+
+        else:
+            self._upsertLogicalItem(
+                itemId=itemId,
+                enabled=enabled,
+                label=label,
+                comment=comment,
+                creation=creation,
+                jsonValues=jsonValues,
+            )
+
+    def _upsertRootItem(
+            self,
+            *,
+            itemId: int,
+            enabled: bool,
+            label,
+            comment,
+            creation,
+            jsonValues: str,
+    ) -> None:
         self.db.execute(
             """
             INSERT INTO scipion_set_items (
@@ -1056,7 +1243,7 @@ class PostgresqlSetRuntimeMapper:
             """,
             (
                 int(self.setId),
-                itemId,
+                int(itemId),
                 enabled,
                 label,
                 comment,
@@ -1066,10 +1253,6 @@ class PostgresqlSetRuntimeMapper:
             commit=False,
         )
 
-        # Compatibility logical root table.
-        #
-        # Keep this synchronized inside the same PostgreSQL
-        # transaction. No SQLite is involved.
         self.db.execute(
             """
             INSERT INTO scipion_set_table_items (
@@ -1105,7 +1288,64 @@ class PostgresqlSetRuntimeMapper:
             """,
             (
                 int(self.rootTableId),
-                itemId,
+                int(itemId),
+                enabled,
+                label,
+                comment,
+                creation,
+                jsonValues,
+            ),
+            commit=False,
+        )
+
+    def _upsertLogicalItem(
+            self,
+            *,
+            itemId: int,
+            enabled: bool,
+            label,
+            comment,
+            creation,
+            jsonValues: str,
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT INTO scipion_set_table_items (
+                "tableId",
+                "scipionItemId",
+                "parentItemId",
+                enabled,
+                label,
+                comment,
+                creation,
+                "values"
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s::jsonb
+            )
+            ON CONFLICT ON CONSTRAINT
+                ux_scipion_set_table_items_table_item
+            DO UPDATE SET
+                "parentItemId" =
+                    EXCLUDED."parentItemId",
+                enabled = EXCLUDED.enabled,
+                label = EXCLUDED.label,
+                comment = EXCLUDED.comment,
+                creation = EXCLUDED.creation,
+                "values" = EXCLUDED."values",
+                "updatedAt" = NOW()
+            """,
+            (
+                int(self.tableId),
+                int(itemId),
+                int(self.parentItemId),
                 enabled,
                 label,
                 comment,
@@ -1118,18 +1358,23 @@ class PostgresqlSetRuntimeMapper:
     def _refreshSetCounters(
             self,
     ) -> None:
-        row = self.db.fetchOne(
-            """
+        query = """
             SELECT
                 COUNT(*) AS "itemsCount",
                 MAX(
                     "scipionItemId"
                 ) AS "maxItemId"
-              FROM scipion_set_items
-             WHERE "setId" = %s
-            """,
+              FROM {itemsTable}
+             WHERE "{scopeColumn}" = %s
+        """.format(
+            itemsTable=self._itemsTable,
+            scopeColumn=self._scopeColumn,
+        )
+
+        row = self.db.fetchOne(
+            query,
             (
-                int(self.setId),
+                int(self._scopeId),
             ),
         ) or {}
 
@@ -1144,37 +1389,74 @@ class PostgresqlSetRuntimeMapper:
             "maxItemId"
         )
 
-        self.db.execute(
-            """
-            UPDATE scipion_sets
-               SET properties = (
-                       COALESCE(
-                           properties,
-                           '{}'::jsonb
-                       )
-                       || jsonb_build_object(
-                           'itemsCount',
-                           %s,
-                           'maxItemId',
-                           %s,
-                           'incremental',
-                           TRUE
-                       )
-                   ),
-                   "updatedAt" = NOW()
-             WHERE id = %s
-            """,
-            (
-                itemsCount,
-                (
-                    int(maxItemId)
-                    if maxItemId is not None
-                    else None
-                ),
-                int(self.setId),
-            ),
-            commit=False,
+        normalizedMaxItemId = (
+            int(maxItemId)
+            if maxItemId is not None
+            else None
         )
+
+        if self.setId is not None:
+            self.db.execute(
+                """
+                UPDATE scipion_sets
+                   SET properties = (
+                           COALESCE(
+                               properties,
+                               '{}'::jsonb
+                           )
+                           || jsonb_build_object(
+                               'itemsCount',
+                               %s,
+                               'maxItemId',
+                               %s,
+                               'incremental',
+                               TRUE
+                           )
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                """,
+                (
+                    itemsCount,
+                    normalizedMaxItemId,
+                    int(self.setId),
+                ),
+                commit=False,
+            )
+
+            self.db.execute(
+                """
+                UPDATE scipion_set_tables
+                   SET properties = (
+                           COALESCE(
+                               properties,
+                               '{}'::jsonb
+                           )
+                           || jsonb_build_object(
+                               'itemsCount',
+                               %s,
+                               'maxItemId',
+                               %s,
+                               'incremental',
+                               TRUE
+                           )
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "setId" = %s
+                   AND "tableKind" = 'root'
+                """,
+                (
+                    itemsCount,
+                    normalizedMaxItemId,
+                    int(self.rootTableId),
+                    int(self.setId),
+                ),
+                commit=False,
+            )
+
+            return
+
         self.db.execute(
             """
             UPDATE scipion_set_tables
@@ -1194,21 +1476,20 @@ class PostgresqlSetRuntimeMapper:
                    ),
                    "updatedAt" = NOW()
              WHERE id = %s
-               AND "setId" = %s
-               AND "tableKind" = 'root'
             """,
             (
                 itemsCount,
-                (
-                    int(maxItemId)
-                    if maxItemId is not None
-                    else None
-                ),
-                int(self.rootTableId),
-                int(self.setId),
+                normalizedMaxItemId,
+                int(self.tableId),
             ),
             commit=False,
         )
+
+        self._tableProperties.update({
+            "itemsCount": itemsCount,
+            "maxItemId": normalizedMaxItemId,
+            "incremental": True,
+        })
 
     # ------------------------------------------------------------------
     # Set properties
