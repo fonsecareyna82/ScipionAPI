@@ -722,3 +722,63 @@ def test_ResumeUsesNativePostgresqlWritableSet():
         outputSet.getStreamState()
         == Set.STREAM_OPEN
     )
+
+
+def test_MarkFailedRollsBackBeforeStoringProtocol():
+    events = []
+
+    class FailedProtocolStub:
+        def setFailed(
+                self,
+                message,
+        ):
+            events.append(
+                (
+                    "failed",
+                    message,
+                )
+            )
+
+    database = SimpleNamespace(
+        rollback=lambda: events.append(
+            "rollback"
+        )
+    )
+
+    worker = (
+        RuntimePostgresqlProtocolWorker(
+            projectId=344,
+            protocolId=24,
+        )
+    )
+
+    worker.mapper = SimpleNamespace(
+        db=database
+    )
+
+    worker.protocol = (
+        FailedProtocolStub()
+    )
+
+    worker.storeProtocol = (
+        lambda: events.append(
+            "store"
+        )
+    )
+
+    worker.markFailed(
+        RuntimeError(
+            "database failure"
+        )
+    )
+
+    assert events == [
+        "rollback",
+        (
+            "failed",
+            "database failure",
+        ),
+        "store",
+    ]
+
+

@@ -750,8 +750,7 @@ class PostgresqlSetRuntimeMapper:
                 key
             )
             DO UPDATE SET
-                value = EXCLUDED.value,
-                "updatedAt" = NOW()
+                value = EXCLUDED.value
             """,
             (
                 int(self.setId),

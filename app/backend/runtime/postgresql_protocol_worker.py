@@ -2757,7 +2757,43 @@ class RuntimePostgresqlProtocolWorker:
 
         self.storeProtocol()
 
-    def markFailed(self, error) -> None:
+    def rollbackPostgresqlTransaction(
+            self,
+    ) -> None:
+        db = getattr(
+            self.mapper,
+            "db",
+            None,
+        )
+
+        if db is None:
+            return
+
+        rollback = getattr(
+            db,
+            "rollback",
+            None,
+        )
+
+        if callable(
+                rollback
+        ):
+            rollback()
+            return
+
+        connection = getattr(
+            db,
+            "conn",
+            None,
+        )
+
+        if connection is not None:
+            connection.rollback()
+
+    def markFailed(
+            self,
+            error,
+    ) -> None:
         logger.exception(
             "PostgreSQL protocol execution failed. "
             "projectId=%s protocolId=%s",
@@ -2765,11 +2801,47 @@ class RuntimePostgresqlProtocolWorker:
             self.protocolId,
         )
 
+        # A PostgreSQL error leaves the connection in an
+        # aborted transaction. Clear it before trying to
+        # persist the terminal protocol state.
+        self.rollbackPostgresqlTransaction()
+
         self.protocol.setFailed(
             str(error)
         )
 
-        self.storeProtocol()
+        try:
+            self.storeProtocol()
+
+        except Exception:
+            logger.exception(
+                "Could not persist the complete failed "
+                "protocol state. Falling back to a direct "
+                "status update. projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+            )
+
+            self.rollbackPostgresqlTransaction()
+
+            # Last-resort protection against protocols
+            # remaining permanently Running/Launched.
+            self.mapper.db.execute(
+                """
+                UPDATE protocols
+                   SET status = %s,
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                   AND "protocolId" = %s
+                """,
+                (
+                    STATUS_FAILED,
+                    self.projectId,
+                    str(
+                        self.protocolId
+                    ),
+                ),
+            )
 
     def submitToQueue(self) -> int:
         command = buildPostgresqlWorkerCommand(
