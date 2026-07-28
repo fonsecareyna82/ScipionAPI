@@ -1948,22 +1948,54 @@ def test_RuntimeRootSetCanEnablePostgresqlWrite():
     assert runtimeSet._idCount == 7
 
 
-def test_NestedRuntimeSetKeepsCompatibilityFallback():
+def test_NestedRuntimeRootCanEnablePostgresqlWrite():
     _, runtimeSet = (
         buildNestedRuntimeSet()
     )
 
+    # The factory is technically ready to write the
+    # root Set and synchronize its nested logical tables.
     assert (
         runtimeSet
         .supportsPostgresqlNativeWrite()
+        is True
+    )
+
+    # Loading an existing output remains read-only
+    # until writing is requested explicitly.
+    assert (
+        runtimeSet
+        .isPostgresqlWritable()
         is False
     )
 
-    with pytest.raises(
-            NotImplementedError,
-            match="nested PostgreSQL Sets",
-    ):
-        runtimeSet.enablePostgresqlWrite()
+    result = (
+        runtimeSet
+        .enablePostgresqlWrite()
+    )
+
+    assert result is runtimeSet
+
+    assert (
+        runtimeSet
+        .isPostgresqlWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet
+        ._mapper
+        .isWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet
+        ._mapper
+        .rootTableId
+        == FakeNestedSetDb
+        .ROOT_TABLE_ID
+    )
 
 
 def test_PromoteNestedSetKeepsSameObjectIdentity():
