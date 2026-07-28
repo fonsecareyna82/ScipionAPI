@@ -110,37 +110,68 @@ class PostgresqlRuntimeSetMixin:
 
         return self
 
-    def refreshPostgresqlRuntimeState(
-            self,
-    ):
-        """
-        Refresh size, maximum item id and Set properties from
-        PostgreSQL without replacing the runtime Set object.
-        """
+    def refreshPostgresqlRuntimeState(self):
         mapper = self._getMapper()
 
-        refreshProperties = getattr(
-            mapper,
-            "refreshProperties",
-            None,
-        )
+        refreshProperties = getattr(mapper, "refreshProperties", None)
 
-        if callable(
-                refreshProperties
-        ):
+        if callable(refreshProperties):
             refreshProperties()
 
-        self._size.set(
-            mapper.count()
-        )
-
-        self._idCount = (
-            mapper.maxId()
-        )
-
-        super().loadAllProperties()
+        self._size.set(mapper.count())
+        self._idCount = mapper.maxId()
+        self._refreshPostgresqlRuntimeProperties(mapper)
 
         return self
+
+    def _refreshPostgresqlRuntimeProperties(self, mapper):
+        getPropertyKeys = getattr(mapper, "getPropertyKeys", None)
+        getProperty = getattr(mapper, "getProperty", None)
+
+        if not callable(getPropertyKeys) or not callable(getProperty):
+            return
+
+        runtimeProperties = self.getPostgresqlRuntimeProperties()
+
+        for propertyName in getPropertyKeys():
+            propertyName = str(propertyName)
+
+            if propertyName == "self":
+                continue
+
+            propertyValue = getProperty(propertyName)
+            runtimeProperties[propertyName] = propertyValue
+
+            if self._isPostgresqlRuntimePointerProperty(propertyName):
+                continue
+
+            try:
+                self.setAttributeValue(propertyName, propertyValue)
+            except Exception:
+                logger.warning(
+                    "Could not refresh PostgreSQL runtime Set property. "
+                    "className=%s objectId=%s property=%s",
+                    self.getClassName(),
+                    self.getObjId(),
+                    propertyName,
+                    exc_info=True,
+                )
+
+        self._postgresqlRuntimeProperties = runtimeProperties
+
+    def _isPostgresqlRuntimePointerProperty(self, propertyName):
+        current = self
+
+        for attributeName in str(propertyName).split("."):
+            if isinstance(current, (Pointer, PointerList)):
+                return True
+
+            current = getattr(current, attributeName, None)
+
+            if current is None:
+                return False
+
+        return isinstance(current, (Pointer, PointerList))
 
     def loadAllProperties(
             self,
@@ -157,11 +188,23 @@ class PostgresqlRuntimeSetMixin:
         )
 
     def close(self):
-        mapper = getattr(
-            self,
-            "_mapper",
-            None,
-        )
+        materializer = getattr(self, "_postgresqlSqliteMaterializer", None)
+        materializedPath = getattr(self, "_postgresqlMaterializedFileName", None)
+
+        if materializer is not None and materializedPath:
+            try:
+                materializer.materialize(self)
+            except Exception:
+                logger.warning(
+                    "Could not refresh PostgreSQL SQLite compatibility snapshot before closing. "
+                    "className=%s objectId=%s path=%s",
+                    self.getClassName(),
+                    self.getObjId(),
+                    materializedPath,
+                    exc_info=True,
+                )
+
+        mapper = getattr(self, "_mapper", None)
 
         if mapper is not None:
             mapper.close()
