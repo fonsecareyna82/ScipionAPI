@@ -773,6 +773,11 @@ def test_RuntimeSetCanReloadMapperAfterClose():
 
     item = runtimeSet.getFirstItem()
 
+    assert (
+            runtimeSet.isPostgresqlWritable()
+            is False
+    )
+
     assert isinstance(
         item,
         ExampleItem,
@@ -2215,6 +2220,95 @@ def test_RuntimeNestedItemSerializationRemovesTemporaryMapperPath():
     assert (
         values["_name"]
         == "series-8"
+    )
+
+
+def test_WritableRuntimeSetReloadsWritableMapperAfterClose():
+    _, runtimeSet = (
+        buildNestedRuntimeSet()
+    )
+
+    runtimeSet.enablePostgresqlWrite()
+
+    assert (
+        runtimeSet.isPostgresqlWritable()
+        is True
+    )
+
+    runtimeSet.close()
+
+    assert runtimeSet._mapper is None
+
+    # Closing releases the mapper but preserves
+    # the canonical output's writable intent.
+    assert (
+        runtimeSet._postgresqlWritable
+        is True
+    )
+
+    runtimeSet.load()
+
+    assert (
+        runtimeSet.isPostgresqlWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet._mapper.isWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet._mapper.rootTableId
+        == FakeNestedSetDb.ROOT_TABLE_ID
+    )
+
+
+def test_WriteReopensWritableMapperAfterStreamingClose(
+        monkeypatch,
+):
+    _, runtimeSet = (
+        buildNestedRuntimeSet()
+    )
+
+    runtimeSet.enablePostgresqlWrite()
+    runtimeSet.close()
+
+    nativeWriteCalls = []
+    expectedResult = object()
+
+    def nativeWrite(
+            self,
+            properties=True,
+    ):
+        nativeWriteCalls.append(
+            properties
+        )
+
+        return expectedResult
+
+    monkeypatch.setattr(
+        ExampleParentSet,
+        "write",
+        nativeWrite,
+    )
+
+    result = runtimeSet.write()
+
+    assert result is expectedResult
+
+    assert nativeWriteCalls == [
+        True,
+    ]
+
+    assert (
+        runtimeSet.isPostgresqlWritable()
+        is True
+    )
+
+    assert (
+        runtimeSet._mapper.isWritable()
+        is True
     )
 
 
