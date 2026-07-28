@@ -3493,32 +3493,133 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return tomograms
 
-    def _iterLinkedTomograms(self, scipionSet: Any) -> Iterable[Any]:
-        for methodName in ("iterTomograms", "iterVolumes"):
-            iteratorGetter = getattr(scipionSet, methodName, None)
-            if not callable(iteratorGetter):
+    def _iterLinkedTomograms(
+            self,
+            scipionSet: Any,
+    ) -> Iterable[Any]:
+        """
+        Return an iterator over tomograms linked to a Set.
+
+        Some Sets, such as SetOfCoordinates3D, expose
+        iterVolumes() before their precedents pointer has been
+        assigned. In that state the method legally returns None.
+        """
+        for methodName in (
+                "iterTomograms",
+                "iterVolumes",
+        ):
+            iteratorGetter = getattr(
+                scipionSet,
+                methodName,
+                None,
+            )
+
+            if not callable(
+                    iteratorGetter
+            ):
                 continue
 
             try:
-                return iteratorGetter()
+                linkedObjects = (
+                    iteratorGetter()
+                )
+
             except Exception:
                 continue
 
-        getTomograms = getattr(scipionSet, "getTomograms", None)
-        if callable(getTomograms):
+            iterator = (
+                self
+                ._coerceLinkedTomogramIterator(
+                    linkedObjects
+                )
+            )
+
+            if iterator is not None:
+                return iterator
+
+        getTomograms = getattr(
+            scipionSet,
+            "getTomograms",
+            None,
+        )
+
+        if callable(
+                getTomograms
+        ):
             try:
-                tomograms = getTomograms()
-                iterItems = getattr(tomograms, "iterItems", None)
-                if callable(iterItems):
-                    try:
-                        return iterItems(iterate=False)
-                    except TypeError:
-                        return iterItems()
-                return iter(tomograms)
+                linkedObjects = (
+                    getTomograms()
+                )
+
             except Exception:
-                pass
+                linkedObjects = None
+
+            iterator = (
+                self
+                ._coerceLinkedTomogramIterator(
+                    linkedObjects
+                )
+            )
+
+            if iterator is not None:
+                return iterator
 
         return iter(())
+
+    @staticmethod
+    def _coerceLinkedTomogramIterator(
+            linkedObjects,
+    ):
+        """
+        Normalize a linked Set, sequence or iterator.
+
+        None means that the link has not been assigned yet.
+        """
+        if linkedObjects is None:
+            return None
+
+        iterItems = getattr(
+            linkedObjects,
+            "iterItems",
+            None,
+        )
+
+        if callable(
+                iterItems
+        ):
+            try:
+                items = iterItems(
+                    iterate=False
+                )
+
+            except TypeError:
+                try:
+                    items = iterItems()
+
+                except Exception:
+                    return None
+
+            except Exception:
+                return None
+
+            if items is None:
+                return None
+
+            try:
+                return iter(
+                    items
+                )
+
+            except TypeError:
+                return None
+
+        try:
+            return iter(
+                linkedObjects
+            )
+
+        except TypeError:
+            return None
 
     def _buildLinkedTomogramSummary(self, tomogram: Any, index: int) -> Optional[Dict[str, Any]]:
         objectId = self._callOptionalGetter(tomogram, "getObjId")
