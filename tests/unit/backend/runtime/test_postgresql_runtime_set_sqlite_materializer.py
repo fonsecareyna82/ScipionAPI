@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 
 from pyworkflow.object import Float, Object, Set, String
 
@@ -304,7 +305,7 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         sourceSet.close()
 
 
-def test_MaterializeReusesExistingLegacySqliteWithoutCopyingItems(
+def test_MaterializeNeverReusesPersistentLegacySqlite(
         tmp_path,
 ):
     sourcePath = (
@@ -331,21 +332,14 @@ def test_MaterializeReusesExistingLegacySqliteWithoutCopyingItems(
             "itemClassName": "ExampleItem",
         },
         runtimeProperties={
-            "fileName": str(sourcePath),
+            "fileName": str(
+                sourcePath
+            ),
+            "_mapperPath": [
+                str(sourcePath),
+                "",
+            ],
         },
-    )
-
-    def unexpectedIterItems(
-            *args,
-            **kwargs,
-    ):
-        raise AssertionError(
-            "Existing legacy SQLite must be reused "
-            "without iterating PostgreSQL items."
-        )
-
-    sourceSet.iterItems = (
-        unexpectedIterItems
     )
 
     materializer = (
@@ -359,25 +353,42 @@ def test_MaterializeReusesExistingLegacySqliteWithoutCopyingItems(
             )
         )
 
-        assert targetPath == str(
-            sourcePath.resolve()
+        assert (
+            targetPath
+            != str(
+                sourcePath.resolve()
+            )
         )
 
         assert (
-            sourceSet
-            ._postgresqlRuntimeProperties[
-                "materializedFileName"
-            ]
-            == str(sourcePath.resolve())
+            materializer
+            ._isManagedTemporaryPath(
+                targetPath
+            )
+            is True
         )
 
-        assert materializer.materialize(
-            sourceSet
-        ) == str(sourcePath.resolve())
+        assert Path(
+            targetPath
+        ).is_file()
+
+        assert (
+            str(
+                Path(targetPath)
+            )
+            .startswith(
+                str(
+                    Path(
+                        tempfile.gettempdir()
+                    )
+                    / materializer
+                    .DIRECTORY_NAME
+                )
+            )
+        )
 
     finally:
         sourceSet.close()
-
 
 def test_MaterializeSupportsEmptySets(
         tmp_path,
@@ -637,5 +648,65 @@ def test_MaterializerFindsOwnerThroughRuntimeParentReference(
         is owner
     )
 
+def test_PersistentCachedMaterializedPathIsIgnored(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "cached-output.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 32,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    sourceSet._postgresqlMaterializedFileName = (
+        str(sourcePath)
+    )
+
+    materializer = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+    )
+
+    try:
+        targetPath = (
+            materializer.materialize(
+                sourceSet
+            )
+        )
+
+        assert (
+            targetPath
+            != str(
+                sourcePath.resolve()
+            )
+        )
+
+        assert (
+            materializer
+            ._isManagedTemporaryPath(
+                targetPath
+            )
+            is True
+        )
+
+    finally:
+        sourceSet.close()
 
 
