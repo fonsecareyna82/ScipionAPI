@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import pytest
 
 from pyworkflow.object import Float, Object, Set, String
 
@@ -451,6 +452,20 @@ def test_MaterializeCopiesNestedLogicalItems(
         iter([sourceNestedSet])
     )
 
+    sourceSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    sourceNestedSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    rootMapper = sourceSet._getMapper()
+    nestedMapper = sourceNestedSet._getMapper()
+
+    rootSelectAll = rootMapper.selectAll
+    nestedSelectAll = nestedMapper.selectAll
+
     _configureRuntimeSource(
         sourceSet=sourceSet,
         owner=owner,
@@ -763,3 +778,77 @@ def test_PersistentCachedMaterializedPathIsIgnored(
         sourceSet.close()
 
 
+def test_RecursiveMaterializationFailsFast(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "recursive-source.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 91,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    sourceSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    materializer = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+    )
+
+    mapper = sourceSet._getMapper()
+    originalSelectAll = mapper.selectAll
+
+    def recursiveSelectAll(
+            *args,
+            **kwargs,
+    ):
+        materializer.materialize(
+            sourceSet
+        )
+
+        return originalSelectAll(
+            *args,
+            **kwargs,
+        )
+
+    mapper.selectAll = (
+        recursiveSelectAll
+    )
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match=(
+                    "Recursive PostgreSQL SQLite "
+                    "materialization detected"
+                ),
+        ):
+            materializer.materialize(
+                sourceSet
+            )
+
+    finally:
+        mapper.selectAll = (
+            originalSelectAll
+        )
+
+        sourceSet.close()

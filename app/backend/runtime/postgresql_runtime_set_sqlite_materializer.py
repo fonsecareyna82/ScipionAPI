@@ -22,9 +22,21 @@ class PostgresqlRuntimeSetSqliteMaterializer:
     MATERIALIZED_PATH_PROPERTY = "materializedFileName"
 
     def __init__(self):
-        self._lock = threading.Lock()
+        # RLock allows a recursive call to reach our
+        # explicit recursion guard instead of hanging
+        # forever while waiting for the same thread.
+        self._lock = threading.RLock()
 
-    def materialize(self, runtimeSet: ScipionSet) -> str:
+        self._materializingSetIdentities = set()
+
+    def materialize(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> str:
+        runtimeSetIdentity = id(
+            runtimeSet
+        )
+
         with self._lock:
             cachedPath = self._getCachedPath(
                 runtimeSet
@@ -33,44 +45,115 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             if cachedPath is not None:
                 return cachedPath
 
-            # PostgreSQL is the canonical source of truth.
-            #
-            # Never reuse a persistent SQLite file from the
-            # project or protocol directory. Compatibility
-            # snapshots must always live in our managed
-            # temporary directory.
-            materializedPath = self._buildMaterializedPath(
-                runtimeSet
-            )
-            os.makedirs(os.path.dirname(materializedPath), exist_ok=True)
-            self._removeSqliteFiles(materializedPath)
+            if (
+                    runtimeSetIdentity
+                    in self._materializingSetIdentities
+            ):
+                runtimeInfo = self._getRuntimeInfo(
+                    runtimeSet
+                )
 
+                raise RuntimeError(
+                    "Recursive PostgreSQL SQLite "
+                    "materialization detected. "
+                    "className=%s setId=%s tableId=%s"
+                    % (
+                        runtimeSet.getClassName(),
+                        runtimeInfo.get(
+                            "setId"
+                        ),
+                        runtimeInfo.get(
+                            "tableId"
+                        ),
+                    )
+                )
+
+            self._materializingSetIdentities.add(
+                runtimeSetIdentity
+            )
+
+            materializedPath = None
             targetSet = None
+
             try:
-                classes = self._getRuntimeClasses(runtimeSet)
-                nativeSetClass = self._getNativeSetClass(runtimeSet)
+                # PostgreSQL is the canonical source of truth.
+                #
+                # Never reuse a persistent SQLite file from the
+                # project or protocol directory. Compatibility
+                # snapshots always live in our managed temporary
+                # directory.
+                materializedPath = (
+                    self._buildMaterializedPath(
+                        runtimeSet
+                    )
+                )
+
+                os.makedirs(
+                    os.path.dirname(
+                        materializedPath
+                    ),
+                    exist_ok=True,
+                )
+
+                self._removeSqliteFiles(
+                    materializedPath
+                )
+
+                classes = self._getRuntimeClasses(
+                    runtimeSet
+                )
+
+                nativeSetClass = (
+                    self._getNativeSetClass(
+                        runtimeSet
+                    )
+                )
 
                 targetSet = self._openSet(
                     setClass=nativeSetClass,
                     fileName=materializedPath,
                     classes=classes,
                 )
-                self._copySetMetadata(runtimeSet, targetSet)
-                self._copySetItems(runtimeSet, targetSet, classes)
+
+                self._copySetMetadata(
+                    runtimeSet,
+                    targetSet,
+                )
+
+                self._copySetItems(
+                    runtimeSet,
+                    targetSet,
+                    classes,
+                )
+
                 targetSet.write()
                 targetSet.close()
                 targetSet = None
+
+                self._rememberMaterializedPath(
+                    runtimeSet,
+                    materializedPath,
+                )
+
+                return materializedPath
+
             except Exception:
                 if targetSet is not None:
                     try:
                         targetSet.close()
                     except Exception:
                         pass
-                self._removeSqliteFiles(materializedPath)
+
+                self._removeSqliteFiles(
+                    materializedPath
+                )
+
                 raise
 
-            self._rememberMaterializedPath(runtimeSet, materializedPath)
-            return materializedPath
+            finally:
+                self._materializingSetIdentities.discard(
+                    runtimeSetIdentity
+                )
 
     def openWritable(
             self,
@@ -288,7 +371,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 or classes
         )
 
-        for sourceItem in sourceSet.iterItems():
+        for sourceItem in self._iterSourceItems(
+                sourceSet
+        ):
             targetItem = self._cloneItem(
                 sourceItem,
                 sourceClasses,
@@ -333,6 +418,81 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             sourceSet=sourceSet,
             targetSet=targetSet,
             classes=sourceClasses,
+        )
+
+    def _iterSourceItems(
+            self,
+            sourceSet: ScipionSet,
+    ):
+        """
+        Iterate PostgreSQL runtime Sets directly through their
+        PostgreSQL mapper.
+
+        Tomography Sets may override iterItems() and use
+        getFileName() internally to resolve nested SQLite tables.
+        Calling that method while materializing the same Set
+        produces recursive materialization.
+        """
+        runtimeChecker = getattr(
+            sourceSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        isPostgresqlRuntimeSet = (
+            bool(
+                runtimeChecker()
+            )
+            if callable(
+                runtimeChecker
+            )
+            else False
+        )
+
+        if not isPostgresqlRuntimeSet:
+            return sourceSet.iterItems()
+
+        mapper = getattr(
+            sourceSet,
+            "_mapper",
+            None,
+        )
+
+        if mapper is None:
+            raise RuntimeError(
+                "PostgreSQL runtime Set does not have "
+                "an active mapper during SQLite "
+                "compatibility materialization. "
+                "className=%s objectId=%s"
+                % (
+                    sourceSet.getClassName(),
+                    sourceSet.getObjId(),
+                )
+            )
+
+        selectAll = getattr(
+            mapper,
+            "selectAll",
+            None,
+        )
+
+        if not callable(
+                selectAll
+        ):
+            raise RuntimeError(
+                "PostgreSQL runtime Set mapper does not "
+                "provide selectAll(). "
+                "className=%s mapperClass=%s"
+                % (
+                    sourceSet.getClassName(),
+                    mapper.__class__.__name__,
+                )
+            )
+
+        return selectAll(
+            orderBy="id",
+            direction="ASC",
+            iterate=True,
         )
 
     def _ensureSetSchema(
