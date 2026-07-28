@@ -69,6 +69,9 @@ from app.backend.runtime.protocol_graph_repository import (
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    setPostgresqlRuntimeParentReference,
+)
 
 logger = logging.getLogger(__name__)
 
