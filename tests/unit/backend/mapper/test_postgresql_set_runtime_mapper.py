@@ -1099,6 +1099,21 @@ def test_DeleteRemovesCanonicalAndLogicalItem():
         14,
     )
 
+    nestedTableDelete = next(
+        call
+        for call in db.executions
+        if (
+                "DELETE FROM scipion_set_tables"
+                in call["query"]
+        )
+    )
+
+    assert nestedTableDelete["params"] == (
+        31,
+        71,
+        14,
+    )
+
 
 def test_ClearRemovesCanonicalAndLogicalItems():
     db = WritableFakeDb()
@@ -1140,6 +1155,20 @@ def test_ClearRemovesCanonicalAndLogicalItems():
 
     assert canonicalDelete["params"] == (
         31,
+    )
+
+    nestedTablesDelete = next(
+        call
+        for call in db.executions
+        if (
+                "DELETE FROM scipion_set_tables"
+                in call["query"]
+        )
+    )
+
+    assert nestedTablesDelete["params"] == (
+        31,
+        71,
     )
 
 
@@ -1426,4 +1455,88 @@ def test_LogicalPropertyWritesTableMetadata():
         )
         == 1
     )
+
+
+def test_NestedSynchronizerRequiresRootScope():
+    with pytest.raises(
+            ValueError,
+            match="root PostgreSQL Sets",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=WritableLogicalTableFakeDb(),
+            tableId=91,
+            parentItemId=7,
+            itemBuilder=buildItem,
+            itemSerializer=(
+                serializeWritableItem
+            ),
+            nestedItemSynchronizer=(
+                lambda item, itemId: None
+            ),
+            writable=True,
+        )
+
+
+def test_AppendRootItemSynchronizesNestedItem():
+    db = WritableFakeDb(
+        nextItemId=8
+    )
+
+    synchronizationCalls = []
+
+    def synchronizeNestedItem(
+            item,
+            itemId,
+    ):
+        assert any(
+            "INSERT INTO scipion_set_items"
+            in call["query"]
+            for call in db.executions
+        )
+
+        assert any(
+            "INSERT INTO "
+            "scipion_set_table_items"
+            in call["query"]
+            for call in db.executions
+        )
+
+        synchronizationCalls.append({
+            "item": item,
+            "itemId": itemId,
+        })
+
+        return {
+            "tableId": 91,
+        }
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        nestedItemSynchronizer=(
+            synchronizeNestedItem
+        ),
+        writable=True,
+    )
+
+    item = FakeWritableItem()
+
+    mapper.appendItem(
+        item
+    )
+
+    assert synchronizationCalls == [
+        {
+            "item": item,
+            "itemId": 8,
+        },
+    ]
+
+    assert db.transactionCalls == 1
+
 

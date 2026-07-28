@@ -1572,6 +1572,214 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return itemsCount, maxItemId
 
+    def ensureRuntimeNestedSetTable(
+            self,
+            setId: int,
+            rootTableId: int,
+            parentSet: Any,
+            parentItemId: int,
+            batchSize: int = 1000,
+    ) -> Dict[str, Any]:
+        """
+        Create or refresh the PostgreSQL logical table owned by
+        one nested runtime Set item.
+
+        The caller must already own the PostgreSQL transaction.
+        No commit or nested transaction is performed here.
+        """
+        if not isinstance(
+                parentSet,
+                ScipionSet,
+        ):
+            raise TypeError(
+                "Runtime nested item must be a "
+                "Scipion Set. className=%s"
+                % parentSet.__class__.__name__
+            )
+
+        setId = int(
+            setId
+        )
+
+        rootTableId = int(
+            rootTableId
+        )
+
+        parentItemId = int(
+            parentItemId
+        )
+
+        if batchSize <= 0:
+            raise ValueError(
+                "batchSize must be greater than zero"
+            )
+
+        tableId = (
+            self
+            ._upsertNestedLogicalTablesForItem(
+                setId=setId,
+                parentTableId=rootTableId,
+                parentItem=parentSet,
+                parentItemId=parentItemId,
+                batchSize=batchSize,
+                runtimeWritable=True,
+            )
+        )
+
+        if tableId is None:
+            raise RuntimeError(
+                "Could not create PostgreSQL logical "
+                "table for nested runtime Set. "
+                "setId=%s parentItemId=%s className=%s"
+                % (
+                    setId,
+                    parentItemId,
+                    self._getClassName(
+                        parentSet
+                    ),
+                )
+            )
+
+        tableId = int(
+            tableId
+        )
+
+        counters = self.db.fetchOne(
+            """
+            SELECT
+                COUNT(*) AS "itemsCount",
+                MAX(
+                    "scipionItemId"
+                ) AS "maxItemId"
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+            """,
+            (
+                tableId,
+            ),
+        ) or {}
+
+        itemsCount = int(
+            counters.get(
+                "itemsCount"
+            )
+            or 0
+        )
+
+        maxItemId = counters.get(
+            "maxItemId"
+        )
+
+        maxItemId = (
+            int(maxItemId)
+            if maxItemId is not None
+            else None
+        )
+
+        storedColumns = (
+            self.getStoredSetTableColumns(
+                tableId
+            )
+        )
+
+        properties = {
+            "source": "postgresql",
+            "parentItemId": parentItemId,
+            "parentClassName": (
+                self._getClassName(
+                    parentSet
+                )
+            ),
+            "runtimeWritable": True,
+            "incremental": True,
+            "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+            "columnsCount": len(
+                storedColumns
+            ),
+        }
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || %s::jsonb
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "setId" = %s
+               AND "parentTableId" = %s
+               AND "parentItemId" = %s
+               AND "tableKind" = 'child'
+            """,
+            (
+                self._jsonParam(
+                    properties
+                ),
+                tableId,
+                setId,
+                rootTableId,
+                parentItemId,
+            ),
+            commit=False,
+        )
+
+        tableRow = self.db.fetchOne(
+            """
+            SELECT
+                id,
+                "setId",
+                name,
+                alias,
+                "tableKind",
+                "parentTableId",
+                "parentItemId",
+                "itemClassName",
+                properties
+              FROM scipion_set_tables
+             WHERE id = %s
+            """,
+            (
+                tableId,
+            ),
+        )
+
+        if tableRow is None:
+            raise RuntimeError(
+                "PostgreSQL logical table %s "
+                "disappeared after creation."
+                % tableId
+            )
+
+        return {
+            "setId": setId,
+            "rootTableId": rootTableId,
+            "tableId": tableId,
+            "parentItemId": parentItemId,
+            "itemClassName": (
+                tableRow.get(
+                    "itemClassName"
+                )
+            ),
+            "columns": [
+                dict(column)
+                for column in storedColumns
+            ],
+            "columnsCount": len(
+                storedColumns
+            ),
+            "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+            "properties": properties,
+            "table": dict(
+                tableRow
+            ),
+        }
+
     def _upsertNestedLogicalTablesForItem(
             self,
             setId: int,
@@ -1579,6 +1787,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             parentItem: Any,
             parentItemId: int,
             batchSize: int,
+            runtimeWritable: bool = False,
     ) -> Optional[int]:
         """
         Persist the logical table owned by one nested Set item.
@@ -1591,11 +1800,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         ):
             return None
 
-        childIterator = iter(
-            self._iterNestedItems(
-                parentItem
-            )
+        sourceMapper = getattr(
+            parentItem,
+            "_mapper",
+            None,
         )
+
+        if (
+                runtimeWritable
+                and sourceMapper is None
+        ):
+            # A newly-created TiltSeries/Class item has not
+            # received its PostgreSQL logical mapper yet.
+            #
+            # It is empty at this point and its declared
+            # ITEM_TYPE is enough to create the child table.
+            childIterator = iter(())
+
+        else:
+            childIterator = iter(
+                self._iterNestedItems(
+                    parentItem
+                )
+            )
 
         firstChild = self._nextOrNone(
             childIterator
@@ -1669,12 +1896,23 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             properties={
                 "source": "postgresql",
                 "parentItemId": (
-                    parentItemId
+                    int(parentItemId)
                 ),
                 "parentClassName": (
                     self._getClassName(
                         parentItem
                     )
+                ),
+                "runtimeWritable": bool(
+                    runtimeWritable
+                ),
+                "incremental": bool(
+                    runtimeWritable
+                ),
+                "itemsCount": 0,
+                "maxItemId": None,
+                "columnsCount": len(
+                    childColumns
                 ),
             },
         )
