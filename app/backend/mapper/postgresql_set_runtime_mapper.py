@@ -89,6 +89,9 @@ class PostgresqlSetRuntimeMapper:
             itemSerializer: Optional[
                 Callable[[Any], Dict[str, Any]]
             ] = None,
+            itemSchemaSynchronizer: Optional[
+                Callable[[Any], Dict[str, Any]]
+            ] = None,
             writable: bool = False,
     ):
         if db is None:
@@ -103,6 +106,18 @@ class PostgresqlSetRuntimeMapper:
         ):
             raise ValueError(
                 "tableIdResolver must be callable or None"
+            )
+
+        if (
+                itemSchemaSynchronizer
+                is not None
+                and not callable(
+            itemSchemaSynchronizer
+        )
+        ):
+            raise ValueError(
+                "itemSchemaSynchronizer must "
+                "be callable or None."
             )
 
         hasSetId = setId is not None
@@ -187,6 +202,9 @@ class PostgresqlSetRuntimeMapper:
         self.itemSerializer = (
             itemSerializer
         )
+        self.itemSchemaSynchronizer = (
+            itemSchemaSynchronizer
+        )
         self.writable = bool(
             writable
         )
@@ -211,6 +229,7 @@ class PostgresqlSetRuntimeMapper:
             )
 
         self._columns = self._loadColumns()
+        self._itemSchemaReady = bool(self._columns)
 
     def _refreshLogicalTableScope(
             self,
@@ -697,6 +716,23 @@ class PostgresqlSetRuntimeMapper:
             default=str,
         )
 
+        propertyValue = (
+            None
+            if value is None
+            else (
+                jsonValue
+                if isinstance(
+                    value,
+                    (
+                        dict,
+                        list,
+                        tuple,
+                    ),
+                )
+                else str(value)
+            )
+        )
+
         self.db.execute(
             """
             INSERT INTO scipion_set_properties (
@@ -707,7 +743,7 @@ class PostgresqlSetRuntimeMapper:
             VALUES (
                 %s,
                 %s,
-                %s::jsonb
+                %s
             )
             ON CONFLICT (
                 "setId",
@@ -720,7 +756,7 @@ class PostgresqlSetRuntimeMapper:
             (
                 int(self.setId),
                 str(key),
-                jsonValue,
+                propertyValue,
             ),
             commit=False,
         )
@@ -859,6 +895,52 @@ class PostgresqlSetRuntimeMapper:
             int(itemId)
         )
 
+    def _ensureItemSchema(
+            self,
+            item,
+    ) -> None:
+        if self._itemSchemaReady:
+            return
+
+        synchronizer = (
+            self.itemSchemaSynchronizer
+        )
+
+        if not callable(
+                synchronizer
+        ):
+            raise RuntimeError(
+                "Writable PostgreSQL Set does not "
+                "have an item schema synchronizer."
+            )
+
+        schemaInfo = dict(
+            synchronizer(
+                item
+            )
+            or {}
+        )
+
+        columns = schemaInfo.get(
+            "columns"
+        )
+
+        if columns is None:
+            raise RuntimeError(
+                "PostgreSQL item schema "
+                "synchronizer did not return columns."
+            )
+
+        self._columns = [
+            dict(column)
+            for column
+            in columns
+        ]
+
+        # Empty schemas are valid. This flag records that
+        # synchronization was attempted successfully.
+        self._itemSchemaReady = True
+
     def _serializeItem(
             self,
             item,
@@ -906,9 +988,8 @@ class PostgresqlSetRuntimeMapper:
             self,
             item,
     ) -> None:
-        serialized = self._serializeItem(
-            item
-        )
+        self._ensureItemSchema(item)
+        serialized = self._serializeItem(item)
 
         itemId = int(
             serialized[
