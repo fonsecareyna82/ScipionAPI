@@ -2575,7 +2575,10 @@ class PostgresqlRuntimeSetFactory:
             str(outputName)
         )
 
-        runtimeSet._objParent = parent
+        setPostgresqlRuntimeParentReference(
+            runtimeObject=runtimeSet,
+            parent=parent,
+        )
 
         parentIdGetter = getattr(
             parent,

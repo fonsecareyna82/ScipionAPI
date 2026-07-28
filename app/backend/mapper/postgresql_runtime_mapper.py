@@ -4882,6 +4882,383 @@ class PostgresqlRuntimeMapper(Mapper):
             ),
         }
 
+    def getPostgresqlOutputSetCapability(
+            self,
+            setClass,
+    ) -> Dict[str, Any]:
+        if not isinstance(
+                setClass,
+                type,
+        ):
+            return {
+                "supported": False,
+                "reason": "invalid_set_class",
+            }
+
+        try:
+            if not issubclass(
+                    setClass,
+                    ScipionSet,
+            ):
+                return {
+                    "supported": False,
+                    "reason": "not_a_scipion_set",
+                }
+        except TypeError:
+            return {
+                "supported": False,
+                "reason": "invalid_set_class",
+            }
+
+        classRegistry = (
+            self.runtimeSetFactory
+            ._loadClasses(
+                getattr(
+                    self,
+                    "dictClasses",
+                    None,
+                )
+            )
+        )
+
+        itemType = getattr(
+            setClass,
+            "ITEM_TYPE",
+            None,
+        )
+
+        if isinstance(
+                itemType,
+                str,
+        ):
+            nativeItemClass = (
+                classRegistry.get(
+                    itemType
+                )
+            )
+        else:
+            nativeItemClass = itemType
+
+        if not isinstance(
+                nativeItemClass,
+                type,
+        ):
+            return {
+                "supported": False,
+                "reason": (
+                    "unresolved_item_class"
+                ),
+            }
+
+        if (
+                self.runtimeSetFactory
+                        ._isScipionSetClass(
+                    nativeItemClass
+                )
+        ):
+            return {
+                "supported": False,
+                "reason": (
+                    "nested_set_items"
+                ),
+                "itemClassName": (
+                    nativeItemClass.__name__
+                ),
+            }
+
+        return {
+            "supported": True,
+            "reason": None,
+            "itemClassName": (
+                nativeItemClass.__name__
+            ),
+        }
+
+    def createPostgresqlOutputSet(
+            self,
+            protocol,
+            setClass,
+            provisionalOutputName: str,
+            constructorKwargs=None,
+            reservationToken=None,
+    ):
+        capability = (
+            self
+            .getPostgresqlOutputSetCapability(
+                setClass
+            )
+        )
+
+        if not capability.get(
+                "supported"
+        ):
+            raise NotImplementedError(
+                "Native PostgreSQL output Set "
+                "creation is not supported: %s"
+                % capability.get(
+                    "reason"
+                )
+            )
+
+        protocolDbId = (
+            self
+            ._resolveProtocolDbIdFromObject(
+                protocol
+            )
+        )
+
+        if protocolDbId is None:
+            raise RuntimeError(
+                "Cannot create a PostgreSQL output "
+                "Set without its owner protocol."
+            )
+
+        runtimeSetClass = (
+            self.runtimeSetFactory
+            ._getRuntimeSetClass(
+                setClass
+            )
+        )
+
+        runtimeSet = runtimeSetClass(
+            **dict(
+                constructorKwargs
+                or {}
+            )
+        )
+
+        runtimeObjectId = self._ensureObjId(
+            runtimeSet
+        )
+
+        runtimeSet.setName(
+            provisionalOutputName
+        )
+
+        runtimeSet.setObjLabel(
+            provisionalOutputName
+        )
+
+        runtimeSet._objParentId = (
+            protocol.getObjId()
+        )
+
+        setPostgresqlRuntimeParentReference(
+            runtimeObject=runtimeSet,
+            parent=protocol,
+        )
+
+        reservation = None
+
+        try:
+            reservation = (
+                self.setMapper
+                .reserveRuntimeSet(
+                    projectId=self.projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=(
+                        provisionalOutputName
+                    ),
+                    scipionSet=runtimeSet,
+                    reservationToken=(
+                        reservationToken
+                    ),
+                )
+            )
+
+            reservation["protocolId"] = int(
+                protocol.getObjId()
+            )
+
+            runtimeSet = (
+                self.runtimeSetFactory
+                .build(
+                    db=self.db,
+                    parent=protocol,
+                    outputName=(
+                        provisionalOutputName
+                    ),
+                    outputInfo=reservation,
+                    classes=getattr(
+                        self,
+                        "dictClasses",
+                        None,
+                    ),
+                    runtimeSet=runtimeSet,
+                    cache=True,
+                )
+            )
+
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=runtimeSet,
+                parent=protocol,
+            )
+
+            runtimeSet.enablePostgresqlWrite()
+
+            return runtimeSet
+
+        except Exception:
+            if reservation is not None:
+                try:
+                    self.setMapper.discardReservedRuntimeSet(
+                        projectId=self.projectId,
+                        protocolDbId=protocolDbId,
+                        runtimeObjectId=(
+                            runtimeObjectId
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not discard failed "
+                        "PostgreSQL output Set reservation. "
+                        "projectId=%s protocolId=%s "
+                        "runtimeObjectId=%s",
+                        self.projectId,
+                        protocol.getObjId(),
+                        runtimeObjectId,
+                    )
+
+            raise
+
+    def finalizePostgresqlOutputSet(
+            self,
+            protocol,
+            outputName: str,
+            runtimeSet,
+    ) -> Dict[str, Any]:
+        protocolDbId = (
+            self
+            ._resolveProtocolDbIdFromObject(
+                protocol
+            )
+        )
+
+        if protocolDbId is None:
+            raise RuntimeError(
+                "Cannot finalize PostgreSQL output "
+                "without its owner protocol."
+            )
+
+        runtimeInfo = getattr(
+            runtimeSet,
+            "_postgresqlRuntimeInfo",
+            {},
+        )
+
+        provisionalName = (
+            runtimeInfo.get(
+                "outputName"
+            )
+            if isinstance(
+                runtimeInfo,
+                dict,
+            )
+            else None
+        )
+
+        currentLabel = None
+
+        try:
+            currentLabel = (
+                runtimeSet.getObjLabel()
+            )
+        except Exception:
+            pass
+
+        runtimeSet.setName(
+            outputName
+        )
+
+        if (
+                not currentLabel
+                or currentLabel
+                == provisionalName
+        ):
+            runtimeSet.setObjLabel(
+                outputName
+            )
+
+        runtimeSet._objParentId = (
+            protocol.getObjId()
+        )
+
+        setPostgresqlRuntimeParentReference(
+            runtimeObject=runtimeSet,
+            parent=protocol,
+        )
+
+        report = (
+            self.setMapper
+            .finalizeRuntimeSetOutput(
+                projectId=self.projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=runtimeSet,
+            )
+        )
+
+        runtimeSet._postgresqlRuntimeInfo = dict(
+            report
+        )
+
+        runtimeSet._postgresqlRuntimeProperties = dict(
+            report.get(
+                "properties"
+            )
+            or {}
+        )
+
+        self.runtimeSetFactory._cacheRuntimeSet(
+            runtimeSet
+        )
+
+        return report
+
+    def discardPostgresqlOutputSet(
+            self,
+            protocol,
+            runtimeSet,
+    ) -> bool:
+        protocolDbId = (
+            self
+            ._resolveProtocolDbIdFromObject(
+                protocol
+            )
+        )
+
+        runtimeObjectId = self._getObjId(
+            runtimeSet
+        )
+
+        if (
+                protocolDbId is None
+                or runtimeObjectId is None
+        ):
+            return False
+
+        deleted = (
+            self.setMapper
+            .discardReservedRuntimeSet(
+                projectId=self.projectId,
+                protocolDbId=protocolDbId,
+                runtimeObjectId=(
+                    runtimeObjectId
+                ),
+            )
+        )
+
+        if deleted:
+            self.runtimeSetFactory.evictRuntimeSet(
+                projectId=self.projectId,
+                runtimeObjectId=runtimeObjectId,
+                runtimeSet=runtimeSet,
+            )
+
+        return bool(
+            deleted
+        )
+
     def _storeSetObject(self, scipionSet):
         ownerProtocol = (
             self._findOwnerProtocol(
@@ -4913,6 +5290,46 @@ class PostgresqlRuntimeMapper(Mapper):
                 "Skipping runtime set persistence "
                 "without owner/outputName: %s",
                 scipionSet,
+            )
+
+            return
+
+        runtimeChecker = getattr(
+            scipionSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        isPostgresqlRuntimeSet = (
+            bool(
+                runtimeChecker()
+            )
+            if callable(
+                runtimeChecker
+            )
+            else False
+        )
+
+        if isPostgresqlRuntimeSet:
+            ownerProtocol = (
+                self._findOwnerProtocol(
+                    scipionSet
+                )
+            )
+
+            if ownerProtocol is None:
+                raise RuntimeError(
+                    "PostgreSQL output Set %s does not "
+                    "have an owner protocol."
+                    % self._getObjId(
+                        scipionSet
+                    )
+                )
+
+            self.finalizePostgresqlOutputSet(
+                protocol=ownerProtocol,
+                outputName=outputName,
+                runtimeSet=scipionSet,
             )
 
             return
