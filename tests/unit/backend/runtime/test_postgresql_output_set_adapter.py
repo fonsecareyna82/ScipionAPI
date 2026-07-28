@@ -41,6 +41,36 @@ class OutputSetStub(Set):
     ITEM_TYPE = ItemStub
 
 
+class DirectCreateBaseSet(Set):
+    nativeCreateCalls = []
+
+    @classmethod
+    def create(
+            cls,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+            **kwargs,
+    ):
+        cls.nativeCreateCalls.append({
+            "outputPath": outputPath,
+            "prefix": prefix,
+            "suffix": suffix,
+            "ext": ext,
+            "kwargs": kwargs,
+        })
+
+        return cls()
+
+
+class DirectCreateOutputSetStub(
+        DirectCreateBaseSet
+):
+    ITEM_TYPE = ItemStub
+    nativeCreateCalls = []
+
+
 class NestedItemStub(Set):
     ITEM_TYPE = ItemStub
 
@@ -84,6 +114,17 @@ class ProtocolStub:
                 child,
             )
         )
+
+
+class DirectCreateProtocolStub(
+    ProtocolStub
+):
+    _possibleOutputs = {
+        "outputTomograms": (
+            DirectCreateOutputSetStub
+        ),
+    }
+
 
 
 class TomoProtocolStub:
@@ -460,3 +501,140 @@ def test_IncompatibleCreateSetMethodIsNotPatched():
         protocol._createSet(8)
         == 8
     )
+
+
+def test_DeclaredOutputClassCreateUsesPostgresqlAndRemovesLegacyFile(
+        tmp_path,
+):
+    DirectCreateOutputSetStub.nativeCreateCalls.clear()
+
+    protocol = (
+        DirectCreateProtocolStub()
+    )
+
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    legacyPath = (
+        tmp_path
+        / "tomograms.sqlite"
+    )
+
+    legacyPath.write_text(
+        "old SQLite",
+        encoding="utf-8",
+    )
+
+    assert legacyPath.exists()
+
+    assert (
+        "create"
+        not in
+        DirectCreateOutputSetStub
+        .__dict__
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    assert (
+        "create"
+        in
+        DirectCreateOutputSetStub
+        .__dict__
+    )
+
+    outputSet = (
+        DirectCreateOutputSetStub
+        .create(
+            str(tmp_path),
+            prefix="tomograms",
+            template=(
+                "tomograms%s.sqlite"
+            ),
+            indexes=[
+                "_tsId",
+            ],
+        )
+    )
+
+    assert (
+        legacyPath.exists()
+        is False
+    )
+
+    assert outputSet.getObjId() == 91
+
+    assert (
+        DirectCreateOutputSetStub
+        .nativeCreateCalls
+        == []
+    )
+
+    assert len(
+        runtimeMapper.created
+    ) == 1
+
+    assert (
+        runtimeMapper.created[0][
+            "setClass"
+        ]
+        is DirectCreateOutputSetStub
+    )
+
+    assert (
+        runtimeMapper.created[0][
+            "constructorKwargs"
+        ]
+        == {
+            "template": (
+                "tomograms%s.sqlite"
+            ),
+            "indexes": [
+                "_tsId",
+            ],
+        }
+    )
+
+    protocol._insertChild(
+        "outputTomograms",
+        outputSet,
+    )
+
+    assert (
+        runtimeMapper.finalized[0][
+            "outputName"
+        ]
+        == "outputTomograms"
+    )
+
+    adapter.uninstall()
+
+    # The subclass originally inherited create().
+    # Uninstall must remove the temporary override.
+    assert (
+        "create"
+        not in
+        DirectCreateOutputSetStub
+        .__dict__
+    )
+
+    DirectCreateOutputSetStub.create(
+        str(tmp_path),
+        prefix="tomograms",
+    )
+
+    assert len(
+        DirectCreateOutputSetStub
+        .nativeCreateCalls
+    ) == 1
+
+

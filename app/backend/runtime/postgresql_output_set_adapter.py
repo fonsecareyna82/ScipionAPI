@@ -25,10 +25,12 @@
 # ******************************************************************************
 import inspect
 import logging
+import os
 import uuid
 from types import MethodType
 from typing import Any, Dict
 
+import pyworkflow.utils as pwutils
 from pyworkflow.object import (
     Set as ScipionSet,
 )
@@ -85,6 +87,11 @@ class RuntimePostgresqlOutputSetAdapter:
             Dict[str, Any],
         ] = {}
 
+        self._classCreatePatches: Dict[
+            type,
+            Dict[str, Any],
+        ] = {}
+
         self._createdSets: Dict[
             int,
             Dict[str, Any],
@@ -96,6 +103,7 @@ class RuntimePostgresqlOutputSetAdapter:
 
         self._patchSpaCreator()
         self._patchTomoCreator()
+        self._patchDeclaredOutputClassCreators()
         self._patchInsertChild()
         logger.info(
             "Installed PostgreSQL output Set adapter. "
@@ -116,31 +124,18 @@ class RuntimePostgresqlOutputSetAdapter:
 
         try:
             self._discardUnfinalizedSets()
-
         finally:
-            for attributeName, patchInfo in reversed(
-                    list(
-                        self._patches.items()
-                    )
-            ):
-                if patchInfo[
-                    "hadInstanceAttribute"
-                ]:
-                    setattr(
-                        self.protocol,
-                        attributeName,
-                        patchInfo[
-                            "instanceValue"
-                        ],
-                    )
-                else:
-                    self.protocol.__dict__.pop(
-                        attributeName,
-                        None,
-                    )
+            try:
+                self._restoreDeclaredOutputClassCreators()
+            finally:
+                for attributeName, patchInfo in reversed(list(self._patches.items())):
+                    if patchInfo["hadInstanceAttribute"]:
+                        setattr(self.protocol, attributeName, patchInfo["instanceValue"],)
+                    else:
+                        self.protocol.__dict__.pop(attributeName, None,)
 
-            self._patches.clear()
-            self._installed = False
+                self._patches.clear()
+                self._installed = False
 
     def _patchSpaCreator(self) -> None:
         originalCreator = getattr(
@@ -248,6 +243,250 @@ class RuntimePostgresqlOutputSetAdapter:
             self.protocol.__class__.__name__,
         )
 
+    def _patchDeclaredOutputClassCreators(
+            self,
+    ) -> None:
+        possibleOutputs = getattr(
+            self.protocol,
+            "_possibleOutputs",
+            None,
+        )
+
+        if not isinstance(
+                possibleOutputs,
+                dict,
+        ):
+            return
+
+        outputNamesByClass = {}
+
+        for outputName, setClass in (
+                possibleOutputs.items()
+        ):
+            if not isinstance(
+                    setClass,
+                    type,
+            ):
+                continue
+
+            try:
+                isSetClass = issubclass(
+                    setClass,
+                    ScipionSet,
+                )
+
+            except TypeError:
+                isSetClass = False
+
+            if not isSetClass:
+                continue
+
+            outputNamesByClass.setdefault(
+                setClass,
+                [],
+            ).append(
+                str(outputName)
+            )
+
+        for setClass, outputNames in (
+                outputNamesByClass.items()
+        ):
+            capability = (
+                self.runtimeMapper
+                .getPostgresqlOutputSetCapability(
+                    setClass
+                )
+            )
+
+            if not capability.get(
+                    "supported"
+            ):
+                logger.debug(
+                    "Not patching declared output "
+                    "Set class creator. "
+                    "projectId=%s protocolId=%s "
+                    "setClass=%s outputNames=%s "
+                    "reason=%s",
+                    self.projectId,
+                    self.protocol.getObjId(),
+                    setClass.__name__,
+                    outputNames,
+                    capability.get(
+                        "reason"
+                    ),
+                )
+
+                continue
+
+            originalCreator = getattr(
+                setClass,
+                "create",
+                None,
+            )
+
+            if not callable(
+                    originalCreator
+            ):
+                continue
+
+            if not self._isCompatibleClassCreator(
+                    originalCreator
+            ):
+                logger.debug(
+                    "Declared output Set create() "
+                    "does not match EMSet.create(). "
+                    "setClass=%s creator=%r",
+                    setClass.__name__,
+                    originalCreator,
+                )
+
+                continue
+
+            if (
+                    setClass
+                    in self._classCreatePatches
+            ):
+                continue
+
+            hadOwnCreate = (
+                    "create"
+                    in setClass.__dict__
+            )
+
+            ownCreateDescriptor = (
+                setClass.__dict__.get(
+                    "create"
+                )
+            )
+
+            adapter = self
+
+            def create(
+                    runtimeSetClass,
+                    outputPath,
+                    prefix=None,
+                    suffix=None,
+                    ext=None,
+                    _originalCreator=originalCreator,
+                    **kwargs,
+            ):
+                return (
+                    adapter
+                    ._createSetFromClassCreator(
+                        originalCreator=(
+                            _originalCreator
+                        ),
+                        setClass=(
+                            runtimeSetClass
+                        ),
+                        outputPath=(
+                            outputPath
+                        ),
+                        prefix=prefix,
+                        suffix=suffix,
+                        ext=ext,
+                        constructorKwargs=kwargs,
+                    )
+                )
+
+            self._classCreatePatches[
+                setClass
+            ] = {
+                "hadOwnCreate": (
+                    hadOwnCreate
+                ),
+                "ownCreateDescriptor": (
+                    ownCreateDescriptor
+                ),
+                "originalCreator": (
+                    originalCreator
+                ),
+                "outputNames": list(
+                    outputNames
+                ),
+            }
+
+            setattr(
+                setClass,
+                "create",
+                classmethod(
+                    create
+                ),
+            )
+
+            logger.info(
+                "Installed PostgreSQL declared "
+                "output Set class creator. "
+                "projectId=%s protocolId=%s "
+                "setClass=%s outputNames=%s",
+                self.projectId,
+                self.protocol.getObjId(),
+                setClass.__name__,
+                outputNames,
+            )
+
+    @staticmethod
+    def _isCompatibleClassCreator(
+            creator,
+    ) -> bool:
+        """
+        Detect the common EMSet.create() contract.
+
+        Bound classmethod signature:
+            (
+                outputPath,
+                prefix=None,
+                suffix=None,
+                ext=None,
+                **kwargs
+            )
+        """
+        try:
+            signature = inspect.signature(
+                creator
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return False
+
+        parameters = list(
+            signature.parameters.values()
+        )
+
+        positionalNames = [
+            parameter.name
+            for parameter in parameters
+            if parameter.kind
+               in {
+                   inspect.Parameter
+                   .POSITIONAL_ONLY,
+
+                   inspect.Parameter
+                   .POSITIONAL_OR_KEYWORD,
+               }
+        ]
+
+        if (
+                len(positionalNames) < 4
+                or positionalNames[:4]
+                != [
+            "outputPath",
+            "prefix",
+            "suffix",
+            "ext",
+        ]
+        ):
+            return False
+
+        return any(
+            parameter.kind
+            == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+
     @staticmethod
     def _isCompatibleSetCreator(
             creator,
@@ -340,6 +579,120 @@ class RuntimePostgresqlOutputSetAdapter:
             insertChild,
         )
 
+    def _createSetFromClassCreator(
+            self,
+            originalCreator,
+            setClass,
+            outputPath,
+            prefix,
+            suffix,
+            ext,
+            constructorKwargs,
+    ):
+        capability = (
+            self.runtimeMapper
+            .getPostgresqlOutputSetCapability(
+                setClass
+            )
+        )
+
+        if not capability.get(
+                "supported"
+        ):
+            return originalCreator(
+                outputPath,
+                prefix=prefix,
+                suffix=suffix,
+                ext=ext,
+                **dict(
+                    constructorKwargs
+                    or {}
+                ),
+            )
+
+        legacyPath = (
+            self._buildLegacyClassCreatePath(
+                setClass=setClass,
+                outputPath=outputPath,
+                prefix=prefix,
+                suffix=suffix,
+                ext=ext,
+            )
+        )
+
+        # Preserve EMSet.create() restart semantics:
+        # remove a SQLite left by an earlier execution.
+        #
+        # The new execution will not create it again.
+        pwutils.cleanPath(
+            legacyPath
+        )
+
+        return (
+            self
+            ._createPostgresqlRuntimeSet(
+                setClass=setClass,
+                constructorKwargs=(
+                    constructorKwargs
+                ),
+                creatorKind="class-create",
+                creationMetadata={
+                    "outputPath": str(
+                        outputPath
+                    ),
+                    "prefix": prefix,
+                    "suffix": suffix,
+                    "ext": ext,
+                    "legacyPath": (
+                        legacyPath
+                    ),
+                },
+            )
+        )
+
+    @staticmethod
+    def _buildLegacyClassCreatePath(
+            setClass,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+    ) -> str:
+        filePrefix = (
+                prefix
+                or setClass.__name__
+                .lower()
+                .replace(
+            "setof",
+            "",
+        )
+        )
+
+        if suffix:
+            filePrefix += (
+                    "_%s"
+                    % suffix
+            )
+
+        extension = str(
+            ext or "sqlite"
+        )
+
+        if extension.startswith(
+                "."
+        ):
+            extension = extension[1:]
+
+        fileName = "%s.%s" % (
+            filePrefix,
+            extension,
+        )
+
+        return os.path.join(
+            outputPath,
+            fileName,
+        )
+
     def _createSet(
             self,
             originalCreator,
@@ -387,13 +740,39 @@ class RuntimePostgresqlOutputSetAdapter:
                 ),
             )
 
+        return (
+            self
+            ._createPostgresqlRuntimeSet(
+                setClass=setClass,
+                constructorKwargs=(
+                    constructorKwargs
+                ),
+                creatorKind=creatorKind,
+                creationMetadata={
+                    "template": str(
+                        template
+                    ),
+                    "suffix": str(
+                        suffix
+                    ),
+                },
+            )
+        )
+
+    def _createPostgresqlRuntimeSet(
+            self,
+            setClass,
+            constructorKwargs,
+            creatorKind: str,
+            creationMetadata=None,
+    ):
         reservationToken = (
             uuid.uuid4().hex
         )
 
         provisionalOutputName = (
-            "__postgresql_runtime_output_%s"
-            % reservationToken
+                "__postgresql_runtime_output_%s"
+                % reservationToken
         )
 
         runtimeSet = (
@@ -404,8 +783,9 @@ class RuntimePostgresqlOutputSetAdapter:
                 provisionalOutputName=(
                     provisionalOutputName
                 ),
-                constructorKwargs=(
+                constructorKwargs=dict(
                     constructorKwargs
+                    or {}
                 ),
                 reservationToken=(
                     reservationToken
@@ -413,9 +793,7 @@ class RuntimePostgresqlOutputSetAdapter:
             )
         )
 
-        self._createdSets[
-            id(runtimeSet)
-        ] = {
+        entry = {
             "runtimeSet": runtimeSet,
             "runtimeObjectId": (
                 runtimeSet.getObjId()
@@ -428,28 +806,69 @@ class RuntimePostgresqlOutputSetAdapter:
             "setClassName": (
                 runtimeSet.getClassName()
             ),
-            "template": str(
-                template
+            "creatorKind": (
+                creatorKind
             ),
-            "suffix": str(
-                suffix
-            ),
-            "creatorKind": creatorKind,
         }
+
+        entry.update(
+            dict(
+                creationMetadata
+                or {}
+            )
+        )
+
+        self._createdSets[
+            id(runtimeSet)
+        ] = entry
 
         logger.info(
             "Created native PostgreSQL output Set. "
             "projectId=%s protocolId=%s "
             "runtimeObjectId=%s className=%s "
-            "provisionalOutputName=%s",
+            "provisionalOutputName=%s "
+            "creator=%s",
             self.projectId,
             self.protocol.getObjId(),
             runtimeSet.getObjId(),
             runtimeSet.getClassName(),
             provisionalOutputName,
+            creatorKind,
         )
 
         return runtimeSet
+
+    def _restoreDeclaredOutputClassCreators(
+            self,
+    ) -> None:
+        for setClass, patchInfo in reversed(
+                list(
+                    self._classCreatePatches
+                            .items()
+                )
+        ):
+            if patchInfo[
+                "hadOwnCreate"
+            ]:
+                setattr(
+                    setClass,
+                    "create",
+                    patchInfo[
+                        "ownCreateDescriptor"
+                    ],
+                )
+
+            else:
+                try:
+                    delattr(
+                        setClass,
+                        "create",
+                    )
+
+                except AttributeError:
+                    pass
+
+        self._classCreatePatches.clear()
 
     def _finalizeOutputSet(
             self,
