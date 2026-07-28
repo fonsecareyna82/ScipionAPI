@@ -356,6 +356,15 @@ class PostgresqlRuntimeSetMixin:
 
         return self
 
+    def enableAppend(self):
+        if not self.supportsPostgresqlNativeWrite():
+            raise RuntimeError(
+                "PostgreSQL runtime Set is read-only."
+            )
+
+        self.enablePostgresqlWrite()
+        self._getMapper().enableAppend()
+
     def append(
             self,
             item,
@@ -547,7 +556,7 @@ class PostgresqlRuntimeSetMixin:
 
         # A clone must not become writable implicitly.
         # Resume explicitly enables writing on the canonical output.
-        runtimeClone._postgresqlSupportsNativeWrite = False
+        runtimeClone._postgresqlSupportsNativeWrite = self.supportsPostgresqlNativeWrite()
         runtimeClone._postgresqlWritable = False
 
         runtimeClone._mapper = None
@@ -573,8 +582,10 @@ class PostgresqlRuntimeSetMixin:
             ),
         )
 
-        def cloneMapperFactory():
-            mapper = sourceMapperFactory()
+        def cloneMapperFactory(writable=False):
+            mapper = sourceMapperFactory(
+                writable=bool(writable)
+            )
 
             sourceItemBuilder = getattr(
                 mapper,

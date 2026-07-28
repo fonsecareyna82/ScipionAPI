@@ -1895,6 +1895,27 @@ def test_NestedRuntimeSetCloneCanIterateChildren():
     )
 
 
+def test_NestedRuntimeSetCloneCanEnableAppend():
+    _, runtimeSet = buildNestedRuntimeSet()
+
+    nestedSet = runtimeSet.getFirstItem()
+    nestedClone = nestedSet.clone()
+
+    assert nestedClone is not nestedSet
+    assert nestedClone.supportsPostgresqlNativeWrite() is True
+    assert nestedClone.isPostgresqlWritable() is False
+    assert nestedSet.isPostgresqlWritable() is False
+
+    nestedClone.enableAppend()
+
+    assert nestedClone.isPostgresqlWritable() is True
+    assert nestedClone._mapper.isWritable() is True
+    assert nestedClone._mapper.tableId == FakeNestedSetDb.CHILD_TABLE_ID
+
+    # Promoting the clone must not change the source object.
+    assert nestedSet.isPostgresqlWritable() is False
+
+
 def test_RuntimeRootSetCanEnablePostgresqlWrite():
     _, runtimeSet = buildRuntimeSet()
 
