@@ -23,6 +23,9 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+import app.backend.mapper as backendMapperModule
+
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
@@ -120,3 +123,168 @@ def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
         "s.properties ->> 'runtimeReserved', "
         "'false' ) <> 'true'"
     ) in setQuery
+
+
+def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
+        monkeypatch,
+):
+    finalized = []
+
+    class NativeRuntimeSetStub:
+        def getObjId(self):
+            return 91
+
+        def getClassName(self):
+            return "SetOfParticles"
+
+        def isPostgresqlRuntimeOutput(self):
+            return True
+
+    class ProtocolStub:
+        def __init__(self, outputSet):
+            self.outputSet = outputSet
+
+        def getObjId(self):
+            return 23
+
+        def iterOutputAttributes(self):
+            return [
+                (
+                    "outputParticles",
+                    self.outputSet,
+                ),
+            ]
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.db = object()
+
+    class SetMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+        def finalizeRuntimeSetOutput(
+                self,
+                projectId,
+                protocolDbId,
+                outputName,
+                scipionSet,
+        ):
+            finalized.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+                "runtimeObjectId": (
+                    scipionSet.getObjId()
+                ),
+            })
+
+            return {
+                "setId": 71,
+                "runtimeObjectId": (
+                    scipionSet.getObjId()
+                ),
+                "outputName": outputName,
+            }
+
+        def storeSet(self, **kwargs):
+            pytest.fail(
+                "Native PostgreSQL output must not "
+                "be persisted through storeSet()."
+            )
+
+    class ObjectMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+    outputSet = NativeRuntimeSetStub()
+    protocol = ProtocolStub(
+        outputSet
+    )
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionSetPostgresqlMapper",
+        SetMapperStub,
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionObjectPostgresqlMapper",
+        ObjectMapperStub,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "resolveProtocolDbIdForOutputPersistence",
+        lambda **kwargs: 17,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_prepareOutputObjectIdsForPersistence",
+        lambda **kwargs: pytest.fail(
+            "Native PostgreSQL output identity "
+            "must not be prepared again."
+        ),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_openRelativeSetMapperForPersistence",
+        lambda **kwargs: pytest.fail(
+            "Native PostgreSQL output must not "
+            "open a compatibility SQLite mapper."
+        ),
+    )
+
+    report = service.registerOutput(
+        projectId=7,
+        protocol=protocol,
+        mapper=RuntimeMapperStub(),
+        returnReport=True,
+    )
+
+    assert finalized == [
+        {
+            "projectId": 7,
+            "protocolDbId": 17,
+            "outputName": (
+                "outputParticles"
+            ),
+            "runtimeObjectId": 91,
+        },
+    ]
+
+    assert report["errors"] == []
+    assert report["skipped"] == []
+
+    assert len(
+        report["persisted"]
+    ) == 1
+
+    persistedOutput = (
+        report["persisted"][0]
+    )
+
+    assert (
+        persistedOutput["setId"]
+        == 71
+    )
+
+    assert (
+        persistedOutput[
+            "postgresqlNativeOutput"
+        ]
+        is True
+    )
+
+    assert (
+        outputSet.getObjId()
+        == 91
+    )
+
+
