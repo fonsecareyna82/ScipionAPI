@@ -75,6 +75,15 @@ class PostgresqlDb:
             self.conn.rollback()
             raise
 
+    def rollback(self) -> None:
+        """
+        Roll back the active PostgreSQL transaction.
+
+        This is required before persisting terminal protocol
+        state after a runtime database error.
+        """
+        self.conn.rollback()
+
     def fetchOne(self, query: str, params: Optional[tuple] = None) -> Optional[Dict]:
         """Fetch a single row."""
         self.cursor.execute(query, params)

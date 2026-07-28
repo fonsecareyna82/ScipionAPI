@@ -974,6 +974,17 @@ def test_SetPropertyWritesPostgresqlMetadata():
         in db.executions[0]["query"]
     )
 
+    propertyQuery = (
+        db.executions[0][
+            "query"
+        ]
+    )
+
+    assert (
+            '"updatedAt"'
+            not in propertyQuery
+    )
+
     assert (
         "UPDATE scipion_sets"
         in db.executions[1]["query"]
