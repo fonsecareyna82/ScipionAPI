@@ -86,6 +86,43 @@ class ProtocolStub:
         )
 
 
+class TomoProtocolStub:
+    def __init__(self):
+        self.inserted = []
+        self.nativeCreated = []
+
+    def getObjId(self):
+        return 18
+
+    def _createSet(
+            self,
+            SetClass,
+            template,
+            suffix,
+            **kwargs,
+    ):
+        self.nativeCreated.append({
+            "SetClass": SetClass,
+            "template": template,
+            "suffix": suffix,
+            "kwargs": kwargs,
+        })
+
+        return SetClass()
+
+    def _insertChild(
+            self,
+            key,
+            child,
+    ):
+        self.inserted.append(
+            (
+                key,
+                child,
+            )
+        )
+
+
 class RuntimeMapperStub:
     def __init__(self):
         self.created = []
@@ -305,3 +342,121 @@ def test_UninstallRestoresOriginalCreator():
     assert len(
         protocol.nativeCreated
     ) == 1
+
+
+def test_TomoCreatorReturnsPostgresqlSetWithoutClassIdentityCheck():
+    protocol = TomoProtocolStub()
+
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    outputSet = protocol._createSet(
+        OutputSetStub,
+        "tomograms%s.sqlite",
+        "",
+    )
+
+    assert outputSet.getObjId() == 91
+
+    # The native SQLite creator must not run.
+    assert protocol.nativeCreated == []
+
+    assert len(
+        runtimeMapper.created
+    ) == 1
+
+    assert (
+        runtimeMapper.created[0][
+            "setClass"
+        ]
+        is OutputSetStub
+    )
+
+    protocol._insertChild(
+        "outputTomograms",
+        outputSet,
+    )
+
+    assert len(
+        runtimeMapper.finalized
+    ) == 1
+
+    assert (
+        runtimeMapper.finalized[0][
+            "outputName"
+        ]
+        == "outputTomograms"
+    )
+
+    assert protocol.inserted == [
+        (
+            "outputTomograms",
+            outputSet,
+        ),
+    ]
+
+    adapter.uninstall()
+
+    assert (
+        runtimeMapper.discarded
+        == []
+    )
+
+
+def test_IncompatibleCreateSetMethodIsNotPatched():
+    class IncompatibleProtocolStub(
+            ProtocolStub
+    ):
+        def _createSet(
+                self,
+                value,
+        ):
+            return value
+
+    protocol = (
+        IncompatibleProtocolStub()
+    )
+
+    originalCreator = (
+        protocol._createSet
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=(
+                RuntimeMapperStub()
+            ),
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    assert (
+        protocol._createSet(7)
+        == 7
+    )
+
+    assert (
+        "_createSet"
+        not in adapter._patches
+    )
+
+    adapter.uninstall()
+
+    assert (
+        protocol._createSet(8)
+        == 8
+    )
