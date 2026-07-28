@@ -151,6 +151,31 @@ class FakeDb:
                 },
             ]
 
+        if (
+                "FROM scipion_set_tables"
+                in normalizedQuery
+        ):
+            return [
+                {
+                    "id": 71,
+                    "setId": 31,
+                    "name": "objects",
+                    "alias": "ExampleSet",
+                    "tableKind": "root",
+                    "parentTableId": None,
+                    "parentItemId": None,
+                    "itemClassName": (
+                        "ExampleItem"
+                    ),
+                    "properties": {
+                        "source": "postgresql",
+                        "legacySetTable": True,
+                    },
+                    "createdAt": None,
+                    "updatedAt": None,
+                },
+            ]
+
         if "FROM scipion_set_items" in normalizedQuery:
             return list(
                 self.itemRows
@@ -1835,6 +1860,18 @@ def test_RuntimeRootSetCanEnablePostgresqlWrite():
         is False
     )
 
+    runtimeInfo = (
+        runtimeSet
+        .getPostgresqlRuntimeInfo()
+    )
+
+    assert (
+        runtimeInfo[
+            "rootTableId"
+        ]
+        == 71
+    )
+
     result = (
         runtimeSet
         .enablePostgresqlWrite()
@@ -1853,6 +1890,13 @@ def test_RuntimeRootSetCanEnablePostgresqlWrite():
         ._mapper
         .isWritable()
         is True
+    )
+
+    assert (
+        runtimeSet
+        ._mapper
+        .rootTableId
+        == 71
     )
 
     assert runtimeSet.getSize() == 1

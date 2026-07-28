@@ -752,7 +752,24 @@ def test_WritableMapperRequiresSerializer():
         PostgresqlSetRuntimeMapper(
             db=WritableFakeDb(),
             setId=31,
+            rootTableId=71,
             itemBuilder=buildItem,
+            writable=True,
+        )
+
+
+def test_WritableRootMapperRequiresRootTableId():
+    with pytest.raises(
+            ValueError,
+            match="rootTableId",
+    ):
+        PostgresqlSetRuntimeMapper(
+            db=WritableFakeDb(),
+            setId=31,
+            itemBuilder=buildItem,
+            itemSerializer=(
+                serializeWritableItem
+            ),
             writable=True,
         )
 
@@ -781,6 +798,7 @@ def test_AppendItemAllocatesIdAtomically():
     mapper = PostgresqlSetRuntimeMapper(
         db=db,
         setId=31,
+        rootTableId=71,
         itemBuilder=buildItem,
         itemSerializer=(
             serializeWritableItem
@@ -804,6 +822,42 @@ def test_AppendItemAllocatesIdAtomically():
     ]
 
     assert any(
+        "INSERT INTO scipion_set_table_items"
+        in query
+        for query in executedQueries
+    )
+
+    assert any(
+        "UPDATE scipion_set_tables"
+        in query
+        for query in executedQueries
+    )
+
+    canonicalInsert = next(
+        call
+        for call in db.executions
+        if (
+                "INSERT INTO scipion_set_items"
+                in call["query"]
+        )
+    )
+
+    logicalInsert = next(
+        call
+        for call in db.executions
+        if (
+                "INSERT INTO scipion_set_table_items"
+                in call["query"]
+        )
+    )
+
+    assert canonicalInsert["params"][0] == 31
+    assert canonicalInsert["params"][1] == 8
+
+    assert logicalInsert["params"][0] == 71
+    assert logicalInsert["params"][1] == 8
+
+    assert any(
         "INSERT INTO scipion_set_items"
         in query
         for query in executedQueries
@@ -824,6 +878,7 @@ def test_UpdateItemKeepsExistingId():
     mapper = PostgresqlSetRuntimeMapper(
         db=db,
         setId=31,
+        rootTableId=71,
         itemBuilder=buildItem,
         itemSerializer=(
             serializeWritableItem
@@ -848,6 +903,18 @@ def test_UpdateItemKeepsExistingId():
         )
     )
 
+    logicalInsertCall = next(
+        call
+        for call in db.executions
+        if (
+                "INSERT INTO scipion_set_table_items"
+                in call["query"]
+        )
+    )
+
+    assert logicalInsertCall["params"][0] == 71
+    assert logicalInsertCall["params"][1] == 14
+
     assert insertCall["params"][0] == 31
     assert insertCall["params"][1] == 14
     assert (
@@ -862,6 +929,7 @@ def test_SetPropertyWritesPostgresqlMetadata():
     mapper = PostgresqlSetRuntimeMapper(
         db=db,
         setId=31,
+        rootTableId=71,
         itemBuilder=buildItem,
         itemSerializer=(
             serializeWritableItem
@@ -903,3 +971,96 @@ def test_ReadOnlyMapperRejectsWrites():
         mapper.appendItem(
             FakeWritableItem()
         )
+
+
+def test_DeleteRemovesCanonicalAndLogicalItem():
+    db = WritableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.delete(
+        FakeWritableItem(
+            itemId=14
+        )
+    )
+
+    logicalDelete = next(
+        call
+        for call in db.executions
+        if (
+            "DELETE FROM scipion_set_table_items"
+            in call["query"]
+        )
+    )
+
+    canonicalDelete = next(
+        call
+        for call in db.executions
+        if (
+            "DELETE FROM scipion_set_items"
+            in call["query"]
+        )
+    )
+
+    assert logicalDelete["params"] == (
+        71,
+        14,
+    )
+
+    assert canonicalDelete["params"] == (
+        31,
+        14,
+    )
+
+
+def test_ClearRemovesCanonicalAndLogicalItems():
+    db = WritableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    mapper.clear()
+
+    logicalDelete = next(
+        call
+        for call in db.executions
+        if (
+            "DELETE FROM scipion_set_table_items"
+            in call["query"]
+        )
+    )
+
+    canonicalDelete = next(
+        call
+        for call in db.executions
+        if (
+            "DELETE FROM scipion_set_items"
+            in call["query"]
+        )
+    )
+
+    assert logicalDelete["params"] == (
+        71,
+    )
+
+    assert canonicalDelete["params"] == (
+        31,
+    )
+
