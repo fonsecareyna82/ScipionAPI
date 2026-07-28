@@ -133,3 +133,68 @@ def test_RemoveLegacyRunDatabasesDoesNotFollowSymlinkDirectories(
     assert report["deletedCount"] == 0
     assert externalRunDatabase.exists()
     assert linkedRunPath.is_symlink()
+
+
+def test_RemoveLegacyProjectDatabasesRemovesSettingsArtifacts(
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "project"
+    )
+
+    projectPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    legacyFiles = [
+        projectPath / "project.sqlite",
+        projectPath / "project.sqlite-wal",
+        projectPath / "project.sqlite-shm",
+        projectPath / "settings.sqlite",
+        projectPath / "settings.sqlite-wal",
+        projectPath / "settings.sqlite-journal",
+    ]
+
+    for legacyFile in legacyFiles:
+        legacyFile.write_text(
+            "legacy"
+        )
+
+    outputDatabase = (
+        projectPath
+        / "output.sqlite"
+    )
+
+    outputDatabase.write_text(
+        "output"
+    )
+
+    report = (
+        RuntimeProjectLifecycleService()
+        .removeLegacyProjectDatabase(
+            projectPath=projectPath,
+        )
+    )
+
+    assert (
+        report["projectSqliteRemoved"]
+        is True
+    )
+
+    assert (
+        report["settingsSqliteRemoved"]
+        is True
+    )
+
+    assert all(
+        not legacyFile.exists()
+        for legacyFile in legacyFiles
+    )
+
+    # Other SQLite outputs are not legacy
+    # project infrastructure.
+    assert outputDatabase.exists()
+
+

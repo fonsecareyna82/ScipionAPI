@@ -77,6 +77,11 @@ class FakeManager:
                 / "project.sqlite"
         ).touch()
 
+        (
+                projectPath
+                / "settings.sqlite"
+        ).touch()
+
         self.createdProjects.append(name)
 
         return FakeCreatedProject(
@@ -320,6 +325,23 @@ def test_CreateProjectSanitizesNameAndInsertsProject(service, mapper, currentUse
     assert result["permission"] == "owner"
     assert result["projectOwnerId"] == 1
     assert result["thumbnailUrl"] == "/projects/101/thumbnail"
+
+    createdProjectPath = (
+            Path(
+                service.manager.PROJECTS
+            )
+            / "my_project_v1"
+    )
+
+    assert not (
+            createdProjectPath
+            / "project.sqlite"
+    ).exists()
+
+    assert not (
+            createdProjectPath
+            / "settings.sqlite"
+    ).exists()
 
 
 def test_CreateProjectRejectsDuplicateSanitizedName(service, mapper, currentUser):

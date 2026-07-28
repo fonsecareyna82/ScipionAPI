@@ -55,15 +55,13 @@ class PostgresqlProject(ScipionProject):
     """
     PostgreSQL-aware Scipion Project.
 
-    This class keeps the normal Scipion Project lifecycle, paths, settings,
-    hosts and protocol setup logic, but replaces Project.mapper with a
-    PostgresqlRuntimeMapper.
+    This class keeps Scipion's normal project paths,
+    hosts and protocol setup logic, while replacing
+    Project.mapper with PostgresqlRuntimeMapper.
 
-    Project reads are PostgreSQL-only.
-
-    A temporary project.sqlite write mirror can still be enabled for Scipion's
-    native runner. Protocol runtime databases such as logs/run.db remain
-    regular SQLite databases.
+    Project data and effective runtime settings are
+    PostgreSQL-backed. Project-local project.sqlite
+    and settings.sqlite databases are not required.
     """
 
     def __init__(

@@ -32,6 +32,7 @@ class RuntimeProjectLifecycleService:
     """Finalize managed projects as PostgreSQL-only filesystem projects."""
 
     LEGACY_PROJECT_DATABASE_NAME = "project.sqlite"
+    LEGACY_SETTINGS_DATABASE_NAME = "settings.sqlite"
     LEGACY_RUN_DATABASE_NAME = "run.db"
 
     LEGACY_PROJECT_DATABASE_SUFFIXES = (
@@ -40,6 +41,105 @@ class RuntimeProjectLifecycleService:
         "-shm",
         "-journal",
     )
+
+    def _removeLegacyDatabaseArtifacts(
+            self,
+            *,
+            projectRoot: Path,
+            databasePath: Path,
+            expectedName: str,
+    ) -> Dict[str, Any]:
+        databasePath = (
+            self._normalizeLexicalPath(
+                databasePath
+            )
+        )
+
+        if databasePath.name != expectedName:
+            raise RuntimeError(
+                "Unexpected legacy project "
+                "database name: %s"
+                % databasePath
+            )
+
+        self._assertPathInsideProject(
+            projectRoot=projectRoot,
+            candidatePath=databasePath,
+        )
+
+        deletedPaths = []
+        missingPaths = []
+
+        for suffix in (
+                self.LEGACY_DATABASE_SUFFIXES
+        ):
+            candidatePath = Path(
+                str(databasePath) + suffix
+            )
+
+            self._assertPathInsideProject(
+                projectRoot=projectRoot,
+                candidatePath=candidatePath,
+            )
+
+            candidateText = str(
+                candidatePath
+            )
+
+            if not os.path.lexists(
+                    candidateText
+            ):
+                missingPaths.append(
+                    candidateText
+                )
+                continue
+
+            if (
+                    not os.path.islink(
+                        candidateText
+                    )
+                    and os.path.isdir(
+                candidateText
+            )
+            ):
+                raise RuntimeError(
+                    "Legacy project database path "
+                    "is unexpectedly a directory: %s"
+                    % candidatePath
+                )
+
+            # Remove the link itself without following it.
+            os.unlink(
+                candidateText
+            )
+
+            deletedPaths.append(
+                candidateText
+            )
+
+        remainingPaths = [
+            str(databasePath) + suffix
+            for suffix
+            in self.LEGACY_DATABASE_SUFFIXES
+            if os.path.lexists(
+                str(databasePath) + suffix
+            )
+        ]
+
+        if remainingPaths:
+            raise RuntimeError(
+                "Legacy project database cleanup "
+                "was incomplete: %s"
+                % remainingPaths
+            )
+
+        return {
+            "database": str(
+                databasePath
+            ),
+            "deleted": deletedPaths,
+            "missing": missingPaths,
+        }
 
     @staticmethod
     def _normalizeLexicalPath(
