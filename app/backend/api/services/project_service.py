@@ -274,7 +274,10 @@ class ProjectService:
         )
 
         try:
-            postgresqlProject.load(chdir=True)
+            postgresqlProject.load(
+                chdir=True,
+                loadAllConfig=False,
+            )
         except Exception:
             try:
                 postgresqlProject.closeMapper()
@@ -698,13 +701,6 @@ class ProjectService:
                     projectPath=projectPath,
                     projectDbPath=projectDbPath,
                 )
-            )
-
-            logger.info(
-                "Created PostgreSQL-only project. "
-                "path=%s cleanup=%s",
-                projectPath,
-                cleanupReport,
             )
 
             dbProjectId = mapper.insertProject(
