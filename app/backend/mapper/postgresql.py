@@ -9,8 +9,13 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Iterator, Tuple
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    setPostgresqlRuntimeParentReference,
+)
+
 POSTGRESQL_PROTOCOL_ID_START = 2
 POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
+
 
 def _toJsonParam(value: Any) -> Any:
     # toJsonParam

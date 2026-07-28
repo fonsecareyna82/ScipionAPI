@@ -86,7 +86,9 @@ from app.backend.runtime.protocol_status_sync_service import (
 from app.backend.runtime.protocol_step_persistence_service import (
     RuntimeProtocolStepPersistenceService,
 )
-
+from app.backend.runtime.postgresql_output_set_adapter import (
+    RuntimePostgresqlOutputSetAdapter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2907,9 +2909,25 @@ class RuntimePostgresqlProtocolWorker:
             self.buildStepsExecutor()
         )
 
-        self.protocol.run()
+        outputSetAdapter = (
+            RuntimePostgresqlOutputSetAdapter(
+                runtimeMapper=(
+                    self.runtimeMapper
+                ),
+                projectId=self.projectId,
+                protocol=self.protocol,
+            )
+        )
 
-        self.storeProtocol()
+        outputSetAdapter.install()
+
+        try:
+            self.protocol.run()
+
+            self.storeProtocol()
+
+        finally:
+            outputSetAdapter.uninstall()
 
         protocolStatus = str(
             self.protocol.getStatus()

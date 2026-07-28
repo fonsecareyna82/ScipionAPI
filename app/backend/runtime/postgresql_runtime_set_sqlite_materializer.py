@@ -587,37 +587,49 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         else:
             scipionSet._classesDict = classes
 
-    def _buildMaterializedPath(self, runtimeSet: ScipionSet) -> str:
-        info = self._getRuntimeInfo(runtimeSet)
-        setId = info.get("setId")
-        tableId = info.get("tableId")
+    def _buildMaterializedPath(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> str:
+        info = self._getRuntimeInfo(
+            runtimeSet
+        )
+
+        setId = info.get(
+            "setId"
+        )
+
+        tableId = info.get(
+            "tableId"
+        )
 
         if tableId is not None:
-            identity = "table-%s" % tableId
+            identity = (
+                    "table-%s"
+                    % tableId
+            )
         elif setId is not None:
-            identity = "set-%s" % setId
+            identity = (
+                    "set-%s"
+                    % setId
+            )
         else:
             identity = "set"
 
-        className = self._sanitizePathPart(runtimeSet.getClassName())
+        className = self._sanitizePathPart(
+            runtimeSet.getClassName()
+        )
+
         fileName = "%s-%s-%s.sqlite" % (
             className or "ScipionSet",
             identity,
             uuid.uuid4().hex[:12],
         )
 
-        owner = self._findPathOwner(runtimeSet)
-        if owner is not None:
-            try:
-                return str(
-                    owner.getExtraPath(self.DIRECTORY_NAME, fileName)
-                )
-            except Exception:
-                pass
-
         return os.path.join(
             tempfile.gettempdir(),
             self.DIRECTORY_NAME,
+            "worker-%s" % os.getpid(),
             fileName,
         )
 

@@ -443,6 +443,582 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "staleObjectsDeleted": staleObjectsDeleted,
         }
 
+    def reserveRuntimeSet(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            scipionSet: Any,
+            reservationToken: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Reserve an empty PostgreSQL Set before a protocol starts
+        appending items.
+
+        No SQLite file is created and no Set iteration is attempted.
+        """
+        if not projectId:
+            raise ValueError("projectId is required")
+
+        if not protocolDbId:
+            raise ValueError("protocolDbId is required")
+
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        if not outputName:
+            raise ValueError("outputName is required")
+
+        runtimeObjectId = self._getSourceObjId(
+            scipionSet
+        )
+
+        if runtimeObjectId is None:
+            raise ValueError(
+                "Cannot reserve a PostgreSQL runtime Set "
+                "without a Scipion object id."
+            )
+
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        setClassName = (
+                self._getClassName(
+                    scipionSet
+                )
+                or scipionSet.__class__.__name__
+        )
+
+        itemClassName = self._getItemClassName(
+            item=None,
+            itemSchema={},
+            scipionSet=scipionSet,
+        )
+
+        if (
+                not itemClassName
+                or str(itemClassName).lower()
+                == "unknown"
+        ):
+            raise ValueError(
+                "Cannot reserve PostgreSQL Set %s "
+                "without a declared ITEM_TYPE."
+                % setClassName
+            )
+
+        self.registerObjectTypeFromObject(
+            scipionSet,
+            mapperKind="flat_set",
+            includeProperties=False,
+            classSchema={
+                "storage": "flat_set",
+                "runtimeWritable": True,
+            },
+        )
+
+        timestamp = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+        properties = self._getSetProperties(
+            scipionSet
+        )
+
+        properties.update({
+            "columnsCount": 0,
+            "itemsCount": 0,
+            "maxItemId": None,
+            "incremental": True,
+            "runtimeReserved": True,
+            "provisionalOutputName": outputName,
+            "reservationToken": reservationToken,
+            "lastSyncAt": timestamp,
+            "lastCheckedAt": timestamp,
+            "nestedTablesVersion": (
+                NESTED_LOGICAL_TABLES_VERSION
+            ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
+            ),
+        })
+
+        storedPaths: List[str] = []
+
+        with self.db.transaction():
+            rootObjectId = self._storeObjectNode(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                scipionObj=scipionSet,
+                name=outputName,
+                path=outputName,
+                parentObjectId=None,
+                storedPaths=storedPaths,
+                includeNestedProperties=False,
+                visited=set(),
+            )
+
+            setId = self._upsertSet(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                objectId=rootObjectId,
+                outputName=outputName,
+                setClassName=setClassName,
+                itemClassName=str(
+                    itemClassName
+                ),
+                properties=properties,
+            )
+
+            self._replaceStoredSetSnapshot(
+                setId=setId
+            )
+
+            rootTableId = self._upsertSetTable(
+                setId=setId,
+                name="objects",
+                alias=setClassName,
+                tableKind="root",
+                parentTableId=None,
+                parentItemId=None,
+                itemClassName=str(
+                    itemClassName
+                ),
+                properties={
+                    "source": "postgresql",
+                    "legacySetTable": True,
+                    "runtimeWritable": True,
+                    "itemsCount": 0,
+                    "maxItemId": None,
+                    "incremental": True,
+                },
+            )
+
+            self._updateSetProperties(
+                setId=setId,
+                properties=properties,
+            )
+
+            self._upsertSetProperties(
+                setId=setId,
+                properties=properties,
+            )
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=runtimeObjectId,
+            itemsCount=0,
+            maxItemId=None,
+        )
+
+        return {
+            "setId": int(setId),
+            "rootTableId": int(
+                rootTableId
+            ),
+            # Database id of the scipion_objects row.
+            "objectId": int(
+                rootObjectId
+            ),
+            # Canonical Scipion runtime id.
+            "runtimeObjectId": int(
+                runtimeObjectId
+            ),
+            "projectId": int(
+                projectId
+            ),
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "outputName": outputName,
+            "className": setClassName,
+            "setClassName": setClassName,
+            "itemClassName": str(
+                itemClassName
+            ),
+            "properties": properties,
+            "reserved": True,
+        }
+
+    def finalizeRuntimeSetOutput(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            scipionSet: Any,
+    ) -> Dict[str, Any]:
+        """
+        Rename and finalize a previously reserved PostgreSQL runtime Set.
+
+        This method never iterates the Set and never rebuilds its items.
+        """
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        if not outputName:
+            raise ValueError("outputName is required")
+
+        runtimeObjectId = self._getSourceObjId(
+            scipionSet
+        )
+
+        if runtimeObjectId is None:
+            raise ValueError(
+                "Cannot finalize a PostgreSQL Set "
+                "without its runtime object id."
+            )
+
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        storedSet = self.db.fetchOne(
+            """
+            SELECT
+                stored_set.id,
+                stored_set."objectId",
+                stored_set."outputName",
+                stored_set."setClassName",
+                stored_set."itemClassName",
+                stored_set.properties
+              FROM scipion_sets stored_set
+              JOIN scipion_objects object_row
+                ON object_row.id =
+                   stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND object_row."scipionObjId" = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        if storedSet is None:
+            raise RuntimeError(
+                "PostgreSQL runtime Set %s was not reserved."
+                % runtimeObjectId
+            )
+
+        setId = int(
+            storedSet["id"]
+        )
+
+        objectId = int(
+            storedSet["objectId"]
+        )
+
+        conflictingSet = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "outputName" = %s
+               AND id <> %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                outputName,
+                setId,
+            ),
+        )
+
+        if conflictingSet is not None:
+            raise RuntimeError(
+                "Protocol output '%s' is already owned "
+                "by PostgreSQL Set %s."
+                % (
+                    outputName,
+                    conflictingSet["id"],
+                )
+            )
+
+        existingProperties = self._normalizeProperties(
+            storedSet.get(
+                "properties"
+            )
+        )
+
+        currentProperties = self._getSetProperties(
+            scipionSet
+        )
+
+        finalProperties = dict(
+            existingProperties
+        )
+
+        finalProperties.update(
+            currentProperties
+        )
+
+        finalProperties.update({
+            "runtimeReserved": False,
+            "outputName": outputName,
+            "finalOutputName": outputName,
+            "incremental": True,
+            "lastCheckedAt": (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            ),
+            "nestedTablesVersion": (
+                NESTED_LOGICAL_TABLES_VERSION
+            ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
+            ),
+        })
+
+        setClassName = (
+                self._getClassName(
+                    scipionSet
+                )
+                or storedSet[
+                    "setClassName"
+                ]
+        )
+
+        with self.db.transaction():
+            self.db.execute(
+                """
+                UPDATE scipion_objects
+                   SET name = %s,
+                       path = %s,
+                       "scipionObjId" = %s,
+                       "className" = %s,
+                       label = %s,
+                       comment = %s,
+                       creation = %s,
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    outputName,
+                    outputName,
+                    int(runtimeObjectId),
+                    str(setClassName),
+                    self._getObjectLabel(
+                        scipionSet
+                    ),
+                    self._getObjectComment(
+                        scipionSet
+                    ),
+                    self._getObjectCreation(
+                        scipionSet
+                    ),
+                    objectId,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            self.db.execute(
+                """
+                UPDATE scipion_sets
+                   SET "outputName" = %s,
+                       "setClassName" = %s,
+                       properties = %s::jsonb,
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    outputName,
+                    str(setClassName),
+                    self._jsonParam(
+                        finalProperties
+                    ),
+                    setId,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            self._upsertSetProperties(
+                setId=setId,
+                properties=finalProperties,
+            )
+
+        itemsCount = self._toOptionalInt(
+            finalProperties.get(
+                "itemsCount"
+            )
+        )
+
+        maxItemId = self._toOptionalInt(
+            finalProperties.get(
+                "maxItemId"
+            )
+        )
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=runtimeObjectId,
+            itemsCount=itemsCount or 0,
+            maxItemId=maxItemId,
+        )
+
+        return {
+            "setId": setId,
+            "rootTableId": self._resolveRootTableId(
+                setId
+            ),
+            "objectId": objectId,
+            "runtimeObjectId": int(
+                runtimeObjectId
+            ),
+            "projectId": int(
+                projectId
+            ),
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "outputName": outputName,
+            "className": str(
+                setClassName
+            ),
+            "setClassName": str(
+                setClassName
+            ),
+            "itemClassName": storedSet[
+                "itemClassName"
+            ],
+            "properties": finalProperties,
+            "reserved": False,
+        }
+
+    def discardReservedRuntimeSet(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            runtimeObjectId: int,
+    ) -> bool:
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        storedSet = self.db.fetchOne(
+            """
+            SELECT
+                stored_set.id,
+                stored_set."objectId",
+                stored_set.properties
+              FROM scipion_sets stored_set
+              JOIN scipion_objects object_row
+                ON object_row.id =
+                   stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND object_row."scipionObjId" = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        if storedSet is None:
+            return False
+
+        properties = self._normalizeProperties(
+            storedSet.get(
+                "properties"
+            )
+        )
+
+        if not properties.get(
+                "runtimeReserved"
+        ):
+            return False
+
+        self.deleteStoredSetOutput(
+            projectId=int(projectId),
+            setId=int(
+                storedSet["id"]
+            ),
+            objectId=int(
+                storedSet["objectId"]
+            ),
+            runtimeObjectId=int(
+                runtimeObjectId
+            ),
+        )
+
+        return True
+
+    def _resolveRootTableId(
+            self,
+            setId: int,
+    ) -> Optional[int]:
+        row = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_set_tables
+             WHERE "setId" = %s
+               AND "tableKind" = 'root'
+             LIMIT 1
+            """,
+            (
+                int(setId),
+            ),
+        )
+
+        return (
+            int(row["id"])
+            if row is not None
+            else None
+        )
+
+    def _isPostgresqlRuntimeSet(
+            self,
+            scipionSet: Any,
+    ) -> bool:
+        checker = getattr(
+            scipionSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        try:
+            return bool(
+                checker()
+            )
+        except Exception:
+            return False
+
     def getStoredSet(
         self,
         projectId: int,
@@ -1586,6 +2162,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return None
 
     def _getSetSourceMTime(self, scipionSet: Any) -> Optional[float]:
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            return None
+
         fileName = self._callOptionalGetter(scipionSet, "getFileName")
         if not fileName:
             return None
@@ -2426,13 +3007,27 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "scipionObjId": self._getSourceObjId(scipionSet),
         }
 
-        fileName = self._callOptionalGetter(
-            scipionSet,
-            "getFileName",
-        )
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            # Never call getFileName() here. For PostgreSQL
+            # runtime Sets that method is the explicit SQLite
+            # compatibility boundary.
+            fileName = self._callOptionalGetter(
+                scipionSet,
+                "getLegacyFileName",
+            )
+        else:
+            fileName = self._callOptionalGetter(
+                scipionSet,
+                "getFileName",
+            )
+
         if fileName is not None:
-            properties["fileName"] = self._toJsonValue(
-                fileName
+            properties["fileName"] = (
+                self._toJsonValue(
+                    fileName
+                )
             )
 
         streamState = self._callOptionalGetter(
