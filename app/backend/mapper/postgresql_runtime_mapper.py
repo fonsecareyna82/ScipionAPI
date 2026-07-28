@@ -4959,11 +4959,73 @@ class PostgresqlRuntimeMapper(Mapper):
                     nativeItemClass
                 )
         ):
+            nestedItemType = getattr(
+                nativeItemClass,
+                "ITEM_TYPE",
+                None,
+            )
+
+            if isinstance(
+                    nestedItemType,
+                    str,
+            ):
+                nativeNestedItemClass = (
+                    classRegistry.get(
+                        nestedItemType
+                    )
+                )
+
+            else:
+                nativeNestedItemClass = (
+                    nestedItemType
+                )
+
+            if not isinstance(
+                    nativeNestedItemClass,
+                    type,
+            ):
+                return {
+                    "supported": False,
+                    "reason": (
+                        "unresolved_nested_item_class"
+                    ),
+                    "itemClassName": (
+                        nativeItemClass.__name__
+                    ),
+                }
+
+            # The current implementation supports:
+            #
+            # root Set
+            #   └── item Set
+            #         └── normal items
+            #
+            # Do not silently accept deeper hierarchies yet.
+            if (
+                    self.runtimeSetFactory
+                            ._isScipionSetClass(
+                        nativeNestedItemClass
+                    )
+            ):
+                return {
+                    "supported": False,
+                    "reason": (
+                        "nested_set_depth_unsupported"
+                    ),
+                    "itemClassName": (
+                        nativeItemClass.__name__
+                    ),
+                    "childItemClassName": (
+                        nativeNestedItemClass
+                        .__name__
+                    ),
+                }
+
             return {
-                "supported": False,
-                "reason": (
-                    "nested_set_items"
-                ),
+                "supported": True,
+                "reason": None,
+                "storageKind": "flat_items",
+                "nestedSetItems": False,
                 "itemClassName": (
                     nativeItemClass.__name__
                 ),

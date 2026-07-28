@@ -31,7 +31,38 @@ from pyworkflow.object import (
 from app.backend.runtime.postgresql_output_set_adapter import (
     RuntimePostgresqlOutputSetAdapter,
 )
+from app.backend.mapper.postgresql_runtime_mapper import (
+    PostgresqlRuntimeMapper,
+)
+from app.backend.runtime.postgresql_runtime_set_factory import (
+    PostgresqlRuntimeSetFactory,
+)
 
+
+def _buildRealCapabilityMapper():
+    mapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.runtimeSetFactory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    mapper.dictClasses = {
+        "ItemStub": ItemStub,
+        "NestedItemStub": NestedItemStub,
+        "NestedOutputSetStub": (
+            NestedOutputSetStub
+        ),
+        "DeepNestedItemStub": (
+            DeepNestedItemStub
+        ),
+        "DeepNestedOutputSetStub": (
+            DeepNestedOutputSetStub
+        ),
+    }
+
+    return mapper
 
 class ItemStub(Object):
     pass
@@ -77,6 +108,18 @@ class NestedItemStub(Set):
 
 class NestedOutputSetStub(Set):
     ITEM_TYPE = NestedItemStub
+
+
+class UnsupportedOutputSetStub(Set):
+    ITEM_TYPE = None
+
+
+class DeepNestedItemStub(Set):
+    ITEM_TYPE = NestedItemStub
+
+
+class DeepNestedOutputSetStub(Set):
+    ITEM_TYPE = DeepNestedItemStub
 
 
 class ProtocolStub:
@@ -174,15 +217,37 @@ class RuntimeMapperStub:
             self,
             setClass,
     ):
-        if setClass is NestedOutputSetStub:
+        if setClass is UnsupportedOutputSetStub:
             return {
                 "supported": False,
-                "reason": "nested_set_items",
+                "reason": (
+                    "unresolved_item_class"
+                ),
+            }
+
+        if setClass is DeepNestedOutputSetStub:
+            return {
+                "supported": False,
+                "reason": (
+                    "nested_set_depth_unsupported"
+                ),
+            }
+
+        if setClass is NestedOutputSetStub:
+            return {
+                "supported": True,
+                "reason": None,
+                "storageKind": (
+                    "nested_logical_tables"
+                ),
+                "nestedSetItems": True,
             }
 
         return {
             "supported": True,
             "reason": None,
+            "storageKind": "flat_items",
+            "nestedSetItems": False,
         }
 
     def createPostgresqlOutputSet(
@@ -298,14 +363,16 @@ def test_SpaCreatorReturnsPostgresqlSetAndFinalizesOnInsertChild():
     assert runtimeMapper.discarded == []
 
 
-def test_UnsupportedNestedSetUsesNativeCreator():
+def test_NestedSetUsesPostgresqlCreator():
     protocol = ProtocolStub()
     runtimeMapper = RuntimeMapperStub()
 
-    adapter = RuntimePostgresqlOutputSetAdapter(
-        runtimeMapper=runtimeMapper,
-        projectId=4,
-        protocol=protocol,
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
     )
 
     adapter.install()
@@ -314,7 +381,7 @@ def test_UnsupportedNestedSetUsesNativeCreator():
         protocol
         ._EMProtocol__createSet(
             NestedOutputSetStub,
-            "classes%s.sqlite",
+            "tiltseries%s.sqlite",
             "",
         )
     )
@@ -324,13 +391,40 @@ def test_UnsupportedNestedSetUsesNativeCreator():
         NestedOutputSetStub,
     )
 
+    assert outputSet.getObjId() == 91
+
+    assert protocol.nativeCreated == []
+
     assert len(
-        protocol.nativeCreated
+        runtimeMapper.created
     ) == 1
 
-    assert runtimeMapper.created == []
+    assert (
+        runtimeMapper.created[0][
+            "setClass"
+        ]
+        is NestedOutputSetStub
+    )
+
+    protocol._insertChild(
+        "outputTiltSeries",
+        outputSet,
+    )
+
+    assert len(
+        runtimeMapper.finalized
+    ) == 1
+
+    assert (
+        runtimeMapper.finalized[0][
+            "outputName"
+        ]
+        == "outputTiltSeries"
+    )
 
     adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
 
 
 def test_UnregisteredPostgresqlSetIsDiscarded():
@@ -636,5 +730,93 @@ def test_DeclaredOutputClassCreateUsesPostgresqlAndRemovesLegacyFile(
         DirectCreateOutputSetStub
         .nativeCreateCalls
     ) == 1
+
+
+def test_UnsupportedSetUsesNativeCreator():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    outputSet = (
+        protocol
+        ._EMProtocol__createSet(
+            UnsupportedOutputSetStub,
+            "unsupported%s.sqlite",
+            "",
+        )
+    )
+
+    assert isinstance(
+        outputSet,
+        UnsupportedOutputSetStub,
+    )
+
+    assert len(
+        protocol.nativeCreated
+    ) == 1
+
+    assert runtimeMapper.created == []
+
+    adapter.uninstall()
+
+
+def test_RealCapabilitySupportsNestedLogicalTables():
+    mapper = (
+        _buildRealCapabilityMapper()
+    )
+
+    capability = (
+        mapper
+        .getPostgresqlOutputSetCapability(
+            NestedOutputSetStub
+        )
+    )
+
+    assert capability == {
+        "supported": True,
+        "reason": None,
+        "storageKind": (
+            "nested_logical_tables"
+        ),
+        "nestedSetItems": True,
+        "itemClassName": (
+            "NestedItemStub"
+        ),
+        "childItemClassName": (
+            "ItemStub"
+        ),
+    }
+
+
+def test_RealCapabilityRejectsDeeperNestedSets():
+    mapper = (
+        _buildRealCapabilityMapper()
+    )
+
+    capability = (
+        mapper
+        .getPostgresqlOutputSetCapability(
+            DeepNestedOutputSetStub
+        )
+    )
+
+    assert (
+        capability["supported"]
+        is False
+    )
+
+    assert (
+        capability["reason"]
+        == "nested_set_depth_unsupported"
+    )
 
 

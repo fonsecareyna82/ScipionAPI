@@ -1274,11 +1274,9 @@ class PostgresqlRuntimeSetFactory:
                 ),
             )
 
-        # Root Sets containing normal items can now write
-        # directly into scipion_set_items.
-        #
-        # Sets whose items are themselves Sets still require
-        # writable logical-table support.
+        # Root Sets can write normal items directly and can
+        # synchronize nested Set items through writable
+        # PostgreSQL logical tables.
         runtimeSet._postgresqlSupportsNativeWrite = (
                 rootTableId is not None
         )
