@@ -56,6 +56,12 @@ SELF_LABEL = "self"
 NESTED_LOGICAL_TABLES_VERSION = 18
 SET_PROPERTIES_VERSION = 3
 
+POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS = (
+    "fileName",
+    "_mapperPath",
+    "materializedFileName",
+)
+
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
@@ -529,12 +535,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             scipionSet
         )
 
+        self._removePostgresqlRuntimeStorageProperties(
+            properties
+        )
+
         properties.update({
             "columnsCount": 0,
             "itemsCount": 0,
             "maxItemId": None,
             "incremental": True,
             "runtimeReserved": True,
+            "runtimeWritable": True,
+            "postgresqlNativeOutput": True,
             "provisionalOutputName": outputName,
             "reservationToken": reservationToken,
             "lastSyncAt": timestamp,
@@ -756,8 +768,16 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
         )
 
+        self._removePostgresqlRuntimeStorageProperties(
+            existingProperties
+        )
+
         currentProperties = self._getSetProperties(
             scipionSet
+        )
+
+        self._removePostgresqlRuntimeStorageProperties(
+            currentProperties
         )
 
         finalProperties = dict(
@@ -768,8 +788,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             currentProperties
         )
 
+        self._removePostgresqlRuntimeStorageProperties(
+            finalProperties
+        )
+
         finalProperties.update({
             "runtimeReserved": False,
+            "runtimeWritable": True,
+            "postgresqlNativeOutput": True,
             "outputName": outputName,
             "finalOutputName": outputName,
             "incremental": True,
@@ -2999,6 +3025,28 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return flags
 
+    def _removePostgresqlRuntimeStorageProperties(
+            self,
+            properties: Dict[str, Any],
+    ) -> None:
+        """
+        Remove SQLite-specific storage metadata from a
+        PostgreSQL-native runtime Set.
+        """
+        if not isinstance(
+                properties,
+                dict,
+        ):
+            return
+
+        for propertyName in (
+                POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS
+        ):
+            properties.pop(
+                propertyName,
+                None,
+            )
+
     def _getSetProperties(self, scipionSet: Any) -> Dict[str, Any]:
         properties: Dict[str, Any] = {
             "className": self._getClassName(scipionSet),
@@ -3074,6 +3122,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
             properties[attrPath] = self._toJsonValue(
                 value
+            )
+
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            self._removePostgresqlRuntimeStorageProperties(
+                properties
             )
 
         return {

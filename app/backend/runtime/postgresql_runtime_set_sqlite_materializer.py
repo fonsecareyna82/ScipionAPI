@@ -26,32 +26,22 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
     def materialize(self, runtimeSet: ScipionSet) -> str:
         with self._lock:
-            cachedPath = self._getCachedPath(runtimeSet)
+            cachedPath = self._getCachedPath(
+                runtimeSet
+            )
+
             if cachedPath is not None:
                 return cachedPath
 
-            reusableLegacyPath = (
-                self._getReusableLegacyPath(
-                    runtimeSet
-                )
+            # PostgreSQL is the canonical source of truth.
+            #
+            # Never reuse a persistent SQLite file from the
+            # project or protocol directory. Compatibility
+            # snapshots must always live in our managed
+            # temporary directory.
+            materializedPath = self._buildMaterializedPath(
+                runtimeSet
             )
-
-            if reusableLegacyPath is not None:
-                logger.info(
-                    "Reusing existing SQLite file for PostgreSQL runtime Set. "
-                    "className=%s path=%s",
-                    runtimeSet.getClassName(),
-                    reusableLegacyPath,
-                )
-
-                self._rememberMaterializedPath(
-                    runtimeSet,
-                    reusableLegacyPath,
-                )
-
-                return reusableLegacyPath
-
-            materializedPath = self._buildMaterializedPath(runtimeSet)
             os.makedirs(os.path.dirname(materializedPath), exist_ok=True)
             self._removeSqliteFiles(materializedPath)
 
@@ -145,157 +135,89 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
             raise
 
-    def _getCachedPath(self, runtimeSet: ScipionSet) -> Optional[str]:
+    def _getCachedPath(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> Optional[str]:
         cachedPath = getattr(
             runtimeSet,
             "_postgresqlMaterializedFileName",
             None,
         )
+
         if not cachedPath:
-            cachedPath = self._getRuntimeProperties(runtimeSet).get(
-                self.MATERIALIZED_PATH_PROPERTY
+            cachedPath = (
+                self
+                ._getRuntimeProperties(
+                    runtimeSet
+                )
+                .get(
+                    self.MATERIALIZED_PATH_PROPERTY
+                )
             )
 
-        if cachedPath and os.path.isfile(str(cachedPath)):
-            return str(cachedPath)
-        return None
+        if not cachedPath:
+            return None
 
-    def _getReusableLegacyPath(
-            self,
-            runtimeSet: ScipionSet,
-    ) -> Optional[str]:
-        properties = self._getRuntimeProperties(
-            runtimeSet
+        cachedPath = os.path.realpath(
+            str(cachedPath)
         )
 
-        rawPaths = []
-
-        for propertyName in (
-                "fileName",
-                "_mapperPath",
+        # Never accept a cached path located in Runs/,
+        # project root, extra/, or any other persistent
+        # project directory.
+        if not self._isManagedTemporaryPath(
+                cachedPath
         ):
-            rawValue = properties.get(
-                propertyName
+            logger.warning(
+                "Ignoring persistent SQLite compatibility "
+                "path for PostgreSQL runtime Set. "
+                "className=%s path=%s",
+                runtimeSet.getClassName(),
+                cachedPath,
             )
 
-            if not rawValue:
-                continue
+            return None
 
-            rawPath = str(
-                rawValue
-            ).split(
-                ",",
-                1,
-            )[0].strip()
+        if not os.path.isfile(
+                cachedPath
+        ):
+            return None
 
-            if (
-                    rawPath
-                    and rawPath not in rawPaths
-            ):
-                rawPaths.append(
-                    rawPath
-                )
+        return cachedPath
 
-        projectRoots = []
-        owner = self._findPathOwner(
-            runtimeSet
+    def _isManagedTemporaryPath(
+            self,
+            path: str,
+    ) -> bool:
+        if not path:
+            return False
+
+        managedRoot = os.path.realpath(
+            os.path.join(
+                tempfile.gettempdir(),
+                self.DIRECTORY_NAME,
+            )
         )
 
-        if owner is not None:
-            getProject = getattr(
-                owner,
-                "getProject",
-                None,
-            )
+        candidatePath = os.path.realpath(
+            str(path)
+        )
 
-            if callable(getProject):
-                try:
-                    project = getProject()
-                    getProjectPath = getattr(
-                        project,
-                        "getPath",
-                        None,
-                    )
-
-                    if callable(getProjectPath):
-                        projectPath = getProjectPath()
-
-                        if projectPath:
-                            projectRoots.append(
-                                str(projectPath)
-                            )
-
-                except Exception:
-                    pass
-
-            getOwnerPath = getattr(
-                owner,
-                "getPath",
-                None,
-            )
-
-            if callable(getOwnerPath):
-                try:
-                    ownerPath = getOwnerPath()
-
-                    if ownerPath:
-                        projectRoots.append(
-                            str(ownerPath)
-                        )
-
-                except Exception:
-                    pass
-
-        for rawPath in rawPaths:
-            expandedPath = os.path.expandvars(
-                os.path.expanduser(
-                    rawPath
-                )
-            )
-
-            candidates = []
-
-            if os.path.isabs(
-                    expandedPath
-            ):
-                candidates.append(
-                    expandedPath
-                )
-
-            else:
-                for rootPath in projectRoots:
-                    candidates.append(
-                        os.path.join(
-                            rootPath,
-                            expandedPath,
+        try:
+            return (
+                    os.path.commonpath(
+                        (
+                            managedRoot,
+                            candidatePath,
                         )
                     )
+                    == managedRoot
+            )
 
-                candidates.append(
-                    os.path.abspath(
-                        expandedPath
-                    )
-                )
-
-            for candidatePath in candidates:
-                normalizedPath = os.path.realpath(
-                    candidatePath
-                )
-
-                if os.path.basename(
-                        normalizedPath
-                ) in {
-                    "project.sqlite",
-                    "run.db",
-                }:
-                    continue
-
-                if os.path.isfile(
-                        normalizedPath
-                ):
-                    return normalizedPath
-
-        return None
+        except ValueError:
+            # Different drives or incompatible paths.
+            return False
 
     def _rememberMaterializedPath(
             self,
