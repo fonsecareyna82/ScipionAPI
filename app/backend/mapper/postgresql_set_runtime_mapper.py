@@ -61,7 +61,6 @@ class PostgresqlSetRuntimeMapper:
         "enabled": "enabled",
         "label": "label",
         "comment": "comment",
-        "creation": "creation",
     }
 
     WHERE_PART_PATTERN = re.compile(
@@ -2225,7 +2224,10 @@ class PostgresqlSetRuntimeMapper:
                    enabled,
                    label,
                    comment,
-                   creation,
+                   COALESCE(
+                       creation,
+                       "createdAt"
+                   ) AS creation,
                    "values",
                    "createdAt",
                    "updatedAt"
@@ -2531,6 +2533,12 @@ class PostgresqlSetRuntimeMapper:
         if field in self.ID_FIELDS:
             return (
                 '"scipionItemId"',
+                [],
+            )
+
+        if field == "creation":
+            return (
+                'COALESCE("creation", "createdAt")',
                 [],
             )
 

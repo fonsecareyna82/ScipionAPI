@@ -483,6 +483,12 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 targetItem
             )
 
+            self._preserveItemCreation(
+                sourceItem=sourceItem,
+                targetItem=targetItem,
+                targetSet=targetSet,
+            )
+
             if not isinstance(
                     sourceItem,
                     ScipionSet,
@@ -518,6 +524,82 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             sourceSet=sourceSet,
             targetSet=targetSet,
             classes=sourceClasses,
+        )
+
+    @staticmethod
+    def _preserveItemCreation(
+            sourceItem,
+            targetItem,
+            targetSet: ScipionSet,
+    ) -> None:
+        creationGetter = getattr(
+            sourceItem,
+            "getObjCreation",
+            None,
+        )
+
+        creation = (
+            creationGetter()
+            if callable(creationGetter)
+            else getattr(
+                sourceItem,
+                "_objCreation",
+                None,
+            )
+        )
+
+        if creation in (None, ""):
+            return
+
+        itemId = targetItem.getObjId()
+
+        if itemId in (None, ""):
+            raise RuntimeError(
+                "Cannot preserve SQLite item creation "
+                "without an object id."
+            )
+
+        mapper = targetSet._getMapper()
+        sqliteDb = getattr(
+            mapper,
+            "db",
+            None,
+        )
+        executeCommand = getattr(
+            sqliteDb,
+            "executeCommand",
+            None,
+        )
+
+        if not callable(executeCommand):
+            raise RuntimeError(
+                "SQLite compatibility mapper does not "
+                "provide executeCommand()."
+            )
+
+        tablePrefix = str(
+            getattr(
+                sqliteDb,
+                "tablePrefix",
+                "",
+            )
+            or ""
+        )
+        creationText = str(creation)
+
+        executeCommand(
+            "UPDATE %sObjects "
+            "SET creation=? "
+            "WHERE id=?"
+            % tablePrefix,
+            (
+                creationText,
+                int(itemId),
+            ),
+        )
+
+        targetItem.setObjCreation(
+            creationText
         )
 
     def _iterSourceItems(

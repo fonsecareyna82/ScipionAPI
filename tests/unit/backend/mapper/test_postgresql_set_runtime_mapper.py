@@ -497,6 +497,49 @@ def test_SelectAllSupportsNumericComparison():
     )
 
 
+def test_SelectAllUsesStableCreationCursor():
+    db = FakeDb(rows=[])
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    mapper.selectAll(
+        orderBy="creation",
+        direction="ASC",
+        where=(
+            'creation>'
+            '"2026-07-29 10:00:00.000001+00:00"'
+        ),
+        iterate=False,
+    )
+
+    assert (
+        'COALESCE(creation, "createdAt") '
+        'AS creation'
+        in db.query
+    )
+
+    assert (
+        'COALESCE("creation", "createdAt") '
+        '> %s'
+        in db.query
+    )
+
+    assert (
+        'ORDER BY '
+        'COALESCE("creation", "createdAt") ASC'
+        in db.query
+    )
+
+    assert db.params == (
+        31,
+        "2026-07-29 10:00:00.000001+00:00",
+    )
+
+
 def test_UnsupportedWhereExpressionFailsExplicitly():
     mapper = PostgresqlSetRuntimeMapper(
         db=FakeDb(),

@@ -306,6 +306,108 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         sourceSet.close()
 
 
+def test_MaterializePreservesStreamingCreationCursor(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "streaming-creation-source.sqlite"
+    )
+    owner = FakePathOwner(
+        tmp_path / "extra"
+    )
+    sourceSet = _createEmptySource(
+        sourcePath
+    )
+
+    firstCreation = (
+        "2026-07-29 "
+        "10:00:00.000001+00:00"
+    )
+    secondCreation = (
+        "2026-07-29 "
+        "10:00:00.000002+00:00"
+    )
+
+    firstItem = ExampleItem()
+    firstItem.setObjId(7)
+    firstItem.setObjCreation(
+        firstCreation
+    )
+    firstItem._name.set(
+        "particle-7"
+    )
+
+    secondItem = ExampleItem()
+    secondItem.setObjId(8)
+    secondItem.setObjCreation(
+        secondCreation
+    )
+    secondItem._name.set(
+        "particle-8"
+    )
+
+    sourceSet.iterItems = (
+        lambda *args, **kwargs:
+        iter([
+            firstItem,
+            secondItem,
+        ])
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 71,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    targetPath = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+        .materialize(
+            sourceSet
+        )
+    )
+
+    compatibilitySet = _openSet(
+        ExampleSet,
+        targetPath,
+    )
+
+    try:
+        newItems = list(
+            compatibilitySet.iterItems(
+                orderBy="creation",
+                direction="ASC",
+                where=(
+                    'creation>'
+                    '"%s"'
+                    % firstCreation
+                ),
+            )
+        )
+
+        assert [
+            item.getObjId()
+            for item in newItems
+        ] == [
+            8,
+        ]
+
+        assert (
+            newItems[0].getObjCreation()
+            == secondCreation
+        )
+
+    finally:
+        compatibilitySet.close()
+        sourceSet.close()
+
+
 def test_MaterializeNeverReusesPersistentLegacySqlite(
         tmp_path,
 ):
