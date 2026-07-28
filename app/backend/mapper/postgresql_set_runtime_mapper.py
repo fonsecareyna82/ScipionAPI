@@ -2224,10 +2224,7 @@ class PostgresqlSetRuntimeMapper:
                    enabled,
                    label,
                    comment,
-                   COALESCE(
-                       creation,
-                       "createdAt"
-                   ) AS creation,
+                   "createdAt" AS creation,
                    "values",
                    "createdAt",
                    "updatedAt"
@@ -2537,8 +2534,10 @@ class PostgresqlSetRuntimeMapper:
             )
 
         if field == "creation":
+            # Native SQLite Sets stamp creation when the row is
+            # inserted and never change it during item updates.
             return (
-                'COALESCE("creation", "createdAt")',
+                '"createdAt"',
                 [],
             )
 
