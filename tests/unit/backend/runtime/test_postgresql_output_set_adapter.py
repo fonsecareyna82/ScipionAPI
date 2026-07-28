@@ -159,6 +159,14 @@ class ProtocolStub:
         )
 
 
+class DeclaredOutputProtocolStub(
+        ProtocolStub
+):
+    _possibleOutputs = {
+        "outputClasses": NestedOutputSetStub,
+    }
+
+
 class DirectCreateProtocolStub(
     ProtocolStub
 ):
@@ -357,6 +365,82 @@ def test_SpaCreatorReturnsPostgresqlSetAndFinalizesOnInsertChild():
             outputSet,
         ),
     ]
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+
+
+def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
+    protocol = DeclaredOutputProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    workingSet = (
+        protocol
+        ._EMProtocol__createSet(
+            OutputSetStub,
+            "particles%s.sqlite",
+            "",
+        )
+    )
+
+    assert isinstance(
+        workingSet,
+        OutputSetStub,
+    )
+
+    assert len(
+        protocol.nativeCreated
+    ) == 1
+
+    assert (
+        protocol.nativeCreated[0]["SetClass"]
+        is OutputSetStub
+    )
+
+    assert runtimeMapper.created == []
+
+    outputSet = (
+        protocol
+        ._EMProtocol__createSet(
+            NestedOutputSetStub,
+            "classes2D%s.sqlite",
+            "",
+        )
+    )
+
+    assert outputSet.getObjId() == 91
+
+    assert len(
+        runtimeMapper.created
+    ) == 1
+
+    assert (
+        runtimeMapper.created[0]["setClass"]
+        is NestedOutputSetStub
+    )
+
+    protocol._insertChild(
+        "outputClasses",
+        outputSet,
+    )
+
+    assert len(
+        runtimeMapper.finalized
+    ) == 1
+
+    assert (
+        runtimeMapper.finalized[0]["outputName"]
+        == "outputClasses"
+    )
 
     adapter.uninstall()
 
