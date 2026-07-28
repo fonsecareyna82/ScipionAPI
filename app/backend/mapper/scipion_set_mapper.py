@@ -369,16 +369,64 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if batchSize <= 0:
             raise ValueError("batchSize must be greater than zero")
 
-        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
-        syncTimestamp = datetime.now(timezone.utc).isoformat()
-        itemsCountHint = self._getSetItemsCountHint(scipionSet)
-        maxItemIdHint = self._getSetMaxItemIdHint(scipionSet)
-        sourceMTime = self._getSetSourceMTime(scipionSet)
-        existingSet = self._getExistingSet(projectId, protocolDbId, outputName)
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        existingSet = self._getExistingSet(
+            projectId,
+            protocolDbId,
+            outputName,
+        )
+
+        existingProperties = (
+            self._normalizeProperties(
+                existingSet.get(
+                    "properties"
+                )
+            )
+            if existingSet is not None
+            else {}
+        )
+
+        if (
+                existingSet is not None
+                and self._hasPostgresqlNativeOutputFlag(
+            existingProperties
+        )
+        ):
+            return self.finalizeRuntimeSetOutput(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=scipionSet,
+            )
+
+        syncTimestamp = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        itemsCountHint = (
+            self._getSetItemsCountHint(
+                scipionSet
+            )
+        )
+
+        maxItemIdHint = (
+            self._getSetMaxItemIdHint(
+                scipionSet
+            )
+        )
+
+        sourceMTime = (
+            self._getSetSourceMTime(
+                scipionSet
+            )
+        )
 
         if existingSet is not None:
             existingSetId = int(existingSet["id"])
-            existingProperties = self._normalizeProperties(existingSet.get("properties"))
             if (
                     self.hasStoredSetTables(existingSetId)
                     and self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime)
@@ -1430,6 +1478,61 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         raise ValueError(
             "Protocol %s was not found in PostgreSQL protocols table for project %s"
             % (protocolDbId, projectId)
+        )
+
+    @staticmethod
+    def _hasPostgresqlNativeOutputFlag(
+            properties: Dict[str, Any],
+    ) -> bool:
+        value = (
+            properties or {}
+        ).get(
+            "postgresqlNativeOutput"
+        )
+
+        if isinstance(value, bool):
+            return value
+
+        return str(
+            value or ""
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def isPostgresqlNativeSetOutput(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> bool:
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        existingSet = self._getExistingSet(
+            projectId,
+            protocolDbId,
+            outputName,
+        )
+
+        if existingSet is None:
+            return False
+
+        properties = self._normalizeProperties(
+            existingSet.get(
+                "properties"
+            )
+        )
+
+        return (
+            self
+            ._hasPostgresqlNativeOutputFlag(
+                properties
+            )
         )
 
     def _getExistingSet(self, projectId: int, protocolDbId: int, outputName: str) -> Optional[Dict[str, Any]]:

@@ -129,6 +129,44 @@ class RuntimeProtocolOutputPersistenceService:
             return False
 
     @staticmethod
+    def _isPersistedPostgresqlNativeSetOutput(
+            setMapper,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> bool:
+        checker = getattr(
+            setMapper,
+            "isPostgresqlNativeSetOutput",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        try:
+            return bool(
+                checker(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=outputName,
+                )
+            )
+
+        except Exception:
+            logger.warning(
+                "Could not identify persisted PostgreSQL "
+                "native Set. projectId=%s "
+                "protocolDbId=%s outputName=%s",
+                projectId,
+                protocolDbId,
+                outputName,
+                exc_info=True,
+            )
+
+            return False
+
+    @staticmethod
     def _setScipionObjectId(
             obj: Any,
             objectId: Optional[int],
@@ -2710,9 +2748,20 @@ class RuntimeProtocolOutputPersistenceService:
 
             isPostgresqlRuntimeSet = (
                     isSetOutput
-                    and self._isPostgresqlRuntimeSetOutput(
-                outputObj
-            )
+                    and (
+                            self._isPostgresqlRuntimeSetOutput(
+                                outputObj
+                            )
+                            or self
+                            ._isPersistedPostgresqlNativeSetOutput(
+                        setMapper=setMapper,
+                        projectId=projectId,
+                        protocolDbId=int(
+                            protocolDbId
+                        ),
+                        outputName=outputName,
+                    )
+                    )
             )
 
             identityPreparation = None
