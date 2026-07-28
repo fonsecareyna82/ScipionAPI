@@ -56,6 +56,63 @@ class ExampleSet(Object):
         return self._streamState.get()
 
 
+class ExampleTomogram(Object):
+    def __init__(
+            self,
+            objectId=7,
+            tsId="TS_01",
+    ):
+        super().__init__()
+
+        self.setObjId(
+            objectId
+        )
+
+        self.tsId = tsId
+
+    def getTsId(self):
+        return self.tsId
+
+    def getObjLabel(self):
+        return (
+            "Tomogram %s"
+            % self.tsId
+        )
+
+    def getDim(self):
+        return (
+            64,
+            64,
+            32,
+        )
+
+    def getSamplingRate(self):
+        return 2.5
+
+    def getFileName(self):
+        return (
+            "/tmp/%s.mrc"
+            % self.tsId
+        )
+
+
+class DeferredLinkedTomogramsSet(
+        ExampleSet
+):
+    def __init__(
+            self,
+            **kwargs,
+    ):
+        super().__init__(
+            **kwargs
+        )
+
+        self.linkedTomograms = None
+
+    def iterVolumes(self):
+        return self.linkedTomograms
+
+
 def test_GetSetPropertiesIncludesNestedAttributes():
     scipionSet = ExampleSet()
     scipionSet.setObjId(41)
@@ -121,3 +178,117 @@ def test_CurrentSetPropertiesVersionAllowsUnchangedSetSkip():
         maxItemIdHint=3,
         sourceMTime=10.0,
     ) is True
+
+
+def test_LinkedTomogramSummaryAllowsDeferredPrecedents():
+    scipionSet = (
+        DeferredLinkedTomogramsSet()
+    )
+
+    scipionSet.setObjId(
+        41
+    )
+
+    mapper = (
+        ScipionSetPostgresqlMapper(
+            db=None,
+        )
+    )
+
+    # Models the PostgreSQL reservation performed inside
+    # _createSet(), before setPrecedents() is called.
+    reservedProperties = (
+        mapper._getSetProperties(
+            scipionSet
+        )
+    )
+
+    assert (
+        "linkedTomograms"
+        not in reservedProperties
+    )
+
+    assert list(
+        mapper._iterLinkedTomograms(
+            scipionSet
+        )
+    ) == []
+
+    # Models SetOfCoordinates3D.setPrecedents() after
+    # _createSet() returns to the tomo protocol helper.
+    tomogram = ExampleTomogram()
+
+    scipionSet.linkedTomograms = [
+        tomogram,
+    ]
+
+    finalizedProperties = (
+        mapper._getSetProperties(
+            scipionSet
+        )
+    )
+
+    assert (
+        finalizedProperties[
+            "linkedTomograms"
+        ]
+        == [
+            {
+                "id": "TS_01",
+                "tomoId": "TS_01",
+                "label": "TS_01",
+                "name": "Tomogram TS_01",
+                "objectId": "7",
+                "volumeId": "7",
+                "tsId": "TS_01",
+                "tiltSeriesId": "TS_01",
+                "fileName": (
+                    "/tmp/TS_01.mrc"
+                ),
+                "dims": [
+                    64,
+                    64,
+                    32,
+                ],
+                "voxelSize": [
+                    2.5,
+                    2.5,
+                    2.5,
+                ],
+            },
+        ]
+    )
+
+
+def test_LinkedTomogramSummarySupportsScipionSets():
+    tomogram = ExampleTomogram()
+
+    class ExampleTomogramSet:
+        def iterItems(
+                self,
+                iterate=True,
+        ):
+            return [
+                tomogram,
+            ]
+
+    mapper = (
+        ScipionSetPostgresqlMapper(
+            db=None,
+        )
+    )
+
+    iterator = (
+        mapper
+        ._coerceLinkedTomogramIterator(
+            ExampleTomogramSet()
+        )
+    )
+
+    assert list(
+        iterator
+    ) == [
+        tomogram,
+    ]
+
+
