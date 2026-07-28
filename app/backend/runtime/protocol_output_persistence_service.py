@@ -2029,7 +2029,11 @@ class RuntimeProtocolOutputPersistenceService:
               ) set_properties_stats
                 ON set_properties_stats."setId" = s.id
              WHERE s."projectId" = %s
-             ORDER BY p."protocolId", s."outputName"
+                AND COALESCE(
+                        s.properties ->> 'runtimeReserved',
+                        'false'
+                    ) <> 'true'
+                ORDER BY p."protocolId", s."outputName"
             """,
             (projectId,),
         )
@@ -2203,7 +2207,11 @@ class RuntimeProtocolOutputPersistenceService:
               JOIN protocols p
                 ON p.id = s."protocolDbId"
              WHERE s."projectId" = %s
-             ORDER BY p."protocolId", s."outputName"
+              AND COALESCE(
+                      s.properties ->> 'runtimeReserved',
+                      'false'
+                  ) <> 'true'
+            ORDER BY p."protocolId", s."outputName"
             """,
             (projectId,),
         )
