@@ -559,6 +559,10 @@ def test_OpenWritableReturnsNativeAppendableSet(
         )
     )
 
+    writablePath = (
+        writableSet.getFileName()
+    )
+
     try:
         assert isinstance(
             writableSet,
@@ -576,7 +580,23 @@ def test_OpenWritableReturnsNativeAppendableSet(
         assert writableSet.getSize() == 1
         assert writableSet.getSamplingRate() == 1.5
 
+        assert (
+            writablePath
+            != str(
+                sourcePath
+            )
+        )
+
+        assert (
+            materializer
+            ._isManagedTemporaryPath(
+                writablePath
+            )
+            is True
+        )
+
         newItem = ExampleItem()
+
         newItem.setObjId(
             8
         )
@@ -596,9 +616,10 @@ def test_OpenWritableReturnsNativeAppendableSet(
     finally:
         writableSet.close()
 
+    # The writable compatibility Set lives in /tmp.
     reopenedSet = _openSet(
         ExampleSet,
-        sourcePath,
+        writablePath,
     )
 
     try:
@@ -611,12 +632,44 @@ def test_OpenWritableReturnsNativeAppendableSet(
             )
         )
 
+        assert restoredItem is not None
+
         assert restoredItem._name.get() == (
             "particle-8"
         )
 
     finally:
         reopenedSet.close()
+
+    # The original persistent SQLite must remain untouched.
+    originalSet = _openSet(
+        ExampleSet,
+        sourcePath,
+    )
+
+    try:
+        assert originalSet.getSize() == 1
+
+        originalItems = list(
+            originalSet.iterItems()
+        )
+
+        assert len(originalItems) == 1
+
+        assert [
+                   item.getObjId()
+                   for item in originalItems
+               ] == [
+                   7,
+               ]
+
+        assert all(
+            item.getObjId() != 8
+            for item in originalItems
+        )
+
+    finally:
+        originalSet.close()
 
 
 def test_MaterializerFindsOwnerThroughRuntimeParentReference(
