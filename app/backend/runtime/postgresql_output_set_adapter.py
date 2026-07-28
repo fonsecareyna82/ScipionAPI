@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
 import logging
 import uuid
 from types import MethodType
@@ -96,7 +97,17 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchSpaCreator()
         self._patchTomoCreator()
         self._patchInsertChild()
-
+        logger.info(
+            "Installed PostgreSQL output Set adapter. "
+            "projectId=%s protocolId=%s "
+            "protocolClass=%s patchedMethods=%s",
+            self.projectId,
+            self.protocol.getObjId(),
+            self.protocol.__class__.__name__,
+            sorted(
+                self._patches
+            ),
+        )
         self._installed = True
 
     def uninstall(self) -> None:
@@ -178,23 +189,28 @@ class RuntimePostgresqlOutputSetAdapter:
         if not callable(
                 originalCreator
         ):
-            return
-
-        # Do not patch arbitrary plugin methods named
-        # _createSet. The tomography base creator always
-        # receives SetClass, template and suffix.
-        try:
-            from tomo.protocols.protocol_base import (
-                ProtTomoBase,
+            logger.debug(
+                "Protocol does not expose a tomography "
+                "Set creator. protocolClass=%s "
+                "attribute=%s",
+                self.protocol.__class__.__name__,
+                self.TOMO_CREATE_ATTRIBUTE,
             )
 
-            if not isinstance(
-                    self.protocol,
-                    ProtTomoBase,
-            ):
-                return
+            return
 
-        except Exception:
+        if not self._isCompatibleSetCreator(
+                originalCreator
+        ):
+            logger.debug(
+                "Protocol _createSet() does not match "
+                "the Scipion tomography Set creator "
+                "contract. protocolClass=%s "
+                "creator=%r",
+                self.protocol.__class__.__name__,
+                originalCreator,
+            )
+
             return
 
         adapter = self
@@ -220,6 +236,72 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchMethod(
             self.TOMO_CREATE_ATTRIBUTE,
             createSet,
+        )
+
+        logger.info(
+            "Installed PostgreSQL tomography "
+            "output Set creator. "
+            "projectId=%s protocolId=%s "
+            "protocolClass=%s",
+            self.projectId,
+            self.protocol.getObjId(),
+            self.protocol.__class__.__name__,
+        )
+
+    @staticmethod
+    def _isCompatibleSetCreator(
+            creator,
+    ) -> bool:
+        """
+        Detect Scipion's common Set creator contract without
+        relying on a concrete ProtTomoBase class identity.
+
+        Bound-method signature:
+            (SetClass, template, suffix, **kwargs)
+        """
+        try:
+            signature = inspect.signature(
+                creator
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return False
+
+        parameters = list(
+            signature.parameters.values()
+        )
+
+        parameterNames = [
+            parameter.name
+            for parameter in parameters
+            if parameter.kind
+               in {
+                   inspect.Parameter
+                   .POSITIONAL_ONLY,
+
+                   inspect.Parameter
+                   .POSITIONAL_OR_KEYWORD,
+               }
+        ]
+
+        if (
+                len(parameterNames) < 3
+                or parameterNames[:3]
+                != [
+            "SetClass",
+            "template",
+            "suffix",
+        ]
+        ):
+            return False
+
+        return any(
+            parameter.kind
+            == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
         )
 
     def _patchInsertChild(self) -> None:
