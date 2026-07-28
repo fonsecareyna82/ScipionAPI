@@ -248,132 +248,6 @@ class RuntimeProjectLifecycleService:
     def removeLegacyProjectDatabase(
             self,
             *,
-            projectPath: Union[str, os.PathLike],
-            projectDbPath: Optional[
-                Union[str, os.PathLike]
-            ] = None,
-    ) -> Dict[str, Any]:
-        projectRoot = self._normalizeLexicalPath(
-            projectPath
-        )
-
-        if os.path.islink(projectRoot):
-            raise RuntimeError(
-                "Refusing to finalize a project whose root "
-                "directory is a symbolic link: %s"
-                % projectRoot
-            )
-
-        if (
-                not projectRoot.exists()
-                or not projectRoot.is_dir()
-        ):
-            raise RuntimeError(
-                "Project directory does not exist: %s"
-                % projectRoot
-            )
-
-        if projectDbPath in (None, ""):
-            databasePath = (
-                projectRoot
-                / self.LEGACY_PROJECT_DATABASE_NAME
-            )
-        else:
-            databasePath = Path(
-                os.path.expanduser(
-                    str(projectDbPath)
-                )
-            )
-
-            if not databasePath.is_absolute():
-                databasePath = (
-                    projectRoot
-                    / databasePath
-                )
-
-            databasePath = self._normalizeLexicalPath(
-                databasePath
-            )
-
-        if (
-                databasePath.name
-                != self.LEGACY_PROJECT_DATABASE_NAME
-        ):
-            raise RuntimeError(
-                "Unexpected legacy project database name: %s"
-                % databasePath
-            )
-
-        self._assertPathInsideProject(
-            projectRoot=projectRoot,
-            candidatePath=databasePath,
-        )
-
-        deletedPaths: List[str] = []
-        missingPaths: List[str] = []
-
-        for suffix in (
-                self.LEGACY_PROJECT_DATABASE_SUFFIXES
-        ):
-            candidatePath = Path(
-                str(databasePath) + suffix
-            )
-
-            self._assertPathInsideProject(
-                projectRoot=projectRoot,
-                candidatePath=candidatePath,
-            )
-
-            candidateText = str(candidatePath)
-
-            if not os.path.lexists(candidateText):
-                missingPaths.append(candidateText)
-                continue
-
-            if (
-                    not os.path.islink(candidateText)
-                    and os.path.isdir(candidateText)
-            ):
-                raise RuntimeError(
-                    "Legacy project database path is "
-                    "unexpectedly a directory: %s"
-                    % candidatePath
-                )
-
-            # os.unlink removes the link itself when project.sqlite
-            # is a symlink. It never follows it into the source project.
-            os.unlink(candidateText)
-
-            deletedPaths.append(candidateText)
-
-        remainingPaths = [
-            str(databasePath) + suffix
-            for suffix in (
-                self.LEGACY_PROJECT_DATABASE_SUFFIXES
-            )
-            if os.path.lexists(
-                str(databasePath) + suffix
-            )
-        ]
-
-        if remainingPaths:
-            raise RuntimeError(
-                "Legacy project database cleanup was incomplete: %s"
-                % remainingPaths
-            )
-
-        return {
-            "projectPath": str(projectRoot),
-            "database": str(databasePath),
-            "deleted": deletedPaths,
-            "missing": missingPaths,
-            "projectSqliteRemoved": True,
-            "postgresqlOnly": True,
-        }
-
-    def removeLegacyProjectDatabase(
-            self,
-            *,
             projectPath: Union[
                 str,
                 os.PathLike,
@@ -389,23 +263,14 @@ class RuntimeProjectLifecycleService:
         Remove project-level SQLite databases that are
         obsolete after migrating the project to PostgreSQL.
 
-        This includes:
-
-          - project.sqlite
-          - settings.sqlite
-          - their WAL, SHM and journal artifacts
-
-        Protocol output SQLite databases are not affected.
+        This includes project.sqlite, settings.sqlite and
+        their WAL, SHM and journal artifacts.
         """
-        projectRoot = (
-            self._normalizeLexicalPath(
-                projectPath
-            )
+        projectRoot = self._normalizeLexicalPath(
+            projectPath
         )
 
-        if os.path.islink(
-                projectRoot
-        ):
+        if os.path.islink(projectRoot):
             raise RuntimeError(
                 "Refusing to finalize a project whose "
                 "root directory is a symbolic link: %s"
@@ -421,14 +286,13 @@ class RuntimeProjectLifecycleService:
                 % projectRoot
             )
 
-        # Resolve the legacy project.sqlite path.
         if projectDbPath in (
                 None,
                 "",
         ):
             projectDatabasePath = (
-                    projectRoot
-                    / self.LEGACY_PROJECT_DATABASE_NAME
+                projectRoot
+                / self.LEGACY_PROJECT_DATABASE_NAME
             )
 
         else:
@@ -440,8 +304,8 @@ class RuntimeProjectLifecycleService:
 
             if not projectDatabasePath.is_absolute():
                 projectDatabasePath = (
-                        projectRoot
-                        / projectDatabasePath
+                    projectRoot
+                    / projectDatabasePath
                 )
 
             projectDatabasePath = (
@@ -450,18 +314,15 @@ class RuntimeProjectLifecycleService:
                 )
             )
 
-        # settings.sqlite always belongs to the project root.
         settingsDatabasePath = (
-                projectRoot
-                / self.LEGACY_SETTINGS_DATABASE_NAME
+            projectRoot
+            / self.LEGACY_SETTINGS_DATABASE_NAME
         )
 
         projectDatabaseReport = (
             self._removeLegacyDatabaseArtifacts(
                 projectRoot=projectRoot,
-                databasePath=(
-                    projectDatabasePath
-                ),
+                databasePath=projectDatabasePath,
                 expectedName=(
                     self
                     .LEGACY_PROJECT_DATABASE_NAME
@@ -472,9 +333,7 @@ class RuntimeProjectLifecycleService:
         settingsDatabaseReport = (
             self._removeLegacyDatabaseArtifacts(
                 projectRoot=projectRoot,
-                databasePath=(
-                    settingsDatabasePath
-                ),
+                databasePath=settingsDatabasePath,
                 expectedName=(
                     self
                     .LEGACY_SETTINGS_DATABASE_NAME
@@ -483,41 +342,39 @@ class RuntimeProjectLifecycleService:
         )
 
         deletedPaths = (
-                list(
-                    projectDatabaseReport.get(
-                        "deleted",
-                        [],
-                    )
+            list(
+                projectDatabaseReport.get(
+                    "deleted",
+                    [],
                 )
-                + list(
-            settingsDatabaseReport.get(
-                "deleted",
-                [],
             )
-        )
+            + list(
+                settingsDatabaseReport.get(
+                    "deleted",
+                    [],
+                )
+            )
         )
 
         missingPaths = (
-                list(
-                    projectDatabaseReport.get(
-                        "missing",
-                        [],
-                    )
+            list(
+                projectDatabaseReport.get(
+                    "missing",
+                    [],
                 )
-                + list(
-            settingsDatabaseReport.get(
-                "missing",
-                [],
             )
-        )
+            + list(
+                settingsDatabaseReport.get(
+                    "missing",
+                    [],
+                )
+            )
         )
 
         return {
             "projectPath": str(
                 projectRoot
             ),
-            # Keep the previous response field for
-            # backward compatibility.
             "database": (
                 projectDatabaseReport[
                     "database"
@@ -534,3 +391,104 @@ class RuntimeProjectLifecycleService:
             "settingsSqliteRemoved": True,
             "postgresqlOnly": True,
         }
+
+    def removeLegacyRunDatabases(
+            self,
+            *,
+            projectPath: Union[
+                str,
+                os.PathLike,
+            ],
+    ) -> Dict[str, Any]:
+        projectRoot = self._normalizeLexicalPath(
+            projectPath
+        )
+
+        if os.path.islink(projectRoot):
+            raise RuntimeError(
+                "Refusing to finalize a project whose "
+                "root directory is a symbolic link: %s"
+                % projectRoot
+            )
+
+        if (
+                not projectRoot.exists()
+                or not projectRoot.is_dir()
+        ):
+            raise RuntimeError(
+                "Project directory does not exist: %s"
+                % projectRoot
+            )
+
+        databasePaths = (
+            self._findLegacyRunDatabaseArtifacts(
+                projectRoot
+            )
+        )
+
+        deletedPaths = []
+
+        for databasePath in databasePaths:
+            self._assertPathInsideProject(
+                projectRoot=projectRoot,
+                candidatePath=databasePath,
+            )
+
+            databaseText = str(
+                databasePath
+            )
+
+            if not os.path.lexists(
+                    databaseText
+            ):
+                continue
+
+            if (
+                    not os.path.islink(
+                        databaseText
+                    )
+                    and os.path.isdir(
+                        databaseText
+                    )
+            ):
+                raise RuntimeError(
+                    "Legacy protocol database path "
+                    "is unexpectedly a directory: %s"
+                    % databasePath
+                )
+
+            os.unlink(
+                databaseText
+            )
+
+            deletedPaths.append(
+                databaseText
+            )
+
+        remainingPaths = [
+            str(databasePath)
+            for databasePath
+            in self._findLegacyRunDatabaseArtifacts(
+                projectRoot
+            )
+        ]
+
+        if remainingPaths:
+            raise RuntimeError(
+                "Legacy protocol database cleanup "
+                "was incomplete: %s"
+                % remainingPaths
+            )
+
+        return {
+            "projectPath": str(
+                projectRoot
+            ),
+            "deleted": deletedPaths,
+            "deletedCount": len(
+                deletedPaths
+            ),
+            "remaining": [],
+            "legacyRunDatabasesRemoved": True,
+        }
+
