@@ -1637,6 +1637,10 @@ class RuntimeProtocolOutputPersistenceService:
                 ON root.id = s."objectId"
              WHERE s."projectId" = %s
                AND s."protocolDbId" = %s
+               AND COALESCE(
+                       s.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
              ORDER BY s."outputName"
             """,
             (

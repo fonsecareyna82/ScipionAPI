@@ -26,7 +26,9 @@
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
-
+from app.backend.runtime import (
+    protocol_output_persistence_service as outputPersistenceModule,
+)
 
 class FakeRuntimeObject:
     def __init__(
@@ -499,3 +501,36 @@ def test_PostgresqlRuntimeProjectionStillRegistersAvailableOutputs():
     )
 
 
+def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
+        monkeypatch,
+):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+
+    monkeypatch.setattr(
+        outputPersistenceModule.ProtocolIdentityResolver,
+        "resolvePostgresqlProtocolDbId",
+        lambda self, protocolId: 17,
+    )
+
+    assert service.loadPersistedProtocolOutputs(
+        mapper=mapper,
+        projectId=7,
+        protocolId=19,
+    ) == {}
+
+    setQuery = next(
+        call["query"]
+        for call in mapper.db.queries
+        if (
+            'FROM scipion_sets s '
+            'LEFT JOIN scipion_objects root '
+            'ON root.id = s."objectId"'
+        ) in call["query"]
+    )
+
+    assert (
+        "COALESCE( "
+        "s.properties ->> 'runtimeReserved', "
+        "'false' ) <> 'true'"
+    ) in setQuery
