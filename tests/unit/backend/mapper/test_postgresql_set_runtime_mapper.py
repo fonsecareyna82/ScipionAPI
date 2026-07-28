@@ -1239,18 +1239,16 @@ def test_FirstAppendSynchronizesEmptySchemaOnce():
 
     assert mapper._itemSchemaReady is True
 
-    assert mapper._columns == [
-        {
-            "labelProperty": (
-                "_score"
-            ),
+    assert mapper._columns == {
+        "_score": {
+            "labelProperty": "_score",
             "columnName": "c00",
             "className": "Float",
             "valueType": "float",
             "position": 0,
             "indexed": False,
         },
-    ]
+    }
 
 
 def test_EmptyWritableSchemaRequiresSynchronizer():
@@ -1538,5 +1536,152 @@ def test_AppendRootItemSynchronizesNestedItem():
     ]
 
     assert db.transactionCalls == 1
+
+
+def test_FirstAppendSchemaSupportsImmediateFieldQuery():
+    db = EmptySchemaWritableFakeDb(
+        nextItemId=8
+    )
+
+    def synchronizeSchema(
+            item,
+    ):
+        return {
+            "itemClassName": (
+                "FakeWritableItem"
+            ),
+            "columns": [
+                {
+                    "labelProperty": (
+                        "_score"
+                    ),
+                    "columnName": "c00",
+                    "className": "Float",
+                    "valueType": "float",
+                    "position": 0,
+                    "indexed": False,
+                },
+            ],
+            "columnsCount": 1,
+        }
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        itemSchemaSynchronizer=(
+            synchronizeSchema
+        ),
+        writable=True,
+    )
+
+    mapper.appendItem(
+        FakeWritableItem()
+    )
+
+    result = mapper.selectBy(
+        iterate=False,
+        _score=0.75,
+    )
+
+    assert result == []
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')'
+        "::DOUBLE PRECISION = %s"
+        in db.query
+    )
+
+    assert db.params == (
+        31,
+        "_score",
+        0.75,
+    )
+
+
+class EmptyLogicalSchemaWritableFakeDb(
+        WritableLogicalTableFakeDb
+):
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        if (
+                "FROM scipion_set_table_columns"
+                in normalizedQuery
+        ):
+            return []
+
+        return super().fetchAll(
+            query,
+            params,
+        )
+
+
+def test_FirstLogicalAppendSchemaSupportsImmediateFieldQuery():
+    db = EmptyLogicalSchemaWritableFakeDb(
+        nextItemId=3
+    )
+
+    def synchronizeSchema(
+            item,
+    ):
+        return {
+            "itemClassName": (
+                "FakeWritableItem"
+            ),
+            "columns": [
+                {
+                    "labelProperty": (
+                        "_score"
+                    ),
+                    "columnName": "c00",
+                    "className": "Float",
+                    "valueType": "float",
+                    "position": 0,
+                    "indexed": False,
+                },
+            ],
+            "columnsCount": 1,
+        }
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        tableId=91,
+        parentItemId=8,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        itemSchemaSynchronizer=(
+            synchronizeSchema
+        ),
+        writable=True,
+    )
+
+    mapper.appendItem(
+        FakeWritableItem()
+    )
+
+    mapper.selectBy(
+        iterate=False,
+        _score=0.75,
+    )
+
+    assert db.params == (
+        91,
+        "_score",
+        0.75,
+    )
+
 
 

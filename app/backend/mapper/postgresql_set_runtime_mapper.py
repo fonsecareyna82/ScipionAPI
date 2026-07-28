@@ -1142,11 +1142,11 @@ class PostgresqlSetRuntimeMapper:
                 "synchronizer did not return columns."
             )
 
-        self._columns = [
-            dict(column)
-            for column
-            in columns
-        ]
+        self._columns = (
+            self._indexColumns(
+                columns
+            )
+        )
 
         # Empty schemas are valid. This flag records that
         # synchronization was attempted successfully.
@@ -2095,6 +2095,40 @@ class PostgresqlSetRuntimeMapper:
     # Query construction
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _indexColumns(
+            columns,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Normalize PostgreSQL Set column metadata into the
+        label-indexed representation used by query builders.
+        """
+        indexedColumns = {}
+
+        for rawColumn in columns or []:
+            column = dict(
+                rawColumn or {}
+            )
+
+            labelProperty = column.get(
+                "labelProperty"
+            )
+
+            if labelProperty in (
+                    None,
+                    "",
+            ):
+                raise ValueError(
+                    "PostgreSQL Set column does not "
+                    "define labelProperty."
+                )
+
+            indexedColumns[
+                str(labelProperty)
+            ] = column
+
+        return indexedColumns
+
     def _loadColumns(
             self,
     ) -> Dict[str, Dict[str, Any]]:
@@ -2116,12 +2150,9 @@ class PostgresqlSetRuntimeMapper:
             (self._scopeId,),
         )
 
-        return {
-            str(
-                row["labelProperty"]
-            ): dict(row)
-            for row in rows or []
-        }
+        return self._indexColumns(
+            rows
+        )
 
     def _buildItems(
             self,
