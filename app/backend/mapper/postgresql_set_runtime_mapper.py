@@ -93,6 +93,12 @@ class PostgresqlSetRuntimeMapper:
             itemSchemaSynchronizer: Optional[
                 Callable[[Any], Dict[str, Any]]
             ] = None,
+            nestedItemSynchronizer: Optional[
+                Callable[
+                    [Any, int],
+                    Optional[Dict[str, Any]],
+                ]
+            ] = None,
             writable: bool = False,
     ):
         if db is None:
@@ -121,8 +127,30 @@ class PostgresqlSetRuntimeMapper:
                 "be callable or None."
             )
 
+        if (
+                nestedItemSynchronizer
+                is not None
+                and not callable(
+            nestedItemSynchronizer
+        )
+        ):
+            raise ValueError(
+                "nestedItemSynchronizer must "
+                "be callable or None."
+            )
+
         hasSetId = setId is not None
         hasTableId = tableId is not None
+
+        if (
+                nestedItemSynchronizer
+                is not None
+                and not hasSetId
+        ):
+            raise ValueError(
+                "nestedItemSynchronizer is only "
+                "supported for root PostgreSQL Sets."
+            )
 
         if (
                 rootTableId is not None
@@ -224,6 +252,9 @@ class PostgresqlSetRuntimeMapper:
         )
         self.itemSchemaSynchronizer = (
             itemSchemaSynchronizer
+        )
+        self.nestedItemSynchronizer = (
+            nestedItemSynchronizer
         )
         self.writable = bool(
             writable
@@ -678,6 +709,21 @@ class PostgresqlSetRuntimeMapper:
             if self.setId is not None:
                 self.db.execute(
                     """
+                    DELETE FROM scipion_set_tables
+                     WHERE "setId" = %s
+                       AND "parentTableId" = %s
+                       AND "parentItemId" = %s
+                       AND "tableKind" = 'child'
+                    """,
+                    (
+                        int(self.setId),
+                        int(self.rootTableId),
+                        int(itemId),
+                    ),
+                    commit=False,
+                )
+                self.db.execute(
+                    """
                     DELETE FROM scipion_set_table_items
                      WHERE "tableId" = %s
                        AND "scipionItemId" = %s
@@ -723,6 +769,19 @@ class PostgresqlSetRuntimeMapper:
 
         with self.db.transaction():
             if self.setId is not None:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_tables
+                     WHERE "setId" = %s
+                       AND "parentTableId" = %s
+                       AND "tableKind" = 'child'
+                    """,
+                    (
+                        int(self.setId),
+                        int(self.rootTableId),
+                    ),
+                    commit=False,
+                )
                 self.db.execute(
                     """
                     DELETE FROM scipion_set_table_items
@@ -1190,6 +1249,15 @@ class PostgresqlSetRuntimeMapper:
                 creation=creation,
                 jsonValues=jsonValues,
             )
+
+            if (
+                    self.nestedItemSynchronizer
+                    is not None
+            ):
+                self.nestedItemSynchronizer(
+                    item,
+                    int(itemId),
+                )
 
         else:
             self._upsertLogicalItem(
