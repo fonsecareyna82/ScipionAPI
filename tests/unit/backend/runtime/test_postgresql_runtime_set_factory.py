@@ -2311,6 +2311,90 @@ def test_WriteReopensWritableMapperAfterStreamingClose(
         is True
     )
 
+class RuntimePropertiesMapperStub:
+    def __init__(self, events=None):
+        self.events = events
+        self.properties = {
+            "_streamState": Set.STREAM_OPEN,
+            "_linkedSetPointer": "91.outputSet",
+        }
+
+    def refreshProperties(self):
+        pass
+
+    def count(self):
+        return 3
+
+    def maxId(self):
+        return 3
+
+    def getPropertyKeys(self):
+        return list(self.properties)
+
+    def getProperty(self, key, defaultValue=None):
+        return self.properties.get(key, defaultValue)
+
+    def close(self):
+        if self.events is not None:
+            self.events.append("close")
+
+
+def test_RefreshPostgresqlRuntimeStatePreservesHydratedPointer():
+    factory = PostgresqlRuntimeSetFactory()
+    runtimeSetClass = factory._getRuntimeSetClass(ExampleLinkedSet)
+    runtimeSet = runtimeSetClass()
+
+    linkedSet = ExampleSet()
+    linkedSet.setObjId(91)
+
+    runtimeSet.setLinkedSet(linkedSet)
+
+    mapper = RuntimePropertiesMapperStub()
+    runtimeSet._mapper = mapper
+    runtimeSet._postgresqlMapperFactory = lambda writable=False: mapper
+    runtimeSet._postgresqlRuntimeProperties = {}
+
+    runtimeSet.refreshPostgresqlRuntimeState()
+
+    assert runtimeSet.getSize() == 3
+    assert runtimeSet._idCount == 3
+    assert runtimeSet.isStreamOpen()
+    assert runtimeSet.getLinkedSet() is linkedSet
+    assert runtimeSet._postgresqlRuntimeProperties["_linkedSetPointer"] == "91.outputSet"
+
+    compatibilitySet = ExampleLinkedSet()
+    compatibilitySet.copy(
+        runtimeSet,
+        copyId=True,
+        ignoreAttrs=["_mapperPath", "_size", "_objParent"],
+    )
+
+    assert compatibilitySet.getLinkedSet() is linkedSet
+
+
+def test_CloseRefreshesExistingCompatibilitySnapshot():
+    events = []
+    mapper = RuntimePropertiesMapperStub(events=events)
+
+    factory = PostgresqlRuntimeSetFactory()
+    runtimeSetClass = factory._getRuntimeSetClass(ExampleLinkedSet)
+    runtimeSet = runtimeSetClass()
+
+    runtimeSet._mapper = None
+    runtimeSet._postgresqlMaterializedFileName = "/tmp/postgresql-input.sqlite"
+
+    class MaterializerStub:
+        def materialize(self, sourceSet):
+            events.append("materialize")
+            sourceSet._mapper = mapper
+            return sourceSet._postgresqlMaterializedFileName
+
+    runtimeSet._postgresqlSqliteMaterializer = MaterializerStub()
+
+    runtimeSet.close()
+
+    assert events == ["materialize", "close"]
+    assert runtimeSet._mapper is None
 
 
 
