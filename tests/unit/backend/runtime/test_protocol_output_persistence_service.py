@@ -25,6 +25,9 @@
 # ******************************************************************************
 import pytest
 import app.backend.mapper as backendMapperModule
+from app.backend.mapper.scipion_set_mapper import (
+    ScipionSetPostgresqlMapper,
+)
 
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
@@ -125,20 +128,18 @@ def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
     ) in setQuery
 
 
-def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
+def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):
+    nativeChecks = []
     finalized = []
 
-    class NativeRuntimeSetStub:
+    class RunDbSetProjectionStub:
         def getObjId(self):
             return 91
 
         def getClassName(self):
             return "SetOfParticles"
-
-        def isPostgresqlRuntimeOutput(self):
-            return True
 
     class ProtocolStub:
         def __init__(self, outputSet):
@@ -162,6 +163,20 @@ def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
     class SetMapperStub:
         def __init__(self, db):
             self.db = db
+
+        def isPostgresqlNativeSetOutput(
+                self,
+                projectId,
+                protocolDbId,
+                outputName,
+        ):
+            nativeChecks.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            })
+
+            return True
 
         def finalizeRuntimeSetOutput(
                 self,
@@ -189,18 +204,19 @@ def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
 
         def storeSet(self, **kwargs):
             pytest.fail(
-                "Native PostgreSQL output must not "
-                "be persisted through storeSet()."
+                "A persisted native PostgreSQL "
+                "output must not use storeSet()."
             )
 
     class ObjectMapperStub:
         def __init__(self, db):
             self.db = db
 
-    outputSet = NativeRuntimeSetStub()
+    outputSet = RunDbSetProjectionStub()
     protocol = ProtocolStub(
         outputSet
     )
+
     service = (
         RuntimeProtocolOutputPersistenceService()
     )
@@ -227,8 +243,8 @@ def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
         service,
         "_prepareOutputObjectIdsForPersistence",
         lambda **kwargs: pytest.fail(
-            "Native PostgreSQL output identity "
-            "must not be prepared again."
+            "A persisted native PostgreSQL "
+            "output must not prepare ids again."
         ),
     )
 
@@ -236,8 +252,8 @@ def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
         service,
         "_openRelativeSetMapperForPersistence",
         lambda **kwargs: pytest.fail(
-            "Native PostgreSQL output must not "
-            "open a compatibility SQLite mapper."
+            "A persisted native PostgreSQL output "
+            "must not open a SQLite mapper."
         ),
     )
 
@@ -248,43 +264,144 @@ def test_RegisterOutputFinalizesNativePostgresqlSetWithoutSnapshot(
         returnReport=True,
     )
 
+    assert nativeChecks == [
+        {
+            "projectId": 7,
+            "protocolDbId": 17,
+            "outputName": "outputParticles",
+        },
+    ]
+
     assert finalized == [
         {
             "projectId": 7,
             "protocolDbId": 17,
-            "outputName": (
-                "outputParticles"
-            ),
+            "outputName": "outputParticles",
             "runtimeObjectId": 91,
         },
     ]
 
     assert report["errors"] == []
     assert report["skipped"] == []
-
-    assert len(
-        report["persisted"]
-    ) == 1
-
-    persistedOutput = (
-        report["persisted"][0]
-    )
+    assert len(report["persisted"]) == 1
 
     assert (
-        persistedOutput["setId"]
+        report["persisted"][0]["setId"]
         == 71
     )
 
     assert (
-        persistedOutput[
+        report["persisted"][0][
             "postgresqlNativeOutput"
         ]
         is True
     )
 
-    assert (
-        outputSet.getObjId()
-        == 91
+    assert outputSet.getObjId() == 91
+
+
+def test_StoreSetProtectsNativePostgresqlSnapshotBeforeArtifactRead(
+        monkeypatch,
+):
+    finalized = []
+
+    class RunDbSetProjectionStub:
+        def getObjId(self):
+            return 91
+
+        def getClassName(self):
+            return "SetOfParticles"
+
+    setMapper = object.__new__(
+        ScipionSetPostgresqlMapper
     )
+    setMapper.db = object()
+
+    monkeypatch.setattr(
+        setMapper,
+        "_resolveProtocolDbId",
+        lambda projectId, protocolDbId: 17,
+    )
+
+    monkeypatch.setattr(
+        setMapper,
+        "_getExistingSet",
+        lambda projectId, protocolDbId, outputName: {
+            "id": 71,
+            "objectId": 81,
+            "setClassName": "SetOfParticles",
+            "itemClassName": "Particle",
+            "properties": {
+                "postgresqlNativeOutput": True,
+                "itemsCount": 5000,
+                "maxItemId": 5000,
+            },
+        },
+    )
+
+    def failArtifactRead(*args, **kwargs):
+        pytest.fail(
+            "Native PostgreSQL rows must be "
+            "protected before artifact inspection."
+        )
+
+    for methodName in (
+        "_getSetItemsCountHint",
+        "_getSetMaxItemIdHint",
+        "_getSetSourceMTime",
+        "_iterSetItems",
+        "_replaceStoredSetSnapshot",
+    ):
+        monkeypatch.setattr(
+            setMapper,
+            methodName,
+            failArtifactRead,
+        )
+
+    def finalizeRuntimeSetOutput(**kwargs):
+        finalized.append(
+            kwargs
+        )
+
+        return {
+            "setId": 71,
+            "runtimeObjectId": 91,
+            "outputName": (
+                kwargs["outputName"]
+            ),
+        }
+
+    monkeypatch.setattr(
+        setMapper,
+        "finalizeRuntimeSetOutput",
+        finalizeRuntimeSetOutput,
+    )
+
+    outputSet = RunDbSetProjectionStub()
+
+    result = setMapper.storeSet(
+        projectId=7,
+        protocolDbId=17,
+        outputName="outputParticles",
+        scipionSet=outputSet,
+    )
+
+    assert len(finalized) == 1
+
+    assert finalized[0] == {
+        "projectId": 7,
+        "protocolDbId": 17,
+        "outputName": "outputParticles",
+        "scipionSet": outputSet,
+    }
+
+    assert result == {
+        "setId": 71,
+        "runtimeObjectId": 91,
+        "outputName": "outputParticles",
+    }
+
+
+
 
 
