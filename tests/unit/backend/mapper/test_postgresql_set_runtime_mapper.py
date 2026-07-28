@@ -517,9 +517,9 @@ def test_SelectAllUsesStableCreationCursor():
     )
 
     assert (
-        'COALESCE(creation, "createdAt") '
-        'AS creation'
-        in db.query
+            'COALESCE( creation, "createdAt" ) '
+            'AS creation'
+            in db.query
     )
 
     assert (
