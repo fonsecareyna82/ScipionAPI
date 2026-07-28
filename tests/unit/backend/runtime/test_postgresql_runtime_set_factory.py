@@ -815,6 +815,11 @@ def test_NestedSetItemsUseLogicalTableMapper():
         nestedSet.iterItems()
     )
 
+    assert (
+            nestedSet.isPostgresqlWritable()
+            is False
+    )
+
     assert len(children) == 1
     assert isinstance(
         children[0],
@@ -836,6 +841,16 @@ def test_NestedSetItemsUseLogicalTableMapper():
     assert children[0]._value.get() == (
         "child-3"
     )
+    assert (
+        nestedSet
+        .supportsPostgresqlNativeWrite()
+    )
+
+    assert (
+            nestedSet.isPostgresqlWritable()
+            is False
+    )
+
 
 def test_NestedSetCanReloadLogicalMapper():
     _, runtimeSet = buildNestedRuntimeSet()
@@ -1949,6 +1964,176 @@ def test_NestedRuntimeSetKeepsCompatibilityFallback():
             match="nested PostgreSQL Sets",
     ):
         runtimeSet.enablePostgresqlWrite()
+
+
+def test_PromoteNestedSetKeepsSameObjectIdentity():
+    factory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    nestedSet = (
+        ExampleNestedSet()
+    )
+
+    originalIdentity = id(
+        nestedSet
+    )
+
+    promotedSet = (
+        factory
+        ._promoteRuntimeSetInstance(
+            runtimeSet=nestedSet,
+            nativeSetClass=(
+                ExampleNestedSet
+            ),
+        )
+    )
+
+    assert promotedSet is nestedSet
+
+    assert id(
+        promotedSet
+    ) == originalIdentity
+
+    assert isinstance(
+        promotedSet,
+        ExampleNestedSet,
+    )
+
+    assert callable(
+        getattr(
+            promotedSet,
+            "enablePostgresqlWrite",
+            None,
+        )
+    )
+
+
+def test_AttachLogicalTableMapperCanEnableWrites():
+    db = FakeNestedSetDb()
+
+    factory = (
+        PostgresqlRuntimeSetFactory()
+    )
+
+    setMapper = (
+        ScipionSetPostgresqlMapper(
+            db=db
+        )
+    )
+
+    nestedSet = (
+        ExampleNestedSet()
+    )
+
+    nestedSet.setObjId(
+        FakeNestedSetDb.ROOT_ITEM_ID
+    )
+
+    factory._promoteRuntimeSetInstance(
+        runtimeSet=nestedSet,
+        nativeSetClass=(
+            ExampleNestedSet
+        ),
+    )
+
+    factory._configureRuntimeSetCompatibility(
+        runtimeSet=nestedSet,
+        nativeSetClass=(
+            ExampleNestedSet
+        ),
+        runtimeInfo={
+            "setId": (
+                FakeNestedSetDb
+                .ROOT_SET_ID
+            ),
+            "tableId": (
+                FakeNestedSetDb
+                .CHILD_TABLE_ID
+            ),
+            "parentItemId": (
+                FakeNestedSetDb
+                .ROOT_ITEM_ID
+            ),
+            "className": (
+                "ExampleNestedSet"
+            ),
+            "itemClassName": (
+                "ExampleChildItem"
+            ),
+        },
+        runtimeProperties={},
+        classRegistry={
+            "ExampleNestedSet": (
+                ExampleNestedSet
+            ),
+            "ExampleChildItem": (
+                ExampleChildItem
+            ),
+            "String": String,
+        },
+    )
+
+    factory._attachLogicalTableMapper(
+        db=db,
+        setMapper=setMapper,
+        item=nestedSet,
+        row={
+            "scipionItemId": (
+                FakeNestedSetDb
+                .ROOT_ITEM_ID
+            ),
+        },
+        logicalTablesByParentId={
+            (
+                FakeNestedSetDb
+                .ROOT_ITEM_ID
+            ): dict(
+                db.logicalTables[1]
+            ),
+        },
+        classRegistry={
+            "ExampleNestedSet": (
+                ExampleNestedSet
+            ),
+            "ExampleChildItem": (
+                ExampleChildItem
+            ),
+            "String": String,
+        },
+        writable=True,
+    )
+
+    assert (
+        nestedSet
+        .supportsPostgresqlNativeWrite()
+    )
+
+    assert (
+        nestedSet
+        .isPostgresqlWritable()
+    )
+
+    assert (
+        nestedSet._mapper.tableId
+        == FakeNestedSetDb
+        .CHILD_TABLE_ID
+    )
+
+    assert (
+        nestedSet._mapper.parentItemId
+        == FakeNestedSetDb
+        .ROOT_ITEM_ID
+    )
+
+    assert (
+        nestedSet
+        .getPostgresqlRuntimeInfo()[
+            "tableId"
+        ]
+        == FakeNestedSetDb
+        .CHILD_TABLE_ID
+    )
 
 
 

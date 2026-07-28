@@ -1085,6 +1085,171 @@ class PostgresqlRuntimeSetFactory:
 
             return schemaInfo
 
+        def synchronizeNestedItem(
+                item,
+                parentItemId,
+        ):
+            if not nestedSetItemClass:
+                return None
+
+            if not isinstance(
+                    item,
+                    ScipionSet,
+            ):
+                raise TypeError(
+                    "Nested PostgreSQL output item must "
+                    "be a Scipion Set. className=%s"
+                    % item.__class__.__name__
+                )
+
+            parentItemId = int(
+                parentItemId
+            )
+
+            tableInfo = (
+                setMapper
+                .ensureRuntimeNestedSetTable(
+                    setId=int(setId),
+                    rootTableId=int(
+                        rootTableId
+                    ),
+                    parentSet=item,
+                    parentItemId=(
+                        parentItemId
+                    ),
+                )
+            )
+
+            tableRow = dict(
+                tableInfo.get(
+                    "table"
+                )
+                or {}
+            )
+
+            tableProperties = (
+                self._normalizeProperties(
+                    tableRow.get(
+                        "properties"
+                    )
+                )
+            )
+
+            tableProperties.update(
+                self._normalizeProperties(
+                    tableInfo.get(
+                        "properties"
+                    )
+                )
+            )
+
+            tableRow[
+                "properties"
+            ] = tableProperties
+
+            logicalTablesByParentId[
+                parentItemId
+            ] = tableRow
+
+            # The protocol must keep the exact same object.
+            self._promoteRuntimeSetInstance(
+                runtimeSet=item,
+                nativeSetClass=(
+                    nativeItemClass
+                ),
+            )
+
+            currentMapper = getattr(
+                item,
+                "_mapper",
+                None,
+            )
+
+            # ensureRuntimeNestedSetTable() has already copied any
+            # items held by the original native/SQLite mapper.
+            if currentMapper is not None:
+                closeMapper = getattr(
+                    currentMapper,
+                    "close",
+                    None,
+                )
+
+                if callable(
+                        closeMapper
+                ):
+                    closeMapper()
+
+            item._mapper = None
+
+            self._configureRuntimeSetCompatibility(
+                runtimeSet=item,
+                nativeSetClass=(
+                    nativeItemClass
+                ),
+                runtimeInfo={
+                    "setId": int(setId),
+                    "rootTableId": int(
+                        rootTableId
+                    ),
+                    "tableId": int(
+                        tableInfo[
+                            "tableId"
+                        ]
+                    ),
+                    "parentItemId": (
+                        parentItemId
+                    ),
+                    "className": (
+                        item.getClassName()
+                    ),
+                    "itemClassName": (
+                        tableInfo.get(
+                            "itemClassName"
+                        )
+                    ),
+                    "properties": (
+                        tableProperties
+                    ),
+                },
+                runtimeProperties=(
+                    tableProperties
+                ),
+                classRegistry=(
+                    classRegistry
+                ),
+            )
+
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=item,
+                parent=runtimeSet,
+            )
+
+            item._objParentId = (
+                runtimeSet.getObjId()
+            )
+
+            self._attachLogicalTableMapper(
+                db=db,
+                setMapper=setMapper,
+                item=item,
+                row={
+                    "scipionItemId": (
+                        parentItemId
+                    ),
+                },
+                logicalTablesByParentId={
+                    parentItemId: (
+                        tableRow
+                    ),
+                },
+                classRegistry=(
+                    classRegistry
+                ),
+                writable=True,
+            )
+
+            return tableInfo
+
         def mapperFactory(
                 writable=False,
         ):
@@ -1099,6 +1264,11 @@ class PostgresqlRuntimeSetFactory:
                     if rootTableId is not None
                     else None
                 ),
+                nestedItemSynchronizer=(
+                    synchronizeNestedItem
+                    if nestedSetItemClass
+                    else None
+                ),
                 writable=bool(
                     writable
                 ),
@@ -1110,8 +1280,7 @@ class PostgresqlRuntimeSetFactory:
         # Sets whose items are themselves Sets still require
         # writable logical-table support.
         runtimeSet._postgresqlSupportsNativeWrite = (
-                not nestedSetItemClass
-                and rootTableId is not None
+                rootTableId is not None
         )
 
         runtimeSet._postgresqlWritable = False
@@ -1363,6 +1532,7 @@ class PostgresqlRuntimeSetFactory:
             logicalTablesByParentId:
             Dict[int, Dict[str, Any]],
             classRegistry: Dict[str, Type],
+            writable: bool = False,
     ) -> None:
         itemId = self._toOptionalInt(
             row.get("scipionItemId")
@@ -1457,6 +1627,12 @@ class PostgresqlRuntimeSetFactory:
                 % tableId
             )
 
+        childMapperState = {
+            "tableId": None,
+            "columns": [],
+            "hydrator": None,
+        }
+
         def resolveCurrentTableId():
             currentTableId = (
                 self._resolveCurrentLogicalTableId(
@@ -1481,7 +1657,9 @@ class PostgresqlRuntimeSetFactory:
                     runtimeInfo,
                     dict,
             ):
-                runtimeInfo["tableId"] = int(
+                runtimeInfo[
+                    "tableId"
+                ] = int(
                     currentTableId
                 )
 
@@ -1489,34 +1667,161 @@ class PostgresqlRuntimeSetFactory:
                 currentTableId
             )
 
-        def mapperFactory():
+        def refreshChildColumns(
+                currentTableId,
+        ):
+            currentTableId = int(
+                currentTableId
+            )
+
+            if (
+                    childMapperState[
+                        "tableId"
+                    ]
+                    == currentTableId
+            ):
+                return
+
+            childMapperState[
+                "tableId"
+            ] = currentTableId
+
+            childMapperState[
+                "columns"
+            ] = [
+                dict(column)
+                for column in (
+                        setMapper
+                        .getStoredSetTableColumns(
+                            currentTableId
+                        )
+                        or []
+                )
+            ]
+
+            childMapperState[
+                "hydrator"
+            ] = None
+
+        def getChildHydrator():
             currentTableId = (
                 resolveCurrentTableId()
             )
 
-            childColumns = (
-                setMapper
-                .getStoredSetTableColumns(
-                    currentTableId
+            refreshChildColumns(
+                currentTableId
+            )
+
+            hydrator = (
+                childMapperState[
+                    "hydrator"
+                ]
+            )
+
+            if hydrator is None:
+                hydrator = (
+                    PostgresqlScipionItemHydrator(
+                        itemClassName=str(
+                            childItemClassName
+                        ),
+                        columns=(
+                            childMapperState[
+                                "columns"
+                            ]
+                        ),
+                        parent=item,
+                        classes=classRegistry,
+                        pointerResolver=(
+                            self._buildPointerResolver(
+                                db=db,
+                                runtimeSet=item,
+                                classRegistry=(
+                                    classRegistry
+                                ),
+                            )
+                        ),
+                    )
+                )
+
+                childMapperState[
+                    "hydrator"
+                ] = hydrator
+
+            return hydrator
+
+        def buildChildItem(
+                childRow,
+        ):
+            return (
+                getChildHydrator()
+                .build(
+                    dict(
+                        childRow
+                        or {}
+                    )
                 )
             )
 
-            childHydrator = (
-                PostgresqlScipionItemHydrator(
-                    itemClassName=str(
-                        childItemClassName
-                    ),
-                    columns=childColumns,
-                    parent=item,
-                    classes=classRegistry,
-                    pointerResolver=(
-                        self._buildPointerResolver(
-                            db=db,
-                            runtimeSet=item,
-                            classRegistry=classRegistry,
-                        )
-                    ),
+        def serializeChildItem(
+                childItem,
+        ):
+            return (
+                setMapper
+                .serializeRuntimeItem(
+                    item=childItem,
+                    scipionSet=item,
                 )
+            )
+
+        def synchronizeChildSchema(
+                childItem,
+        ):
+            currentTableId = (
+                resolveCurrentTableId()
+            )
+
+            schemaInfo = (
+                setMapper
+                .synchronizeRuntimeLogicalItemSchema(
+                    tableId=(
+                        currentTableId
+                    ),
+                    item=childItem,
+                    parentSet=item,
+                )
+            )
+
+            childMapperState[
+                "tableId"
+            ] = currentTableId
+
+            childMapperState[
+                "columns"
+            ] = [
+                dict(column)
+                for column in (
+                        schemaInfo.get(
+                            "columns"
+                        )
+                        or []
+                )
+            ]
+
+            childMapperState[
+                "hydrator"
+            ] = None
+
+            return schemaInfo
+
+        def mapperFactory(
+                writable=False,
+        ):
+            currentTableId = (
+                resolveCurrentTableId()
+            )
+
+            refreshChildColumns(
+                currentTableId
             )
 
             return PostgresqlSetRuntimeMapper(
@@ -1525,16 +1830,52 @@ class PostgresqlRuntimeSetFactory:
                 tableIdResolver=(
                     resolveCurrentTableId
                 ),
-                itemBuilder=childHydrator,
+                parentItemId=int(
+                    itemId
+                ),
+                itemBuilder=(
+                    buildChildItem
+                ),
+                itemSerializer=(
+                    serializeChildItem
+                ),
+                itemSchemaSynchronizer=(
+                    synchronizeChildSchema
+                ),
+                writable=bool(
+                    writable
+                ),
             )
 
         item._postgresqlMapperFactory = (
             mapperFactory
         )
 
-        # Keep loading lazy. The mapper will be created when iterItems(),
-        # getFirstItem(), getItem() or another Set operation needs it.
+        item._postgresqlSupportsNativeWrite = True
+        item._postgresqlWritable = False
+
+        currentMapper = getattr(
+            item,
+            "_mapper",
+            None,
+        )
+
+        if currentMapper is not None:
+            closeMapper = getattr(
+                currentMapper,
+                "close",
+                None,
+            )
+
+            if callable(
+                    closeMapper
+            ):
+                closeMapper()
+
         item._mapper = None
+
+        if writable:
+            item.enablePostgresqlWrite()
 
     def _buildLocalPointerResolver(
             self,
@@ -2493,6 +2834,66 @@ class PostgresqlRuntimeSetFactory:
             )
         except TypeError:
             return False
+
+    def _promoteRuntimeSetInstance(
+            self,
+            runtimeSet: ScipionSet,
+            nativeSetClass: Type,
+    ):
+        """
+        Promote one existing native Scipion Set instance to its
+        PostgreSQL runtime subclass without replacing the object.
+
+        Protocols commonly keep using the same TiltSeries/Class
+        reference after appending it to the parent Set.
+        """
+        if not isinstance(
+                runtimeSet,
+                nativeSetClass,
+        ):
+            raise TypeError(
+                "Cannot promote %s using native Set class %s."
+                % (
+                    runtimeSet.__class__.__name__,
+                    nativeSetClass.__name__,
+                )
+            )
+
+        runtimeSetClass = (
+            self._getRuntimeSetClass(
+                nativeSetClass
+            )
+        )
+
+        if isinstance(
+                runtimeSet,
+                runtimeSetClass,
+        ):
+            return runtimeSet
+
+        originalClass = (
+            runtimeSet.__class__
+        )
+
+        try:
+            runtimeSet.__class__ = (
+                runtimeSetClass
+            )
+
+        except TypeError as error:
+            raise TypeError(
+                "Could not promote native Scipion Set "
+                "instance in place. "
+                "originalClass=%s runtimeClass=%s "
+                "objectId=%s"
+                % (
+                    originalClass.__name__,
+                    runtimeSetClass.__name__,
+                    runtimeSet.getObjId(),
+                )
+            ) from error
+
+        return runtimeSet
 
     def _getRuntimeSetClass(
             self,
