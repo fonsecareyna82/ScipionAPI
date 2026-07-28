@@ -162,6 +162,29 @@ class WritableFakeDb(FakeDb):
         return None
 
 
+class EmptySchemaWritableFakeDb(
+        WritableFakeDb
+):
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        if (
+                "FROM scipion_set_columns"
+                in normalizedQuery
+        ):
+            return []
+
+        return super().fetchAll(
+            query,
+            params,
+        )
+
 class FakeWritableItem:
     def __init__(
             self,
@@ -955,6 +978,19 @@ def test_SetPropertyWritesPostgresqlMetadata():
         "UPDATE scipion_sets"
         in db.executions[1]["query"]
     )
+    assert (
+            "%s::jsonb"
+            not in db.executions[0][
+                "query"
+            ]
+    )
+
+    assert (
+            "%s::jsonb"
+            in db.executions[1][
+                "query"
+            ]
+    )
 
 
 def test_ReadOnlyMapperRejectsWrites():
@@ -1063,4 +1099,108 @@ def test_ClearRemovesCanonicalAndLogicalItems():
     assert canonicalDelete["params"] == (
         31,
     )
+
+
+def test_FirstAppendSynchronizesEmptySchemaOnce():
+    db = EmptySchemaWritableFakeDb(
+        nextItemId=8
+    )
+
+    synchronizeCalls = []
+
+    def synchronizeSchema(
+            item,
+    ):
+        synchronizeCalls.append(
+            item
+        )
+
+        return {
+            "itemClassName": (
+                "FakeWritableItem"
+            ),
+            "columns": [
+                {
+                    "labelProperty": (
+                        "_score"
+                    ),
+                    "columnName": "c00",
+                    "className": "Float",
+                    "valueType": "float",
+                    "position": 0,
+                    "indexed": False,
+                },
+            ],
+            "columnsCount": 1,
+        }
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        itemSchemaSynchronizer=(
+            synchronizeSchema
+        ),
+        writable=True,
+    )
+
+    firstItem = FakeWritableItem()
+
+    mapper.appendItem(
+        firstItem
+    )
+
+    secondItem = FakeWritableItem(
+        itemId=14
+    )
+
+    mapper.update(
+        secondItem
+    )
+
+    assert synchronizeCalls == [
+        firstItem,
+    ]
+
+    assert mapper._itemSchemaReady is True
+
+    assert mapper._columns == [
+        {
+            "labelProperty": (
+                "_score"
+            ),
+            "columnName": "c00",
+            "className": "Float",
+            "valueType": "float",
+            "position": 0,
+            "indexed": False,
+        },
+    ]
+
+
+def test_EmptyWritableSchemaRequiresSynchronizer():
+    db = EmptySchemaWritableFakeDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="schema synchronizer",
+    ):
+        mapper.appendItem(
+            FakeWritableItem()
+        )
 

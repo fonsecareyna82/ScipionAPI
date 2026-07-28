@@ -101,6 +101,152 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             ),
         }
 
+    def synchronizeRuntimeItemSchema(
+            self,
+            setId: int,
+            rootTableId: int,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persist the item schema discovered by the first
+        incremental PostgreSQL append.
+
+        The caller must already own the PostgreSQL transaction.
+        """
+        if item is None:
+            raise ValueError(
+                "item is required to synchronize "
+                "a PostgreSQL Set schema."
+            )
+
+        setId = int(
+            setId
+        )
+
+        rootTableId = int(
+            rootTableId
+        )
+
+        itemSchema = self._getItemSchema(
+            item
+        )
+
+        itemClassName = self._getItemClassName(
+            item=item,
+            itemSchema=itemSchema,
+            scipionSet=scipionSet,
+        )
+
+        columns = self._getSetColumns(
+            itemSchema
+        )
+
+        self._upsertSetColumns(
+            setId=setId,
+            columns=columns,
+        )
+
+        self._upsertSetTableColumns(
+            tableId=rootTableId,
+            columns=columns,
+        )
+
+        # Read the complete stored representation because
+        # columns may already exist from a previous execution.
+        storedColumns = self.getStoredSetColumns(
+            setId
+        )
+
+        columnsCount = len(
+            storedColumns
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_sets
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'itemClassName',
+                           %s,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                str(itemClassName),
+                setId,
+            ),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "setId" = %s
+               AND "tableKind" = 'root'
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                rootTableId,
+                setId,
+            ),
+            commit=False,
+        )
+
+        self._upsertSetProperties(
+            setId=setId,
+            properties={
+                "columnsCount": (
+                    columnsCount
+                ),
+            },
+        )
+
+        return {
+            "setId": setId,
+            "rootTableId": rootTableId,
+            "itemClassName": (
+                str(itemClassName)
+            ),
+            "columns": [
+                dict(column)
+                for column
+                in storedColumns
+            ],
+            "columnsCount": (
+                columnsCount
+            ),
+        }
+
     def storeSet(
         self,
         projectId: int,

@@ -894,19 +894,56 @@ class PostgresqlRuntimeSetFactory:
             int(setId)
         )
 
-        itemHydrator = PostgresqlScipionItemHydrator(
-            itemClassName=str(itemClassName),
-            columns=columns,
-            parent=runtimeSet,
-            classes=itemClassRegistry,
-            pointerResolver=(
-                self._buildPointerResolver(
-                    db=db,
-                    runtimeSet=runtimeSet,
-                    classRegistry=classRegistry,
-                )
-            ),
+        pointerResolver = (
+            self._buildPointerResolver(
+                db=db,
+                runtimeSet=runtimeSet,
+                classRegistry=classRegistry,
+            )
         )
+
+        itemHydratorState = {
+            "columns": [
+                dict(column)
+                for column
+                in columns or []
+            ],
+            "hydrator": None,
+        }
+
+        def getItemHydrator():
+            hydrator = (
+                itemHydratorState[
+                    "hydrator"
+                ]
+            )
+
+            if hydrator is None:
+                hydrator = (
+                    PostgresqlScipionItemHydrator(
+                        itemClassName=(
+                            str(itemClassName)
+                        ),
+                        columns=(
+                            itemHydratorState[
+                                "columns"
+                            ]
+                        ),
+                        parent=runtimeSet,
+                        classes=(
+                            itemClassRegistry
+                        ),
+                        pointerResolver=(
+                            pointerResolver
+                        ),
+                    )
+                )
+
+                itemHydratorState[
+                    "hydrator"
+                ] = hydrator
+
+            return hydrator
 
         def buildItem(row):
             row = dict(
@@ -944,8 +981,11 @@ class PostgresqlRuntimeSetFactory:
                         )
                     )
 
-            item = itemHydrator.build(
-                row
+            item = (
+                getItemHydrator()
+                .build(
+                    row
+                )
             )
 
             if (
@@ -1003,6 +1043,48 @@ class PostgresqlRuntimeSetFactory:
                 )
             )
 
+        def synchronizeItemSchema(
+                item,
+        ):
+            if rootTableId is None:
+                raise RuntimeError(
+                    "Cannot synchronize a PostgreSQL "
+                    "Set schema without rootTableId."
+                )
+
+            schemaInfo = (
+                setMapper
+                .synchronizeRuntimeItemSchema(
+                    setId=int(setId),
+                    rootTableId=int(
+                        rootTableId
+                    ),
+                    item=item,
+                    scipionSet=runtimeSet,
+                )
+            )
+
+            itemHydratorState[
+                "columns"
+            ] = [
+                dict(column)
+                for column
+                in (
+                        schemaInfo.get(
+                            "columns"
+                        )
+                        or []
+                )
+            ]
+
+            # Force reconstruction with the newly
+            # discovered Scipion column classes.
+            itemHydratorState[
+                "hydrator"
+            ] = None
+
+            return schemaInfo
+
         def mapperFactory(
                 writable=False,
         ):
@@ -1012,6 +1094,11 @@ class PostgresqlRuntimeSetFactory:
                 rootTableId=rootTableId,
                 itemBuilder=buildItem,
                 itemSerializer=serializeItem,
+                itemSchemaSynchronizer=(
+                    synchronizeItemSchema
+                    if rootTableId is not None
+                    else None
+                ),
                 writable=bool(
                     writable
                 ),
