@@ -96,6 +96,62 @@ class RuntimePostgresqlOutputSetAdapter:
             int,
             Dict[str, Any],
         ] = {}
+        self._declaredOutputSetClasses = (
+            self._resolveDeclaredOutputSetClasses()
+        )
+
+    def _resolveDeclaredOutputSetClasses(
+            self,
+    ) -> set:
+        possibleOutputs = getattr(
+            self.protocol,
+            "_possibleOutputs",
+            None,
+        )
+
+        if not isinstance(possibleOutputs, dict):
+            return set()
+
+        declaredClasses = set()
+
+        for setClass in possibleOutputs.values():
+            if not isinstance(setClass, type):
+                continue
+
+            try:
+                if issubclass(setClass, ScipionSet):
+                    declaredClasses.add(setClass)
+
+            except TypeError:
+                continue
+
+        return declaredClasses
+
+    def _shouldRedirectSetClass(
+            self,
+            setClass,
+    ) -> bool:
+        """
+        Redirect declared output Sets to PostgreSQL.
+
+        Protocols without _possibleOutputs preserve the previous
+        behavior for backward compatibility.
+        """
+        if not self._declaredOutputSetClasses:
+            return True
+
+        if not isinstance(setClass, type):
+            return False
+
+        for declaredClass in self._declaredOutputSetClasses:
+            try:
+                if issubclass(setClass, declaredClass):
+                    return True
+
+            except TypeError:
+                continue
+
+        return False
 
     def install(self) -> None:
         if self._installed:
@@ -702,6 +758,34 @@ class RuntimePostgresqlOutputSetAdapter:
             constructorKwargs,
             creatorKind: str,
     ):
+        if not self._shouldRedirectSetClass(
+                setClass
+        ):
+            logger.debug(
+                "Using native SQLite working Set. "
+                "projectId=%s protocolId=%s "
+                "protocolClass=%s setClass=%s creator=%s",
+                self.projectId,
+                self.protocol.getObjId(),
+                self.protocol.__class__.__name__,
+                getattr(
+                    setClass,
+                    "__name__",
+                    str(setClass),
+                ),
+                creatorKind,
+            )
+
+            return originalCreator(
+                setClass,
+                template,
+                suffix,
+                **dict(
+                    constructorKwargs
+                    or {}
+                ),
+            )
+
         capability = (
             self.runtimeMapper
             .getPostgresqlOutputSetCapability(
