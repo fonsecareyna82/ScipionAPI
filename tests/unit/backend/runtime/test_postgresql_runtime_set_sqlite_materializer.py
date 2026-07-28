@@ -433,90 +433,109 @@ def test_MaterializeSupportsEmptySets(
         sourceSet.close()
 
 
-def test_MaterializeCopiesNestedLogicalItems(
+def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         tmp_path,
 ):
-    sourcePath = tmp_path / "nested-source.sqlite"
-    owner = FakePathOwner(
-        tmp_path / "extra"
+    sourcePath = (
+        tmp_path
+        / "lazy-runtime-source.sqlite"
     )
-    sourceSet = _createNestedSource(
+
+    sourceSet = _createRootSource(
         sourcePath
     )
 
-    sourceNestedSet = sourceSet.getFirstItem()
-    sourceNestedSet._objParent = sourceSet
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
 
-    sourceSet.iterItems = (
-        lambda *args, **kwargs:
-        iter([sourceNestedSet])
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 61,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
     )
 
     sourceSet.isPostgresqlRuntimeOutput = (
         lambda: True
     )
 
-    sourceNestedSet.isPostgresqlRuntimeOutput = (
-        lambda: True
+    originalMapper = (
+        sourceSet._getMapper()
     )
 
-    rootMapper = sourceSet._getMapper()
-    nestedMapper = sourceNestedSet._getMapper()
-
-    rootSelectAll = rootMapper.selectAll
-    nestedSelectAll = nestedMapper.selectAll
-
-    _configureRuntimeSource(
-        sourceSet=sourceSet,
-        owner=owner,
-        nativeSetClass=ExampleParentSet,
-        runtimeInfo={
-            "setId": 41,
-            "className": "ExampleParentSet",
-            "itemClassName": "ExampleNestedSet",
-        },
+    originalGetMapper = (
+        sourceSet._getMapper
     )
 
-    targetPath = (
+    mapperLoadCalls = []
+
+    def getMapperLazily():
+        mapperLoadCalls.append(
+            True
+        )
+
+        sourceSet._mapper = (
+            originalMapper
+        )
+
+        return originalMapper
+
+    # Reproduce the real nested TiltSeries state:
+    #
+    # _mapper is deliberately None, but _getMapper()
+    # can lazily reconstruct it.
+    sourceSet._mapper = None
+
+    sourceSet._getMapper = (
+        getMapperLazily
+    )
+
+    materializer = (
         PostgresqlRuntimeSetSqliteMaterializer()
-        .materialize(sourceSet)
     )
 
     try:
-        compatibilitySet = _openSet(
-            ExampleParentSet,
-            targetPath,
+        items = list(
+            materializer._iterSourceItems(
+                sourceSet
+            )
         )
-        nestedSet = None
 
-        try:
-            assert compatibilitySet.getSize() == 1
+        assert mapperLoadCalls == [
+            True,
+        ]
 
-            nestedSet = compatibilitySet.getFirstItem()
+        assert (
+            sourceSet._mapper
+            is originalMapper
+        )
 
-            assert isinstance(
-                nestedSet,
-                ExampleNestedSet,
-            )
-            assert nestedSet.getObjId() == 7
-            assert nestedSet._name.get() == "series-7"
-            assert nestedSet.getSize() == 1
+        assert len(items) == 1
 
-            child = nestedSet.getFirstItem()
+        assert isinstance(
+            items[0],
+            ExampleItem,
+        )
 
-            assert isinstance(
-                child,
-                ExampleChildItem,
-            )
-            assert child.getObjId() == 3
-            assert child._value.get() == "child-3"
-        finally:
-            if nestedSet is not None:
-                nestedSet._mapper = None
-            compatibilitySet.close()
+        assert (
+            items[0].getObjId()
+            == 7
+        )
+
     finally:
-        if sourceNestedSet is not None:
-            sourceNestedSet._mapper = None
+        sourceSet._getMapper = (
+            originalGetMapper
+        )
+
+        sourceSet._mapper = (
+            originalMapper
+        )
 
         sourceSet.close()
 

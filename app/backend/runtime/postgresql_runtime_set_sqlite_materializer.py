@@ -452,16 +452,61 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         if not isPostgresqlRuntimeSet:
             return sourceSet.iterItems()
 
-        mapper = getattr(
+        getMapper = getattr(
             sourceSet,
-            "_mapper",
+            "_getMapper",
             None,
         )
 
+        if not callable(
+                getMapper
+        ):
+            raise RuntimeError(
+                "PostgreSQL runtime Set does not "
+                "provide _getMapper(). "
+                "className=%s objectId=%s"
+                % (
+                    sourceSet.getClassName(),
+                    sourceSet.getObjId(),
+                )
+            )
+
+        try:
+            # Nested PostgreSQL Sets deliberately keep
+            # _mapper=None until the first read.
+            #
+            # _getMapper() invokes the runtime load()
+            # method and constructs the logical-table
+            # mapper through _postgresqlMapperFactory.
+            mapper = getMapper()
+
+        except Exception as error:
+            runtimeInfo = self._getRuntimeInfo(
+                sourceSet
+            )
+
+            raise RuntimeError(
+                "Could not lazily load PostgreSQL "
+                "runtime Set mapper during SQLite "
+                "compatibility materialization. "
+                "className=%s objectId=%s "
+                "setId=%s tableId=%s"
+                % (
+                    sourceSet.getClassName(),
+                    sourceSet.getObjId(),
+                    runtimeInfo.get(
+                        "setId"
+                    ),
+                    runtimeInfo.get(
+                        "tableId"
+                    ),
+                )
+            ) from error
+
         if mapper is None:
             raise RuntimeError(
-                "PostgreSQL runtime Set does not have "
-                "an active mapper during SQLite "
+                "PostgreSQL runtime Set _getMapper() "
+                "returned None during SQLite "
                 "compatibility materialization. "
                 "className=%s objectId=%s"
                 % (
