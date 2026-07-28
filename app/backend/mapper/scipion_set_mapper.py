@@ -253,6 +253,104 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             ),
         }
 
+    def synchronizeRuntimeLogicalItemSchema(
+            self,
+            tableId: int,
+            item: Any,
+            parentSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persist the schema discovered by the first append to a
+        writable PostgreSQL logical-table Set.
+
+        The caller already owns the PostgreSQL transaction.
+        """
+        if item is None:
+            raise ValueError(
+                "item is required to synchronize a "
+                "PostgreSQL logical-table schema."
+            )
+
+        tableId = int(
+            tableId
+        )
+
+        itemSchema = self._getItemSchema(
+            item
+        )
+
+        itemClassName = (
+            self._getItemClassName(
+                item=item,
+                itemSchema=itemSchema,
+                scipionSet=parentSet,
+            )
+        )
+
+        columns = self._getSetColumns(
+            itemSchema
+        )
+
+        self._upsertSetTableColumns(
+            tableId=tableId,
+            columns=columns,
+        )
+
+        storedColumns = (
+            self.getStoredSetTableColumns(
+                tableId
+            )
+        )
+
+        columnsCount = len(
+            storedColumns
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'itemClassName',
+                           %s,
+                           'runtimeWritable',
+                           TRUE,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "tableKind" = 'child'
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                str(itemClassName),
+                tableId,
+            ),
+            commit=False,
+        )
+
+        return {
+            "tableId": tableId,
+            "itemClassName": str(
+                itemClassName
+            ),
+            "columns": [
+                dict(column)
+                for column in storedColumns
+            ],
+            "columnsCount": columnsCount,
+        }
+
     def storeSet(
         self,
         projectId: int,
