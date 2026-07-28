@@ -568,6 +568,190 @@ class PostgresqlSetRuntimeMapper:
             row["maxItemId"]
         )
 
+    def getRevisionToken(self):
+        """
+        Return a token that changes whenever the current
+        PostgreSQL Set scope changes.
+
+        For root Sets this also includes nested logical tables,
+        so changes inside Classes, TiltSeries, CTF series, etc.
+        invalidate the compatibility snapshot.
+        """
+        self._refreshLogicalTableScope()
+
+        if self.setId is not None:
+            row = self.db.fetchOne(
+                """
+                SELECT
+                    s."updatedAt"
+                        AS "scopeUpdatedAt",
+
+                    COALESCE(
+                        (
+                            SELECT COUNT(*)
+                              FROM scipion_set_items i
+                             WHERE i."setId" = s.id
+                        ),
+                        0
+                    ) AS "itemsCount",
+
+                    COALESCE(
+                        (
+                            SELECT MAX(
+                                i."scipionItemId"
+                            )
+                              FROM scipion_set_items i
+                             WHERE i."setId" = s.id
+                        ),
+                        0
+                    ) AS "maxItemId",
+
+                    (
+                        SELECT MAX(
+                            i."updatedAt"
+                        )
+                          FROM scipion_set_items i
+                         WHERE i."setId" = s.id
+                    ) AS "itemsUpdatedAt",
+
+                    (
+                        SELECT MAX(
+                            t."updatedAt"
+                        )
+                          FROM scipion_set_tables t
+                         WHERE t."setId" = s.id
+                    ) AS "tablesUpdatedAt",
+
+                    (
+                        SELECT MAX(
+                            ti."updatedAt"
+                        )
+                          FROM scipion_set_table_items ti
+                          JOIN scipion_set_tables t
+                            ON t.id = ti."tableId"
+                         WHERE t."setId" = s.id
+                    ) AS "tableItemsUpdatedAt"
+
+                  FROM scipion_sets s
+                 WHERE s.id = %s
+                """,
+                (
+                    int(self.setId),
+                ),
+            ) or {}
+
+            return (
+                "root",
+                int(self.setId),
+                int(
+                    row.get(
+                        "itemsCount"
+                    )
+                    or 0
+                ),
+                int(
+                    row.get(
+                        "maxItemId"
+                    )
+                    or 0
+                ),
+                str(
+                    row.get(
+                        "scopeUpdatedAt"
+                    )
+                    or ""
+                ),
+                str(
+                    row.get(
+                        "itemsUpdatedAt"
+                    )
+                    or ""
+                ),
+                str(
+                    row.get(
+                        "tablesUpdatedAt"
+                    )
+                    or ""
+                ),
+                str(
+                    row.get(
+                        "tableItemsUpdatedAt"
+                    )
+                    or ""
+                ),
+            )
+
+        row = self.db.fetchOne(
+            """
+            SELECT
+                t."updatedAt"
+                    AS "scopeUpdatedAt",
+
+                COALESCE(
+                    (
+                        SELECT COUNT(*)
+                          FROM scipion_set_table_items i
+                         WHERE i."tableId" = t.id
+                    ),
+                    0
+                ) AS "itemsCount",
+
+                COALESCE(
+                    (
+                        SELECT MAX(
+                            i."scipionItemId"
+                        )
+                          FROM scipion_set_table_items i
+                         WHERE i."tableId" = t.id
+                    ),
+                    0
+                ) AS "maxItemId",
+
+                (
+                    SELECT MAX(
+                        i."updatedAt"
+                    )
+                      FROM scipion_set_table_items i
+                     WHERE i."tableId" = t.id
+                ) AS "itemsUpdatedAt"
+
+              FROM scipion_set_tables t
+             WHERE t.id = %s
+            """,
+            (
+                int(self.tableId),
+            ),
+        ) or {}
+
+        return (
+            "logical",
+            int(self.tableId),
+            int(
+                row.get(
+                    "itemsCount"
+                )
+                or 0
+            ),
+            int(
+                row.get(
+                    "maxItemId"
+                )
+                or 0
+            ),
+            str(
+                row.get(
+                    "scopeUpdatedAt"
+                )
+                or ""
+            ),
+            str(
+                row.get(
+                    "itemsUpdatedAt"
+                )
+                or ""
+            ),
+        )
+
     # ------------------------------------------------------------------
     # PostgreSQL write contract
     # ------------------------------------------------------------------
@@ -1641,6 +1825,19 @@ class PostgresqlSetRuntimeMapper:
             for row in rows or []
         ]
 
+    def refreshProperties(self):
+        """
+        Refresh properties cached by logical-table mappers.
+
+        Root Set properties are queried directly from PostgreSQL
+        and therefore do not need a local refresh.
+        """
+        self._refreshLogicalTableScope()
+
+        if self.tableId is not None:
+            self._tableProperties = (
+                self._loadLogicalTableProperties()
+            )
     # ------------------------------------------------------------------
     # Pending mapper operations
     # ------------------------------------------------------------------

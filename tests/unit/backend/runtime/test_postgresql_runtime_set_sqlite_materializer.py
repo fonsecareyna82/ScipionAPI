@@ -871,3 +871,200 @@ def test_RecursiveMaterializationFailsFast(
         )
 
         sourceSet.close()
+
+
+
+class RevisionAwareMapper:
+    def __init__(
+            self,
+            delegate,
+            revision,
+    ):
+        self.delegate = delegate
+        self.revision = revision
+
+    def getRevisionToken(self):
+        return self.revision
+
+    def __getattr__(
+            self,
+            name,
+    ):
+        return getattr(
+            self.delegate,
+            name,
+        )
+
+
+def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
+        tmp_path,
+):
+    sourcePath = (
+        tmp_path
+        / "streaming-source.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 31,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    sourceSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    originalMapper = (
+        sourceSet._getMapper()
+    )
+
+    revisionMapper = (
+        RevisionAwareMapper(
+            originalMapper,
+            (
+                "root",
+                31,
+                1,
+                7,
+                "revision-1",
+            ),
+        )
+    )
+
+    sourceSet._mapper = (
+        revisionMapper
+    )
+
+    materializer = (
+        PostgresqlRuntimeSetSqliteMaterializer()
+    )
+
+    copyCalls = []
+
+    originalCopySetItems = (
+        materializer._copySetItems
+    )
+
+    def copySetItems(
+            *args,
+            **kwargs,
+    ):
+        copyCalls.append(
+            True
+        )
+
+        return originalCopySetItems(
+            *args,
+            **kwargs,
+        )
+
+    materializer._copySetItems = (
+        copySetItems
+    )
+
+    try:
+        targetPath = (
+            materializer.materialize(
+                sourceSet
+            )
+        )
+
+        assert copyCalls == [
+            True,
+        ]
+
+        # Unchanged revision keeps the cached snapshot.
+        assert (
+            materializer.materialize(
+                sourceSet
+            )
+            == targetPath
+        )
+
+        assert copyCalls == [
+            True,
+        ]
+
+        secondItem = ExampleItem()
+
+        secondItem.setObjId(
+            8
+        )
+
+        secondItem._name.set(
+            "particle-8"
+        )
+
+        sourceSet.append(
+            secondItem
+        )
+
+        sourceSet.write()
+
+        revisionMapper.revision = (
+            "root",
+            31,
+            2,
+            8,
+            "revision-2",
+        )
+
+        refreshedPath = (
+            materializer.materialize(
+                sourceSet
+            )
+        )
+
+        # Keep a stable compatibility filename.
+        assert (
+            refreshedPath
+            == targetPath
+        )
+
+        # But rebuild its contents.
+        assert copyCalls == [
+            True,
+            True,
+        ]
+
+        compatibilitySet = _openSet(
+            ExampleSet,
+            refreshedPath,
+        )
+
+        try:
+            assert (
+                compatibilitySet.getSize()
+                == 2
+            )
+
+            assert [
+                item._name.get()
+                for item
+                in compatibilitySet
+            ] == [
+                "particle-7",
+                "particle-8",
+            ]
+
+        finally:
+            compatibilitySet.close()
+
+    finally:
+        sourceSet.close()
+
+

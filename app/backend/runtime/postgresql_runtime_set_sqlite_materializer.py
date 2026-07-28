@@ -42,7 +42,26 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 runtimeSet
             )
 
-            if cachedPath is not None:
+            sourceRevision = (
+                self._getSourceRevision(
+                    runtimeSet
+                )
+            )
+
+            cachedRevision = getattr(
+                runtimeSet,
+                "_postgresqlMaterializedRevision",
+                None,
+            )
+
+            if (
+                    cachedPath is not None
+                    and (
+                    sourceRevision is None
+                    or cachedRevision
+                    == sourceRevision
+            )
+            ):
                 return cachedPath
 
             if (
@@ -76,16 +95,14 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet = None
 
             try:
-                # PostgreSQL is the canonical source of truth.
-                #
-                # Never reuse a persistent SQLite file from the
-                # project or protocol directory. Compatibility
-                # snapshots always live in our managed temporary
-                # directory.
+                # Rebuild stale snapshots at the same worker-local
+                # path. This avoids accumulating obsolete SQLite files
+                # and preserves the filename expected by streaming code.
                 materializedPath = (
-                    self._buildMaterializedPath(
-                        runtimeSet
-                    )
+                        cachedPath
+                        or self._buildMaterializedPath(
+                    runtimeSet
+                )
                 )
 
                 os.makedirs(
@@ -115,6 +132,10 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     classes=classes,
                 )
 
+                self._refreshRuntimeSetState(
+                    runtimeSet
+                )
+
                 self._copySetMetadata(
                     runtimeSet,
                     targetSet,
@@ -133,6 +154,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 self._rememberMaterializedPath(
                     runtimeSet,
                     materializedPath,
+                    sourceRevision=(
+                        sourceRevision
+                    ),
                 )
 
                 return materializedPath
@@ -217,6 +241,64 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 pass
 
             raise
+
+    def _getSourceRevision(
+            self,
+            runtimeSet: ScipionSet,
+    ):
+        runtimeChecker = getattr(
+            runtimeSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if (
+                not callable(
+                    runtimeChecker
+                )
+                or not runtimeChecker()
+        ):
+            return None
+
+        mapper = runtimeSet._getMapper()
+
+        revisionGetter = getattr(
+            mapper,
+            "getRevisionToken",
+            None,
+        )
+
+        if callable(
+                revisionGetter
+        ):
+            return revisionGetter()
+
+        # Safe fallback while loading an object created by
+        # older runtime mapper code.
+        return (
+            "fallback",
+            int(
+                mapper.count()
+            ),
+            int(
+                mapper.maxId()
+            ),
+        )
+
+    @staticmethod
+    def _refreshRuntimeSetState(
+            runtimeSet: ScipionSet,
+    ) -> None:
+        refresher = getattr(
+            runtimeSet,
+            "refreshPostgresqlRuntimeState",
+            None,
+        )
+
+        if callable(
+                refresher
+        ):
+            refresher()
 
     def _getCachedPath(
             self,
@@ -306,13 +388,31 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             self,
             runtimeSet: ScipionSet,
             materializedPath: str,
+            sourceRevision=None,
     ) -> None:
-        materializedPath = str(materializedPath)
-        runtimeSet._postgresqlMaterializedFileName = materializedPath
+        materializedPath = str(
+            materializedPath
+        )
 
-        properties = self._getRuntimeProperties(runtimeSet)
-        properties[self.MATERIALIZED_PATH_PROPERTY] = materializedPath
-        runtimeSet._postgresqlRuntimeProperties = properties
+        runtimeSet._postgresqlMaterializedFileName = (
+            materializedPath
+        )
+
+        runtimeSet._postgresqlMaterializedRevision = (
+            sourceRevision
+        )
+
+        properties = self._getRuntimeProperties(
+            runtimeSet
+        )
+
+        properties[
+            self.MATERIALIZED_PATH_PROPERTY
+        ] = materializedPath
+
+        runtimeSet._postgresqlRuntimeProperties = (
+            properties
+        )
 
     def _openSet(
             self,

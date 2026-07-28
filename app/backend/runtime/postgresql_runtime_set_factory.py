@@ -110,6 +110,52 @@ class PostgresqlRuntimeSetMixin:
 
         return self
 
+    def refreshPostgresqlRuntimeState(
+            self,
+    ):
+        """
+        Refresh size, maximum item id and Set properties from
+        PostgreSQL without replacing the runtime Set object.
+        """
+        mapper = self._getMapper()
+
+        refreshProperties = getattr(
+            mapper,
+            "refreshProperties",
+            None,
+        )
+
+        if callable(
+                refreshProperties
+        ):
+            refreshProperties()
+
+        self._size.set(
+            mapper.count()
+        )
+
+        self._idCount = (
+            mapper.maxId()
+        )
+
+        super().loadAllProperties()
+
+        return self
+
+    def loadAllProperties(
+            self,
+    ):
+        """
+        Preserve the native streaming contract.
+
+        Scipion protocols call loadAllProperties() expecting the
+        input Set size and stream state to reflect current storage.
+        """
+        return (
+            self
+            .refreshPostgresqlRuntimeState()
+        )
+
     def close(self):
         mapper = getattr(
             self,
@@ -453,11 +499,8 @@ class PostgresqlRuntimeSetMixin:
             sourceMaterializer
         )
 
-        runtimeClone._postgresqlMaterializedFileName = getattr(
-            self,
-            "_postgresqlMaterializedFileName",
-            None,
-        )
+        runtimeClone._postgresqlMaterializedFileName = None
+        runtimeClone._postgresqlMaterializedRevision = None
 
         # A clone must not become writable implicitly.
         # Resume explicitly enables writing on the canonical output.
@@ -1424,6 +1467,7 @@ class PostgresqlRuntimeSetFactory:
         )
 
         runtimeSet._postgresqlMaterializedFileName = None
+        runtimeSet._postgresqlMaterializedRevision = None
         runtimeSet._postgresqlSupportsNativeWrite = False
         runtimeSet._postgresqlWritable = False
 
