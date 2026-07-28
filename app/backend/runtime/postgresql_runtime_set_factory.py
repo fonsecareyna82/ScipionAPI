@@ -70,14 +70,43 @@ class PostgresqlRuntimeSetMixin:
             None,
         )
 
-        if not callable(mapperFactory):
+        if not callable(
+                mapperFactory
+        ):
             raise RuntimeError(
-                "PostgreSQL runtime set does not have a mapper factory."
+                "PostgreSQL runtime set does not "
+                "have a mapper factory."
             )
 
-        self._mapper = mapperFactory()
-        self._size.set(self._mapper.count())
-        self._idCount = self._mapper.maxId()
+        writable = bool(
+            getattr(
+                self,
+                "_postgresqlWritable",
+                False,
+            )
+        )
+
+        # Scipion streaming closes output Sets after every
+        # _updateOutputSet(). Preserve the previous access
+        # mode when the same object is opened again.
+        if writable:
+            self._mapper = mapperFactory(
+                writable=True
+            )
+
+        else:
+            # Do not pass writable=False here. Clone mapper
+            # factories preserve the original no-argument
+            # callable contract.
+            self._mapper = mapperFactory()
+
+        self._size.set(
+            self._mapper.count()
+        )
+
+        self._idCount = (
+            self._mapper.maxId()
+        )
 
         return self
 
@@ -510,6 +539,24 @@ class PostgresqlRuntimeSetMixin:
             self,
             properties=True,
     ):
+        # Scipion's streaming update closes the Set after
+        # committing STREAM_OPEN. The following STREAM_CLOSED
+        # update reuses exactly the same object.
+        #
+        # _postgresqlWritable preserves the requested access
+        # mode even while _mapper is None.
+        if (
+                not self.isPostgresqlWritable()
+                and bool(
+            getattr(
+                self,
+                "_postgresqlWritable",
+                False,
+            )
+        )
+        ):
+            self.enablePostgresqlWrite()
+
         if not self.isPostgresqlWritable():
             raise RuntimeError(
                 "PostgreSQL runtime Set is read-only."
