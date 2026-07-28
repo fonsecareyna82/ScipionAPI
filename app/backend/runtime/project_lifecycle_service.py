@@ -35,11 +35,16 @@ class RuntimeProjectLifecycleService:
     LEGACY_SETTINGS_DATABASE_NAME = "settings.sqlite"
     LEGACY_RUN_DATABASE_NAME = "run.db"
 
-    LEGACY_PROJECT_DATABASE_SUFFIXES = (
+    LEGACY_DATABASE_SUFFIXES = (
         "",
         "-wal",
         "-shm",
         "-journal",
+    )
+
+    # Backward-compatible alias used by the run.db cleanup.
+    LEGACY_PROJECT_DATABASE_SUFFIXES = (
+        LEGACY_DATABASE_SUFFIXES
     )
 
     def _removeLegacyDatabaseArtifacts(
@@ -366,73 +371,166 @@ class RuntimeProjectLifecycleService:
             "postgresqlOnly": True,
         }
 
-    def removeLegacyRunDatabases(
+    def removeLegacyProjectDatabase(
             self,
             *,
-            projectPath: Union[str, os.PathLike],
+            projectPath: Union[
+                str,
+                os.PathLike,
+            ],
+            projectDbPath: Optional[
+                Union[
+                    str,
+                    os.PathLike,
+                ]
+            ] = None,
     ) -> Dict[str, Any]:
-        projectRoot = self._normalizeLexicalPath(projectPath)
+        """
+        Remove project-level SQLite databases that are
+        obsolete after migrating the project to PostgreSQL.
 
-        if os.path.islink(projectRoot):
+        This includes:
+
+          - project.sqlite
+          - settings.sqlite
+          - their WAL, SHM and journal artifacts
+
+        Protocol output SQLite databases are not affected.
+        """
+        projectRoot = (
+            self._normalizeLexicalPath(
+                projectPath
+            )
+        )
+
+        if os.path.islink(
+                projectRoot
+        ):
             raise RuntimeError(
-                "Refusing to finalize a project whose root "
-                "directory is a symbolic link: %s"
+                "Refusing to finalize a project whose "
+                "root directory is a symbolic link: %s"
                 % projectRoot
             )
 
-        if not projectRoot.exists() or not projectRoot.is_dir():
+        if (
+                not projectRoot.exists()
+                or not projectRoot.is_dir()
+        ):
             raise RuntimeError(
                 "Project directory does not exist: %s"
                 % projectRoot
             )
 
-        databasePaths = self._findLegacyRunDatabaseArtifacts(
-            projectRoot
-        )
-
-        deletedPaths = []
-
-        for databasePath in databasePaths:
-            self._assertPathInsideProject(
-                projectRoot=projectRoot,
-                candidatePath=databasePath,
+        # Resolve the legacy project.sqlite path.
+        if projectDbPath in (
+                None,
+                "",
+        ):
+            projectDatabasePath = (
+                    projectRoot
+                    / self.LEGACY_PROJECT_DATABASE_NAME
             )
 
-            databaseText = str(databasePath)
+        else:
+            projectDatabasePath = Path(
+                os.path.expanduser(
+                    str(projectDbPath)
+                )
+            )
 
-            if not os.path.lexists(databaseText):
-                continue
-
-            if (
-                    not os.path.islink(databaseText)
-                    and os.path.isdir(databaseText)
-            ):
-                raise RuntimeError(
-                    "Legacy protocol database path is unexpectedly "
-                    "a directory: %s"
-                    % databasePath
+            if not projectDatabasePath.is_absolute():
+                projectDatabasePath = (
+                        projectRoot
+                        / projectDatabasePath
                 )
 
-            os.unlink(databaseText)
-            deletedPaths.append(databaseText)
+            projectDatabasePath = (
+                self._normalizeLexicalPath(
+                    projectDatabasePath
+                )
+            )
 
-        remainingPaths = [
-            str(databasePath)
-            for databasePath in self._findLegacyRunDatabaseArtifacts(
+        # settings.sqlite always belongs to the project root.
+        settingsDatabasePath = (
                 projectRoot
-            )
-        ]
+                / self.LEGACY_SETTINGS_DATABASE_NAME
+        )
 
-        if remainingPaths:
-            raise RuntimeError(
-                "Legacy protocol database cleanup was incomplete: %s"
-                % remainingPaths
+        projectDatabaseReport = (
+            self._removeLegacyDatabaseArtifacts(
+                projectRoot=projectRoot,
+                databasePath=(
+                    projectDatabasePath
+                ),
+                expectedName=(
+                    self
+                    .LEGACY_PROJECT_DATABASE_NAME
+                ),
             )
+        )
+
+        settingsDatabaseReport = (
+            self._removeLegacyDatabaseArtifacts(
+                projectRoot=projectRoot,
+                databasePath=(
+                    settingsDatabasePath
+                ),
+                expectedName=(
+                    self
+                    .LEGACY_SETTINGS_DATABASE_NAME
+                ),
+            )
+        )
+
+        deletedPaths = (
+                list(
+                    projectDatabaseReport.get(
+                        "deleted",
+                        [],
+                    )
+                )
+                + list(
+            settingsDatabaseReport.get(
+                "deleted",
+                [],
+            )
+        )
+        )
+
+        missingPaths = (
+                list(
+                    projectDatabaseReport.get(
+                        "missing",
+                        [],
+                    )
+                )
+                + list(
+            settingsDatabaseReport.get(
+                "missing",
+                [],
+            )
+        )
+        )
 
         return {
-            "projectPath": str(projectRoot),
+            "projectPath": str(
+                projectRoot
+            ),
+            # Keep the previous response field for
+            # backward compatibility.
+            "database": (
+                projectDatabaseReport[
+                    "database"
+                ]
+            ),
+            "settingsDatabase": (
+                settingsDatabaseReport[
+                    "database"
+                ]
+            ),
             "deleted": deletedPaths,
-            "deletedCount": len(deletedPaths),
-            "remaining": [],
-            "legacyRunDatabasesRemoved": True,
+            "missing": missingPaths,
+            "projectSqliteRemoved": True,
+            "settingsSqliteRemoved": True,
+            "postgresqlOnly": True,
         }
