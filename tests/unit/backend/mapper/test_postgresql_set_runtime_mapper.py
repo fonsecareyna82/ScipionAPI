@@ -497,7 +497,7 @@ def test_SelectAllSupportsNumericComparison():
     )
 
 
-def test_SelectAllUsesStableCreationCursor():
+def test_SelectAllUsesImmutableCreationCursor():
     db = FakeDb(rows=[])
 
     mapper = PostgresqlSetRuntimeMapper(
@@ -517,21 +517,23 @@ def test_SelectAllUsesStableCreationCursor():
     )
 
     assert (
-            'COALESCE( creation, "createdAt" ) '
-            'AS creation'
-            in db.query
-    )
-
-    assert (
-        'COALESCE("creation", "createdAt") '
-        '> %s'
+        '"createdAt" AS creation'
         in db.query
     )
 
     assert (
-        'ORDER BY '
-        'COALESCE("creation", "createdAt") ASC'
+        '"createdAt" > %s'
         in db.query
+    )
+
+    assert (
+        'ORDER BY "createdAt" ASC'
+        in db.query
+    )
+
+    assert (
+        'COALESCE("creation", "createdAt")'
+        not in db.query
     )
 
     assert db.params == (
