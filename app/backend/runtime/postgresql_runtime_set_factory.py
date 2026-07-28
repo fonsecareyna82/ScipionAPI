@@ -862,6 +862,13 @@ class PostgresqlRuntimeSetFactory:
             )
         )
 
+        rootTableId = (
+            self._resolveRootLogicalTableId(
+                setMapper=setMapper,
+                setId=int(setId),
+            )
+        )
+
         itemClassRegistry = dict(
             classRegistry
         )
@@ -1002,6 +1009,7 @@ class PostgresqlRuntimeSetFactory:
             return PostgresqlSetRuntimeMapper(
                 db=db,
                 setId=int(setId),
+                rootTableId=rootTableId,
                 itemBuilder=buildItem,
                 itemSerializer=serializeItem,
                 writable=bool(
@@ -1015,7 +1023,8 @@ class PostgresqlRuntimeSetFactory:
         # Sets whose items are themselves Sets still require
         # writable logical-table support.
         runtimeSet._postgresqlSupportsNativeWrite = (
-            not nestedSetItemClass
+                not nestedSetItemClass
+                and rootTableId is not None
         )
 
         runtimeSet._postgresqlWritable = False
@@ -1025,6 +1034,20 @@ class PostgresqlRuntimeSetFactory:
         )
 
         runtimeSet.load()
+
+        runtimeInfo = getattr(
+            runtimeSet,
+            "_postgresqlRuntimeInfo",
+            None,
+        )
+
+        if isinstance(
+                runtimeInfo,
+                dict,
+        ):
+            runtimeInfo[
+                "rootTableId"
+            ] = rootTableId
 
         if cache:
             self._cacheRuntimeSet(
@@ -1102,6 +1125,49 @@ class PostgresqlRuntimeSetFactory:
         runtimeSet._postgresqlMaterializedFileName = None
         runtimeSet._postgresqlSupportsNativeWrite = False
         runtimeSet._postgresqlWritable = False
+
+    def _resolveRootLogicalTableId(
+            self,
+            setMapper,
+            setId: int,
+    ) -> Optional[int]:
+        rootTables = [
+            dict(table)
+            for table in (
+                    setMapper.listStoredSetTables(
+                        int(setId)
+                    )
+                    or []
+            )
+            if (
+                    table.get(
+                        "tableKind"
+                    )
+                    == "root"
+            )
+        ]
+
+        if len(rootTables) > 1:
+            raise ValueError(
+                "More than one PostgreSQL root "
+                "logical table was found for set %s."
+                % setId
+            )
+
+        if not rootTables:
+            return None
+
+        tableId = self._toOptionalInt(
+            rootTables[0].get(
+                "id"
+            )
+        )
+
+        return (
+            int(tableId)
+            if tableId is not None
+            else None
+        )
 
     def _loadLogicalTablesByParentItemId(
             self,
