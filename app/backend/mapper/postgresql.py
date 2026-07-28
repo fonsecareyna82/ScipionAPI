@@ -1,6 +1,7 @@
 # postgresql.py
 
 import json
+import threading
 from datetime import datetime
 
 import psycopg2
@@ -25,18 +26,103 @@ def _toJsonParam(value: Any) -> Any:
 
 
 class PostgresqlDb:
-    """Class to handle PostgreSQL connection and basic operations."""
+    """Handle PostgreSQL connections and basic operations."""
 
-    def __init__(self, dbName: str, user: str, password: str, host: str = "localhost", port: int = 5432):
-        self.conn = psycopg2.connect(dbname=dbName, user=user, password=password, host=host, port=port)
-        self.cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    def __init__(
+            self,
+            dbName: str,
+            user: str,
+            password: str,
+            host: str = "localhost",
+            port: int = 5432,
+    ):
+        self._connectionParams = {
+            "dbname": dbName,
+            "user": user,
+            "password": password,
+            "host": host,
+            "port": port,
+        }
 
-    def execute(self, query: str, params: Optional[tuple] = None, commit: bool = True) -> Any:
+        self._threadLocal = threading.local()
+        self._resourcesLock = threading.RLock()
+        self._connections = []
+        self._cursors = []
+        self._closed = False
+
+        # Preserve the previous fail-fast behavior: creating the
+        # mapper validates the main-thread connection immediately.
+        _ = self.cursor
+
+    @property
+    def conn(self):
+        return self._getThreadConnection()
+
+    @property
+    def cursor(self):
+        with self._resourcesLock:
+            if self._closed:
+                raise psycopg2.InterfaceError(
+                    "PostgreSQL database is closed."
+                )
+
+            connection = self._getThreadConnection()
+            cursor = getattr(self._threadLocal, "cursor", None)
+
+            if cursor is None or bool(getattr(cursor, "closed", False)):
+                cursor = connection.cursor(
+                    cursor_factory=psycopg2.extras.RealDictCursor
+                )
+
+                self._threadLocal.cursor = cursor
+                self._cursors.append(cursor)
+
+            return cursor
+
+    def _getThreadConnection(self):
+        with self._resourcesLock:
+            if self._closed:
+                raise psycopg2.InterfaceError(
+                    "PostgreSQL database is closed."
+                )
+
+            connection = getattr(
+                self._threadLocal,
+                "connection",
+                None,
+            )
+
+            if connection is not None and not bool(
+                    getattr(connection, "closed", False)
+            ):
+                return connection
+
+            connection = psycopg2.connect(
+                **self._connectionParams
+            )
+
+            self._threadLocal.connection = connection
+            self._threadLocal.cursor = None
+            self._connections.append(connection)
+
+            return connection
+
+    def execute(
+            self,
+            query: str,
+            params: Optional[tuple] = None,
+            commit: bool = True,
+    ) -> Any:
         """Execute a SQL command."""
-        self.cursor.execute(query, params)
+        cursor = self.cursor
+        connection = self.conn
+
+        cursor.execute(query, params)
+
         if commit:
-            self.conn.commit()
-        return self.cursor
+            connection.commit()
+
+        return cursor
 
     def executeReturningOne(
             self,
@@ -46,57 +132,98 @@ class PostgresqlDb:
         """
         Execute a write statement with RETURNING and commit it.
 
-        The returned row is fetched before committing so this
-        also works safely with PostgreSQL cursors.
+        The returned row is fetched before committing.
         """
+        cursor = self.cursor
+        connection = self.conn
+
         try:
-            self.cursor.execute(
-                query,
-                params,
-            )
-
-            row = self.cursor.fetchone()
-
-            self.conn.commit()
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            connection.commit()
 
             return row
 
         except Exception:
-            self.conn.rollback()
+            connection.rollback()
             raise
 
     @contextmanager
     def transaction(self) -> Iterator["PostgresqlDb"]:
-        # transaction
+        connection = self.conn
+
         try:
             yield self
-            self.conn.commit()
+            connection.commit()
+
         except Exception:
-            self.conn.rollback()
+            connection.rollback()
             raise
 
     def rollback(self) -> None:
         """
-        Roll back the active PostgreSQL transaction.
-
-        This is required before persisting terminal protocol
-        state after a runtime database error.
+        Roll back the active transaction owned by the current thread.
         """
         self.conn.rollback()
 
-    def fetchOne(self, query: str, params: Optional[tuple] = None) -> Optional[Dict]:
+    def fetchOne(
+            self,
+            query: str,
+            params: Optional[tuple] = None,
+    ) -> Optional[Dict]:
         """Fetch a single row."""
-        self.cursor.execute(query, params)
-        return self.cursor.fetchone()
+        cursor = self.cursor
+        cursor.execute(query, params)
 
-    def fetchAll(self, query: str, params: Optional[tuple] = None) -> List[Dict]:
+        return cursor.fetchone()
+
+    def fetchAll(
+            self,
+            query: str,
+            params: Optional[tuple] = None,
+    ) -> List[Dict]:
         """Fetch all rows."""
-        self.cursor.execute(query, params)
-        return self.cursor.fetchall()
+        cursor = self.cursor
+        cursor.execute(query, params)
+
+        return cursor.fetchall()
 
     def close(self):
-        self.cursor.close()
-        self.conn.close()
+        with self._resourcesLock:
+            if self._closed:
+                return
+
+            self._closed = True
+
+            cursors = list(self._cursors)
+            connections = list(self._connections)
+
+            self._cursors.clear()
+            self._connections.clear()
+            self._threadLocal = threading.local()
+
+        firstError = None
+
+        for cursor in cursors:
+            try:
+                if not bool(getattr(cursor, "closed", False)):
+                    cursor.close()
+
+            except Exception as error:
+                if firstError is None:
+                    firstError = error
+
+        for connection in connections:
+            try:
+                if not bool(getattr(connection, "closed", False)):
+                    connection.close()
+
+            except Exception as error:
+                if firstError is None:
+                    firstError = error
+
+        if firstError is not None:
+            raise firstError
 
 
 class PostgresqlFlatMapper(Mapper):
