@@ -2643,6 +2643,16 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
         )
 
+        # A nested Set may temporarily point to a compatibility
+        # SQLite snapshot under /tmp. PostgreSQL runtime storage
+        # must never persist those transient paths.
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            self._removePostgresqlRuntimeStorageProperties(
+                rawValues
+            )
+
         values = {
             str(label): self._toJsonValue(value)
             for label, value in (rawValues or {}).items()

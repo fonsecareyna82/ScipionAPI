@@ -2168,6 +2168,56 @@ def test_AttachLogicalTableMapperCanEnableWrites():
     )
 
 
+def test_RuntimeNestedItemSerializationRemovesTemporaryMapperPath():
+    _, runtimeRootSet = (
+        buildNestedRuntimeSet()
+    )
+
+    nestedSet = (
+        ExampleNestedSet()
+    )
+
+    nestedSet.setObjId(
+        8
+    )
+
+    nestedSet._name.set(
+        "series-8"
+    )
+
+    nestedSet._mapperPath.set(
+        "/tmp/postgresql-runtime-sets/"
+        "worker-123/SetOfTiltSeries.sqlite,"
+        "series-8"
+    )
+
+    serialized = (
+        ScipionSetPostgresqlMapper(
+            db=object()
+        )
+        .serializeRuntimeItem(
+            item=nestedSet,
+            scipionSet=(
+                runtimeRootSet
+            ),
+        )
+    )
+
+    values = serialized[
+        "values"
+    ]
+
+    assert (
+        "_mapperPath"
+        not in values
+    )
+
+    assert (
+        values["_name"]
+        == "series-8"
+    )
+
+
 
 
 
