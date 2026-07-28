@@ -820,3 +820,27 @@ def test_RealCapabilityRejectsDeeperNestedSets():
     )
 
 
+def test_RealCapabilitySupportsFlatItems():
+    mapper = (
+        _buildRealCapabilityMapper()
+    )
+
+    capability = (
+        mapper
+        .getPostgresqlOutputSetCapability(
+            OutputSetStub
+        )
+    )
+
+    assert capability == {
+        "supported": True,
+        "reason": None,
+        "storageKind": "flat_items",
+        "nestedSetItems": False,
+        "itemClassName": "ItemStub",
+    }
+
+
+
+
+

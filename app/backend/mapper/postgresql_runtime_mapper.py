@@ -5024,16 +5024,23 @@ class PostgresqlRuntimeMapper(Mapper):
             return {
                 "supported": True,
                 "reason": None,
-                "storageKind": "flat_items",
-                "nestedSetItems": False,
+                "storageKind": (
+                    "nested_logical_tables"
+                ),
+                "nestedSetItems": True,
                 "itemClassName": (
                     nativeItemClass.__name__
+                ),
+                "childItemClassName": (
+                    nativeNestedItemClass.__name__
                 ),
             }
 
         return {
             "supported": True,
             "reason": None,
+            "storageKind": "flat_items",
+            "nestedSetItems": False,
             "itemClassName": (
                 nativeItemClass.__name__
             ),
