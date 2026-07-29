@@ -89,8 +89,8 @@ class PostgresqlRuntimeMapper(Mapper):
     - SetOf... objects go to scipion_sets/scipion_set_items.
     - Runtime relations go to scipion_relations.
 
-    SQLite is retained only as a write and execution compatibility mirror for
-    the native Scipion runner.
+    SQLite is used only when an explicit native Scipion compatibility snapshot
+    is requested.
     """
 
     isPostgresqlRuntimeMapper = True
@@ -100,7 +100,6 @@ class PostgresqlRuntimeMapper(Mapper):
             flatMapper: PostgresqlFlatMapper,
             projectId: int,
             dictClasses=None,
-            writeFallbackMapper=None,
             project=None,
     ):
         if not dictClasses or not hasattr(dictClasses, "items"):
@@ -146,9 +145,6 @@ class PostgresqlRuntimeMapper(Mapper):
         self.projectId = int(projectId)
         self.project = project
 
-        # SQLite remains available only as a write and execution mirror.
-        self.writeFallbackMapper = writeFallbackMapper
-
         self.objectMapper = (
             ScipionObjectPostgresqlMapper(
                 self.db
@@ -167,11 +163,8 @@ class PostgresqlRuntimeMapper(Mapper):
 
         # Keep one factory per runtime mapper so native sets,
         # protocols and pointer targets share the same caches.
-        self.runtimeSetFactory = (
-            PostgresqlRuntimeSetFactory()
-        )
+        self.runtimeSetFactory = PostgresqlRuntimeSetFactory()
         self._runtimeProtocolsById = {}
-        self._sqliteProtocolMirrorIds = set()
 
     SELECT_BY_FIELDS = frozenset({
         "id",
@@ -205,9 +198,6 @@ class PostgresqlRuntimeMapper(Mapper):
             logger.exception("Could not commit PostgreSQL runtime mapper.")
             raise
 
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.commit()
-
     def close(self):
         # Do not close the shared PostgreSQL connection here. It belongs to the
         # request/session mapper lifecycle.
@@ -227,10 +217,9 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
         self._runtimeProtocolsById.clear()
-        self._sqliteProtocolMirrorIds.clear()
 
     @staticmethod
-    def _clearFallbackMapperCaches(
+    def _clearSqliteMapperCaches(
             *fallbackMappers,
     ) -> None:
         seenMappers = set()
@@ -455,22 +444,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return True
 
-    def _storeProtocolInWriteFallback(
-            self,
-            protocol: Protocol,
-    ) -> bool:
-        writeFallbackMapper = self.writeFallbackMapper
-
-        if writeFallbackMapper is None:
-            raise RuntimeError(
-                "SQLite write fallback mapper is not available."
-            )
-
-        return self._storeProtocolRootInSqliteMapper(
-            protocol=protocol,
-            sqliteMapper=writeFallbackMapper,
-        )
-
     def materializeProtocolInSqliteMapper(
             self,
             protocol: Protocol,
@@ -496,7 +469,7 @@ class PostgresqlRuntimeMapper(Mapper):
             sqliteMapper=sqliteMapper,
         )
 
-        self._clearFallbackMapperCaches(
+        self._clearSqliteMapperCaches(
             sqliteMapper
         )
 
@@ -514,7 +487,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 identitySnapshot
             )
 
-            self._clearFallbackMapperCaches(
+            self._clearSqliteMapperCaches(
                 sqliteMapper
             )
 
@@ -545,9 +518,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
         self._ensureObjId(obj)
 
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.store(obj)
-
         if self._shouldSkipInternalRuntimeObject(obj):
             return
 
@@ -564,36 +534,16 @@ class PostgresqlRuntimeMapper(Mapper):
             type(obj),
         )
 
-    def _storeRuntimeProtocol(
-            self,
-            protocol: Protocol,
-    ) -> None:
-        """
-        Store a protocol using PostgreSQL as the authoritative runtime
-        persistence.
-
-        PostgreSQL always allocates and owns the protocol id. When the
-        temporary SQLite execution mirror is enabled, it receives an exact
-        copy preserving that PostgreSQL id.
-        """
-        protocolId = self._ensureObjId(
-            protocol
-        )
+    def _storeRuntimeProtocol(self, protocol: Protocol) -> None:
+        """Store a protocol using PostgreSQL as the authoritative runtime persistence."""
+        protocolId = self._ensureObjId(protocol)
 
         if protocolId is None:
             raise RuntimeError(
                 "Cannot store PostgreSQL runtime protocol without id."
             )
 
-        # PostgreSQL is written first and remains authoritative.
-        self._storeProtocol(
-            protocol
-        )
-
-        if self.writeFallbackMapper is not None:
-            self.ensureProtocolWriteFallbackMirror(
-                protocol
-            )
+        self._storeProtocol(protocol)
 
     def evictRuntimeProtocols(self, protocolIds):
         evictedProtocolIds = []
@@ -607,10 +557,6 @@ class PostgresqlRuntimeMapper(Mapper):
             self._runtimeProtocolsById.pop(
                 protocolId,
                 None,
-            )
-
-            self._sqliteProtocolMirrorIds.discard(
-                protocolId
             )
 
             evictedProtocolIds.append(
@@ -674,20 +620,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 cachesCleared
             ),
         }
-
-    def _existsInWriteFallback(self, objId) -> bool:
-        if self.writeFallbackMapper is None or objId is None:
-            return False
-
-        try:
-            return bool(self.writeFallbackMapper.exists(objId))
-        except Exception:
-            pass
-
-        try:
-            return self.writeFallbackMapper.selectById(objId) is not None
-        except Exception:
-            return False
 
     def _getProjectSqlitePath(
             self,
@@ -773,19 +705,14 @@ class PostgresqlRuntimeMapper(Mapper):
             objId,
     ) -> bool:
         """
-        Check the real project.sqlite Objects namespace.
+        Check the physical project.sqlite Objects namespace.
 
-        This check must work even when neither the read nor the write
-        fallback mapper is open. Imported project.sqlite databases use
-        one global namespace for protocols and protocol child objects.
+        Imported legacy projects may retain project.sqlite on disk while PostgreSQL
+        allocates new runtime object ids. The file is consulted only to avoid id
+        collisions during migration.
         """
         if objId is None:
             return False
-
-        if self._existsInWriteFallback(
-                objId
-        ):
-            return True
 
         sqlitePath = (
             self._getProjectSqlitePath()
@@ -831,54 +758,6 @@ class PostgresqlRuntimeMapper(Mapper):
                     sqlitePath,
                 )
             ) from error
-
-    def ensureProtocolWriteFallbackMirror(
-            self,
-            protocol: Protocol,
-    ) -> Dict[str, Any]:
-        """
-        Materialize a PostgreSQL runtime protocol in the temporary SQLite
-        execution mirror.
-
-        PostgreSQL owns the protocol identity. SQLite preserves that root id
-        and allocates only internal child ids from its reserved high range.
-        """
-        writeFallbackMapper = self.writeFallbackMapper
-
-        if writeFallbackMapper is None:
-            raise RuntimeError(
-                "Cannot materialize protocol SQLite execution mirror: "
-                "write fallback mapper is not available."
-            )
-
-        materializeReport = self.materializeProtocolInSqliteMapper(
-            protocol=protocol,
-            sqliteMapper=writeFallbackMapper,
-        )
-
-        protocolId = int(
-            materializeReport["protocolId"]
-        )
-
-        self._sqliteProtocolMirrorIds.add(
-            protocolId
-        )
-
-        report = {
-            "protocolId": protocolId,
-            "created": materializeReport["created"],
-            "updated": not materializeReport["created"],
-            "mirrorClassName": materializeReport["className"],
-        }
-
-        logger.info(
-            "Ensured protocol SQLite execution mirror. "
-            "projectId=%s report=%s",
-            self.projectId,
-            report,
-        )
-
-        return report
 
     def _storeRuntimeObjectRootInSqliteMapper(
             self,
@@ -1061,7 +940,7 @@ class PostgresqlRuntimeMapper(Mapper):
             )
         )
 
-        self._clearFallbackMapperCaches(
+        self._clearSqliteMapperCaches(
             sqliteMapper
         )
 
@@ -1125,7 +1004,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 identitySnapshot
             )
 
-            self._clearFallbackMapperCaches(
+            self._clearSqliteMapperCaches(
                 sqliteMapper
             )
 
@@ -1291,8 +1170,6 @@ class PostgresqlRuntimeMapper(Mapper):
             return
 
         if isinstance(obj, Protocol):
-            # PostgreSQL allocates the protocol id. The optional SQLite
-            # execution mirror must preserve that same identity.
             self._storeRuntimeProtocol(obj)
             return
 
@@ -1300,13 +1177,7 @@ class PostgresqlRuntimeMapper(Mapper):
         self.store(obj)
 
     def insertChild(self, obj, key, attr, namePrefix=None):
-        """
-        Insert/store a child object following the naming convention used by
-        SqliteMapper.
-
-        For Protocol parents, mirror children into SQLite only when the protocol root
-        already exists in SQLite. Otherwise SQLite creates orphan rows.
-        """
+        """Insert a child object following Scipion's mapper naming convention."""
         if attr is None:
             return
 
@@ -1326,21 +1197,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 key,
                 attr,
                 exc_info=True,
-            )
-
-        shouldWriteFallback = self.writeFallbackMapper is not None
-
-        if isinstance(obj, Protocol):
-            shouldWriteFallback = shouldWriteFallback and self._existsInWriteFallback(
-                self._getObjId(obj)
-            )
-
-        if shouldWriteFallback:
-            self.writeFallbackMapper.insertChild(
-                obj,
-                key,
-                attr,
-                namePrefix=namePrefix,
             )
 
         self.store(attr)
@@ -1436,33 +1292,14 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         try:
-            if (
-                    protocolId
-                    in self._sqliteProtocolMirrorIds
-            ):
-                refreshedProtocol = (
-                    self
-                    ._refreshSqliteProtocolMirrorFromPostgresqlRow(
-                        protocol,
-                        row,
-                    )
-                )
-
-            else:
-                refreshedProtocol = (
-                    self
-                    ._refreshProtocolFromPostgresqlRow(
-                        protocol,
-                        row,
-                    )
-                )
+            refreshedProtocol = self._refreshProtocolFromPostgresqlRow(
+                protocol,
+                row,
+            )
 
             if refreshedProtocol is not protocol:
                 raise RuntimeError(
-                    "PostgreSQL protocol updateFrom "
-                    "replaced protocol identity %s."
-                    % protocolId
-                )
+                    "PostgreSQL protocol updateFrom replaced protocol identity %s." % protocolId)
 
         except Exception:
             self._restoreRuntimeObjectState(
@@ -2137,22 +1974,8 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return self._selectGenericObjectByIdFromPostgresql(objId)
 
-    def selectRuntimeProtocolById(
-            self,
-            objId,
-            refreshCached: bool = True,
-    ):
-        """
-        Return one stable, fully hydrated protocol for runtime operations.
-
-        Prefer the SQLite execution mirror on the first runtime hydration because
-        it contains native pointers, internal attributes and outputs. Cache that
-        instance so all subsequent runtime reads reuse the same protocol identity.
-
-        When refreshCached is False, an existing protocol instance is returned
-        without applying PostgreSQL status, params or runtime metadata. This is
-        used by relation reads to keep owner protocols strictly read-only.
-        """
+    def selectRuntimeProtocolById(self, objId, refreshCached: bool = True):
+        """Return one stable PostgreSQL-backed protocol for runtime operations."""
         protocolId = self._toOptionalInt(objId)
 
         if protocolId is None:
@@ -2167,137 +1990,24 @@ class PostgresqlRuntimeMapper(Mapper):
             protocolId,
         )
 
-        cachedProtocol = self._runtimeProtocolsById.get(
-            protocolId
-        )
+        cachedProtocol = self._runtimeProtocolsById.get(protocolId)
 
         if cachedProtocol is not None:
             if row:
                 if refreshCached:
-                    return (
-                        self
-                        ._getOrBuildProtocolFromPostgresqlRow(
-                            row
-                        )
-                    )
+                    return self._getOrBuildProtocolFromPostgresqlRow(row)
 
                 return cachedProtocol
 
-            if protocolId in self._sqliteProtocolMirrorIds:
-                if refreshCached:
-                    return self._attachRuntimeContext(
-                        cachedProtocol
-                    )
+            self._runtimeProtocolsById.pop(protocolId, None)
 
-                return cachedProtocol
-
-            # A PostgreSQL-native cached protocol whose row disappeared must
-            # not remain available as a stale runtime object.
-            self._runtimeProtocolsById.pop(
-                protocolId,
-                None,
-            )
-
-        protocol = self._selectProtocolFromWriteFallbackMirror(protocolId)
-
-        if protocol is not None:
-            if row:
-                if refreshCached:
-                    return self._adoptSqliteProtocolMirror(
-                        protocol,
-                        row,
-                    )
-
-                return protocol
-
-            if not refreshCached:
-                return protocol
-
-            protocol = self._attachRuntimeContext(
-                protocol
-            )
-
-            # Preserve identity for compatibility-only protocols too. If the
-            # PostgreSQL row appears later, it will receive the safe mirror
-            # refresh.
-            self._runtimeProtocolsById[
-                protocolId
-            ] = protocol
-
-            self._sqliteProtocolMirrorIds.add(
-                protocolId
-            )
-
-            return protocol
-
-        if row:
-            if refreshCached:
-                return (
-                    self
-                    ._getOrBuildProtocolFromPostgresqlRow(
-                        row
-                    )
-                )
-
-            # Build an independent read representation. Do not place it in
-            # the shared protocol cache and do not modify another instance.
-            return self._buildProtocolFromPostgresqlRow(
-                row
-            )
-
-        return None
-
-    def _selectProtocolFromWriteFallbackMirror(
-            self,
-            protocolId,
-    ):
-        """
-        Read one native Protocol from the SQLite execution mirror.
-
-        This is not a general project read fallback. The mirror is consulted only
-        to recover Scipion-native protocol state such as Pointer, PointerList,
-        internal attributes and outputs.
-        """
-        writeFallbackMapper = self.writeFallbackMapper
-
-        if writeFallbackMapper is None:
+        if not row:
             return None
 
-        try:
-            protocol = writeFallbackMapper.selectById(
-                protocolId
-            )
+        if refreshCached:
+            return self._getOrBuildProtocolFromPostgresqlRow(row)
 
-        except Exception:
-            logger.debug(
-                "Protocol %s was not found in the SQLite execution mirror.",
-                protocolId,
-                exc_info=True,
-            )
-
-            return None
-
-        if protocol is None:
-            logger.debug(
-                "Protocol %s was not found in the SQLite execution mirror.",
-                protocolId,
-            )
-
-            return None
-
-        if not isinstance(
-                protocol,
-                Protocol,
-        ):
-            logger.debug(
-                "SQLite execution mirror object %s is not a Protocol. class=%s",
-                protocolId,
-                protocol.__class__.__name__,
-            )
-
-            return None
-
-        return protocol
+        return self._buildProtocolFromPostgresqlRow(row)
 
     def _selectProtocolByIdFromPostgresql(
             self,
@@ -2375,65 +2085,10 @@ class PostgresqlRuntimeMapper(Mapper):
             self._runtimeProtocolsById[protocolId] = protocol
             return protocol
 
-        if protocolId in self._sqliteProtocolMirrorIds:
-            return self._refreshSqliteProtocolMirrorFromPostgresqlRow(
-                protocol,
-                row,
-            )
-
-        return self._refreshProtocolFromPostgresqlRow(protocol, row)
-
-    def _refreshSqliteProtocolMirrorFromPostgresqlRow(self, protocol, row):
-        """
-        Refresh PostgreSQL-owned runtime metadata without replacing the
-        complete protocol state already hydrated from SQLite.
-
-        Stored protocol params are deliberately not reapplied because the
-        SQLite protocol already contains native Pointer, PointerList and
-        output attributes.
-        """
-        protocolId = self._toOptionalInt(row.get("protocolId"))
-
-        if protocolId is not None:
-            self._setObjId(protocol, protocolId)
-
-        self._attachRuntimeContext(protocol)
-
-        self._applyStoredProtocolStatus(
-            protocol,
-            row.get("status"),
-        )
-
-        self._applyStoredProtocolRuntimeMetadata(
-            protocol,
-            row.get("params") or {},
-        )
-
-        self._ensureProtocolWorkingDir(
-            protocol
-        )
-
-        return protocol
-
-    def _adoptSqliteProtocolMirror(self, protocol, row):
-        protocolId = self._toOptionalInt(row.get("protocolId"))
-
-        if protocolId is None:
-            logger.warning(
-                "Cannot adopt SQLite protocol mirror without protocolId. row=%s",
-                row,
-            )
-            return None
-
-        protocol = self._refreshSqliteProtocolMirrorFromPostgresqlRow(
+        return self._refreshProtocolFromPostgresqlRow(
             protocol,
             row,
         )
-
-        self._runtimeProtocolsById[protocolId] = protocol
-        self._sqliteProtocolMirrorIds.add(protocolId)
-
-        return protocol
 
     def _selectSetByIdFromPostgresql(
             self,
@@ -4330,20 +3985,12 @@ class PostgresqlRuntimeMapper(Mapper):
         return self._selectRelationObjectById(parentId)
 
     def deleteAll(self):
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.deleteAll()
-
-        self._clearFallbackMapperCaches(
-            self.writeFallbackMapper
-        )
-
         deleteResult = self.flatMapper.deleteProjectRuntimeData(
             self.projectId
         )
 
         self.runtimeSetFactory.clearCaches()
         self._runtimeProtocolsById.clear()
-        self._sqliteProtocolMirrorIds.clear()
 
         logger.debug(
             "Deleted all PostgreSQL runtime objects. "
@@ -4374,8 +4021,6 @@ class PostgresqlRuntimeMapper(Mapper):
             return
 
         if isinstance(obj, Protocol):
-            if self.writeFallbackMapper is not None:
-                self.writeFallbackMapper.delete(obj)
 
             self.flatMapper.deleteProtocol(
                 self.projectId,
@@ -4428,9 +4073,6 @@ class PostgresqlRuntimeMapper(Mapper):
                     % objId
                 )
 
-            if self.writeFallbackMapper is not None:
-                self.writeFallbackMapper.delete(obj)
-
             deleteResult = self.setMapper.deleteStoredSetOutput(
                 projectId=self.projectId,
                 setId=setId,
@@ -4468,9 +4110,6 @@ class PostgresqlRuntimeMapper(Mapper):
             return
 
         if isSetObject:
-            if self.writeFallbackMapper is not None:
-                self.writeFallbackMapper.delete(obj)
-
             return
 
         if not isinstance(obj, ScipionObject):
@@ -4484,9 +4123,6 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             return
-
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.delete(obj)
 
         deleteResult = self.objectMapper.deleteStoredObjectSubtreesByScipionObjId(
             projectId=self.projectId,
@@ -4515,16 +4151,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
     def insertRelation(self, relName, creatorObj, parentObj, childObj,
                        parentExt=None, childExt=None):
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.insertRelation(
-                relName,
-                creatorObj,
-                parentObj,
-                childObj,
-                parentExt,
-                childExt,
-            )
-
         self.insertRelationData(
             relName,
             self._requireObjId(creatorObj),
@@ -4591,11 +4217,7 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return self._toOptionalInt(row.get("id"))
 
-
     def deleteRelations(self, creatorObj):
-        if self.writeFallbackMapper is not None:
-            self.writeFallbackMapper.deleteRelations(creatorObj)
-
         creatorId = self._getObjId(creatorObj)
         if creatorId is None:
             return
