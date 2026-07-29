@@ -4,6 +4,7 @@ import re
 import tempfile
 import threading
 import uuid
+from datetime import datetime, timedelta
 from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
 
@@ -20,6 +21,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
     DIRECTORY_NAME = "postgresql-runtime-sets"
     MATERIALIZED_PATH_PROPERTY = "materializedFileName"
+    STREAMING_CURSOR_EPOCH = datetime(
+        2000,
+        1,
+        1,
+    )
 
     def __init__(self):
         # RLock allows a recursive call to reach our
@@ -483,8 +489,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 targetItem
             )
 
-            self._preserveItemCreation(
-                sourceItem=sourceItem,
+            self._setStableStreamingCreation(
                 targetItem=targetItem,
                 targetSet=targetSet,
             )
@@ -526,38 +531,55 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             classes=sourceClasses,
         )
 
-    @staticmethod
-    def _preserveItemCreation(
-            sourceItem,
+    @classmethod
+    def _buildStableStreamingCreation(
+            cls,
+            itemId: int,
+    ) -> str:
+        itemId = int(itemId)
+
+        if itemId < 0:
+            raise ValueError(
+                "Streaming item id cannot be negative."
+            )
+
+        try:
+            creation = (
+                cls.STREAMING_CURSOR_EPOCH
+                + timedelta(
+                    microseconds=itemId
+                )
+            )
+
+        except OverflowError as error:
+            raise ValueError(
+                "Streaming item id is too large: %s"
+                % itemId
+            ) from error
+
+        return creation.strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+
+    def _setStableStreamingCreation(
+            self,
             targetItem,
             targetSet: ScipionSet,
     ) -> None:
-        creationGetter = getattr(
-            sourceItem,
-            "getObjCreation",
-            None,
-        )
-
-        creation = (
-            creationGetter()
-            if callable(creationGetter)
-            else getattr(
-                sourceItem,
-                "_objCreation",
-                None,
-            )
-        )
-
-        if creation in (None, ""):
-            return
-
         itemId = targetItem.getObjId()
 
         if itemId in (None, ""):
             raise RuntimeError(
-                "Cannot preserve SQLite item creation "
-                "without an object id."
+                "Cannot create a stable SQLite "
+                "streaming cursor without an object id."
             )
+
+        creationText = (
+            self
+            ._buildStableStreamingCreation(
+                int(itemId)
+            )
+        )
 
         mapper = targetSet._getMapper()
         sqliteDb = getattr(
@@ -565,6 +587,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             "db",
             None,
         )
+
         executeCommand = getattr(
             sqliteDb,
             "executeCommand",
@@ -585,7 +608,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             )
             or ""
         )
-        creationText = str(creation)
 
         executeCommand(
             "UPDATE %sObjects "

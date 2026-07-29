@@ -306,33 +306,39 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         sourceSet.close()
 
 
-def test_MaterializePreservesStreamingCreationCursor(
+def test_MaterializeUsesStableItemIdStreamingCursor(
         tmp_path,
 ):
     sourcePath = (
         tmp_path
-        / "streaming-creation-source.sqlite"
+        / "streaming-cursor-source.sqlite"
     )
+
     owner = FakePathOwner(
         tmp_path / "extra"
     )
+
     sourceSet = _createEmptySource(
         sourcePath
     )
 
-    firstCreation = (
-        "2026-07-29 "
-        "10:00:00.000001+00:00"
+    # Deliberately reverse the source timestamps.
+    # The compatibility cursor must depend on the
+    # item id, not on these values.
+    firstSourceCreation = (
+        "2099-01-01 "
+        "00:00:00.000001+00:00"
     )
-    secondCreation = (
-        "2026-07-29 "
-        "10:00:00.000002+00:00"
+
+    secondSourceCreation = (
+        "1980-01-01 "
+        "00:00:00.000001+00:00"
     )
 
     firstItem = ExampleItem()
     firstItem.setObjId(7)
     firstItem.setObjCreation(
-        firstCreation
+        firstSourceCreation
     )
     firstItem._name.set(
         "particle-7"
@@ -341,7 +347,7 @@ def test_MaterializePreservesStreamingCreationCursor(
     secondItem = ExampleItem()
     secondItem.setObjId(8)
     secondItem.setObjCreation(
-        secondCreation
+        secondSourceCreation
     )
     secondItem._name.set(
         "particle-8"
@@ -366,11 +372,22 @@ def test_MaterializePreservesStreamingCreationCursor(
         },
     )
 
-    targetPath = (
+    materializer = (
         PostgresqlRuntimeSetSqliteMaterializer()
-        .materialize(
-            sourceSet
-        )
+    )
+
+    targetPath = materializer.materialize(
+        sourceSet
+    )
+
+    firstCursor = (
+        materializer
+        ._buildStableStreamingCreation(7)
+    )
+
+    secondCursor = (
+        materializer
+        ._buildStableStreamingCreation(8)
     )
 
     compatibilitySet = _openSet(
@@ -379,6 +396,39 @@ def test_MaterializePreservesStreamingCreationCursor(
     )
 
     try:
+        allItems = list(
+            compatibilitySet.iterItems(
+                orderBy="creation",
+                direction="ASC",
+            )
+        )
+
+        assert [
+            item.getObjId()
+            for item in allItems
+        ] == [
+            7,
+            8,
+        ]
+
+        assert [
+            item.getObjCreation()
+            for item in allItems
+        ] == [
+            firstCursor,
+            secondCursor,
+        ]
+
+        assert (
+            firstCursor
+            != firstSourceCreation
+        )
+
+        assert (
+            secondCursor
+            != secondSourceCreation
+        )
+
         newItems = list(
             compatibilitySet.iterItems(
                 orderBy="creation",
@@ -386,7 +436,7 @@ def test_MaterializePreservesStreamingCreationCursor(
                 where=(
                     'creation>'
                     '"%s"'
-                    % firstCreation
+                    % firstCursor
                 ),
             )
         )
@@ -397,11 +447,6 @@ def test_MaterializePreservesStreamingCreationCursor(
         ] == [
             8,
         ]
-
-        assert (
-            newItems[0].getObjCreation()
-            == secondCreation
-        )
 
     finally:
         compatibilitySet.close()
