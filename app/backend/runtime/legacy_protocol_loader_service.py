@@ -32,8 +32,8 @@ from pyworkflow.protocol.protocol import getProtocolFromDb
 logger = logging.getLogger(__name__)
 
 
-class RuntimeProtocolLoaderService:
-    """Resolve Scipion project paths and load runtime protocols from run.db."""
+class LegacyRuntimeProtocolLoaderService:
+    """Load protocol snapshots from legacy run.db files during project import."""
 
     def resolveCurrentProjectPath(self, project: Any) -> Optional[str]:
         if project is None:
@@ -114,11 +114,10 @@ class RuntimeProtocolLoaderService:
             ] = None,
     ):
         """
-        Load the authoritative protocol from logs/run.db.
+        Load a protocol snapshot from a legacy logs/run.db during project import.
 
-        Explicit project paths are checked first. This allows project imports
-        to read runtime databases from both the managed copy and the untouched
-        source project.
+        Explicit project paths are checked first so imports can read runtime
+        databases from both the managed copy and the untouched source project.
         """
         if currentProject is None:
             return None
@@ -206,8 +205,8 @@ class RuntimeProtocolLoaderService:
 
                 if runtimeProtocol is not None:
                     logger.debug(
-                        "Loaded authoritative protocol "
-                        "from runtime database. "
+                        "Loaded protocol snapshot from "
+                        "legacy runtime database during import. "
                         "protocolId=%s projectPath=%s "
                         "runDbPath=%s",
                         protocolId,
@@ -219,7 +218,7 @@ class RuntimeProtocolLoaderService:
 
             except Exception:
                 logger.debug(
-                    "Could not load protocol from runtime "
+                    "Could not load protocol from legacy runtime "
                     "database. protocolId=%s "
                     "projectPath=%s runDbPath=%s",
                     protocolId,

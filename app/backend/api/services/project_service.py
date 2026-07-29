@@ -117,7 +117,6 @@ from app.backend.runtime import (
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
-    RuntimeProtocolLoaderService,
     RuntimeProjectGraphSyncService,
     RuntimeProtocolLaunchService,
     RuntimeProtocolSaveService,
@@ -132,6 +131,7 @@ from app.backend.runtime import (
     RuntimePostgresqlRestartLauncherService,
     RuntimePostgresqlContinueLauncherService,
 )
+from app.backend.runtime.legacy_protocol_loader_service import LegacyRuntimeProtocolLoaderService
 from app.backend.runtime.project_import_service import (
     RuntimeProjectImportService,
 )
@@ -1348,10 +1348,10 @@ class ProjectService:
     ) -> Dict[str, Any]:
         """
         Keep PostgreSQL protocol parameters authoritative when synchronizing
-        runtime information from run.db.
+        an explicitly supplied runtime protocol representation.
 
-        run.db provides execution status, steps and outputs, but it may contain
-        the parameter values from the previous execution.
+        The supplied protocol may contain execution status, steps and outputs,
+        but its editable parameter values may belong to a previous execution.
         """
         if (
                 not isinstance(protocolContext, dict)
@@ -1411,7 +1411,7 @@ class ProjectService:
                 if isinstance(param, (PointerParam, MultiPointerParam)):
                     mergedValues[paramName] = copy.deepcopy(runtimeValue)
 
-        # Runtime metadata may legitimately have changed in run.db.
+        # Runtime metadata may legitimately have changed in the supplied execution state.
         if runtimeMetadata is not None:
             mergedValues[
                 runtimeMetadataKey
@@ -1457,12 +1457,12 @@ class ProjectService:
             authoritativeProtocolState: bool = False,
     ) -> Dict[str, Any]:
         """
-        Sync one PostgreSQL-runtime protocol from its Scipion runtime database.
+        Persist one protocol state into PostgreSQL without opening a runtime SQLite database.
 
-        The process launched by Scipion updates logs/run.db and steps.sqlite.
-        When syncRelations is enabled, only relations created by this
-        protocol are synchronized. Parent protocols and their outputs are
-        treated as read-only relation targets.
+        The explicitly supplied protocol, or the protocol loaded through the PostgreSQL
+        runtime mapper when omitted, is authoritative for this operation. When relation
+        synchronization is enabled, only relations created by this protocol are written.
+        Parent protocols and their outputs remain read-only relation targets.
         """
         scipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
@@ -1470,18 +1470,12 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        if not authoritativeProtocolState:
-            protocol = self._loadProtocolFromRuntimeDb(
-                protocolId=scipionProtocolId,
-                protocol=protocol,
-            )
+        if protocol is None:
+            protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
         if protocol is None:
-            protocol = (
-                self._getScipionProtocolByRuntimeId(
-                    scipionProtocolId
-                )
-            )
+            raise RuntimeError(
+                "Cannot synchronize PostgreSQL runtime protocol %s: protocol was not found in PostgreSQL" % scipionProtocolId)
 
         protocolContext = self._buildProtocolContext(
             projectId,
@@ -1781,30 +1775,24 @@ class ProjectService:
             getCurrentProjectPathCallback=self._getCurrentProjectPath,
         )
 
-    def _loadProtocolFromRuntimeDb(
-            self,
-            protocolId: int,
-            protocol=None,
-    ):
-        runtimeProtocolLoaderService = (
-            RuntimeProtocolLoaderService()
-        )
-
-        return runtimeProtocolLoaderService.loadProtocolFromRuntimeDb(
-            protocolId=protocolId,
-            currentProject=self.currentProject,
-            getProtocolByRuntimeIdCallback=(
-                self._getScipionProtocolByRuntimeId
-            ),
-            protocol=protocol,
-        )
-
     def _getCurrentProjectPath(self) -> Optional[str]:
-        runtimeProtocolLoaderService = RuntimeProtocolLoaderService()
+        project = getattr(self, "currentProject", None)
 
-        return runtimeProtocolLoaderService.resolveCurrentProjectPath(
-            project=getattr(self, "currentProject", None),
-        )
+        if project is None:
+            return None
+
+        for attrName in ("path", "_path"):
+            value = getattr(project, attrName, None)
+
+            if value:
+                return str(value)
+
+        try:
+            value = project.getPath()
+        except Exception:
+            return None
+
+        return str(value) if value else None
 
     def _isRuntimeProtocolTerminal(self, protocol) -> bool:
         for methodName in ("isFinished", "isFailed", "isAborted"):
@@ -2084,32 +2072,18 @@ class ProjectService:
                 )
             )
 
-            runtimeProtocolLoaderService = (
-                RuntimeProtocolLoaderService()
-            )
+            legacyRuntimeProtocolLoaderService = LegacyRuntimeProtocolLoaderService()
 
             def prepareImportedProtocolOutputs(
                     *,
                     protocolId,
                     protocol,
             ):
-                return (
-                    runtimeProtocolLoaderService
-                    .loadProtocolFromRuntimeDb(
-                        protocolId=int(
-                            protocolId
-                        ),
-                        currentProject=project,
-                        getProtocolByRuntimeIdCallback=(
-                            self
-                            ._getScipionProtocolByRuntimeId
-                        ),
-                        protocol=protocol,
-                        projectPaths=(
-                            outputProjectPaths
-                        ),
-                    )
-                )
+                return legacyRuntimeProtocolLoaderService.loadProtocolFromRuntimeDb(protocolId=int(protocolId),
+                                                                                    currentProject=project,
+                                                                                    getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+                                                                                    protocol=protocol,
+                                                                                    projectPaths=outputProjectPaths)
 
             migrationReport = (
                 self

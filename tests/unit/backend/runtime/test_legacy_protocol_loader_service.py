@@ -24,11 +24,9 @@
 # *
 # ******************************************************************************
 import os
-import app.backend.runtime.protocol_loader_service as loader_module
+import app.backend.runtime.legacy_protocol_loader_service as loader_module
 
-from app.backend.runtime.protocol_loader_service import (
-    RuntimeProtocolLoaderService,
-)
+from app.backend.runtime.legacy_protocol_loader_service import LegacyRuntimeProtocolLoaderService
 
 
 class FakeProject:
@@ -43,10 +41,10 @@ class FakeProtocol:
         return "Runs/001_TestProtocol"
 
 
-def test_LoadProtocolFromRuntimeDbUsesProvidedProtocol(
+def test_LegacyLoaderUsesProvidedProtocolWhenRunDbIsUnavailable(
         monkeypatch,
 ):
-    service = RuntimeProtocolLoaderService()
+    service = LegacyRuntimeProtocolLoaderService()
     protocol = FakeProtocol()
 
     monkeypatch.setattr(
@@ -70,11 +68,11 @@ def test_LoadProtocolFromRuntimeDbUsesProvidedProtocol(
     assert result is protocol
 
 
-def test_LoadProtocolFromRuntimeDbSearchesImportedSource(
+def test_LegacyLoaderSearchesImportedSourceProject(
         monkeypatch,
         tmp_path,
 ):
-    service = RuntimeProtocolLoaderService()
+    service = LegacyRuntimeProtocolLoaderService()
     protocol = FakeProtocol()
 
     managedProject = (
