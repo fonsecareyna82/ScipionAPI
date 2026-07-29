@@ -27,7 +27,7 @@ import subprocess
 import json
 import logging
 import os
-import psutil
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pyworkflow as pw
@@ -470,6 +470,29 @@ class PostgresqlProject(ScipionProject):
             className,
             protocolId,
         )
+
+    def _startPostgresqlProtocolWorker(self, protocol, runMode: str, wait: bool = False):
+        from app.backend.runtime.postgresql_protocol_worker import buildPostgresqlWorkerCommand
+        protocolId = getattr(protocol, "getObjId", lambda: None)()
+        if protocolId in (None, ""):
+            raise RuntimeError("Cannot start PostgreSQL protocol worker without protocol id")
+        rawScheduleLogPath = str(getattr(protocol, "getScheduleLog", lambda: "")() or "").strip()
+        if not rawScheduleLogPath:
+            raise RuntimeError("Cannot start PostgreSQL protocol worker without schedule log path")
+        scheduleLogPath = rawScheduleLogPath if os.path.isabs(rawScheduleLogPath) else os.path.join(self.path, rawScheduleLogPath)
+        scheduleLogPath = os.path.abspath(scheduleLogPath)
+        os.makedirs(os.path.dirname(scheduleLogPath), exist_ok=True)
+        moduleRoot = str(Path(__file__).resolve().parents[3])
+        workerEnv = os.environ.copy()
+        pythonPathEntries = [entry for entry in str(workerEnv.get("PYTHONPATH") or "").split(os.pathsep) if entry]
+        if moduleRoot not in pythonPathEntries:
+            pythonPathEntries.insert(0, moduleRoot)
+        workerEnv["PYTHONPATH"] = os.pathsep.join(pythonPathEntries)
+        command = buildPostgresqlWorkerCommand(projectId=self.postgresqlProjectId, protocolId=int(protocolId), runMode=runMode)
+        with open(scheduleLogPath, "a", encoding="utf-8") as scheduleLog:
+            process = subprocess.Popen(command, cwd=moduleRoot, env=workerEnv, stdin=subprocess.DEVNULL, stdout=scheduleLog, stderr=scheduleLog, start_new_session=True)
+        logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)
+        return process.wait() if wait else process.pid
 
     def launchProtocol(
             self,
