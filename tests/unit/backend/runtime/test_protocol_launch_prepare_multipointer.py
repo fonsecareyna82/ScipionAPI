@@ -128,6 +128,7 @@ class FakeProtocolGraphRepository:
             "kind": "object",
             "setId": None,
             "objectId": parentProtocolDbId + 1,
+            "runtimeObjectId": parentProtocolDbId + 1,
             "className": "Volume",
             "itemClassName": None,
             "itemsCount": None,
@@ -175,13 +176,29 @@ def test_PreparePointerOutputsRestoresMultiPointerWithoutMutatingParents(
         30: secondParent,
     }
 
+    firstRuntimeOutput = Object()
+    firstRuntimeOutput.setObjId(201)
+
+    secondRuntimeOutput = Object()
+    secondRuntimeOutput.setObjId(301)
+
+    runtimeOutputs = {201: firstRuntimeOutput, 301: secondRuntimeOutput}
+    parentProtocolCalls = []
+    resolvedRuntimeObjectIds = []
+
     def getParentProtocolCallback(
             mapper,
             projectId,
             parentId,
     ):
         parentId = int(parentId)
+        parentProtocolCalls.append(parentId)
         return parentId, parents[parentId]
+
+    def resolveRuntimeInputObjectCallback(runtimeObjectId):
+        runtimeObjectId = int(runtimeObjectId)
+        resolvedRuntimeObjectIds.append(runtimeObjectId)
+        return runtimeOutputs[runtimeObjectId]
 
     service = launchPrepareModule.RuntimeProtocolLaunchPrepareService()
 
@@ -191,6 +208,7 @@ def test_PreparePointerOutputsRestoresMultiPointerWithoutMutatingParents(
         protocol=protocol,
         getProtocolIdCallback=lambda item: item.getObjId(),
         getParentProtocolCallback=getParentProtocolCallback,
+        resolveRuntimeInputObjectCallback=resolveRuntimeInputObjectCallback,
     )
 
     assert report["prepared"] == 2
@@ -204,11 +222,11 @@ def test_PreparePointerOutputsRestoresMultiPointerWithoutMutatingParents(
     firstPointer = protocol.inputVolumes[0]
     secondPointer = protocol.inputVolumes[1]
 
-    assert firstPointer.getObjValue() is firstParent
-    assert firstPointer.getExtended() == "outputVolume"
+    assert firstPointer.getObjValue() is firstRuntimeOutput
+    assert secondPointer.getObjValue() is secondRuntimeOutput
 
-    assert secondPointer.getObjValue() is secondParent
-    assert secondPointer.getExtended() == "outputFilteredVolume"
+    assert parentProtocolCalls == []
+    assert resolvedRuntimeObjectIds == [201, 301]
 
     assert firstParent.outputVolume is firstOriginalOutput
     assert secondParent.outputFilteredVolume is secondOriginalOutput
@@ -231,10 +249,11 @@ def test_PreparePointerOutputsRestoresMultiPointerWithoutMutatingParents(
         for item in report["items"]
     )
 
-    assert all(
-        item["pointerResolutionSkipped"]
-        == "parent_protocol_and_outputs_are_read_only"
-        for item in report["items"]
-    )
+    assert [item["runtimeObjectId"] for item in report["items"]] == [201, 301]
+    assert all(item["directOutputPointer"] is True for item in report["items"])
+    assert all(item["pointerResolved"] is True for item in report["items"])
+    assert all(item["parentProtocolReadOnly"] is True for item in report["items"])
+    assert all(item["parentProtocolModified"] is False for item in report["items"])
+    assert all(item["outputRelationRepairSkipped"] is True for item in report["items"])
 
     assert protocol.getParam("inputVolumes").default.value is None
