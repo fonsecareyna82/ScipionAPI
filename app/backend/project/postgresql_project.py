@@ -193,30 +193,6 @@ class PostgresqlProject(ScipionProject):
             self.mapper = None
             self._postgresqlRuntimeMapper = None
 
-    def closeMapper(self):
-        """
-        Close the PostgreSQL runtime mapper and the SQLite write mirror.
-        """
-        runtimeMapper = self._postgresqlRuntimeMapper
-        writeFallbackMapper = self._writeFallbackMapper
-
-        try:
-            if runtimeMapper is not None:
-                runtimeMapper.close()
-
-            if writeFallbackMapper is not None:
-                try:
-                    writeFallbackMapper.close()
-                except Exception:
-                    logger.debug(
-                        "Could not close PostgreSQL project write fallback mapper.",
-                        exc_info=True,
-                    )
-        finally:
-            self.mapper = None
-            self._postgresqlRuntimeMapper = None
-            self._writeFallbackMapper = None
-
     # ---------------------------------------------------
     #               PROTOCOLS
     # --------------------------------------------------
