@@ -253,14 +253,8 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_USE_POSTGRESQL_RUNTIME_PROJECT", "")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
-    def _loadPostgresqlRuntimeProject(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            projectPath: str,
-            enableWriteFallback: bool = False,
-            domain=None,
-    ) -> PostgresqlProject:
+    def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
+                                      projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
         """
         Load a PostgreSQL runtime project directly, without first loading a
         legacy ScipionProject from project.sqlite.
@@ -270,7 +264,6 @@ class ProjectService:
             path=str(projectPath),
             projectId=projectId,
             flatMapper=mapper,
-            enableWriteFallback=enableWriteFallback,
         )
 
         try:
@@ -294,22 +287,11 @@ class ProjectService:
 
         self.currentProject = postgresqlProject
 
-        logger.info(
-            "Loaded PostgreSQL runtime project directly. "
-            "projectId=%s path=%s writeFallback=%s",
-            projectId,
-            projectPath,
-            enableWriteFallback,
-        )
+        logger.info("Loaded PostgreSQL runtime project directly. projectId=%s path=%s", projectId, projectPath)
 
         return postgresqlProject
 
-    def _replaceCurrentProjectWithPostgresqlProject(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            enableWriteFallback: bool = False,
-    ) -> None:
+    def _replaceCurrentProjectWithPostgresqlProject(self, mapper: PostgresqlFlatMapper, projectId: int) -> None:
         """
         Replace the currently loaded Scipion Project with a PostgreSQL-aware
         Project wrapper.
@@ -354,7 +336,6 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             projectPath=projectPath,
-            enableWriteFallback=enableWriteFallback,
             domain=domain,
         )
 
@@ -2321,7 +2302,6 @@ class ProjectService:
                         mapper=mapper,
                         projectId=projectId,
                         projectPath=projectPath,
-                        enableWriteFallback=False,
                     )
                 )
 
@@ -2966,7 +2946,6 @@ class ProjectService:
             failOnConsistencyError: bool = False,
             loadWorkflowFromPostgresql: bool = False,
             usePostgresqlRuntimeProject: bool = False,
-            usePostgresqlRuntimeWriteFallback: bool = False,
             syncRuntimeStatuses: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
@@ -3038,22 +3017,13 @@ class ProjectService:
                 return False
 
         if loadWorkflowFromPostgresql and not validateConsistency:
-            needsRuntimeProject = (
-                    usingPostgresqlRuntimeProject
-                    and (
-                            syncRuntimeStatuses
-                            or usePostgresqlRuntimeWriteFallback
-                    )
-            )
+            needsRuntimeProject = usingPostgresqlRuntimeProject and syncRuntimeStatuses
 
             if needsRuntimeProject:
                 self._loadPostgresqlRuntimeProject(
                     mapper=mapper,
                     projectId=projectId,
                     projectPath=dbProj["name"],
-                    enableWriteFallback=(
-                        usePostgresqlRuntimeWriteFallback
-                    ),
                 )
 
                 if syncRuntimeStatuses:
@@ -3077,7 +3047,6 @@ class ProjectService:
                 self._replaceCurrentProjectWithPostgresqlProject(
                     mapper=mapper,
                     projectId=projectId,
-                    enableWriteFallback=usePostgresqlRuntimeWriteFallback,
                 )
 
                 statusChanged = syncRuntimeStatusesIfNeeded()
@@ -3214,13 +3183,8 @@ class ProjectService:
         dbProj["name"] = projectPath
         return dbProj
 
-    def loadPostgresqlRuntimeProjectForMutation(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            currentUser: dict,
-            enableWriteFallback: bool = False,
-    ) -> Optional[dict]:
+    def loadPostgresqlRuntimeProjectForMutation(self, mapper: PostgresqlFlatMapper,
+                                                projectId: int, currentUser: dict) -> Optional[dict]:
         """
         Load only the PostgreSQL-aware Scipion runtime context required
         to mutate or execute protocols.
@@ -3247,16 +3211,9 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             projectPath=projectPath,
-            enableWriteFallback=enableWriteFallback,
         )
 
-        logger.info(
-            "Loaded lightweight PostgreSQL runtime mutation context. "
-            "projectId=%s path=%s writeFallback=%s",
-            projectId,
-            projectPath,
-            enableWriteFallback,
-        )
+        logger.info("Loaded lightweight PostgreSQL runtime mutation context. projectId=%s path=%s", projectId, projectPath)
 
         return dbProj
 
@@ -3321,7 +3278,6 @@ class ProjectService:
                 projectPath=str(
                     projPath
                 ),
-                enableWriteFallback=False,
             )
         )
 

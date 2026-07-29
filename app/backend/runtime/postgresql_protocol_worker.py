@@ -720,7 +720,6 @@ class RuntimePostgresqlProtocolWorker:
             path=projectPath,
             projectId=self.projectId,
             flatMapper=self.mapper,
-            enableWriteFallback=False,
         )
 
         self.project.load(

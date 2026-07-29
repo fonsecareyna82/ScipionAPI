@@ -64,14 +64,7 @@ class PostgresqlProject(ScipionProject):
     and settings.sqlite databases are not required.
     """
 
-    def __init__(
-            self,
-            domain,
-            path: str,
-            projectId: int,
-            flatMapper: PostgresqlFlatMapper,
-            enableWriteFallback: bool = False,
-    ):
+    def __init__(self, domain, path: str, projectId: int, flatMapper: PostgresqlFlatMapper):
         super().__init__(domain, path)
 
         if projectId is None:
@@ -81,82 +74,35 @@ class PostgresqlProject(ScipionProject):
 
         self.postgresqlProjectId = int(projectId)
         self.postgresqlFlatMapper = flatMapper
-
-        self.enableWriteFallback = bool(enableWriteFallback)
-
         self._postgresqlRuntimeMapper: Optional[PostgresqlRuntimeMapper] = None
-        self._writeFallbackMapper = None
 
     def _loadDb(self, dbPath=None):
-        """
-        Load the PostgreSQL runtime mapper without requiring project.sqlite.
-
-        dbPath remains supported temporarily for protocol runtime SQLite
-        databases and for the optional project.sqlite execution mirror.
-        """
+        """Load PostgreSQL for the project database and SQLite only for legacy runtime databases."""
         if dbPath is not None:
             self.setDbPath(dbPath)
 
         sqlitePath = self._normalizeSqlitePath(self.dbPath)
 
-        # Preserve the transitional logs/run.db compatibility path until the
-        # PostgreSQL protocol runner replaces Scipion's native SQLite runner.
-        if (
-                sqlitePath
-                and os.path.basename(sqlitePath) != PROJECT_DBNAME
-        ):
+        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
             self.mapper = self.createMapper(sqlitePath)
             return
 
-        # project.sqlite is no longer required to load a PostgreSQL project.
-        # Pass it only when the temporary execution mirror is explicitly
-        # enabled and the file still exists.
-        if (
-                not self.enableWriteFallback
-                or not sqlitePath
-                or not os.path.isfile(sqlitePath)
-        ):
-            sqlitePath = None
-
-        self.mapper = self.createMapper(sqlitePath)
+        self.mapper = self.createMapper(None)
 
     def createMapper(self, sqliteFn):
-        """
-        Return the mapper used by Project.
-
-        Scipion Project._loadDb() calls this method and assigns the result to
-        self.mapper. By overriding it, all Project/Protocol calls that delegate
-        to self.mapper can go to PostgreSQL.
-        """
+        """Use PostgreSQL for the project and SQLite only for legacy runtime databases."""
         sqlitePath = self._normalizeSqlitePath(sqliteFn)
-        # Scipion still executes protocols from their own logs/run.db.
-        # Only the project mapper is replaced by PostgreSQL. Protocol run
-        # databases must remain regular SQLite databases because
-        # runProtocolMain() loads them with the standard Project class.
+
         if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
-            logger.info(
-                "Creating legacy SQLite mapper for protocol runtime db: %s",
-                sqlitePath,
-            )
+            logger.info("Creating legacy SQLite mapper for protocol runtime db: %s", sqlitePath)
             return ScipionProject.createMapper(self, sqlitePath)
-
-        writeFallbackMapper = None
-
-        if self.enableWriteFallback:
-            writeFallbackMapper = self._createFallbackMapper(
-                sqlitePath=sqlitePath,
-                enabled=True,
-                label="write",
-            )
-
-        self._writeFallbackMapper = writeFallbackMapper
 
         runtimeMapper = PostgresqlRuntimeMapper(
             flatMapper=self.postgresqlFlatMapper,
             projectId=self.postgresqlProjectId,
-            writeFallbackMapper=writeFallbackMapper,
             project=self,
         )
+
         self._postgresqlRuntimeMapper = runtimeMapper
         return runtimeMapper
 
@@ -236,36 +182,16 @@ class PostgresqlProject(ScipionProject):
 
         return os.path.abspath(os.path.join(self.path, sqlitePath))
 
-    def _createFallbackMapper(self, sqlitePath: Optional[str], enabled: bool, label: str):
-        if not enabled:
-            return None
-
-        if not sqlitePath:
-            logger.debug(
-                "PostgreSQL Project %s fallback mapper disabled: empty sqlite path.",
-                label,
-            )
-            return None
-
-        if not os.path.exists(sqlitePath):
-            logger.warning(
-                "PostgreSQL Project %s fallback mapper disabled: sqlite db does not exist: %s",
-                label,
-                sqlitePath,
-            )
-            return None
+    def closeMapper(self):
+        """Close the PostgreSQL runtime mapper."""
+        runtimeMapper = self._postgresqlRuntimeMapper
 
         try:
-            # Call the original Scipion implementation directly. Do not call
-            # self.createMapper(), because that would recurse into this method.
-            return ScipionProject.createMapper(self, sqlitePath)
-        except Exception:
-            logger.exception(
-                "Could not create %s fallback mapper for sqlite db: %s",
-                label,
-                sqlitePath,
-            )
-            raise
+            if runtimeMapper is not None:
+                runtimeMapper.close()
+        finally:
+            self.mapper = None
+            self._postgresqlRuntimeMapper = None
 
     def closeMapper(self):
         """
