@@ -37,6 +37,11 @@ from pyworkflow.object import (
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
 )
+from pwem.objects import (
+    Acquisition,
+    CTFModel,
+    Particle,
+)
 
 
 class NestedMetadata(Object):
@@ -93,6 +98,70 @@ def buildHydrator(parent=None):
         },
     )
 
+
+def buildParticleHydrator():
+    return PostgresqlScipionItemHydrator(
+        itemClassName="Particle",
+        columns=[
+            {
+                "labelProperty": "_ctfModel",
+                "className": "CTFModel",
+            },
+            {
+                "labelProperty": (
+                    "_ctfModel._defocusU"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": (
+                    "_ctfModel._defocusV"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": (
+                    "_ctfModel._defocusAngle"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": "_acquisition",
+                "className": "Acquisition",
+            },
+            {
+                "labelProperty": (
+                    "_acquisition._magnification"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": (
+                    "_acquisition._voltage"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": (
+                    "_acquisition"
+                    "._sphericalAberration"
+                ),
+                "className": "Float",
+            },
+            {
+                "labelProperty": (
+                    "_acquisition"
+                    "._amplitudeContrast"
+                ),
+                "className": "Float",
+            },
+        ],
+        classes={
+            "Particle": Particle,
+            "CTFModel": CTFModel,
+            "Acquisition": Acquisition,
+        },
+    )
 
 def test_BuildReturnsNativeScipionItem():
     item = buildHydrator().build({
@@ -462,4 +531,107 @@ def test_BuildPreservesUnresolvedPointerReference():
         item._single
         ._postgresqlRuntimeReference
         == reference
+    )
+
+
+def test_BuildKeepsMissingOptionalObjectAsNone():
+    item = buildHydrator().build({
+        "scipionItemId": 17,
+        "values": {
+            "_name": "item-17",
+        },
+    })
+
+    assert item._nested is None
+
+
+def test_BuildConstructsOptionalParentFromChildPath():
+    item = buildHydrator().build({
+        "scipionItemId": 17,
+        "values": {
+            "_name": "item-17",
+            "_nested._score": 42,
+        },
+    })
+
+    assert isinstance(
+        item._nested,
+        NestedMetadata,
+    )
+
+    assert item._nested._score.get() == 42
+
+
+def test_BuildHydratesParticleOptionalObjectsPerRow():
+    hydrator = buildParticleHydrator()
+
+    particleWithMetadata = hydrator.build({
+        "scipionItemId": 1,
+        "values": {
+            "_ctfModel": None,
+            "_ctfModel._defocusU": 15000.0,
+            "_ctfModel._defocusV": 14000.0,
+            "_ctfModel._defocusAngle": 25.0,
+
+            "_acquisition": None,
+            "_acquisition._magnification": (
+                100000.0
+            ),
+            "_acquisition._voltage": 300.0,
+            "_acquisition"
+            "._sphericalAberration": 2.7,
+            "_acquisition"
+            "._amplitudeContrast": 0.1,
+        },
+    })
+
+    particleWithoutMetadata = hydrator.build({
+        "scipionItemId": 2,
+        "values": {},
+    })
+
+    assert particleWithMetadata.hasCTF()
+    assert (
+        particleWithMetadata
+        .getCTF()
+        .getDefocusU()
+        == 15000.0
+    )
+    assert (
+        particleWithMetadata
+        .getCTF()
+        .getDefocusV()
+        == 14000.0
+    )
+    assert (
+        particleWithMetadata
+        .getCTF()
+        .getDefocusAngle()
+        == 25.0
+    )
+
+    assert particleWithMetadata.hasAcquisition()
+    assert (
+        particleWithMetadata
+        .getAcquisition()
+        .getVoltage()
+        == 300.0
+    )
+    assert (
+        particleWithMetadata
+        .getAcquisition()
+        .getMagnification()
+        == 100000.0
+    )
+
+    # Both rows share the same Set schema, but the second
+    # Particle does not contain either optional Object.
+    assert not particleWithoutMetadata.hasCTF()
+    assert (
+        particleWithoutMetadata.getCTF()
+        is None
+    )
+    assert (
+        particleWithoutMetadata.getAcquisition()
+        is None
     )

@@ -100,6 +100,12 @@ class PostgresqlSetRuntimeMapper:
             itemSchemaSynchronizer: Optional[
                 Callable[[Any], Dict[str, Any]]
             ] = None,
+            itemColumnsUpdater: Optional[
+                Callable[
+                    [List[Dict[str, Any]]],
+                    None,
+                ]
+            ] = None,
             nestedItemSynchronizer: Optional[
                 Callable[
                     [Any, int],
@@ -131,6 +137,18 @@ class PostgresqlSetRuntimeMapper:
         ):
             raise ValueError(
                 "itemSchemaSynchronizer must "
+                "be callable or None."
+            )
+
+        if (
+                itemColumnsUpdater
+                is not None
+                and not callable(
+            itemColumnsUpdater
+        )
+        ):
+            raise ValueError(
+                "itemColumnsUpdater must "
                 "be callable or None."
             )
 
@@ -260,6 +278,9 @@ class PostgresqlSetRuntimeMapper:
         self.itemSchemaSynchronizer = (
             itemSchemaSynchronizer
         )
+        self.itemColumnsUpdater = (
+            itemColumnsUpdater
+        )
         self.nestedItemSynchronizer = (
             nestedItemSynchronizer
         )
@@ -328,7 +349,7 @@ class PostgresqlSetRuntimeMapper:
             self._loadLogicalTableProperties()
         )
 
-        self._columns = (
+        self._replaceColumns(
             self._loadColumns()
         )
 
@@ -347,7 +368,7 @@ class PostgresqlSetRuntimeMapper:
             iterate=True,
             rowFilter=None,
     ):
-        self._refreshLogicalTableScope()
+        self._refreshReadSchema()
 
         whereSql, whereParams = self._buildWhere(
             where
@@ -412,7 +433,7 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def selectById(self, itemId):
-        self._refreshLogicalTableScope()
+        self._refreshReadSchema()
 
         query = (
             self._buildItemsSelectQuery()
@@ -444,7 +465,7 @@ class PostgresqlSetRuntimeMapper:
             objectFilter=None,
             **conditions,
     ):
-        self._refreshLogicalTableScope()
+        self._refreshReadSchema()
 
         if not conditions:
             return self.selectAll(
@@ -1300,9 +1321,37 @@ class PostgresqlSetRuntimeMapper:
     def _ensureItemSchema(
             self,
             item,
+            serialized: Dict[str, Any],
     ) -> None:
+        serializedSchema = serialized.get(
+            "_schema"
+        )
+
+        hasSerializedSchema = isinstance(
+            serializedSchema,
+            dict,
+        )
+
+        requiredPaths = {
+            str(path)
+            for path in (
+                    serializedSchema or {}
+            )
+            if str(path) != "self"
+        }
+
         if self._itemSchemaReady:
-            return
+            # Third-party/custom serializers may not expose _schema.
+            # Preserve the previous one-time synchronization contract
+            # for those serializers.
+            if not hasSerializedSchema:
+                return
+
+            # The existing Set schema already covers this item.
+            if requiredPaths.issubset(
+                    self._columns
+            ):
+                return
 
         synchronizer = (
             self.itemSchemaSynchronizer
@@ -1333,15 +1382,30 @@ class PostgresqlSetRuntimeMapper:
                 "synchronizer did not return columns."
             )
 
-        self._columns = (
-            self._indexColumns(
-                columns
-            )
+        self._replaceColumns(
+            columns
         )
 
         # Empty schemas are valid. This flag records that
-        # synchronization was attempted successfully.
+        # synchronization completed successfully.
         self._itemSchemaReady = True
+
+        missingPaths = (
+                requiredPaths
+                - set(
+            self._columns
+        )
+        )
+
+        if missingPaths:
+            raise RuntimeError(
+                "PostgreSQL item schema synchronization "
+                "did not persist all Scipion paths. "
+                "missingPaths=%s"
+                % sorted(
+                    missingPaths
+                )
+            )
 
     def _serializeItem(
             self,
@@ -1390,12 +1454,13 @@ class PostgresqlSetRuntimeMapper:
             self,
             item,
     ) -> None:
-        self._ensureItemSchema(
+        serialized = self._serializeItem(
             item
         )
 
-        serialized = self._serializeItem(
-            item
+        self._ensureItemSchema(
+            item=item,
+            serialized=serialized,
         )
 
         itemId = int(
@@ -1861,7 +1926,7 @@ class PostgresqlSetRuntimeMapper:
         The returned rows follow the SqliteFlatMapper contract used by
         pyworkflow.object.Set.aggregate().
         """
-        self._refreshLogicalTableScope()
+        self._refreshReadSchema()
 
         operations = self._normalizeAggregateArguments(
             operations
@@ -2103,7 +2168,7 @@ class PostgresqlSetRuntimeMapper:
             attributes,
             where=None,
     ):
-        self._refreshLogicalTableScope()
+        self._refreshReadSchema()
         if isinstance(
                 attributes,
                 str,
@@ -2343,6 +2408,82 @@ class PostgresqlSetRuntimeMapper:
             ] = column
 
         return indexedColumns
+
+    def _replaceColumns(
+            self,
+            columns,
+    ) -> bool:
+        if isinstance(
+                columns,
+                dict,
+        ):
+            indexedColumns = {
+                str(label): dict(
+                    column or {}
+                )
+                for label, column
+                in columns.items()
+            }
+        else:
+            indexedColumns = (
+                self._indexColumns(
+                    columns
+                )
+            )
+
+        if indexedColumns == self._columns:
+            return False
+
+        self._columns = indexedColumns
+        self._itemSchemaReady = bool(
+            self._columns
+        )
+
+        updater = self.itemColumnsUpdater
+
+        if callable(
+                updater
+        ):
+            updater([
+                dict(column)
+                for column in sorted(
+                    self._columns.values(),
+                    key=lambda column: (
+                        int(
+                            column.get(
+                                "position"
+                            )
+                            or 0
+                        ),
+                        str(
+                            column.get(
+                                "labelProperty"
+                            )
+                            or ""
+                        ),
+                    ),
+                )
+            ])
+
+        return True
+
+    def _refreshColumns(
+            self,
+    ) -> bool:
+        return self._replaceColumns(
+            self._loadColumns()
+        )
+
+    def _refreshReadSchema(
+            self,
+    ) -> None:
+        scopeChanged = (
+            self
+            ._refreshLogicalTableScope()
+        )
+
+        if not scopeChanged:
+            self._refreshColumns()
 
     def _loadColumns(
             self,

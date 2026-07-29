@@ -184,77 +184,44 @@ class PostgresqlScipionItemHydrator:
             item,
             values: Dict[str, Any],
     ) -> None:
-        # Construct complex parent attributes before assigning nested values.
-        for path in sorted(
-                self._classByPath,
-                key=lambda value: (
-                    value.count("."),
-                    value,
+        """
+        Hydrate only the attributes represented by this PostgreSQL row.
+
+        scipion_set_columns describes the union schema of the Set, but
+        optional embedded Objects may be absent from an individual item.
+        Those absent Objects must remain None so native methods such as
+        hasCTF(), hasTransform(), hasOrigin() and hasCoordinate() preserve
+        their original Scipion semantics.
+        """
+        rowAttributes = [
+            (
+                str(path),
+                value,
+            )
+            for path, value in values.items()
+            if str(path) != self.SELF_LABEL
+        ]
+
+        # Parent paths are applied before their descendants:
+        #
+        # _ctfModel
+        # _ctfModel._defocusU
+        # _ctfModel._defocusV
+        #
+        # _setAttributeValue() can still construct missing parents on
+        # demand when only a descendant path is available.
+        for path, value in sorted(
+                rowAttributes,
+                key=lambda entry: (
+                    entry[0].count("."),
+                    entry[0],
                 ),
         ):
-            self._ensureAttributePath(
-                item,
-                path,
-            )
-
-        for path, value in values.items():
-            path = str(path)
-
-            if path == self.SELF_LABEL:
-                continue
-
             self._setAttributeValue(
                 item=item,
                 path=path,
                 value=value,
             )
-
-    def _ensureAttributePath(
-            self,
-            item,
-            path: str,
-    ):
-        current = item
-        parts = self._splitPath(path)
-
-        for index, part in enumerate(parts):
-            prefix = ".".join(
-                parts[:index + 1]
-            )
-
-            attribute = getattr(
-                current,
-                part,
-                None,
-            )
-
-            if attribute is None:
-                className = self._classByPath.get(
-                    prefix
-                )
-
-                attributeClass = self._resolveClass(
-                    className,
-                    required=False,
-                )
-
-                if attributeClass is None:
-                    return None
-
-                attribute = self._instantiateClass(
-                    attributeClass,
-                    className,
-                )
-
-                setattr(
-                    current,
-                    part,
-                    attribute,
-                )
-
-            current = attribute
-
-        return current
 
     def _setAttributeValue(
             self,

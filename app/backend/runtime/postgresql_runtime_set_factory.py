@@ -1055,6 +1055,33 @@ class PostgresqlRuntimeSetFactory:
             "hydrator": None,
         }
 
+        def updateItemHydratorColumns(
+                updatedColumns,
+        ) -> None:
+            normalizedColumns = [
+                dict(column)
+                for column in (
+                    updatedColumns
+                    or []
+                )
+            ]
+
+            if (
+                    normalizedColumns
+                    == itemHydratorState[
+                "columns"
+            ]
+            ):
+                return
+
+            itemHydratorState[
+                "columns"
+            ] = normalizedColumns
+
+            itemHydratorState[
+                "hydrator"
+            ] = None
+
         def getItemHydrator():
             hydrator = (
                 itemHydratorState[
@@ -1208,24 +1235,21 @@ class PostgresqlRuntimeSetFactory:
                 )
             )
 
-            itemHydratorState[
-                "columns"
-            ] = [
-                dict(column)
-                for column
-                in (
-                        schemaInfo.get(
-                            "columns"
-                        )
-                        or []
+            updateItemHydratorColumns(
+                schemaInfo.get(
+                    "columns"
                 )
-            ]
+                or []
+            )
 
             # Force reconstruction with the newly
             # discovered Scipion column classes.
-            itemHydratorState[
-                "hydrator"
-            ] = None
+            updateItemHydratorColumns(
+                schemaInfo.get(
+                    "hydrator"
+                )
+                or []
+            )
 
             return schemaInfo
 
@@ -1407,6 +1431,9 @@ class PostgresqlRuntimeSetFactory:
                     synchronizeItemSchema
                     if rootTableId is not None
                     else None
+                ),
+                itemColumnsUpdater=(
+                    updateItemHydratorColumns
                 ),
                 nestedItemSynchronizer=(
                     synchronizeNestedItem
@@ -1776,6 +1803,33 @@ class PostgresqlRuntimeSetFactory:
             "hydrator": None,
         }
 
+        def updateChildHydratorColumns(
+                updatedColumns,
+        ) -> None:
+            normalizedColumns = [
+                dict(column)
+                for column in (
+                    updatedColumns
+                    or []
+                )
+            ]
+
+            if (
+                    normalizedColumns
+                    == childMapperState[
+                "columns"
+            ]
+            ):
+                return
+
+            childMapperState[
+                "columns"
+            ] = normalizedColumns
+
+            childMapperState[
+                "hydrator"
+            ] = None
+
         def resolveCurrentTableId():
             currentTableId = (
                 self._resolveCurrentLogicalTableId(
@@ -1829,22 +1883,13 @@ class PostgresqlRuntimeSetFactory:
                 "tableId"
             ] = currentTableId
 
-            childMapperState[
-                "columns"
-            ] = [
-                dict(column)
-                for column in (
-                        setMapper
-                        .getStoredSetTableColumns(
-                            currentTableId
-                        )
-                        or []
+            updateChildHydratorColumns(
+                setMapper
+                .getStoredSetTableColumns(
+                    currentTableId
                 )
-            ]
-
-            childMapperState[
-                "hydrator"
-            ] = None
+                or []
+            )
 
         def getChildHydrator():
             currentTableId = (
@@ -1938,21 +1983,19 @@ class PostgresqlRuntimeSetFactory:
                 "tableId"
             ] = currentTableId
 
-            childMapperState[
-                "columns"
-            ] = [
-                dict(column)
-                for column in (
-                        schemaInfo.get(
-                            "columns"
-                        )
-                        or []
+            updateChildHydratorColumns(
+                schemaInfo.get(
+                    "columns"
                 )
-            ]
+                or []
+            )
 
-            childMapperState[
-                "hydrator"
-            ] = None
+            updateChildHydratorColumns(
+                schemaInfo.get(
+                    "hydrator"
+                )
+                or []
+            )
 
             return schemaInfo
 
@@ -1984,6 +2027,9 @@ class PostgresqlRuntimeSetFactory:
                 ),
                 itemSchemaSynchronizer=(
                     synchronizeChildSchema
+                ),
+                itemColumnsUpdater=(
+                    updateChildHydratorColumns
                 ),
                 writable=bool(
                     writable
