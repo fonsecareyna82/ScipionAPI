@@ -351,6 +351,55 @@ def assertSuccessEnvelope(result):
     assert result["errors"] == []
 
 
+def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(projectServiceModule, monkeypatch):
+    class FakeProtocol:
+        def getStatus(self):
+            return "finished"
+
+    class FakeMapper:
+        def __init__(self):
+            self.savedContexts = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return {"id": 71, "status": "finished", "params": {}}
+
+        def saveProtocol(self, protocolContext):
+            self.savedContexts.append(protocolContext)
+            return 71
+
+    class FakeStepPersistenceService:
+        def buildProtocolStepsForPostgresql(self, protocol):
+            return []
+
+    class FakeOutputPersistenceService:
+        def shouldSyncProtocolOutputs(self, protocol):
+            return False
+
+        def countRuntimeOutputKinds(self, outputs):
+            return {}
+
+    def failLegacyLoad(*args, **kwargs):
+        raise AssertionError("Regular PostgreSQL runtime sync must not read run.db")
+
+    protocol = FakeProtocol()
+    mapper = FakeMapper()
+    service = object.__new__(projectServiceModule.ProjectService)
+    service.currentProject = object()
+    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
+    service._getScipionProtocolByRuntimeId = lambda protocolId: protocol
+    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId, "values": {}, "info": {"status": protocol.getStatus()}}
+
+    monkeypatch.setattr(projectServiceModule.LegacyRuntimeProtocolLoaderService, "loadProtocolFromRuntimeDb", failLegacyLoad)
+    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolStepPersistenceService", FakeStepPersistenceService)
+    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolOutputPersistenceService", FakeOutputPersistenceService)
+    monkeypatch.setattr(projectServiceModule.logger, "isEnabledFor", lambda level: False)
+
+    result = service.syncPostgresqlRuntimeProtocol(mapper=mapper, projectId=3, protocolId=12, protocol=protocol, registerOutputs=False, syncRelations=False)
+
+    assert result["protocolId"] == "12"
+    assert result["protocolStatus"] == "finished"
+    assert len(mapper.savedContexts) == 1
+
 def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):
     declaredOutputs = [
         {
