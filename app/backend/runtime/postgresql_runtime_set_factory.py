@@ -1242,15 +1242,6 @@ class PostgresqlRuntimeSetFactory:
                 or []
             )
 
-            # Force reconstruction with the newly
-            # discovered Scipion column classes.
-            updateItemHydratorColumns(
-                schemaInfo.get(
-                    "hydrator"
-                )
-                or []
-            )
-
             return schemaInfo
 
         def synchronizeNestedItem(
@@ -1986,13 +1977,6 @@ class PostgresqlRuntimeSetFactory:
             updateChildHydratorColumns(
                 schemaInfo.get(
                     "columns"
-                )
-                or []
-            )
-
-            updateChildHydratorColumns(
-                schemaInfo.get(
-                    "hydrator"
                 )
                 or []
             )
