@@ -2253,7 +2253,7 @@ class PostgresqlFlatMapper(Mapper):
         if stepIndexes:
             self.db.execute(
                 """
-                DELETE        self.upsertProtocolStep(projectId, protocolDbId, protocolId, FROM protocol_steps
+                DELETE FROM protocol_steps
                  WHERE "projectId" = %s
                    AND "protocolDbId" = %s
                    AND NOT ("stepIndex" = ANY(%s))
