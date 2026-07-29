@@ -1376,7 +1376,24 @@ class RuntimePostgresqlProtocolWorker:
 
         pendingKeys = set()
         failedKeys = set()
+
         inputParentDbIds = set()
+
+        for inputRef in inputRefs:
+            try:
+                inputParentDbIds.add(
+                    int(
+                        inputRef[
+                            "parentProtocolDbId"
+                        ]
+                    )
+                )
+            except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+            ):
+                continue
 
         def addPending(
                 row,
@@ -1463,6 +1480,33 @@ class RuntimePostgresqlProtocolWorker:
                 or ""
             ).strip().lower()
 
+            try:
+                prerequisiteDbId = int(
+                    prerequisiteRow[
+                        "protocolDbId"
+                    ]
+                )
+            except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
+            ):
+                prerequisiteDbId = None
+
+            # Workflow launches may register the same
+            # protocol both as an execution prerequisite
+            # and as the parent of an input pointer.
+            #
+            # For streaming children, input readiness
+            # takes precedence: the parent may be running
+            # as long as its concrete output is available.
+            if (
+                    streaming
+                    and prerequisiteDbId
+                    in inputParentDbIds
+            ):
+                continue
+
             if (
                     prerequisiteStatus
                     not in
@@ -1491,10 +1535,6 @@ class RuntimePostgresqlProtocolWorker:
                 })
 
                 continue
-
-            inputParentDbIds.add(
-                parentProtocolDbId
-            )
 
             parentRow = (
                 parentRowsByDbId.get(

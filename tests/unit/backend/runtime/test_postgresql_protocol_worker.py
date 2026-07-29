@@ -258,6 +258,46 @@ def test_StreamingProtocolStartsWhenInputsValidate():
     ] == []
 
 
+def test_StreamingInputParentPrerequisiteDoesNotWaitForTerminalStatus():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        outputExists=True,
+        prerequisites="2",
+        prerequisiteStatuses={
+            2: "running",
+        },
+        validationErrors=[],
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "failedParents"
+    ] == []
+
+    assert readiness[
+        "missingInputs"
+    ] == []
+
+    assert readiness[
+        "missingPrerequisites"
+    ] == []
+
+    assert readiness[
+        "inputRestoreErrors"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
+    ] == []
+
 def test_StreamingProtocolWaitsUntilParentOutputExists():
     worker = buildWorker(
         streaming=True,
