@@ -2467,10 +2467,55 @@ class PostgresqlSetRuntimeMapper:
 
         return True
 
+    def _mergeColumns(
+            self,
+            columns,
+    ) -> bool:
+        """
+        Merge newly persisted columns into the runtime Set schema.
+
+        A PostgreSQL Set schema is cumulative while the storage scope
+        remains active. A temporarily empty or stale database read must
+        not discard columns already discovered by a successful runtime
+        item-schema synchronization.
+        """
+        if isinstance(
+                columns,
+                dict,
+        ):
+            indexedColumns = {
+                str(label): dict(
+                    column or {}
+                )
+                for label, column
+                in columns.items()
+            }
+        else:
+            indexedColumns = (
+                self._indexColumns(
+                    columns
+                )
+            )
+
+        if not indexedColumns:
+            return False
+
+        mergedColumns = dict(
+            self._columns
+        )
+
+        mergedColumns.update(
+            indexedColumns
+        )
+
+        return self._replaceColumns(
+            mergedColumns
+        )
+
     def _refreshColumns(
             self,
     ) -> bool:
-        return self._replaceColumns(
+        return self._mergeColumns(
             self._loadColumns()
         )
 
