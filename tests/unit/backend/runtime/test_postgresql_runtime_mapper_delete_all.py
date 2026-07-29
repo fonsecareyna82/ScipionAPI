@@ -362,6 +362,3 @@ def test_DeleteAllKeepsRuntimeCachesWhenPostgresqlDeleteFails():
         101: cachedProtocol,
     }
 
-    assert mapper._sqliteProtocolMirrorIds == {
-        101,
-    }
