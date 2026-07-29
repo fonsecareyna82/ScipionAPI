@@ -440,3 +440,34 @@ def test_MergeRuntimeMetadataPreservesManagedElapsedWhenAnchorExists():
     assert runtimeMetadata[service.ELAPSED_UPDATED_AT_KEY] == 100.0
 
 
+def test_GetEffectiveElapsedTimeUsesStepFallbackWhenMetadataIsZero():
+    service = RuntimeProtocolStatusSyncService()
+
+    result = service.getEffectiveElapsedTimeSeconds(
+        {
+            "elapsedTimeSeconds": 0.0,
+            service.ELAPSED_UPDATED_AT_KEY: 100.0,
+        },
+        "running",
+        nowEpochSeconds=100.0,
+        fallbackElapsedSeconds=137.0,
+    )
+
+    assert result == 137.0
+
+
+def test_GetEffectiveElapsedTimeKeepsProjectedMetadataWhenGreaterThanSteps():
+    service = RuntimeProtocolStatusSyncService()
+
+    result = service.getEffectiveElapsedTimeSeconds(
+        {
+            "elapsedTimeSeconds": 25.0,
+            service.ELAPSED_UPDATED_AT_KEY: 100.0,
+        },
+        "running",
+        nowEpochSeconds=115.0,
+        fallbackElapsedSeconds=30.0,
+    )
+
+    assert result == 40.0
+
