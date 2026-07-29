@@ -94,7 +94,6 @@ def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
         checkPid=False,
         loadWorkflowFromPostgresql=True,
         usePostgresqlRuntimeProject=True,
-        usePostgresqlRuntimeWriteFallback=False,
         syncRuntimeStatuses=True,
     )
 
@@ -109,5 +108,4 @@ def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
 
     assert loadCall["projectId"] == 7
     assert loadCall["projectPath"] == str(tmp_path)
-    assert loadCall["enableWriteFallback"] is False
 

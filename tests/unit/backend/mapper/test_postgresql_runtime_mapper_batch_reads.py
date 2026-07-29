@@ -103,7 +103,6 @@ class RebuildingFallbackMapper:
 
 def buildMapper(
         rows=None,
-        writeFallback=None,
 ):
     return PostgresqlRuntimeMapper(
         flatMapper=FakeFlatMapper(rows),
@@ -112,7 +111,6 @@ def buildMapper(
             "ExampleProtocol": ExampleProtocol,
             "OtherProtocol": OtherProtocol,
         },
-        writeFallbackMapper=writeFallback,
     )
 
 
@@ -171,7 +169,6 @@ def test_SelectAllBatchBuildsOnlyPostgresqlProtocols():
     ]
 
     assert mapper.flatMapper.calls == [4]
-    assert mapper._sqliteProtocolMirrorIds == set()
 
 
 def test_SelectAllBatchAppliesObjectFilter():
@@ -205,81 +202,6 @@ def test_SelectAllBatchRejectsInvalidObjectFilter():
             match="objectFilter must be callable or None",
     ):
         mapper.selectAllBatch(objectFilter="Protocol")
-
-
-def test_SelectAllBatchSafelyRefreshesCachedWriteMirror():
-    protocol = buildProtocol(ExampleProtocol, 100)
-
-    row = buildRow(100)
-    row["status"] = "running"
-    row["params"] = {
-        "inputParticles": "99.outputParticles",
-    }
-
-    mapper = buildMapper(rows=[row])
-    mapper._runtimeProtocolsById[100] = protocol
-    mapper._sqliteProtocolMirrorIds.add(100)
-
-    statusCalls = []
-    paramCalls = []
-    workingDirCalls = []
-
-    mapper._applyStoredProtocolStatus = lambda currentProtocol, status: statusCalls.append((currentProtocol, status))
-    mapper._applyStoredProtocolParams = lambda currentProtocol, params: paramCalls.append((currentProtocol, params))
-    mapper._ensureProtocolWorkingDir = lambda currentProtocol: workingDirCalls.append(currentProtocol)
-
-    result = mapper.selectAllBatch(objectFilter=lambda obj: isinstance(obj, Protocol))
-
-    assert result == [
-        protocol,
-    ]
-
-    assert statusCalls == [
-        (protocol, "running"),
-    ]
-
-    assert paramCalls == []
-    assert workingDirCalls == [protocol]
-    assert mapper._runtimeProtocolsById[100] is protocol
-    assert mapper._sqliteProtocolMirrorIds == {100}
-
-
-def test_SelectByIdUsesSafeRefreshForSqliteProtocolMirror():
-    protocol = buildProtocol(ExampleProtocol, 100)
-
-    mapper = buildMapper([
-        buildRow(100),
-    ])
-
-    mapper._runtimeProtocolsById[100] = protocol
-    mapper._sqliteProtocolMirrorIds.add(100)
-
-    safeRefreshCalls = []
-
-    def safeRefresh(cachedProtocol, row):
-        safeRefreshCalls.append({
-            "protocol": cachedProtocol,
-            "protocolId": int(row["protocolId"]),
-        })
-        return cachedProtocol
-
-    def failFullRefresh(cachedProtocol, row):
-        raise AssertionError(
-            "Full PostgreSQL param refresh must not run "
-            "for a SQLite protocol mirror"
-        )
-
-    mapper._refreshSqliteProtocolMirrorFromPostgresqlRow = safeRefresh
-    mapper._refreshProtocolFromPostgresqlRow = failFullRefresh
-
-    result = mapper._selectProtocolByIdFromPostgresql(100)
-
-    assert result is protocol
-
-    assert safeRefreshCalls == [{
-        "protocol": protocol,
-        "protocolId": 100,
-    }]
 
 
 def test_SelectByIdKeepsFullRefreshForPostgresqlProtocol():
@@ -327,113 +249,6 @@ def test_SelectByIdReturnsNoneForMissingObject():
     mapper._selectGenericObjectByIdFromPostgresql = lambda objId: None
 
     assert mapper.selectById(999) is None
-
-
-def test_SelectRuntimeProtocolByIdReusesWriteMirrorIdentity():
-    writeFallback = RebuildingFallbackMapper(
-        ExampleProtocol
-    )
-
-    mapper = buildMapper(
-        rows=[
-            buildRow(100),
-        ],
-        writeFallback=writeFallback,
-    )
-
-    firstResult = mapper.selectRuntimeProtocolById(
-        100
-    )
-
-    secondResult = mapper.selectRuntimeProtocolById(
-        100
-    )
-
-    assert firstResult is secondResult
-
-    assert firstResult is (
-        writeFallback.createdProtocols[0]
-    )
-
-    # The SQLite execution mirror is consulted only during the first hydration.
-    assert writeFallback.calls == [
-        100,
-    ]
-
-    assert len(
-        writeFallback.createdProtocols
-    ) == 1
-
-    assert mapper._runtimeProtocolsById[
-        100
-    ] is firstResult
-
-    assert mapper._sqliteProtocolMirrorIds == {
-        100,
-    }
-
-    assert mapper.flatMapper.byIdCalls == [
-        (
-            4,
-            100,
-        ),
-        (
-            4,
-            100,
-        ),
-    ]
-
-
-def test_SelectRuntimeProtocolByIdCachesWriteMirrorOnlyProtocol():
-    writeFallback = RebuildingFallbackMapper(
-        ExampleProtocol
-    )
-
-    mapper = buildMapper(
-        rows=[],
-        writeFallback=writeFallback,
-    )
-
-    firstResult = mapper.selectRuntimeProtocolById(
-        100
-    )
-
-    secondResult = mapper.selectRuntimeProtocolById(
-        100
-    )
-
-    assert firstResult is secondResult
-
-    assert firstResult is (
-        writeFallback.createdProtocols[0]
-    )
-
-    assert writeFallback.calls == [
-        100,
-    ]
-
-    assert len(
-        writeFallback.createdProtocols
-    ) == 1
-
-    assert mapper._runtimeProtocolsById[
-        100
-    ] is firstResult
-
-    assert mapper._sqliteProtocolMirrorIds == {
-        100,
-    }
-
-    assert mapper.flatMapper.byIdCalls == [
-        (
-            4,
-            100,
-        ),
-        (
-            4,
-            100,
-        ),
-    ]
 
 
 def test_GetPostgresqlProtocolLabelsReadsStoredLabelsWithoutBuildingProtocols():

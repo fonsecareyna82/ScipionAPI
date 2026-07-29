@@ -44,7 +44,6 @@ def test_ConstructorDoesNotExposeReadFallback():
     ).parameters
 
     assert "readFallbackMapper" not in parameters
-    assert "writeFallbackMapper" in parameters
 
 
 def test_CloseReleasesRuntimeMapperCaches():
@@ -66,4 +65,3 @@ def test_CloseReleasesRuntimeMapperCaches():
 
     assert runtimeSetFactory.clearCalls == 1
     assert mapper._runtimeProtocolsById == {}
-    assert mapper._sqliteProtocolMirrorIds == set()

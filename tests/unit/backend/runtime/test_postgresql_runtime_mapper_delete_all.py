@@ -280,7 +280,7 @@ def test_DeleteProjectRuntimeDataRejectsMissingProject():
     assert len(database.calls) == 1
 
 
-def test_DeleteAllClearsWriteMirrorPostgresqlAndRuntimeCaches():
+def test_DeleteAllClearsPostgresqlAndRuntimeCaches():
     mapper = buildRuntimeMapper()
 
     operations = []
@@ -343,13 +343,7 @@ def test_DeleteAllClearsWriteMirrorPostgresqlAndRuntimeCaches():
 
     assert result is None
 
-    assert operations == [
-        "fallback",
-        "postgresql",
-        "runtimeCaches",
-    ]
-
-    fallbackMapper.deleteAll.assert_called_once_with()
+    assert operations == ["postgresql", "runtimeCaches"]
 
     mapper.flatMapper.deleteProjectRuntimeData.assert_called_once_with(
         7
@@ -368,7 +362,7 @@ def test_DeleteAllClearsWriteMirrorPostgresqlAndRuntimeCaches():
     assert protocol.mock_calls == []
 
 
-def test_DeleteAllKeepsPostgresqlCachesWhenStorageDeleteFails():
+def test_DeleteAllKeepsRuntimeCachesWhenPostgresqlDeleteFails():
     mapper = buildRuntimeMapper()
 
     fallbackMapper = Mock()
@@ -414,8 +408,6 @@ def test_DeleteAllKeepsPostgresqlCachesWhenStorageDeleteFails():
             "Expected PostgreSQL delete failure "
             "to propagate"
         )
-
-    fallbackMapper.deleteAll.assert_called_once_with()
 
     mapper.runtimeSetFactory.clearCaches.assert_not_called()
 

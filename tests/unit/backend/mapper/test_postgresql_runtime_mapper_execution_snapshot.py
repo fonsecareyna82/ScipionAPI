@@ -163,7 +163,7 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
 
         sqliteMapper.commit()
 
-        runtimeMapper._clearFallbackMapperCaches(
+        runtimeMapper._clearSqliteMapperCaches(
             sqliteMapper
         )
 
@@ -181,10 +181,6 @@ def test_RuntimeOutputIsInsertedAndResolvedThroughProtocolPointer(
             .outputMovies
             .getObjId()
             == 1_000_000_050
-        )
-
-        runtimeMapper._clearFallbackMapperCaches(
-            sqliteMapper
         )
 
         storedChild = sqliteMapper.selectById(
