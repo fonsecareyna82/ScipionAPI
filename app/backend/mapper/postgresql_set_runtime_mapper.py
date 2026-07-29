@@ -50,6 +50,14 @@ class PostgresqlSetRuntimeMapper:
     LOGICAL_ITEMS_TABLE = "scipion_set_table_items"
     LOGICAL_COLUMNS_TABLE = "scipion_set_table_columns"
 
+    STREAMING_CREATION_EXPRESSION = (
+        "("
+        "TIMESTAMP '2000-01-01 00:00:00' "
+        '+ "scipionItemId" '
+        "* INTERVAL '1 microsecond'"
+        ")"
+    )
+
     ID_FIELDS = {
         "id",
         "_objId",
@@ -2215,7 +2223,9 @@ class PostgresqlSetRuntimeMapper:
     # Storage-scope helpers
     # ------------------------------------------------------------------
 
-    def _buildItemsSelectQuery(self) -> str:
+    def _buildItemsSelectQuery(
+            self,
+    ) -> str:
         return """
             SELECT id,
                    "{scopeColumn}",
@@ -2224,18 +2234,27 @@ class PostgresqlSetRuntimeMapper:
                    enabled,
                    label,
                    comment,
-                   "createdAt" AS creation,
+                   {creationExpression}
+                       AS creation,
                    "values",
                    "createdAt",
                    "updatedAt"
               FROM {itemsTable}
              WHERE "{scopeColumn}" = %s
         """.format(
-            scopeColumn=self._scopeColumn,
+            scopeColumn=(
+                self._scopeColumn
+            ),
             parentItemExpression=(
                 self._parentItemExpression
             ),
-            itemsTable=self._itemsTable,
+            creationExpression=(
+                self
+                .STREAMING_CREATION_EXPRESSION
+            ),
+            itemsTable=(
+                self._itemsTable
+            ),
         )
 
     def _loadLogicalTableProperties(
@@ -2534,10 +2553,9 @@ class PostgresqlSetRuntimeMapper:
             )
 
         if field == "creation":
-            # Native SQLite Sets stamp creation when the row is
-            # inserted and never change it during item updates.
             return (
-                '"createdAt"',
+                self
+                .STREAMING_CREATION_EXPRESSION,
                 [],
             )
 

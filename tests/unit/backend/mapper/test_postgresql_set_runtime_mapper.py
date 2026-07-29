@@ -497,8 +497,10 @@ def test_SelectAllSupportsNumericComparison():
     )
 
 
-def test_SelectAllUsesImmutableCreationCursor():
-    db = FakeDb(rows=[])
+def test_SelectAllUsesStableItemIdCreationCursor():
+    db = FakeDb(
+        rows=[]
+    )
 
     mapper = PostgresqlSetRuntimeMapper(
         db=db,
@@ -511,35 +513,72 @@ def test_SelectAllUsesImmutableCreationCursor():
         direction="ASC",
         where=(
             'creation>'
-            '"2026-07-29 10:00:00.000001+00:00"'
+            '"2000-01-01 '
+            '00:00:00.002000"'
         ),
         iterate=False,
     )
 
     assert (
-        '"createdAt" AS creation'
+        "TIMESTAMP "
+        "'2000-01-01 00:00:00'"
+        in db.query
+    )
+
+    assert (
+        '"scipionItemId" '
+        "* INTERVAL '1 microsecond'"
+        in db.query
+    )
+
+    assert (
+        "AS creation"
         in db.query
     )
 
     assert (
         '"createdAt" > %s'
-        in db.query
-    )
-
-    assert (
-        'ORDER BY "createdAt" ASC'
-        in db.query
-    )
-
-    assert (
-        'COALESCE("creation", "createdAt")'
         not in db.query
     )
 
     assert db.params == (
         31,
-        "2026-07-29 10:00:00.000001+00:00",
+        "2000-01-01 "
+        "00:00:00.002000",
     )
+
+
+def test_CreationCursorFiltersByStableItemId():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    whereSql, whereParams = (
+        mapper._buildWhere(
+            'creation>'
+            '"2000-01-01 '
+            '00:00:00.002000"'
+        )
+    )
+
+    assert (
+        "TIMESTAMP "
+        "'2000-01-01 00:00:00'"
+        in whereSql
+    )
+
+    assert (
+        '"scipionItemId" '
+        "* INTERVAL '1 microsecond'"
+        in whereSql
+    )
+
+    assert whereParams == [
+        "2000-01-01 "
+        "00:00:00.002000",
+    ]
 
 
 def test_UnsupportedWhereExpressionFailsExplicitly():
