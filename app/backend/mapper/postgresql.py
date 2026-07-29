@@ -25,8 +25,6 @@ PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
             GREATEST(0.0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - "initTime"))::double precision)
         )
 
-        WHEN LOWER(COALESCE(status, '')) IN ('finished        )
-
         WHEN LOWER(COALESCE(status, '')) IN ('finished', 'failed', 'aborted', 'interactive', 'done') AND "initTime" IS NOT NULL
         THEN GREATEST(
             COALESCE("elapsedSeconds", 0.0),
