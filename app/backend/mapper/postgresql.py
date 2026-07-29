@@ -2242,13 +2242,29 @@ class PostgresqlFlatMapper(Mapper):
             or 0
         )
 
-    def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int, steps: List[Dict[str, Any]]) -> None:
-        self.db.execute(
-            'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
-            (projectId, protocolDbId),
-        )
-        for step in steps or []:
+    def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int,
+                             steps: List[Dict[str, Any]]) -> None:
+        steps = list(steps or [])
+        stepIndexes = [int(step["index"]) for step in steps]
+
+        for step in steps:
             self.upsertProtocolStep(projectId, protocolDbId, protocolId, step)
+
+        if stepIndexes:
+            self.db.execute(
+                """
+                DELETE        self.upsertProtocolStep(projectId, protocolDbId, protocolId, FROM protocol_steps
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                   AND NOT ("stepIndex" = ANY(%s))
+                """,
+                (projectId, protocolDbId, stepIndexes),
+            )
+        else:
+            self.db.execute(
+                'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
+                (projectId, protocolDbId),
+            )
 
     def upsertProtocolStep(
             self,
