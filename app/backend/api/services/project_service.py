@@ -3652,14 +3652,12 @@ class ProjectService:
                             liveCpuTime
                         )
 
-                    liveElapsedTime = liveRuntimeMetadata.get(
-                        "elapsedTimeSeconds"
-                    )
+                    liveElapsedTimeSeconds = self._toPersistedOutputFloat(liveRuntimeMetadata.get("elapsedTimeSeconds"))
+                    persistedElapsedTimeSeconds = self._toPersistedOutputFloat(elapsedTimeSeconds)
 
-                    if liveElapsedTime is not None:
-                        elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(
-                            liveElapsedTime
-                        )
+                    if liveElapsedTimeSeconds is not None:
+                        elapsedTimeSeconds = max(persistedElapsedTimeSeconds or 0.0, liveElapsedTimeSeconds, 0.0)
+                        elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
 
                 except Exception:
                     pass
