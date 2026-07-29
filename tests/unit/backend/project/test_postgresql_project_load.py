@@ -113,20 +113,11 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
 def test_PostgresqlProjectIgnoresExistingProjectSqlite(
         authTestEnv,
         tmp_path,
-        monkeypatch,
 ):
     module = importlib.import_module(
         "app.backend.project.postgresql_project"
     )
 
-    class FakeFallbackMapper:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    fallbackMapper = FakeFallbackMapper()
     sqlitePath = tmp_path / "project.sqlite"
     sqlitePath.touch()
 
@@ -137,16 +128,14 @@ def test_PostgresqlProjectIgnoresExistingProjectSqlite(
         flatMapper=FakeFlatMapper(),
     )
 
-    monkeypatch.setattr(
-        project,
-        lambda **kwargs: fallbackMapper,
-    )
-
     project._loadDb()
 
+    assert sqlitePath.exists()
     assert project.usingPostgresqlRuntimeMapper()
-    assert project.mapper.writeFallbackMapper is fallbackMapper
+    assert not hasattr(project.mapper, "writeFallbackMapper")
 
     project.closeMapper()
 
-    assert fallbackMapper.closed is True
+    assert project.mapper is None
+    assert project._postgresqlRuntimeMapper is None
+    assert sqlitePath.exists()
