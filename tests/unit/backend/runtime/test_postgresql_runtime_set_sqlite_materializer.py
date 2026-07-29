@@ -396,27 +396,34 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
     )
 
     try:
-        allItems = list(
-            compatibilitySet.iterItems(
-                orderBy="creation",
-                direction="ASC",
-            )
+        assert (
+                compatibilitySet.getSize()
+                == 2
         )
 
-        assert [
-            item.getObjId()
-            for item in allItems
-        ] == [
-            7,
-            8,
+        allRows = [
+            (
+                item.getObjId(),
+                item.getObjCreation(),
+            )
+            for item in (
+                compatibilitySet
+                .iterItems(
+                    orderBy="creation",
+                    direction="ASC",
+                )
+            )
         ]
 
-        assert [
-            item.getObjCreation()
-            for item in allItems
-        ] == [
-            firstCursor,
-            secondCursor,
+        assert allRows == [
+            (
+                7,
+                firstCursor,
+            ),
+            (
+                8,
+                secondCursor,
+            ),
         ]
 
         assert (
@@ -429,23 +436,30 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
             != secondSourceCreation
         )
 
-        newItems = list(
-            compatibilitySet.iterItems(
-                orderBy="creation",
-                direction="ASC",
-                where=(
-                    'creation>'
-                    '"%s"'
-                    % firstCursor
-                ),
+        newRows = [
+            (
+                item.getObjId(),
+                item.getObjCreation(),
             )
-        )
+            for item in (
+                compatibilitySet
+                .iterItems(
+                    orderBy="creation",
+                    direction="ASC",
+                    where=(
+                            'creation>'
+                            '"%s"'
+                            % firstCursor
+                    ),
+                )
+            )
+        ]
 
-        assert [
-            item.getObjId()
-            for item in newItems
-        ] == [
-            8,
+        assert newRows == [
+            (
+                8,
+                secondCursor,
+            ),
         ]
 
     finally:
