@@ -85,6 +85,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 "a Scipion object id."
             )
 
+        itemSchema = self._getItemSchema(
+            item
+        )
+
         return {
             "scipionItemId": int(
                 itemId
@@ -105,6 +109,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 item,
                 scipionSet=scipionSet,
             ),
+
+            # Runtime-only metadata. It is consumed by
+            # PostgresqlSetRuntimeMapper and is never persisted
+            # inside the item JSONB values.
+            "_schema": itemSchema,
         }
 
     def synchronizeRuntimeItemSchema(
