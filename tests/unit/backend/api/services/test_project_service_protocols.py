@@ -1259,6 +1259,21 @@ def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
     assert exc.value.detail == "Unknown executeMode: invalid-mode"
 
 
+def test_LaunchProtocolPostgresqlResumeDoesNotUseLegacyRuntimeDb(service, mapper, monkeypatch):
+    protocol = FakeProtocol(objId=10, validateErrors=[])
+    monkeypatch.setattr(service, "_currentProjectUsesPostgresqlRuntimeMapper", lambda: True)
+    monkeypatch.setattr(service, "saveProtocol", lambda *args, **kwargs: (protocol, []))
+    monkeypatch.setattr(service, "_preparePostgresqlRuntimePointerOutputsForLaunch", lambda **kwargs: {"prepared": 0, "items": [], "errors": [], "skipped": False})
+    monkeypatch.setattr(RuntimeProtocolStatusSyncService, "getStoredElapsedTimeSeconds", lambda self, **kwargs: 0.0)
+    mapper.getProjectProtocolByProtocolId = lambda projectId, protocolId: {"status": "scheduled"}
+
+    result = service.launchProtocol(mapper=mapper, projectId=1, protocolId="10", protocolClassName="ProtClass", params={}, executeMode="launch")
+
+    assert service.currentProject.launchedProtocols == [protocol]
+    assert result["postgresqlRuntimeLaunch"] is True
+    assert result["protocolStatus"] == "scheduled"
+    assert not hasattr(service, "_refreshPostgresqlRuntimeProtocolForResume")
+
 def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
     calls = []
 

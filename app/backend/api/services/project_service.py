@@ -5936,9 +5936,6 @@ class ProjectService:
                 self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
             ),
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-            refreshPostgresqlRuntimeProtocolForResumeCallback=(
-                self._refreshPostgresqlRuntimeProtocolForResume
-            ),
         )
 
     def findViewersWeb(self, protocol):
