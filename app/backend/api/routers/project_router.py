@@ -420,7 +420,6 @@ async def loadProtocol(
         mapper=mapper,
         projectId=projectId,
         currentUser=currentUser,
-        enableWriteFallback=False,
     )
 
     if not project:
@@ -510,7 +509,6 @@ async def loadNewProtocol(
         mapper=mapper,
         projectId=projectId,
         currentUser=currentUser,
-        enableWriteFallback=False,
     )
 
     if not project:
@@ -557,7 +555,6 @@ def launchProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     currentUser=currentUser,
-                    enableWriteFallback=False,
                 )
             )
 
@@ -569,7 +566,6 @@ def launchProtocol(
                 refresh=True,
                 checkPid=False,
                 usePostgresqlRuntimeProject=False,
-                usePostgresqlRuntimeWriteFallback=False,
             )
         if not project:
             return JSONResponse(
@@ -639,7 +635,6 @@ async def saveProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     currentUser=currentUser,
-                    enableWriteFallback=False,
                 )
             )
         else:
@@ -651,7 +646,6 @@ async def saveProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=False,
                 usePostgresqlRuntimeProject=False,
-                usePostgresqlRuntimeWriteFallback=False,
             )
         if not project:
             return JSONResponse(
@@ -679,7 +673,6 @@ async def saveProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -727,7 +720,6 @@ def suggestionProtocol(
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
     else:
@@ -739,7 +731,6 @@ def suggestionProtocol(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -804,7 +795,6 @@ def renameProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     currentUser=currentUser,
-                    enableWriteFallback=False,
                 )
             )
         else:
@@ -816,7 +806,6 @@ def renameProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=False,
                 usePostgresqlRuntimeProject=False,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
         if not project:
@@ -945,6 +934,7 @@ def renameProtocol(
             },
         )
 
+
 @router.post("/{projectId}/protocols/duplicate", response_model=Any, status_code=status.HTTP_201_CREATED)
 def duplicateProtocol(
     projectId: int,
@@ -961,7 +951,6 @@ def duplicateProtocol(
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
     else:
@@ -973,7 +962,6 @@ def duplicateProtocol(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -1005,7 +993,6 @@ def duplicateProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1053,7 +1040,6 @@ def deleteProtocol(
                     mapper=mapper,
                     projectId=projectId,
                     currentUser=currentUser,
-                    enableWriteFallback=False,
                 )
             )
         else:
@@ -1065,7 +1051,6 @@ def deleteProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=False,
                 usePostgresqlRuntimeProject=False,
-                usePostgresqlRuntimeWriteFallback=False,
             )
         if not project:
             return JSONResponse(
@@ -1096,7 +1081,6 @@ def deleteProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1166,7 +1150,6 @@ def restartProtocolAll(
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
     else:
@@ -1178,7 +1161,6 @@ def restartProtocolAll(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -1202,7 +1184,6 @@ def restartProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1268,7 +1249,6 @@ def continueProtocolAll(
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
     else:
@@ -1280,7 +1260,6 @@ def continueProtocolAll(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -1301,7 +1280,6 @@ def continueProtocolAll(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1363,7 +1341,6 @@ def resetProtocolFrom(
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
 
@@ -1376,7 +1353,6 @@ def resetProtocolFrom(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -1398,7 +1374,6 @@ def resetProtocolFrom(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1454,7 +1429,6 @@ def stopProtocol(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     else:
         project = service.getProjectById(
@@ -1465,7 +1439,6 @@ def stopProtocol(
             checkPid=False,
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
-            usePostgresqlRuntimeWriteFallback=False,
         )
     if not project:
         return JSONResponse(
@@ -1502,7 +1475,6 @@ def stopProtocol(
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
                 usePostgresqlRuntimeProject=True,
-                usePostgresqlRuntimeWriteFallback=False,
             )
 
             if refreshedProject:
@@ -1811,7 +1783,6 @@ def _ensureProjectForFsRequest(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -1943,7 +1914,6 @@ def exportProtocols(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -1987,7 +1957,6 @@ def exportWorkflowProtocols(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -2031,7 +2000,6 @@ def importWorkflowProtocols(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -2112,7 +2080,6 @@ async def previewOutput(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -3659,7 +3626,6 @@ def listExternalViewers(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
@@ -3708,7 +3674,6 @@ def launchExternalViewer(
             mapper=mapper,
             projectId=projectId,
             currentUser=currentUser,
-            enableWriteFallback=False,
         )
     )
     if not project:
