@@ -635,40 +635,16 @@ class RuntimePostgresqlStepAdapter:
         )
 
     def upsertStep(self, step) -> None:
-        stepIndex = getattr(
-            step,
-            "getIndex",
-            lambda: None,
-        )()
+        stepIndex = getattr(step, "getIndex", lambda: None)()
 
         if stepIndex is None:
             return
 
-        stepIndex = int(stepIndex)
-
-        snapshots = self.buildSnapshots()
-
-        stepSnapshot = next(
-            (
-                snapshot
-                for snapshot in snapshots
-                if int(
-                    snapshot.get("index")
-                    or -1
-                ) == stepIndex
-            ),
-            None,
-        )
-
-        if stepSnapshot is None:
-            return
-
-        self.mapper.upsertProtocolStep(
-            projectId=self.projectId,
-            protocolDbId=self.protocolDbId,
-            protocolId=self.protocolId,
-            step=stepSnapshot,
-        )
+        stepSnapshot = self.stepService.buildProtocolStepForPostgresql(step, event="step-updated")
+        self.mapper.upsertProtocolStep(projectId=self.projectId,
+                                       protocolDbId=self.protocolDbId,
+                                       protocolId=self.protocolId,
+                                       step=stepSnapshot)
 
     def persistProtocolProcessIdentity(
             self,

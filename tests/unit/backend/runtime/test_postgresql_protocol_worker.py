@@ -620,6 +620,50 @@ def test_StepAdapterPersistsQueueJobIdsInsteadOfChildObject():
     )
 
 
+class UpdatedRuntimeStepStub:
+    def getIndex(self):
+        return 4
+
+
+class DirectStepPersistenceServiceStub:
+    def __init__(self):
+        self.calls = []
+
+    def buildProtocolStepForPostgresql(self, step, event="snapshot"):
+        self.calls.append((step, event))
+        return {"index": 4, "name": "finalStep", "status": "finished", "elapsedSeconds": 10.0}
+
+    def buildProtocolStepsForPostgresql(self, protocol):
+        raise AssertionError("upsertStep must serialize the updated step directly")
+
+
+class ProtocolStepMapperStub:
+    def __init__(self):
+        self.calls = []
+
+    def upsertProtocolStep(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def test_StepAdapterPersistsExactUpdatedStepSnapshot():
+    step = UpdatedRuntimeStepStub()
+    mapper = ProtocolStepMapperStub()
+    stepService = DirectStepPersistenceServiceStub()
+    adapter = object.__new__(RuntimePostgresqlStepAdapter)
+    adapter.mapper = mapper
+    adapter.projectId = 1
+    adapter.protocolDbId = 20
+    adapter.protocolId = 30
+    adapter.protocol = SimpleNamespace(_steps=[object()])
+    adapter.stepService = stepService
+
+    adapter.upsertStep(step)
+
+    assert stepService.calls == [(step, "step-updated")]
+    assert mapper.calls[0]["step"]["status"] == "finished"
+    assert mapper.calls[0]["step"]["elapsedSeconds"] == 10.0
+
+
 class ResumeItemStub(Object):
     pass
 
