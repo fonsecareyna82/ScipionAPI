@@ -333,4 +333,73 @@ def test_ResetProtocolRuntimeMetadataClearsExecutionState():
         "jobIds": [],
     }
 
+def test_GetEffectiveElapsedTimeProjectsActiveCheckpoint():
+    service = (
+        RuntimeProtocolStatusSyncService()
+    )
+
+    result = (
+        service
+        .getEffectiveElapsedTimeSeconds(
+            runtimeMetadata={
+                "elapsedTimeSeconds": 25.0,
+                (
+                    service
+                    .ELAPSED_UPDATED_AT_KEY
+                ): 100.0,
+            },
+            statusValue="running",
+            nowEpochSeconds=115.0,
+        )
+    )
+
+    assert result == 40.0
+
+
+def test_GetEffectiveElapsedTimeDoesNotProjectTerminalProtocol():
+    service = (
+        RuntimeProtocolStatusSyncService()
+    )
+
+    result = (
+        service
+        .getEffectiveElapsedTimeSeconds(
+            runtimeMetadata={
+                "elapsedTimeSeconds": 25.0,
+                (
+                    service
+                    .ELAPSED_UPDATED_AT_KEY
+                ): 100.0,
+            },
+            statusValue="finished",
+            nowEpochSeconds=115.0,
+        )
+    )
+
+    assert result == 25.0
+
+
+def test_GetEffectiveElapsedTimeIgnoresFutureCheckpoint():
+    service = (
+        RuntimeProtocolStatusSyncService()
+    )
+
+    result = (
+        service
+        .getEffectiveElapsedTimeSeconds(
+            runtimeMetadata={
+                "elapsedTimeSeconds": 25.0,
+                (
+                    service
+                    .ELAPSED_UPDATED_AT_KEY
+                ): 120.0,
+            },
+            statusValue="running",
+            nowEpochSeconds=115.0,
+        )
+    )
+
+    assert result == 25.0
+
+
 

@@ -426,6 +426,78 @@ class RuntimeProtocolStatusSyncService:
 
         return dict(params)
 
+    def getEffectiveElapsedTimeSeconds(
+            self,
+            runtimeMetadata: Any,
+            statusValue,
+            nowEpochSeconds: Optional[float] = None,
+    ) -> float:
+        """
+        Return the elapsed wall time represented by persisted runtime metadata.
+
+        PostgreSQL stores a checkpoint in elapsedTimeSeconds and, while the
+        protocol is active, elapsedUpdatedAtEpochSeconds identifies when that
+        checkpoint was written. Project the elapsed value at read time so a
+        frontend reload does not restart the visible timer.
+        """
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            return 0.0
+
+        elapsedSeconds = self.toSeconds(
+            runtimeMetadata.get(
+                "elapsedTimeSeconds"
+            )
+        )
+
+        elapsedSeconds = max(
+            0.0,
+            float(
+                elapsedSeconds
+                or 0.0
+            ),
+        )
+
+        statusText = str(
+            statusValue
+            or ""
+        ).strip().lower()
+
+        if (
+                statusText
+                not in self.ELAPSED_ACTIVE_STATUS_TEXTS
+        ):
+            return elapsedSeconds
+
+        previousUpdate = self.toSeconds(
+            runtimeMetadata.get(
+                self.ELAPSED_UPDATED_AT_KEY
+            )
+        )
+
+        if previousUpdate is None:
+            return elapsedSeconds
+
+        nowEpochSeconds = float(
+            nowEpochSeconds
+            if nowEpochSeconds is not None
+            else time.time()
+        )
+
+        if (
+                nowEpochSeconds
+                < float(previousUpdate)
+        ):
+            return elapsedSeconds
+
+        return (
+                elapsedSeconds
+                + nowEpochSeconds
+                - float(previousUpdate)
+        )
+
     def getStoredElapsedTimeSeconds(
             self,
             mapper,
