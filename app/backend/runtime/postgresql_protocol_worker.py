@@ -1378,18 +1378,58 @@ class RuntimePostgresqlProtocolWorker:
         failedKeys = set()
 
         inputParentDbIds = set()
+        inputParentProtocolIds = set()
 
         for inputRef in inputRefs:
+            parentProtocolDbId = None
+
             try:
-                inputParentDbIds.add(
-                    int(
-                        inputRef[
-                            "parentProtocolDbId"
-                        ]
-                    )
+                parentProtocolDbId = int(
+                    inputRef[
+                        "parentProtocolDbId"
+                    ]
                 )
+
+                inputParentDbIds.add(
+                    parentProtocolDbId
+                )
+
             except (
                     KeyError,
+                    TypeError,
+                    ValueError,
+            ):
+                pass
+
+            parentProtocolId = inputRef.get(
+                "parentProtocolId"
+            )
+
+            if (
+                    parentProtocolId
+                    in (None, "")
+                    and parentProtocolDbId
+                    is not None
+            ):
+                parentProtocolId = (
+                    parentRowsByDbId
+                    .get(
+                        parentProtocolDbId,
+                        {},
+                    )
+                    .get(
+                        "protocolId"
+                    )
+                )
+
+            try:
+                inputParentProtocolIds.add(
+                    int(
+                        parentProtocolId
+                    )
+                )
+
+            except (
                     TypeError,
                     ValueError,
             ):
@@ -1481,17 +1521,18 @@ class RuntimePostgresqlProtocolWorker:
             ).strip().lower()
 
             try:
-                prerequisiteDbId = int(
+                prerequisiteProtocolId = int(
                     prerequisiteRow[
-                        "protocolDbId"
+                        "protocolId"
                     ]
                 )
+
             except (
                     KeyError,
                     TypeError,
                     ValueError,
             ):
-                prerequisiteDbId = None
+                prerequisiteProtocolId = None
 
             # Workflow launches may register the same
             # protocol both as an execution prerequisite
@@ -1502,8 +1543,8 @@ class RuntimePostgresqlProtocolWorker:
             # as long as its concrete output is available.
             if (
                     streaming
-                    and prerequisiteDbId
-                    in inputParentDbIds
+                    and prerequisiteProtocolId
+                    in inputParentProtocolIds
             ):
                 continue
 
