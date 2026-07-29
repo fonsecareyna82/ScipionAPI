@@ -309,14 +309,12 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
                 path,
                 projectId,
                 flatMapper,
-                enableWriteFallback,
         ):
             captured.update({
                 "domain": domain,
                 "path": path,
                 "projectId": projectId,
                 "flatMapper": flatMapper,
-                "enableWriteFallback": enableWriteFallback,
             })
 
         def load(self, chdir=False):
@@ -342,7 +340,6 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
     projectService._replaceCurrentProjectWithPostgresqlProject(
         mapper=mapper,
         projectId=7,
-        enableWriteFallback=True,
     )
 
     assert captured == {
@@ -351,7 +348,6 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
         "path": str(projectPath),
         "projectId": 7,
         "flatMapper": mapper,
-        "enableWriteFallback": True,
         "loadChdir": True,
     }
 
@@ -379,14 +375,12 @@ def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
                 path,
                 projectId,
                 flatMapper,
-                enableWriteFallback,
         ):
             captured.update({
                 "domain": domain,
                 "path": path,
                 "projectId": projectId,
                 "flatMapper": flatMapper,
-                "enableWriteFallback": enableWriteFallback,
             })
 
         def load(self, chdir=False):
@@ -425,7 +419,6 @@ def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
             mapper=mapper,
             projectId=7,
             currentUser={"id": 3},
-            enableWriteFallback=True,
         )
     )
 

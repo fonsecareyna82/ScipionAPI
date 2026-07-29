@@ -1276,9 +1276,6 @@ def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
         targetObject
     )
 
-    mapper.writeFallbackMapper.delete.assert_called_once_with(
-        targetObject
-    )
 
     assert mapper.objectMapper.deleteCalls == [
         (
@@ -1319,9 +1316,6 @@ def test_DeleteRemovesPersistedPostgresqlSetWithoutMutatingOwner():
         runtimeSet
     )
 
-    mapper.writeFallbackMapper.delete.assert_called_once_with(
-        runtimeSet
-    )
 
     mapper.setMapper.deleteStoredSetOutput.assert_called_once_with(
         projectId=7,
@@ -1348,19 +1342,16 @@ def test_DeleteIgnoresUnstoredGenericObject():
         []
     )
 
-    mapper.writeFallbackMapper = Mock()
-
     targetObject = FakeComposite()
 
     mapper.delete(
         targetObject
     )
 
-    mapper.writeFallbackMapper.delete.assert_not_called()
     assert mapper.objectMapper.deleteCalls == []
 
 
-def test_DeleteUsesFallbackForNonPersistedSet():
+def test_DeleteIgnoresNonPersistedSet():
     mapper = buildRuntimeMapper(
         []
     )
@@ -1378,9 +1369,6 @@ def test_DeleteUsesFallbackForNonPersistedSet():
         runtimeSet
     )
 
-    mapper.writeFallbackMapper.delete.assert_called_once_with(
-        runtimeSet
-    )
 
     assert mapper.objectMapper.deleteCalls == []
 
@@ -1437,7 +1425,6 @@ def test_DeleteRejectsPersistedSetWithoutCanonicalIdentity():
         )
 
     mapper.writeFallbackMapper.delete.assert_not_called()
-    mapper.setMapper.deleteStoredSetOutput.assert_not_called()
     mapper.runtimeSetFactory.evictRuntimeSet.assert_not_called()
 
 

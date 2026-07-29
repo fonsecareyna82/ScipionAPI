@@ -65,7 +65,6 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
         path=str(tmp_path),
         projectId=7,
         flatMapper=FakeFlatMapper(),
-        enableWriteFallback=False,
     )
 
     monkeypatch.setattr(
@@ -84,7 +83,6 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
     )
 
     assert project.usingPostgresqlRuntimeMapper()
-    assert project.mapper.writeFallbackMapper is None
     classes = project.mapper.dictClasses
 
     assert hasattr(classes, "items")
@@ -112,7 +110,7 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
     project.closeMapper()
 
 
-def test_PostgresqlProjectKeepsExistingOptionalSqliteMirror(
+def test_PostgresqlProjectIgnoresExistingProjectSqlite(
         authTestEnv,
         tmp_path,
         monkeypatch,
@@ -137,12 +135,10 @@ def test_PostgresqlProjectKeepsExistingOptionalSqliteMirror(
         path=str(tmp_path),
         projectId=7,
         flatMapper=FakeFlatMapper(),
-        enableWriteFallback=True,
     )
 
     monkeypatch.setattr(
         project,
-        "_createFallbackMapper",
         lambda **kwargs: fallbackMapper,
     )
 

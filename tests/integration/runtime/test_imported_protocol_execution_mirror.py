@@ -125,7 +125,7 @@ def buildRuntimeMapper(project, sqliteMapper):
     return mapper
 
 
-def test_DuplicatedImportedProtocolUsesFreeCompactIdAndMaterializesMirror(
+def test_DuplicatedImportedProtocolUsesFreeCompactId(
         tmp_path,
 ):
     projectPath = tmp_path / "ImportedProject"
@@ -171,82 +171,6 @@ def test_DuplicatedImportedProtocolUsesFreeCompactIdAndMaterializesMirror(
 
         assert duplicatedProtocolId == 605
         assert duplicatedProtocol.getObjId() == 605
-
-        assert runtimeMapper.flatMapper.protocolAllocationCalls == [
-            31,
-            31,
-            31,
-            31,
-        ]
-
-        mirrorReport = runtimeMapper.ensureProtocolWriteFallbackMirror(
-            duplicatedProtocol
-        )
-
-        assert mirrorReport == {
-            "protocolId": 605,
-            "created": True,
-            "updated": False,
-            "mirrorClassName": "ExampleProtocol",
-        }
-
-        rootRow = sqliteMapper.db.selectObjectById(605)
-
-        assert rootRow is not None
-        assert rootRow["id"] == 605
-        assert rootRow["parent_id"] is None
-        assert rootRow["classname"] == "ExampleProtocol"
-
-        for occupiedId in (602, 603, 604):
-            occupiedRow = sqliteMapper.db.selectObjectById(occupiedId)
-
-            assert occupiedRow is not None
-            assert occupiedRow["classname"] == "String"
-            assert occupiedRow["parent_id"] == 600
-
-        childRows = list(
-            sqliteMapper.db.selectObjectsByAncestor("605")
-        )
-
-        assert childRows
-        assert all(
-            int(row["id"]) > SQLITE_EXECUTION_CHILD_ID_START
-            for row in childRows
-        )
-
-        runtimeMapper._clearFallbackMapperCaches(sqliteMapper)
-
-        openedProtocol = sqliteMapper.selectById(605)
-
-        assert isinstance(openedProtocol, ExampleProtocol)
-        assert openedProtocol.getObjId() == 605
-        assert openedProtocol.getObjLabel() == "Duplicated protocol"
-
-        secondMirrorReport = (
-            runtimeMapper.ensureProtocolWriteFallbackMirror(
-                openedProtocol
-            )
-        )
-
-        assert secondMirrorReport == {
-            "protocolId": 605,
-            "created": False,
-            "updated": True,
-            "mirrorClassName": "ExampleProtocol",
-        }
-
-        assert runtimeMapper.flatMapper.protocolAllocationCalls == [
-            31,
-            31,
-            31,
-            31,
-        ]
-
-        finalRootRow = sqliteMapper.db.selectObjectById(605)
-
-        assert finalRootRow is not None
-        assert finalRootRow["parent_id"] is None
-        assert finalRootRow["classname"] == "ExampleProtocol"
 
     finally:
         sqliteMapper.close()

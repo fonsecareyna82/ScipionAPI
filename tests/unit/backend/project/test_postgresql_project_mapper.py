@@ -51,7 +51,6 @@ class FakeWriteFallbackMapper:
 
 def buildProject(
         tmpPath,
-        enableWriteFallback,
 ):
     project = object.__new__(
         PostgresqlProject
@@ -63,9 +62,6 @@ def buildProject(
 
     project.postgresqlProjectId = 7
     project.postgresqlFlatMapper = object()
-    project.enableWriteFallback = bool(
-        enableWriteFallback
-    )
 
     project.mapper = None
     project._postgresqlRuntimeMapper = None
@@ -80,7 +76,6 @@ def test_ConstructorDoesNotExposeReadFallback():
     ).parameters
 
     assert "enableReadFallback" not in parameters
-    assert "enableWriteFallback" in parameters
 
 
 def test_CreateMapperDoesNotConfigureReadFallback(
@@ -89,7 +84,6 @@ def test_CreateMapperDoesNotConfigureReadFallback(
 ):
     project = buildProject(
         tmpPath=tmp_path,
-        enableWriteFallback=False,
     )
 
     createdRuntimeMappers = []
@@ -120,129 +114,31 @@ def test_CreateMapperDoesNotConfigureReadFallback(
     assert runtimeMapper.kwargs == {
         "flatMapper": project.postgresqlFlatMapper,
         "projectId": 7,
-        "writeFallbackMapper": None,
         "project": project,
     }
-
-    assert "readFallbackMapper" not in (
-        runtimeMapper.kwargs
-    )
 
     assert project._postgresqlRuntimeMapper is (
         runtimeMapper
     )
 
-    assert project._writeFallbackMapper is None
 
-
-def test_CreateMapperConfiguresOnlyWriteFallback(
-        monkeypatch,
-        tmp_path,
-):
-    sqlitePath = tmp_path / "project.sqlite"
-    sqlitePath.touch()
-
-    project = buildProject(
-        tmpPath=tmp_path,
-        enableWriteFallback=True,
-    )
-
-    writeFallbackMapper = (
-        FakeWriteFallbackMapper()
-    )
-
-    fallbackCalls = []
-
-    def createFallbackMapper(
-            sqlitePath,
-            enabled,
-            label,
-    ):
-        fallbackCalls.append({
-            "sqlitePath": sqlitePath,
-            "enabled": enabled,
-            "label": label,
-        })
-
-        return writeFallbackMapper
-
-    project._createFallbackMapper = (
-        createFallbackMapper
-    )
-
-    createdRuntimeMappers = []
-
-    def buildRuntimeMapper(**kwargs):
-        runtimeMapper = FakeRuntimeMapper(
-            **kwargs
-        )
-
-        createdRuntimeMappers.append(
-            runtimeMapper
-        )
-
-        return runtimeMapper
-
-    monkeypatch.setattr(
-        projectModule,
-        "PostgresqlRuntimeMapper",
-        buildRuntimeMapper,
-    )
-
-    runtimeMapper = project.createMapper(
-        sqlitePath
-    )
-
-    assert fallbackCalls == [{
-        "sqlitePath": str(
-            sqlitePath
-        ),
-        "enabled": True,
-        "label": "write",
-    }]
-
-    assert runtimeMapper.kwargs == {
-        "flatMapper": project.postgresqlFlatMapper,
-        "projectId": 7,
-        "writeFallbackMapper": writeFallbackMapper,
-        "project": project,
-    }
-
-    assert "readFallbackMapper" not in (
-        runtimeMapper.kwargs
-    )
-
-    assert project._writeFallbackMapper is (
-        writeFallbackMapper
-    )
-
-
-def test_CloseMapperClosesRuntimeAndWriteFallback(
+def test_CloseMapperClosesRuntimeMapper(
         tmp_path,
 ):
     project = buildProject(
         tmpPath=tmp_path,
-        enableWriteFallback=True,
     )
 
     runtimeMapper = FakeRuntimeMapper()
-    writeFallbackMapper = (
-        FakeWriteFallbackMapper()
-    )
 
     project.mapper = runtimeMapper
     project._postgresqlRuntimeMapper = (
         runtimeMapper
     )
 
-    project._writeFallbackMapper = (
-        writeFallbackMapper
-    )
-
     project.closeMapper()
 
     assert runtimeMapper.closeCalls == 1
-    assert writeFallbackMapper.closeCalls == 1
 
     assert project.mapper is None
 
@@ -251,4 +147,3 @@ def test_CloseMapperClosesRuntimeAndWriteFallback(
         is None
     )
 
-    assert project._writeFallbackMapper is None
