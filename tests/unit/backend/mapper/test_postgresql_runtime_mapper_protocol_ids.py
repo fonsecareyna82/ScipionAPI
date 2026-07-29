@@ -133,28 +133,6 @@ class FakeProtocolCounterDb:
             "Unexpected query: %s" % normalizedQuery
         )
 
-
-class FakeSqliteObjectsDb:
-    def __init__(self, existingRow=None):
-        self.existingRow = existingRow
-        self.cursor = SimpleNamespace(rowcount=1)
-        self.commands = []
-
-    def executeCommand(self, query, params=None):
-        self.commands.append({
-            "query": " ".join(str(query).split()),
-            "params": params,
-        })
-
-    def selectObjectById(self, objId):
-        return self.existingRow
-
-
-class FakeWriteFallbackMapper:
-    def __init__(self, db):
-        self.db = db
-
-
 def createProjectSqlite(projectPath, occupiedIds=()):
     projectPath.mkdir(parents=True, exist_ok=True)
     sqlitePath = projectPath / "project.sqlite"
@@ -213,8 +191,6 @@ def buildRuntimeMapper(project, protocolIds=None, objectIds=None):
         protocolIds=protocolIds,
         objectIds=objectIds,
     )
-    mapper.readFallbackMapper = None
-    mapper.writeFallbackMapper = None
 
     return mapper
 
