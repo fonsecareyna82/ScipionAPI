@@ -3576,13 +3576,10 @@ class ProjectService:
                 runtimeMetadata.get("cpuTimeSeconds")
             )
 
-            storedElapsedTimeSeconds = runtimeMetadata.get("elapsedTimeSeconds")
-
-            if storedElapsedTimeSeconds in (None,  "",):
-                elapsedTimeSeconds = stepSummary.get("elapsedSeconds")
-            else:
-                elapsedTimeSeconds = runtimeProtocolStatusSyncService.getEffectiveElapsedTimeSeconds(runtimeMetadata=runtimeMetadata,
-                                                                                                     statusValue=status,)
+            elapsedTimeSeconds = runtimeProtocolStatusSyncService.getEffectiveElapsedTimeSeconds(runtimeMetadata,
+                                                                                                 status,
+                                                                                                 fallbackElapsedSeconds=stepSummary.get(
+                                                                                                     "elapsedSeconds"))
             elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
             isinteractive = bool(stepSummary.get("isInteractive"))
             numberOfSteps = self._toPersistedOutputInt(
