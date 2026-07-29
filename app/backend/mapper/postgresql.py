@@ -19,51 +19,21 @@ POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
 
 PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
     CASE
-        WHEN LOWER(
-            COALESCE(
-                status,
-                ''
-            )
-        ) = 'running'
-        AND "initTime" IS NOT NULL
+        WHEN LOWER(COALESCE(status, '')) = 'running' AND "initTime" IS NOT NULL
         THEN GREATEST(
-            COALESCE(
-                "elapsedSeconds",
-                0.0
-            ),
-            GREATEST(
-                0.0,
-                EXTRACT(
-                    EPOCH FROM (
-                        CURRENT_TIMESTAMP
-                        - "initTime"
-                    )
-                )::double precision
-            )
+            COALESCE("elapsedSeconds", 0.0),
+            GREATEST(0.0, EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - "initTime"))::double precision)
         )
 
-        WHEN "initTime" IS NOT NULL
-        AND "endTime" IS NOT NULL
+        WHEN LOWER(COALESCE(status, '')) IN ('finished        )
+
+        WHEN LOWER(COALESCE(status, '')) IN ('finished', 'failed', 'aborted', 'interactive', 'done') AND "initTime" IS NOT NULL
         THEN GREATEST(
-            COALESCE(
-                "elapsedSeconds",
-                0.0
-            ),
-            GREATEST(
-                0.0,
-                EXTRACT(
-                    EPOCH FROM (
-                        "endTime"
-                        - "initTime"
-                    )
-                )::double precision
-            )
+            COALESCE("elapsedSeconds", 0.0),
+            GREATEST(0.0, EXTRACT(EPOCH FROM (COALESCE("endTime", "updatedAt") - "initTime"))::double precision)
         )
 
-        ELSE COALESCE(
-            "elapsedSeconds",
-            0.0
-        )
+        ELSE COALESCE("elapsedSeconds", 0.0)
     END
 """
 
@@ -2289,6 +2259,8 @@ class PostgresqlFlatMapper(Mapper):
             protocolId: int,
             step: Dict[str, Any],
     ) -> None:
+        statusText = str(step.get("status") or "").strip().lower()
+        terminalStep = statusText in {"finished", "failed", "aborted", "interactive", "done"}
         self.db.execute(
             """
             INSERT INTO protocol_steps (
@@ -2336,12 +2308,9 @@ class PostgresqlFlatMapper(Mapper):
                     EXCLUDED."argsText",
                 "resultFiles" =
                     EXCLUDED."resultFiles",
-                "initTime" =
-                    EXCLUDED."initTime",
-                "endTime" =
-                    EXCLUDED."endTime",
-                "elapsedSeconds" =
-                    EXCLUDED."elapsedSeconds",
+                "initTime" = COALESCE(EXCLUDED."initTime", protocol_steps."initTime"),
+                "endTime" = COALESCE(EXCLUDED."endTime", protocol_steps."endTime"),
+                "elapsedSeconds" = GREATEST(COALESCE(protocol_steps."elapsedSeconds", 0.0), COALESCE(EXCLUDED."elapsedSeconds", 0.0)),
                 error = EXCLUDED.error,
                 interactive =
                     EXCLUDED.interactive,
@@ -2413,6 +2382,31 @@ class PostgresqlFlatMapper(Mapper):
                 ),
             ),
         )
+        if terminalStep:
+            self.db.execute(
+                """
+                UPDATE protocol_steps
+                   SET "endTime" = CASE
+                           WHEN "initTime" IS NULL THEN "endTime"
+                           ELSE COALESCE("endTime", CURRENT_TIMESTAMP)
+                       END,
+                       "elapsedSeconds" = GREATEST(
+                           COALESCE("elapsedSeconds", 0.0),
+                           CASE
+                               WHEN "initTime" IS NULL THEN 0.0
+                               ELSE GREATEST(
+                                   0.0,
+                                   EXTRACT(EPOCH FROM (COALESCE("endTime", CURRENT_TIMESTAMP) - "initTime"))::double precision
+                               )
+                           END
+                       ),
+                       "updatedAt" = CURRENT_TIMESTAMP
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                   AND "stepIndex" = %s
+                """,
+                (projectId, protocolDbId, step["index"]),
+            )
 
     def listProtocolSteps(
             self,
