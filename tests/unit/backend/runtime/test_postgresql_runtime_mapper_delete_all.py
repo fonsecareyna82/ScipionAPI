@@ -154,13 +154,11 @@ def buildRuntimeMapper():
     )
 
     mapper.projectId = 7
-    mapper.writeFallbackMapper = None
 
     mapper.flatMapper = Mock()
     mapper.runtimeSetFactory = Mock()
 
     mapper._runtimeProtocolsById = {}
-    mapper._sqliteProtocolMirrorIds = set()
 
     return mapper
 
@@ -285,28 +283,6 @@ def test_DeleteAllClearsPostgresqlAndRuntimeCaches():
 
     operations = []
 
-    fallbackMapper = Mock()
-
-    fallbackMapper.objDict = {
-        1: object(),
-    }
-
-    fallbackMapper.updateDict = {
-        1: object(),
-    }
-
-    fallbackMapper.updatePendingPointers = [
-        object(),
-    ]
-
-    fallbackMapper.deleteAll.side_effect = lambda: (
-        operations.append(
-            "fallback"
-        )
-    )
-
-    mapper.writeFallbackMapper = fallbackMapper
-
     mapper.flatMapper.deleteProjectRuntimeData.side_effect = (
         lambda projectId: (
             operations.append(
@@ -335,10 +311,6 @@ def test_DeleteAllClearsPostgresqlAndRuntimeCaches():
         101: protocol,
     }
 
-    mapper._sqliteProtocolMirrorIds = {
-        101,
-    }
-
     result = mapper.deleteAll()
 
     assert result is None
@@ -351,12 +323,7 @@ def test_DeleteAllClearsPostgresqlAndRuntimeCaches():
 
     mapper.runtimeSetFactory.clearCaches.assert_called_once_with()
 
-    assert fallbackMapper.objDict == {}
-    assert fallbackMapper.updateDict == {}
-    assert fallbackMapper.updatePendingPointers == []
-
     assert mapper._runtimeProtocolsById == {}
-    assert mapper._sqliteProtocolMirrorIds == set()
 
     assert protocol.outputObject is outputObject
     assert protocol.mock_calls == []
@@ -364,22 +331,6 @@ def test_DeleteAllClearsPostgresqlAndRuntimeCaches():
 
 def test_DeleteAllKeepsRuntimeCachesWhenPostgresqlDeleteFails():
     mapper = buildRuntimeMapper()
-
-    fallbackMapper = Mock()
-
-    fallbackMapper.objDict = {
-        1: object(),
-    }
-
-    fallbackMapper.updateDict = {
-        1: object(),
-    }
-
-    fallbackMapper.updatePendingPointers = [
-        object(),
-    ]
-
-    mapper.writeFallbackMapper = fallbackMapper
 
     mapper.flatMapper.deleteProjectRuntimeData.side_effect = (
         RuntimeError(
@@ -391,10 +342,6 @@ def test_DeleteAllKeepsRuntimeCachesWhenPostgresqlDeleteFails():
 
     mapper._runtimeProtocolsById = {
         101: cachedProtocol,
-    }
-
-    mapper._sqliteProtocolMirrorIds = {
-        101,
     }
 
     try:
@@ -410,10 +357,6 @@ def test_DeleteAllKeepsRuntimeCachesWhenPostgresqlDeleteFails():
         )
 
     mapper.runtimeSetFactory.clearCaches.assert_not_called()
-
-    assert fallbackMapper.objDict == {}
-    assert fallbackMapper.updateDict == {}
-    assert fallbackMapper.updatePendingPointers == []
 
     assert mapper._runtimeProtocolsById == {
         101: cachedProtocol,
