@@ -5543,24 +5543,9 @@ class ProjectService:
             projectId: int,
             parentId,
     ):
-        parentScipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=parentId,
-        )
-
-        parentProtocol = None
-
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
-            parentProtocol = self._loadProtocolFromRuntimeDb(
-                protocolId=parentScipionProtocolId,
-            )
-
-        if parentProtocol is None:
-            parentProtocol = self._getScipionProtocolByRuntimeId(
-                parentScipionProtocolId,
-            )
-
+        parentScipionProtocolId = self._resolveScipionProtocolId(mapper=mapper, projectId=projectId,
+                                                                 protocolId=parentId)
+        parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
         return parentScipionProtocolId, parentProtocol
 
     def _splitPointerValue(self, value):

@@ -400,6 +400,22 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(projectServiceModul
     assert result["protocolStatus"] == "finished"
     assert len(mapper.savedContexts) == 1
 
+
+def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModule):
+    expectedParentProtocol = object()
+    loadedProtocolIds = []
+    service = object.__new__(projectServiceModule.ProjectService)
+    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
+    service._getScipionProtocolByRuntimeId = lambda protocolId: loadedProtocolIds.append(int(protocolId)) or expectedParentProtocol
+
+    parentProtocolId, parentProtocol = service._getParentProtocolForPointer(mapper=object(), projectId=344, parentId="40")
+
+    assert parentProtocolId == 40
+    assert parentProtocol is expectedParentProtocol
+    assert loadedProtocolIds == [40]
+    assert not hasattr(service, "_loadProtocolFromRuntimeDb")
+
+
 def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):
     declaredOutputs = [
         {
