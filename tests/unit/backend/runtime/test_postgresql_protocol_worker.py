@@ -298,6 +298,7 @@ def test_StreamingInputParentPrerequisiteDoesNotWaitForTerminalStatus():
         "validationErrors"
     ] == []
 
+
 def test_StreamingProtocolWaitsUntilParentOutputExists():
     worker = buildWorker(
         streaming=True,
