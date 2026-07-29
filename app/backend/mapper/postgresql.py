@@ -109,6 +109,11 @@ class PostgresqlDb:
         return self._getThreadConnection()
 
     @property
+    def isClosed(self) -> bool:
+        with self._resourcesLock:
+            return bool(self._closed)
+
+    @property
     def cursor(self):
         with self._resourcesLock:
             if self._closed:

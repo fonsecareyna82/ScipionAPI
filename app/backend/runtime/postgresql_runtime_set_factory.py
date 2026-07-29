@@ -188,23 +188,31 @@ class PostgresqlRuntimeSetMixin:
         )
 
     def close(self):
+        mapper = getattr(self, "_mapper", None)
+        db = getattr(mapper, "db", None)
         materializer = getattr(self, "_postgresqlSqliteMaterializer", None)
         materializedPath = getattr(self, "_postgresqlMaterializedFileName", None)
+        databaseClosed = db is None or bool(getattr(db, "isClosed", False))
 
-        if materializer is not None and materializedPath:
+        if materializer is not None and materializedPath and not databaseClosed:
             try:
                 materializer.materialize(self)
             except Exception:
-                logger.warning(
-                    "Could not refresh PostgreSQL SQLite compatibility snapshot before closing. "
-                    "className=%s objectId=%s path=%s",
-                    self.getClassName(),
-                    self.getObjId(),
-                    materializedPath,
-                    exc_info=True,
-                )
-
-        mapper = getattr(self, "_mapper", None)
+                if bool(getattr(db, "isClosed", False)):
+                    logger.debug(
+                        "Skipped PostgreSQL SQLite compatibility snapshot refresh because the database was closed. className=%s objectId=%s path=%s",
+                        self.getClassName(),
+                        self.getObjId(),
+                        materializedPath,
+                    )
+                else:
+                    logger.warning(
+                        "Could not refresh PostgreSQL SQLite compatibility snapshot before closing. className=%s objectId=%s path=%s",
+                        self.getClassName(),
+                        self.getObjId(),
+                        materializedPath,
+                        exc_info=True,
+                    )
 
         if mapper is not None:
             mapper.close()

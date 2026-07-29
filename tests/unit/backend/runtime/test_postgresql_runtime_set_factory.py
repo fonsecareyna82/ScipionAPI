@@ -37,6 +37,7 @@ from app.backend.mapper.scipion_set_mapper import (
 )
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
+    PostgresqlRuntimeSetMixin,
 )
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     getPostgresqlRuntimeParent,
@@ -2417,6 +2418,35 @@ def test_CloseRefreshesExistingCompatibilitySnapshot():
     assert events == ["materialize", "close"]
     assert runtimeSet._mapper is None
 
+
+def test_RuntimeSetCloseSkipsMaterializationWhenPostgresqlIsClosed():
+    class FakeClosedDb:
+        isClosed = True
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeClosedDb()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeMaterializer:
+        def __init__(self):
+            self.calls = 0
+
+        def materialize(self, runtimeSet):
+            self.calls += 1
+
+    runtimeSet = PostgresqlRuntimeSetMixin()
+    runtimeSet._mapper = FakeMapper()
+    runtimeSet._postgresqlSqliteMaterializer = FakeMaterializer()
+    runtimeSet._postgresqlMaterializedFileName = "/tmp/compatibility.sqlite"
+
+    runtimeSet.close()
+
+    assert runtimeSet._postgresqlSqliteMaterializer.calls == 0
+    assert runtimeSet._mapper is None
 
 
 
