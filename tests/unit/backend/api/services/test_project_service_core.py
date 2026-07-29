@@ -317,8 +317,9 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
                 "flatMapper": flatMapper,
             })
 
-        def load(self, chdir=False):
+        def load(self, chdir=False, loadAllConfig=True):
             captured["loadChdir"] = chdir
+            captured["loadAllConfig"] = loadAllConfig
 
     monkeypatch.setenv(
         "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
@@ -349,6 +350,7 @@ def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
         "projectId": 7,
         "flatMapper": mapper,
         "loadChdir": True,
+        "loadAllConfig": False,
     }
 
     assert (
@@ -383,8 +385,9 @@ def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
                 "flatMapper": flatMapper,
             })
 
-        def load(self, chdir=False):
+        def load(self, chdir=False, loadAllConfig=True):
             captured["loadChdir"] = chdir
+            captured["loadAllConfig"] = loadAllConfig
 
         def closeMapper(self):
             captured["closed"] = True
@@ -432,8 +435,8 @@ def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
         "path": str(projectPath),
         "projectId": 7,
         "flatMapper": mapper,
-        "enableWriteFallback": True,
         "loadChdir": True,
+        "loadAllConfig": False,
     }
 
     assert (
