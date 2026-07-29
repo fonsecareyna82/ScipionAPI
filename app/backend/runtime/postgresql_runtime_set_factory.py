@@ -188,31 +188,99 @@ class PostgresqlRuntimeSetMixin:
         )
 
     def close(self):
-        mapper = getattr(self, "_mapper", None)
-        db = getattr(mapper, "db", None)
-        materializer = getattr(self, "_postgresqlSqliteMaterializer", None)
-        materializedPath = getattr(self, "_postgresqlMaterializedFileName", None)
-        databaseClosed = db is None or bool(getattr(db, "isClosed", False))
+        mapper = getattr(
+            self,
+            "_mapper",
+            None,
+        )
 
-        if materializer is not None and materializedPath and not databaseClosed:
+        db = getattr(
+            mapper,
+            "db",
+            None,
+        )
+
+        materializer = getattr(
+            self,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        materializedPath = getattr(
+            self,
+            "_postgresqlMaterializedFileName",
+            None,
+        )
+
+        # A missing mapper does not mean that PostgreSQL is closed.
+        # The compatibility materializer may recreate and attach one.
+        databaseClosed = (
+                db is not None
+                and bool(
+            getattr(
+                db,
+                "isClosed",
+                False,
+            )
+        )
+        )
+
+        if (
+                materializer is not None
+                and materializedPath
+                and not databaseClosed
+        ):
             try:
-                materializer.materialize(self)
+                materializer.materialize(
+                    self
+                )
+
             except Exception:
-                if bool(getattr(db, "isClosed", False)):
+                currentMapper = getattr(
+                    self,
+                    "_mapper",
+                    None,
+                )
+
+                currentDb = getattr(
+                    currentMapper,
+                    "db",
+                    db,
+                )
+
+                if bool(
+                        getattr(
+                            currentDb,
+                            "isClosed",
+                            False,
+                        )
+                ):
                     logger.debug(
-                        "Skipped PostgreSQL SQLite compatibility snapshot refresh because the database was closed. className=%s objectId=%s path=%s",
+                        "Skipped PostgreSQL SQLite compatibility "
+                        "snapshot refresh because the database was "
+                        "closed. className=%s objectId=%s path=%s",
                         self.getClassName(),
                         self.getObjId(),
                         materializedPath,
                     )
+
                 else:
                     logger.warning(
-                        "Could not refresh PostgreSQL SQLite compatibility snapshot before closing. className=%s objectId=%s path=%s",
+                        "Could not refresh PostgreSQL SQLite "
+                        "compatibility snapshot before closing. "
+                        "className=%s objectId=%s path=%s",
                         self.getClassName(),
                         self.getObjId(),
                         materializedPath,
                         exc_info=True,
                     )
+
+        # materialize() may have attached a new mapper to the Set.
+        mapper = getattr(
+            self,
+            "_mapper",
+            None,
+        )
 
         if mapper is not None:
             mapper.close()
