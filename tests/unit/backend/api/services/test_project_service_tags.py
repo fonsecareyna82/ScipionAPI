@@ -298,7 +298,7 @@ def test_ListProtocolTagsAlsoAcceptsRuntimeProtocolId(
         }
     ]
 
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 10, "10")
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, "10")
 
 
 def test_ListProtocolTagsRaises404WhenProtocolCannotBeResolved(
@@ -410,7 +410,7 @@ def test_SetProtocolTagsAlsoAcceptsRuntimeProtocolId(
     ]
 
     assert mapper.setProtocolTagIdsCalls == []
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 10, "10")
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, "10")
 
 
 def test_SetProtocolTagsRaises404WhenProtocolCannotBeResolved(

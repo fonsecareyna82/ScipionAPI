@@ -253,7 +253,7 @@ def test_BuildWizardReadyProtocolResolvesPostgresqlProtocolId(
         protocolId=500,
         protocolClassName="ProtWizardTarget",
         formValues={
-            "iterations": "7",
+            "iterations": 7,
         },
         mapper=mapper,
         projectId=1,
@@ -406,7 +406,7 @@ def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
         protocolId=500,
         protocolClassName="ProtWizardTarget",
         formValues={
-            "iterations": "7",
+            "iterations": 7,
         },
         paramName="boxSize",
         wizardId="tests.FakeWizardClass",
