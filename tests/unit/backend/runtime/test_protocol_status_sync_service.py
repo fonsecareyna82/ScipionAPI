@@ -402,4 +402,41 @@ def test_GetEffectiveElapsedTimeIgnoresFutureCheckpoint():
     assert result == 25.0
 
 
+class FakeElapsedRuntimeProtocol:
+    def __init__(self, elapsedSeconds):
+        self.elapsedSeconds = elapsedSeconds
+
+    def getElapsedTime(self):
+        return self.elapsedSeconds
+
+
+def test_MergeRuntimeMetadataRecoversNativeElapsedWhenAnchorIsMissing():
+    service = RuntimeProtocolStatusSyncService()
+    params = {
+        service.RUNTIME_METADATA_KEY: {
+            "elapsedTimeSeconds": 0.0,
+        },
+    }
+
+    result = service.mergeRuntimeMetadata(params, FakeElapsedRuntimeProtocol(137.0))
+    runtimeMetadata = result[service.RUNTIME_METADATA_KEY]
+
+    assert runtimeMetadata["elapsedTimeSeconds"] == 137.0
+
+
+def test_MergeRuntimeMetadataPreservesManagedElapsedWhenAnchorExists():
+    service = RuntimeProtocolStatusSyncService()
+    params = {
+        service.RUNTIME_METADATA_KEY: {
+            "elapsedTimeSeconds": 25.0,
+            service.ELAPSED_UPDATED_AT_KEY: 100.0,
+        },
+    }
+
+    result = service.mergeRuntimeMetadata(params, FakeElapsedRuntimeProtocol(137.0))
+    runtimeMetadata = result[service.RUNTIME_METADATA_KEY]
+
+    assert runtimeMetadata["elapsedTimeSeconds"] == 25.0
+    assert runtimeMetadata[service.ELAPSED_UPDATED_AT_KEY] == 100.0
+
 

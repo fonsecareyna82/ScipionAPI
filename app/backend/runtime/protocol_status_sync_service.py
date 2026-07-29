@@ -954,24 +954,17 @@ class RuntimeProtocolStatusSyncService:
                 "cpuTimeSeconds"
             ] = cpuTimeSeconds
 
-        # Scipion's native getElapsedTime() preserves the original
-        # initTime in MODE_RESUME and therefore includes paused time.
-        # Use it only to initialize old protocols that do not yet have
-        # ScipionWeb-managed elapsed metadata.
-        if (
-                "elapsedTimeSeconds"
-                not in runtimeMetadata
-        ):
-            nativeElapsedSeconds = (
-                currentMetadata.get(
-                    "elapsedTimeSeconds"
-                )
-            )
+        nativeElapsedSeconds = self.toSeconds(currentMetadata.get("elapsedTimeSeconds"))
+        storedElapsedSeconds = self.toSeconds(runtimeMetadata.get("elapsedTimeSeconds"))
+        elapsedUpdatedAt = self.toSeconds(runtimeMetadata.get(self.ELAPSED_UPDATED_AT_KEY))
 
-            if nativeElapsedSeconds is not None:
-                runtimeMetadata[
-                    "elapsedTimeSeconds"
-                ] = nativeElapsedSeconds
+        shouldInitializeElapsed = "elapsedTimeSeconds" not in runtimeMetadata
+        shouldRecoverMissingAnchor = elapsedUpdatedAt is None and nativeElapsedSeconds is not None and float(
+            nativeElapsedSeconds) > float(storedElapsedSeconds or 0.0)
+
+        if nativeElapsedSeconds is not None and (shouldInitializeElapsed or shouldRecoverMissingAnchor):
+            runtimeMetadata["elapsedTimeSeconds"] = max(float(storedElapsedSeconds or 0.0),
+                                                        float(nativeElapsedSeconds), 0.0)
 
         params[self.RUNTIME_METADATA_KEY] = (
             runtimeMetadata
