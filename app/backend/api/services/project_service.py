@@ -3433,6 +3433,7 @@ class ProjectService:
         persistedOutputsByProtocolId = persistedOutputsByProtocolId or {}
         protocolStepSummaryByProtocolId = protocolStepSummaryByProtocolId or {}
         inputRefsByProtocolId = inputRefsByProtocolId or {}
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -3575,18 +3576,14 @@ class ProjectService:
                 runtimeMetadata.get("cpuTimeSeconds")
             )
 
-            elapsedTimeSeconds = runtimeMetadata.get(
-                "elapsedTimeSeconds"
-            )
+            storedElapsedTimeSeconds = runtimeMetadata.get("elapsedTimeSeconds")
 
-            if elapsedTimeSeconds in (None, ""):
-                elapsedTimeSeconds = stepSummary.get(
-                    "elapsedSeconds"
-                )
-
-            elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(
-                elapsedTimeSeconds
-            )
+            if storedElapsedTimeSeconds in (None,  "",):
+                elapsedTimeSeconds = stepSummary.get("elapsedSeconds")
+            else:
+                elapsedTimeSeconds = runtimeProtocolStatusSyncService.getEffectiveElapsedTimeSeconds(runtimeMetadata=runtimeMetadata,
+                                                                                                     statusValue=status,)
+            elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
             isinteractive = bool(stepSummary.get("isInteractive"))
             numberOfSteps = self._toPersistedOutputInt(
                 stepSummary.get("numberOfSteps")

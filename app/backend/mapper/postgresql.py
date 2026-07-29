@@ -17,6 +17,56 @@ from app.backend.mapper.postgresql_scipion_item_hydrator import (
 POSTGRESQL_PROTOCOL_ID_START = 2
 POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
 
+PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
+    CASE
+        WHEN LOWER(
+            COALESCE(
+                status,
+                ''
+            )
+        ) = 'running'
+        AND "initTime" IS NOT NULL
+        THEN GREATEST(
+            COALESCE(
+                "elapsedSeconds",
+                0.0
+            ),
+            GREATEST(
+                0.0,
+                EXTRACT(
+                    EPOCH FROM (
+                        CURRENT_TIMESTAMP
+                        - "initTime"
+                    )
+                )::double precision
+            )
+        )
+
+        WHEN "initTime" IS NOT NULL
+        AND "endTime" IS NOT NULL
+        THEN GREATEST(
+            COALESCE(
+                "elapsedSeconds",
+                0.0
+            ),
+            GREATEST(
+                0.0,
+                EXTRACT(
+                    EPOCH FROM (
+                        "endTime"
+                        - "initTime"
+                    )
+                )::double precision
+            )
+        )
+
+        ELSE COALESCE(
+            "elapsedSeconds",
+            0.0
+        )
+    END
+"""
+
 
 def _toJsonParam(value: Any) -> Any:
     # toJsonParam
@@ -2359,18 +2409,42 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
 
-    def listProtocolSteps(self, projectId: int, protocolId: int) -> List[Dict[str, Any]]:
+    def listProtocolSteps(
+            self,
+            projectId: int,
+            protocolId: int,
+    ) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
-            """
-            SELECT "stepIndex" AS index, "stepClassName", name, status, prerequisites, args,
-                   "argsText", "resultFiles", "initTime", "endTime", "elapsedSeconds", error,
-                   interactive, "needsGpu", event, "schemaVersion", "updatedAt"
-              FROM protocol_steps
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-             ORDER BY "stepIndex" ASC
+            f"""
+            SELECT
+                "stepIndex" AS index,
+                "stepClassName",
+                name,
+                status,
+                prerequisites,
+                args,
+                "argsText",
+                "resultFiles",
+                "initTime",
+                "endTime",
+                {
+                    PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL
+                } AS "elapsedSeconds",
+                error,
+                interactive,
+                "needsGpu",
+                event,
+                "schemaVersion",
+                "updatedAt"
+            FROM protocol_steps
+            WHERE "projectId" = %s
+              AND "protocolId" = %s
+            ORDER BY "stepIndex" ASC
             """,
-            (projectId, str(protocolId)),
+            (
+                projectId,
+                str(protocolId),
+            ),
         )
 
     def updateProtocolStepStatus(
@@ -2416,9 +2490,12 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
 
-    def getProjectProtocolStepsByProtocolId(self, projectId: int) -> Dict[str, List[Dict[str, Any]]]:
+    def getProjectProtocolStepsByProtocolId(
+            self,
+            projectId: int,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         rows = self.db.fetchAll(
-            """
+            f"""
             SELECT
                 "protocolId",
                 "stepIndex" AS "index",
@@ -2428,60 +2505,143 @@ class PostgresqlFlatMapper(Mapper):
                 args,
                 "initTime",
                 "endTime",
-                "elapsedSeconds",
+                {
+                    PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL
+                } AS "elapsedSeconds",
                 error,
                 interactive,
                 "needsGpu",
                 event,
                 "updatedAt"
-              FROM protocol_steps
-             WHERE "projectId" = %s
-             ORDER BY "protocolId", "stepIndex" ASC
+            FROM protocol_steps
+            WHERE "projectId" = %s
+            ORDER BY
+                "protocolId",
+                "stepIndex" ASC
             """,
-            (projectId,),
+            (
+                projectId,
+            ),
         )
 
-        result: Dict[str, List[Dict[str, Any]]] = {}
+        result: Dict[str,  List[Dict[str, Any]],] = {}
+
         for row in rows:
             protocolId = str(row["protocolId"])
             step = dict(row)
-            step.pop("protocolId", None)
-            result.setdefault(protocolId, []).append(step)
+
+            step.pop("protocolId", None,)
+
+            result.setdefault(protocolId,  [],).append(step)
 
         return result
 
-    def getProjectProtocolStepSummaryByProtocolId(self, projectId: int) -> Dict[str, Dict[str, Any]]:
+    def getProjectProtocolStepSummaryByProtocolId(
+            self,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Any]]:
         rows = self.db.fetchAll(
-            """
+            f"""
+            WITH effective_steps AS (
+                SELECT
+                    "protocolId",
+                    status,
+                    interactive,
+                    "updatedAt",
+                    {
+                        PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL
+                    } AS "effectiveElapsedSeconds"
+                FROM protocol_steps
+                WHERE "projectId" = %s
+            )
             SELECT
                 "protocolId",
-                COUNT(*)::int AS "numberOfSteps",
+
+                COUNT(*)::int
+                    AS "numberOfSteps",
+
                 COUNT(*) FILTER (
-                    WHERE lower(COALESCE(status, '')) IN ('finished', 'done')
-                )::int AS "stepsDone",
-                COALESCE(SUM(COALESCE("elapsedSeconds", 0)), 0)::double precision AS "elapsedSeconds",
-                BOOL_OR(interactive) AS "isInteractive",
-                MAX("updatedAt") AS "updatedAt"
-              FROM protocol_steps
-             WHERE "projectId" = %s
-             GROUP BY "protocolId"
-             ORDER BY "protocolId"
+                    WHERE LOWER(
+                        COALESCE(
+                            status,
+                            ''
+                        )
+                    ) IN (
+                        'finished',
+                        'done'
+                    )
+                )::int
+                    AS "stepsDone",
+
+                COALESCE(
+                    SUM(
+                        "effectiveElapsedSeconds"
+                    ),
+                    0.0
+                )::double precision
+                    AS "elapsedSeconds",
+
+                BOOL_OR(
+                    interactive
+                ) AS "isInteractive",
+
+                MAX(
+                    "updatedAt"
+                ) AS "updatedAt"
+
+            FROM effective_steps
+            GROUP BY "protocolId"
+            ORDER BY "protocolId"
             """,
-            (projectId,),
+            (
+                projectId,
+            ),
         )
 
-        result: Dict[str, Dict[str, Any]] = {}
+        result: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+
         for row in rows or []:
-            protocolId = str(row.get("protocolId") or "").strip()
+            protocolId = str(
+                row.get(
+                    "protocolId"
+                )
+                or ""
+            ).strip()
+
             if not protocolId:
                 continue
 
-            result[protocolId] = {
-                "numberOfSteps": int(row.get("numberOfSteps") or 0),
-                "stepsDone": int(row.get("stepsDone") or 0),
-                "elapsedSeconds": row.get("elapsedSeconds"),
-                "isInteractive": bool(row.get("isInteractive")),
-                "updatedAt": row.get("updatedAt"),
+            result[
+                protocolId
+            ] = {
+                "numberOfSteps": int(
+                    row.get(
+                        "numberOfSteps"
+                    )
+                    or 0
+                ),
+                "stepsDone": int(
+                    row.get(
+                        "stepsDone"
+                    )
+                    or 0
+                ),
+                "elapsedSeconds": (
+                    row.get(
+                        "elapsedSeconds"
+                    )
+                ),
+                "isInteractive": bool(
+                    row.get(
+                        "isInteractive"
+                    )
+                ),
+                "updatedAt": row.get(
+                    "updatedAt"
+                ),
             }
 
         return result
