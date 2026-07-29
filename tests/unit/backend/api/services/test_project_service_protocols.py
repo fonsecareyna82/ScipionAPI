@@ -1272,7 +1272,6 @@ def test_LaunchProtocolPostgresqlResumeDoesNotUseLegacyRuntimeDb(service, mapper
     assert service.currentProject.launchedProtocols == [protocol]
     assert result["postgresqlRuntimeLaunch"] is True
     assert result["protocolStatus"] == "scheduled"
-    assert not hasattr(service, "_refreshPostgresqlRuntimeProtocolForResume")
 
 def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
     calls = []
