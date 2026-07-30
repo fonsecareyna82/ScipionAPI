@@ -738,6 +738,71 @@ def test_GetCtftomoSeriesViewsUsesProjectDbRow(projectClient, fakeProjectService
     }
 
 
+def test_CreateNewSetOfCtftomoSeriesUsesPostgresqlRuntimeProject(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/CTFTomoSeries/ctftomo/new-set",
+        json={
+            "exclusions": {
+                "TS_001": {
+                    "excluded": False,
+                    "tiltimages": [2],
+                }
+            },
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.newCtftomoSeriesSetResult
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "enableWriteFallback": False,
+    }
+    assert fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "CTFTomoSeries",
+        "exclusions": {
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [2],
+            }
+        },
+        "restack": False,
+        "mapper": fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall["mapper"],
+    }
+
+
+def test_CreateNewSetOfCtftomoSeriesReturns404WhenRuntimeProjectIsMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/CTFTomoSeries/ctftomo/new-set",
+        json={
+            "exclusions": {},
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall is None
+
 @pytest.mark.parametrize(
     "url",
     [

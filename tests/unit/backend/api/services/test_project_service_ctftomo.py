@@ -515,6 +515,98 @@ def test_GetPostgresqlCtftomoReaderIfAvailableUsesResolvedProtocolDbId(
     assert createdReaders[0].outputName == "outputCtftomo"
 
 
+def test_ResolveOutputForCtftomoSeriesBuildsReadOnlyPostgresqlProxy(
+    service,
+    projectServiceModule,
+    monkeypatch,
+):
+    parentProtocol = object()
+    proxyOutput = object()
+    runtimeMapper = object()
+    outputInfo = {
+        "exists": True,
+        "setId": 77,
+        "runtimeObjectId": 9001,
+        "outputName": "CTFTomoSeries",
+        "className": "SetOfCTFTomoSeries",
+    }
+
+    class FakeRuntimeProject:
+        pass
+
+    service.currentProject = FakeRuntimeProject()
+    service.currentProject.mapper = runtimeMapper
+
+    protocolCalls = []
+    outputInfoCalls = []
+    proxyCalls = []
+
+    def getScipionProtocolForRuntime(**kwargs):
+        protocolCalls.append(kwargs)
+        return parentProtocol
+
+    def getPostgresqlRuntimeOutputInfo(**kwargs):
+        outputInfoCalls.append(kwargs)
+        return outputInfo
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(
+                self,
+                parentProtocol,
+                outputName,
+                outputInfo,
+                mapper=None,
+        ):
+            proxyCalls.append({
+                "parentProtocol": parentProtocol,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
+                "mapper": mapper,
+            })
+            return proxyOutput
+
+    mapper = object()
+
+    monkeypatch.setattr(service, "_getScipionProtocolForRuntime", getScipionProtocolForRuntime)
+    monkeypatch.setattr(service, "_resolvePostgresqlReaderProtocolId", lambda **kwargs: 654)
+    monkeypatch.setattr(service, "_getPostgresqlRuntimeOutputInfo", getPostgresqlRuntimeOutputInfo)
+    monkeypatch.setattr(projectServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
+
+    protocol, output = service._resolveOutputForCtftomoSeries(
+        protocolId=3,
+        outputName="CTFTomoSeries",
+        projectId=344,
+        mapper=mapper,
+    )
+
+    assert protocol is parentProtocol
+    assert output is proxyOutput
+    assert protocolCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "protocolId": 3,
+        }
+    ]
+    assert outputInfoCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "parentProtocolDbId": 654,
+            "outputName": "CTFTomoSeries",
+        }
+    ]
+    assert proxyCalls == [
+        {
+            "parentProtocol": parentProtocol,
+            "outputName": "CTFTomoSeries",
+            "outputInfo": outputInfo,
+            "mapper": runtimeMapper,
+        }
+    ]
+    assert not hasattr(parentProtocol, "CTFTomoSeries")
+
+
 def test_GetCtftomoSeriesViewsServiceBuildsFrames(service, tmp_path):
     associatedTs = FakeAssociatedTiltSeries(
         items={
@@ -769,6 +861,26 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
     service.currentProject = FakeCurrentProject(protocol)
 
     mapper = FakeMapper()
+    outputIdentityCalls = []
+
+    def getGeneratedSetOutputIdentity(**kwargs):
+        outputIdentityCalls.append(kwargs)
+        return {
+            "outputName": "CTFTomoSeries2",
+            "outputSuffix": "1",
+            "protocolDbId": 654,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForCtftomoSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        getGeneratedSetOutputIdentity,
+    )
 
     result = service.createNewSetOfCtftomoSeriesService(
         projectId=1,
@@ -785,19 +897,28 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
     )
 
     assert result["status"] == 0
-    assert result["outputName"] == "CTFTomoSeries_0"
+    assert result["outputName"] == "CTFTomoSeries2"
     assert result["postgresqlSync"] == {
         "stored": True,
         "protocolDbId": 654,
-        "outputName": "CTFTomoSeries_0",
+        "outputName": "CTFTomoSeries2",
     }
     assert result["postgresqlError"] is None
+    assert outputIdentityCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "protocol": protocol,
+            "outputPrefix": "CTFTomoSeries",
+        }
+    ]
     assert storedCalls == [
         {
             "projectId": 1,
             "protocolDbId": 654,
             "outputName": "CTFTomoSeries_0",
-            "scipionSet": protocol._definedOutputs["CTFTomoSeries_0"],
+            "scipionSet": protocol._definedOutputs["CTFTomoSeries2"],
         }
     ]
 

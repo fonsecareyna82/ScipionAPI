@@ -8971,15 +8971,59 @@ class ProjectService:
             projectId: Optional[int] = None,
     ):
         """
-        Resolve protocol + CTFTomoSeries-like output for CTF tomography operations.
+        Resolve a protocol and its SetOfCTFTomoSeries output.
 
-        protocolId can be either the PostgreSQL protocols.id or the Scipion protocolId.
+        PostgreSQL outputs are reconstructed as independent runtime proxies.
+        The owner protocol and its existing outputs remain unchanged.
         """
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+
+            if output is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, output
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -8988,6 +9032,7 @@ class ProjectService:
             )
 
         output = getattr(protocol, outputName)
+
         if output is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -10548,8 +10593,15 @@ class ProjectService:
         for key, value in (exclusions or {}).items():
             normalizedExclusions[str(key)] = value or {}
 
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix="CTFTomoSeries",
+        )
         # New output name and set object
-        newOutputName = protocol.getNextOutputName("CTFTomoSeries")
+        newOutputName = outputIdentity["outputName"]
         outputSet = inputSet.createCopy(protocol._getPath(), prefix=newOutputName, copyInfo=True)
         createdCount = 0
         for seriesIndex, ctfSeries in enumerate(inputSet.iterItems(iterate=False)):
