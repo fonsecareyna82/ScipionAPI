@@ -1098,6 +1098,7 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
 
     mapper = FakeMapper()
     calls = []
+    inputOutputCalls = []
     protocolSyncCalls = []
     inputSyncCalls = []
     syncResult = {
@@ -1106,6 +1107,10 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         "inputRefs": 1,
         "protocolId": "900",
     }
+
+    def resolveMetadataActionInputOutput(**kwargs):
+        inputOutputCalls.append(kwargs)
+        return output
 
     def syncPostgresqlRuntimeProtocol(**kwargs):
         protocolSyncCalls.append(kwargs)
@@ -1121,6 +1126,7 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(service, "_resolveMetadataActionInputOutput", resolveMetadataActionInputOutput)
     monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", syncPostgresqlRuntimeProtocol)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
@@ -1147,6 +1153,14 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     }
     launchedProtocol = service.currentProject.launchedProtocols[0]
 
+    assert inputOutputCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "outputName": "outputParticles",
+        }
+    ]
     assert protocolSyncCalls == [
         {
             "mapper": mapper,
@@ -1190,107 +1204,98 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     assert selectionFiles[0].read_text(encoding="utf-8") == "3 5 7 "
 
 
-def test_RunMetadataTableActionServiceUsesRuntimeResolverWithMapper(
+def test_ResolveMetadataActionInputOutputBuildsReadOnlyPostgresqlProxy(
     service,
     projectServiceModule,
     monkeypatch,
-    tmp_path,
 ):
-    outputFile = tmp_path / "metadata.sqlite"
-    outputFile.write_text("placeholder", encoding="utf-8")
+    parentProtocol = object()
+    proxyOutput = object()
+    runtimeMapper = object()
+    outputInfo = {
+        "exists": True,
+        "projectId": 1,
+        "setId": 77,
+        "runtimeObjectId": 9001,
+        "outputName": "outputSet",
+        "className": "SetOfParticles",
+    }
 
-    output = FakeOutput(str(outputFile))
-    protocol = FakeProtocol("outputParticles", output)
-    service.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
+    class FakeRuntimeProject:
+        pass
 
-    table = FakeTable(
-        name="objects",
-        alias="Particles",
-        columns=[],
-        actions=[FakeAction("create subset")],
-    )
-    dao = FakeDao(objectsType={"create subset": "SetOfParticles"})
-    objMgr = FakeObjectManager(
-        tables={"objects": table},
-        rowsByTable={"objects": []},
-        dao=dao,
-    )
+    service.currentProject = FakeRuntimeProject()
+    service.currentProject.mapper = runtimeMapper
 
     class FakeDb:
-        # fakeDb
-        def fetchOne(self, *args, **kwargs):
-            return None
+        def __init__(self):
+            self.fetchCalls = []
+
+        def fetchOne(self, query, params):
+            self.fetchCalls.append({"query": query, "params": params})
+
+            if '"protocolId" = %s' in query:
+                assert params == (1, "6115")
+                return {"id": 852, "protocolId": "6115"}
+
+            if "AND id = %s" in query:
+                assert params == (1, 852)
+                return {"id": 852, "protocolId": "6115"}
+
+            raise AssertionError("Unexpected protocol identity query")
 
     class FakeMapper:
-        # fakeMapper
         def __init__(self):
             self.db = FakeDb()
 
     mapper = FakeMapper()
-    resolverCalls = []
-    openTableCalls = []
+    protocolCalls = []
+    outputInfoCalls = []
+    proxyCalls = []
 
-    def getScipionProtocolForRuntime(mapper, projectId, protocolId):
-        resolverCalls.append(
-            {
+    def getScipionProtocolByRuntimeId(protocolId):
+        protocolCalls.append(protocolId)
+        return parentProtocol
+
+    def getPostgresqlRuntimeOutputInfo(**kwargs):
+        outputInfoCalls.append(kwargs)
+        return outputInfo
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(self, parentProtocol, outputName, outputInfo, mapper=None):
+            proxyCalls.append({
+                "parentProtocol": parentProtocol,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
                 "mapper": mapper,
-                "projectId": projectId,
-                "protocolId": protocolId,
-            }
-        )
-        return protocol
+            })
+            return proxyOutput
 
+    monkeypatch.setattr(service, "_getScipionProtocolByRuntimeId", getScipionProtocolByRuntimeId)
+    monkeypatch.setattr(service, "_getPostgresqlRuntimeOutputInfo", getPostgresqlRuntimeOutputInfo)
+    monkeypatch.setattr(projectServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
 
-    patchOpenMetadataTable(
-        service,
-        monkeypatch,
-        objMgr,
-        table,
-        calls=openTableCalls,
-    )
+    result = service._resolveMetadataActionInputOutput(mapper=mapper, projectId=1, protocolId=6115, outputName="outputSet")
 
-    monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
-    monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(
-        service,
-        "_getScipionProtocolForRuntime",
-        getScipionProtocolForRuntime,
-    )
-    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
-    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
-    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
-                        lambda **kwargs: {"dependencies": 1, "inputRefsSaved": 1})
-
-    result = service.runMetadataTableActionService(
-        projectId=1,
-        protocolId=500,
-        outputName="outputParticles",
-        tableName="objects",
-        action="create subset",
-        subsetName="subset A",
-        ids=[3, 5, 7],
-        currentUser={"id": 1},
-        mapper=mapper,
-    )
-
-    assert result["success"] is True
-    assert resolverCalls == [
+    assert result is proxyOutput
+    assert protocolCalls == [6115]
+    assert outputInfoCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
-            "protocolId": 500,
+            "parentProtocolDbId": 852,
+            "outputName": "outputSet",
         }
     ]
-    assert openTableCalls == [
+    assert proxyCalls == [
         {
-            "projectId": 1,
-            "protocolId": 500,
-            "outputName": "outputParticles",
-            "tableName": "objects",
-            "mapper": mapper,
+            "parentProtocol": parentProtocol,
+            "outputName": "outputSet",
+            "outputInfo": outputInfo,
+            "mapper": runtimeMapper,
         }
     ]
-    assert len(protocol.newProtocolCalls) == 1
+    assert not hasattr(parentProtocol, "outputSet")
 
 
 def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
@@ -1325,6 +1330,7 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(service, "_resolveMetadataActionInputOutput", lambda **kwargs: output)
     monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
