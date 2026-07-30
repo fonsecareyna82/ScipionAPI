@@ -42,6 +42,14 @@ class FakeActiveRuntimeProtocol:
         return None
 
 
+class FakeRuntimeMetadataProtocol(FakeActiveRuntimeProtocol):
+    def __init__(self):
+        self._cpuTime = 7.5
+
+    def getElapsedTime(self):
+        return 18.25
+
+
 class FakeMapper:
     def __init__(self):
         self.row = {
@@ -133,6 +141,17 @@ def test_PersistProtocolProcessIdentityPreservesRuntimeMetadata():
             "77",
             "78",
         ],
+    }
+
+
+def test_BuildRuntimeMetadataIncludesTimingAndProcessIdentity():
+    metadata = RuntimeProtocolStatusSyncService().buildRuntimeMetadata(FakeRuntimeMetadataProtocol())
+
+    assert metadata == {
+        "cpuTimeSeconds": 7.5,
+        "elapsedTimeSeconds": 18.25,
+        "pid": 4321,
+        "jobIds": ["77", "78"],
     }
 
 
