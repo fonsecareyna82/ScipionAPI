@@ -719,6 +719,10 @@ class RuntimeProtocolDuplicateService:
                 params.pop(key, None)
                 continue
 
+            if str(key).startswith("object."):
+                params.pop(key, None)
+                continue
+
             if str(key).startswith("_outputs"):
                 params.pop(key, None)
                 continue

@@ -197,6 +197,19 @@ class RuntimeProtocolStatusSyncService:
 
         return jobIds
 
+    def buildRuntimeMetadata(self, protocol) -> Dict[str, Any]:
+        cpuTimeValue = getattr(protocol, "_cpuTime", None)
+
+        if cpuTimeValue is None:
+            cpuTimeValue = getattr(protocol, "cpuTime", None)
+
+        return {
+            "cpuTimeSeconds": self.toSeconds(cpuTimeValue),
+            "elapsedTimeSeconds": self.toSeconds(self.safeCall(protocol, "getElapsedTime", None)),
+            "pid": self.getProtocolPid(protocol),
+            "jobIds": self.getProtocolJobIds(protocol),
+        }
+
     def persistProtocolProcessIdentity(
             self,
             mapper,
