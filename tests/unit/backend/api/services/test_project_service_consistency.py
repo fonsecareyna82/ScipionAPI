@@ -461,12 +461,34 @@ def service(projectServiceModule):
     return instance
 
 
-def patchRuntimeProject(service, monkeypatch, currentProject):
-    def loadProjectForThumbnails(dbProj):
-        service.currentProject = currentProject
+def patchRuntimeProject(
+        service,
+        monkeypatch,
+        currentProject,
+):
+    consistencyServiceModule = (
+        importlib.import_module(
+            "app.backend.api.services."
+            "project_consistency_service"
+        )
+    )
+
+    def loadLegacyProjectForConsistency(
+            consistencyService,
+            dbProj,
+    ):
+        consistencyService.currentProject = (
+            currentProject
+        )
+
         return currentProject
 
-    monkeypatch.setattr(service, "loadProjectForThumbnails", loadProjectForThumbnails)
+    monkeypatch.setattr(
+        consistencyServiceModule
+        .ProjectConsistencyService,
+        "_loadLegacyProjectForConsistency",
+        loadLegacyProjectForConsistency,
+    )
 
 
 def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(

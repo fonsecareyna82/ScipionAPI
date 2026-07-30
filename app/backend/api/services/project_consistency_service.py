@@ -26,11 +26,14 @@
 
 from __future__ import annotations
 from datetime import datetime
+from pathlib import Path
 
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException, status
+from pyworkflow.config import Config
+from pyworkflow.project import Project as ScipionProject
 from pyworkflow.object import PointerList
 from pyworkflow.protocol.params import PointerParam, MultiPointerParam, RelationParam
 
@@ -60,6 +63,38 @@ class ProjectConsistencyService:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.projectService, name)
+
+    def _loadLegacyProjectForConsistency(
+            self,
+            dbProj: Dict[str, Any],
+    ):
+        """
+        Load project.sqlite exclusively for the temporary migration
+        consistency audit.
+
+        Normal runtime, mutation and thumbnail paths must never call
+        this method.
+        """
+        projectPath = Path(str(dbProj["name"]))
+
+        legacyProject = ScipionProject(Config.getDomain(),
+                                       str(projectPath),)
+
+        legacyDbPath = Path(legacyProject.getDbPath())
+
+        if not legacyDbPath.is_file():
+            raise RuntimeError(
+                "Cannot validate PostgreSQL consistency: "
+                "legacy project.sqlite is missing. "
+                "projectPath=%s"
+                % projectPath
+            )
+
+        legacyProject.load(dbPath=str(legacyDbPath))
+
+        self.currentProject = legacyProject
+
+        return legacyProject
 
     def normalizeStatus(self, value: Any) -> str:
         return str(value or "").strip().lower()
@@ -1936,7 +1971,7 @@ class ProjectConsistencyService:
                 detail="Project not found",
             )
 
-        self.loadProjectForThumbnails(dbProj)
+        self._loadLegacyProjectForConsistency(dbProj)
 
         runtimeSnapshot = self.collectRuntimeSnapshot(
             projectId=projectId,
