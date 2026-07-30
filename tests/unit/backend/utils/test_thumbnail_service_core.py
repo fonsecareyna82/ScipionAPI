@@ -361,6 +361,35 @@ def test_BuildProtocolThumbnailReturnsCachedEntry(service, monkeypatch, tmp_path
     }
 
 
+def test_BuildProtocolOutputThumbnailChecksCacheBeforeResolvingOutput(service, monkeypatch, tmp_path):
+    protocol = FakeProtocol(10, label="Prot 10", status="finished")
+    service.currentProject._protocols = {10: protocol}
+
+    cachePath = tmp_path / "protocol_10_outputVol_128_v1.png"
+    cachePath.write_bytes(b"cached")
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: cachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: True)
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("Cached thumbnails must not resolve PostgreSQL outputs")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    result = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputVol", force=False, size=128)
+
+    assert result == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputVol",
+        "outputClassName": None,
+        "absolutePath": str(cachePath),
+        "cached": True,
+        "exists": True,
+    }
+
+
 def test_BuildProtocolThumbnailReturnsMissingWhenRequestedOutputDoesNotExist(service, monkeypatch):
     protocol = FakeProtocol(10, label="Prot 10", status="finished")
     service.currentProject._protocols = {10: protocol}
