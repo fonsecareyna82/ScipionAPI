@@ -13054,8 +13054,9 @@ class ProjectService:
             detail=f"Could not resolve output class for action '{actionName}'",
         )
 
-    def _resolveMetadataActionInputOutput(self, mapper, projectId: int, protocolId: int, outputName: str):
-        protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
+    def _resolveMetadataActionInputContext(self, mapper, projectId: int, protocolId: int, outputName: str):
+        protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId,
+                                                               protocolId=protocolId)
 
         protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
         protocolRow = protocolIdentityResolver.getProtocolRowByDbId(protocolDbId)
@@ -13069,7 +13070,8 @@ class ProjectService:
             raise HTTPException(status_code=404, detail=f"Protocol '{protocolId}' has no Scipion runtime id")
 
         protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-        outputInfo = self._getPostgresqlRuntimeOutputInfo(mapper=mapper, projectId=projectId, parentProtocolDbId=int(protocolDbId), outputName=outputName)
+        outputInfo = self._getPostgresqlRuntimeOutputInfo(mapper=mapper, projectId=projectId,
+                                                          parentProtocolDbId=int(protocolDbId), outputName=outputName)
 
         if not outputInfo.get("exists"):
             raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in PostgreSQL")
@@ -13077,14 +13079,22 @@ class ProjectService:
         runtimeMapper = getattr(self.currentProject, "mapper", None)
 
         if runtimeMapper is None:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="PostgreSQL runtime mapper is not available")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="PostgreSQL runtime mapper is not available")
 
-        output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(parentProtocol=protocol, outputName=outputName, outputInfo=outputInfo, mapper=runtimeMapper)
+        output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(parentProtocol=protocol,
+                                                                                outputName=outputName,
+                                                                                outputInfo=outputInfo,
+                                                                                mapper=runtimeMapper)
 
         if output is None:
-            raise HTTPException(status_code=404, detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL")
+            raise HTTPException(status_code=404,
+                                detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL")
 
-        return output
+        return {
+            "output": output,
+            "parentProtocolId": int(scipionProtocolId),
+        }
 
     def runMetadataTableActionService(
             self,
@@ -13100,10 +13110,9 @@ class ProjectService:
     ) -> Any:
         selectionIds = self._normalizeMetadataSelectionIds(ids)
 
-        output = self._resolveMetadataActionInputOutput(mapper=mapper,
-                                                        projectId=projectId,
-                                                        protocolId=protocolId,
-                                                        outputName=outputName)
+        inputContext = self._resolveMetadataActionInputContext(mapper=mapper, projectId=projectId, protocolId=protocolId, outputName=outputName)
+        output = inputContext["output"]
+        parentProtocolId = int(inputContext["parentProtocolId"])
 
         with _metadataLock:
             objMgr, table = self._openMetadataTable(
@@ -13137,20 +13146,65 @@ class ProjectService:
                 label=subsetName,
             )
 
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise RuntimeError("PostgreSQL runtime mapper is not available")
+
+            runtimeMapper.store(batchProt)
+            runtimeMapper.commit()
+
+            batchProtocolId = self._getScipionObjectId(batchProt)
+
+            if batchProtocolId is None:
+                raise RuntimeError("Subset protocol was created without a runtime id")
+
+            canonicalInputParams = {
+                "inputObject": f"{parentProtocolId}.{outputName}",
+            }
+
+            preLaunchInputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=batchProt,
+                params=canonicalInputParams,
+            ) or {}
+
+            preLaunchParentProtocolIds = {
+                str(value)
+                for value in preLaunchInputSync.get("parentProtocolIds") or []
+            }
+
+            if (
+                    int(preLaunchInputSync.get("dependencies", 0) or 0) < 1
+                    or int(preLaunchInputSync.get("inputRefsSaved", 0) or 0) < 1
+                    or str(parentProtocolId) not in preLaunchParentProtocolIds
+            ):
+                raise RuntimeError(
+                    f"Could not persist subset dependency on protocol {parentProtocolId}.{outputName} before launch"
+                )
+
             self.currentProject.launchProtocol(batchProt)
 
             postgresqlSync = None
-            try:
-                batchProtocolId = self._getScipionObjectId(batchProt)
-                if batchProtocolId is None:
-                    raise RuntimeError("Subset protocol was launched without a runtime id")
 
-                protocolSync = self.syncPostgresqlRuntimeProtocol(mapper=mapper, projectId=projectId,
-                                                                  protocolId=batchProtocolId, registerOutputs=False,
-                                                                  syncRelations=False, protocol=batchProt,
-                                                                  authoritativeProtocolState=True) or {}
-                inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(mapper=mapper, projectId=projectId,
-                                                                                    protocol=batchProt) or {}
+            try:
+                protocolSync = self.syncPostgresqlRuntimeProtocol(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=batchProtocolId,
+                    registerOutputs=False,
+                    syncRelations=False,
+                    protocol=batchProt,
+                    authoritativeProtocolState=True,
+                ) or {}
+
+                inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=batchProt,
+                    params=canonicalInputParams,
+                ) or {}
 
                 postgresqlSync = {
                     "protocols": int(protocolSync.get("protocols", 0) or 0),
@@ -13158,6 +13212,7 @@ class ProjectService:
                     "inputRefs": int(inputSync.get("inputRefsSaved", 0) or 0),
                     "protocolId": str(batchProtocolId),
                 }
+
             except Exception as syncError:
                 logger.exception(
                     "Subset protocol was launched but PostgreSQL sync failed. projectId=%s protocolId=%s outputName=%s tableName=%s",
@@ -13166,6 +13221,7 @@ class ProjectService:
                     outputName,
                     tableName,
                 )
+
                 return {
                     "success": True,
                     "message": "Subset protocol was launched successfully, but PostgreSQL sync failed",
@@ -13180,7 +13236,7 @@ class ProjectService:
                 "postgresqlError": None,
             }
 
-        except Exception as e:
+        except Exception as error:
             logger.exception(
                 "Failed to launch metadata table action. projectId=%s protocolId=%s outputName=%s tableName=%s action=%s",
                 projectId,
@@ -13189,9 +13245,10 @@ class ProjectService:
                 tableName,
                 action,
             )
+
             return {
                 "success": False,
-                "errors": [str(e)],
+                "errors": [str(error)],
             }
 
     def getMetadataTablePageService(
