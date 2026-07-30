@@ -26,7 +26,7 @@
 import importlib
 
 
-def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
+def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
         authTestEnv,
         tmp_path,
         monkeypatch,
@@ -55,8 +55,6 @@ def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
                 "status": "active",
             }
 
-    loadedRuntimeProjects = []
-
     monkeypatch.setattr(
         service,
         "loadProjectRuntimeContext",
@@ -69,13 +67,10 @@ def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
         ),
     )
 
-    monkeypatch.setattr(
-        service,
-        "_loadPostgresqlRuntimeProject",
-        lambda **kwargs: loadedRuntimeProjects.append(
-            kwargs
-        ),
-    )
+    def failRuntimeProjectLoad(**kwargs):
+        raise AssertionError("Read-only PostgreSQL workflow loading must not create a runtime project")
+
+    monkeypatch.setattr(service, "_loadPostgresqlRuntimeProject", failRuntimeProjectLoad)
 
     monkeypatch.setattr(
         service,
@@ -86,26 +81,19 @@ def test_GetProjectByIdLoadsPostgresqlRuntimeWithoutLegacyProject(
         },
     )
 
-    result = service.getProjectById(
-        mapper=FakeMapper(),
-        projectId=7,
-        currentUser={"id": 11},
-        refresh=False,
-        checkPid=False,
-        loadWorkflowFromPostgresql=True,
-        usePostgresqlRuntimeProject=True,
-        syncRuntimeStatuses=True,
-    )
+    result = service.getProjectById(mapper=FakeMapper(),
+                                    projectId=7,
+                                    currentUser={"id": 11},
+                                    refresh=False,
+                                    checkPid=False,
+                                    loadWorkflowFromPostgresql=True,
+                                    usePostgresqlRuntimeProject=True)
 
     assert result == {
         "id": 7,
         "protocols": {},
     }
 
-    assert len(loadedRuntimeProjects) == 1
+    assert service.currentProject is None
 
-    loadCall = loadedRuntimeProjects[0]
-
-    assert loadCall["projectId"] == 7
-    assert loadCall["projectPath"] == str(tmp_path)
 

@@ -577,7 +577,6 @@ class FakeProjectService:
             loadWorkflowFromPostgresql=False,
             usePostgresqlRuntimeProject=False,
             usePostgresqlRuntimeWriteFallback=False,
-            syncRuntimeStatuses=False,
     ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
@@ -596,9 +595,6 @@ class FakeProjectService:
             ),
             "usePostgresqlRuntimeWriteFallback": (
                 usePostgresqlRuntimeWriteFallback
-            ),
-            "syncRuntimeStatuses": (
-                syncRuntimeStatuses
             ),
         }
 
