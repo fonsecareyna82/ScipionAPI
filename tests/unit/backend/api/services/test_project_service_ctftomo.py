@@ -250,6 +250,9 @@ class FakeProtocol:
     def getNextOutputName(self, prefix):
         return self._nextOutputName
 
+    def getOutputsSize(self):
+        return len(self._definedOutputs)
+
     def _defineOutputs(self, **kwargs):
         self._definedOutputs.update(kwargs)
 
@@ -917,7 +920,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
         {
             "projectId": 1,
             "protocolDbId": 654,
-            "outputName": "CTFTomoSeries_0",
+            "outputName": "CTFTomoSeries2",
             "scipionSet": protocol._definedOutputs["CTFTomoSeries2"],
         }
     ]
