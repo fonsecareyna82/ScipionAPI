@@ -370,6 +370,17 @@ class FakeProjectService:
         }
         self.lastGetTiltSeriesFramesCall = None
 
+        self.newTiltSeriesSetResult = {
+            "status": 0,
+            "outputName": "TiltSeries_2",
+            "createdTiltSeries": 1,
+            "hasOddEven": False,
+            "restack": False,
+            "postgresqlSync": {"stored": True},
+            "postgresqlError": None,
+        }
+        self.lastCreateNewSetOfTiltSeriesCall = None
+
         self.ctftomoSeriesResult = [
             {
                 "tiltSeriesId": "TS_001",
@@ -1158,6 +1169,25 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.tiltSeriesFramesResult
+
+    def createNewSetOfTiltSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            exclusions,
+            restack,
+            mapper=None,
+    ):
+        self.lastCreateNewSetOfTiltSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "exclusions": exclusions,
+            "restack": restack,
+            "mapper": mapper,
+        }
+        return self.newTiltSeriesSetResult
 
     def listOutputCtftomoSeriesService(
             self,

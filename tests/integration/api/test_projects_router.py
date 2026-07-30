@@ -637,6 +637,72 @@ def test_GetTiltSeriesFramesUsesProjectDbRow(projectClient, fakeProjectService):
     }
 
 
+def test_CreateNewSetOfTiltSeriesUsesPostgresqlRuntimeProject(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/TiltSeries/tiltseries/new-set",
+        json={
+            "exclusions": {
+                "TS_001": {
+                    "excluded": False,
+                    "tiltimages": [2],
+                }
+            },
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.newTiltSeriesSetResult
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "enableWriteFallback": False,
+    }
+    assert fakeProjectService.lastCreateNewSetOfTiltSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "TiltSeries",
+        "exclusions": {
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [2],
+            }
+        },
+        "restack": False,
+        "mapper": fakeProjectService.lastCreateNewSetOfTiltSeriesCall["mapper"],
+    }
+
+
+def test_CreateNewSetOfTiltSeriesReturns404WhenRuntimeProjectIsMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/TiltSeries/tiltseries/new-set",
+        json={
+            "exclusions": {},
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastCreateNewSetOfTiltSeriesCall is None
+
+
 def test_ListCtftomoSeriesUsesProjectDbRow(projectClient, fakeProjectService):
     response = projectClient.get(
         "/projects/1/protocols/2/outputs/out/ctftomo"
