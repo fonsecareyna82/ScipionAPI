@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -680,7 +681,7 @@ def test_BuildProtocolOutputThumbnailReturnsNegativeCacheWithoutResolvingOutput(
 
     pngCachePath = tmp_path / "protocol_10_outputVol_128_v1.png"
     negativeCachePath = tmp_path / "protocol_10_outputVol_128_v1.missing.json"
-    negativeCachePath.write_text(json.dumps({"createdAt": time.time(), "outputClassName": "SetOfParticles", "error": "Thumbnail not available"}), encoding="utf-8")
+    negativeCachePath.write_text(json.dumps({"outputClassName": "SetOfParticles", "error": "Thumbnail not available"}), encoding="utf-8")
 
     monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: pngCachePath)
     monkeypatch.setattr(service, "_getProtocolOutputNegativeCachePath", lambda protocolId, outputName, size: negativeCachePath)
@@ -704,5 +705,48 @@ def test_BuildProtocolOutputThumbnailReturnsNegativeCacheWithoutResolvingOutput(
         "exists": False,
         "error": "Thumbnail not available",
     }
+
+
+def test_BuildProtocolOutputThumbnailCachesMissingRenderedPreview(service, monkeypatch, tmp_path):
+    output = FakeOutput(className="SetOfParticles", size=5)
+    protocol = FakeProtocol(10, label="Prot 10", status="finished", outputs=[("outputParticles", output)])
+    service.currentProject._protocols = {10: protocol}
+
+    pngCachePath = tmp_path / "protocol_10_outputParticles_128_v1.png"
+    negativeCachePath = tmp_path / "protocol_10_outputParticles_128_v1.missing.json"
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: pngCachePath)
+    monkeypatch.setattr(service, "_getProtocolOutputNegativeCachePath", lambda protocolId, outputName, size: negativeCachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: False)
+    monkeypatch.setattr(service, "_renderProtocolPreviewImage", lambda *args, **kwargs: None)
+
+    firstResult = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputParticles", force=False, size=128)
+
+    assert firstResult["exists"] is False
+    assert json.loads(negativeCachePath.read_text(encoding="utf-8")) == {
+        "outputClassName": "SetOfParticles",
+        "error": "Thumbnail not available",
+    }
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("The second request must use the negative cache")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    secondResult = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputParticles", force=False, size=128)
+
+    assert secondResult == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputParticles",
+        "outputClassName": "SetOfParticles",
+        "absolutePath": None,
+        "cached": True,
+        "exists": False,
+        "error": "Thumbnail not available",
+    }
+
+
 
 
