@@ -1392,8 +1392,6 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     )
     monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
-    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
-                        lambda **kwargs: {"dependencies": 1, "inputRefsSaved": 1})
     monkeypatch.setattr(
                         service,
                         "syncPostgresqlRuntimeProtocolInputsAndDependencies",
