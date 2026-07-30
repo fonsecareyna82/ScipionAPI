@@ -1291,55 +1291,6 @@ class ProjectService:
         value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
-    def syncPostgresqlRuntimeProtocolStatus(
-            self,
-            mapper,
-            projectId: int,
-            protocolId,
-    ):
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
-
-        return runtimeProtocolStatusSyncService.syncProtocolStatus(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=scipionProtocolId,
-            protocol=protocol,
-            buildProtocolContextCallback=self._buildProtocolContext,
-        )
-
-    def syncPostgresqlRuntimeProtocolStatusFromRunDb(
-            self,
-            mapper,
-            projectId: int,
-            protocolId,
-    ) -> dict:
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
-
-        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
-
-        return runtimeProtocolStatusSyncService.syncProtocolStatusFromRunDb(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=scipionProtocolId,
-            protocol=protocol,
-            getCurrentProjectPathCallback=self._getCurrentProjectPath,
-            syncRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-        )
-
     def _preserveStoredProtocolParamsInRuntimeContext(
             self,
             protocolContext: Dict[str, Any],
@@ -2816,20 +2767,6 @@ class ProjectService:
 
         return {"success": True}
 
-    def syncActivePostgresqlRuntimeProtocolStatuses(
-            self,
-            mapper,
-            projectId: int,
-    ) -> dict:
-        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
-
-        return runtimeProtocolStatusSyncService.syncActivePostgresqlRuntimeProtocolStatuses(
-            mapper=mapper,
-            projectId=projectId,
-            syncRuntimeProtocolStatusFromRunDbCallback=self.syncPostgresqlRuntimeProtocolStatusFromRunDb,
-            syncRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-        )
-
     def getProjectById(
             self,
             mapper: PostgresqlFlatMapper,
@@ -2841,7 +2778,6 @@ class ProjectService:
             failOnConsistencyError: bool = False,
             loadWorkflowFromPostgresql: bool = False,
             usePostgresqlRuntimeProject: bool = False,
-            syncRuntimeStatuses: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2857,101 +2793,13 @@ class ProjectService:
             usePostgresqlRuntimeProject
         )
 
-        postgresqlRuntimeStatusSync = None
-
-        def syncRuntimeStatusesIfNeeded():
-            nonlocal postgresqlRuntimeStatusSync
-
-            if not usingPostgresqlRuntimeProject:
-                return False
-
-            if not refresh:
-                return False
-
-            try:
-                postgresqlRuntimeStatusSync = self.syncActivePostgresqlRuntimeProtocolStatuses(
-                    mapper=mapper,
-                    projectId=projectId,
-                )
-
-                if postgresqlRuntimeStatusSync.get("updated"):
-                    logger.info(
-                        "Refreshed PostgreSQL runtime protocol statuses while loading project. "
-                        "projectId=%s report=%s",
-                        projectId,
-                        postgresqlRuntimeStatusSync,
-                    )
-                    return True
-
-                return False
-
-            except Exception as e:
-                try:
-                    mapper.db.conn.rollback()
-                except Exception:
-                    logger.exception(
-                        "Failed to rollback PostgreSQL connection after runtime "
-                        "status synchronization error. projectId=%s",
-                        projectId,
-                    )
-                logger.exception(
-                    "Failed to refresh PostgreSQL runtime protocol statuses while loading project. "
-                    "projectId=%s",
-                    projectId,
-                )
-
-                postgresqlRuntimeStatusSync = {
-                    "checked": 0,
-                    "updated": [],
-                    "unchanged": [],
-                    "errors": [{
-                        "error": str(e),
-                    }],
-                }
-
-                return False
-
         if loadWorkflowFromPostgresql and not validateConsistency:
-            needsRuntimeProject = usingPostgresqlRuntimeProject and syncRuntimeStatuses
-
-            if needsRuntimeProject:
-                self._loadPostgresqlRuntimeProject(
-                    mapper=mapper,
-                    projectId=projectId,
-                    projectPath=dbProj["name"],
-                )
-
-                if syncRuntimeStatuses:
-                    syncRuntimeStatusesIfNeeded()
-
-            project = self.loadProjectFromPostgresql(
-                dbProj=dbProj,
-                mapper=mapper,
-            )
-
+            project = self.loadProjectFromPostgresql(dbProj=dbProj, mapper=mapper)
         else:
-            project = self.loadProject(
-                dbProj,
-                mapper,
-                refresh=refresh,
-                checkPid=checkPid,
-                syncPostgresqlGraph=False,
-            )
+            project = self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid, syncPostgresqlGraph=False)
 
             if usingPostgresqlRuntimeProject:
-                self._replaceCurrentProjectWithPostgresqlProject(
-                    mapper=mapper,
-                    projectId=projectId,
-                )
-
-                statusChanged = syncRuntimeStatusesIfNeeded()
-
-                if statusChanged:
-                    # Return a PostgreSQL payload with the refreshed statuses.
-                    project = self.loadProjectFromPostgresql(
-                        dbProj=dbProj,
-                        mapper=mapper,
-                    )
+                self._replaceCurrentProjectWithPostgresqlProject(mapper=mapper, projectId=projectId)
 
         if validateConsistency:
             try:
@@ -2997,9 +2845,6 @@ class ProjectService:
                     "ok": False,
                     "error": str(e),
                 }
-
-        if postgresqlRuntimeStatusSync is not None and isinstance(project, dict):
-            project["postgresqlRuntimeStatusSync"] = postgresqlRuntimeStatusSync
 
         return project
 
