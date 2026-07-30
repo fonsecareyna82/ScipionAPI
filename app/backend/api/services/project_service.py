@@ -2960,50 +2960,27 @@ class ProjectService:
     def loadProjectForThumbnails(
             self,
             dbProj: dict,
-            mapper: Optional[
-                PostgresqlFlatMapper
-            ] = None,
+            mapper: PostgresqlFlatMapper,
     ):
-        projPath = Path(
+        """
+        Load the project runtime required by thumbnail operations.
+
+        Thumbnail endpoints are PostgreSQL-only and must never load
+        project.sqlite.
+        """
+        projectPath = Path(
             dbProj["name"]
         )
 
-        legacyProject = ScipionProject(
-            pyworkflow.Config.getDomain(),
-            str(projPath),
-        )
-
-        legacyDbPath = Path(
-            legacyProject.getDbPath()
-        )
-
-        if legacyDbPath.is_file():
-            self.currentProject = (
-                legacyProject
-            )
-
-            self.currentProject.load(
-                dbPath=str(
-                    legacyDbPath
-                )
-            )
-
-            return self.currentProject
-
         if mapper is None:
             raise RuntimeError(
-                "Cannot load thumbnail project context: "
-                "project.sqlite is missing and no "
-                "PostgreSQL mapper was provided. "
-                "projectPath=%s"
-                % projPath
+                "Cannot load PostgreSQL thumbnail "
+                "project context: PostgreSQL mapper "
+                "is required. projectPath=%s"
+                % projectPath
             )
 
-        projectId = (
-            self._toPersistedOutputInt(
-                dbProj.get("id")
-            )
-        )
+        projectId = self._toPersistedOutputInt(dbProj.get("id"))
 
         if projectId is None:
             raise RuntimeError(
@@ -3011,15 +2988,11 @@ class ProjectService:
                 "project context: project id is missing."
             )
 
-        return (
-            self._loadPostgresqlRuntimeProject(
+        return self._loadPostgresqlRuntimeProject(
                 mapper=mapper,
                 projectId=projectId,
                 projectPath=str(
-                    projPath
-                ),
-            )
-        )
+                    projectPath),)
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
