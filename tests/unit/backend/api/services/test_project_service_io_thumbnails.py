@@ -311,7 +311,7 @@ def test_OutputPreviewResolvesPostgresqlProtocolId(
         "outputPath": str(outputFile),
         "objMgr": {"manager": "fresh"},
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_BuildProtocolThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -365,7 +365,7 @@ def test_BuildProtocolThumbnailResolvesPostgresqlProtocolId(
             "outputName": "outputA",
         }
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_BuildProjectThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -436,7 +436,7 @@ def test_BuildProtocolOutputThumbnailResolvesPostgresqlProtocolId(
             "size": 256,
         }
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 501, "501")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 501)
 
 
 def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -693,7 +693,9 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
     monkeypatch.setattr(
         service,
         "loadProjectForThumbnails",
-        lambda dbProj: service.currentProject,
+        lambda dbProj, mapper=None: (
+            service.currentProject
+        ),
     )
 
     buildCalls = []
@@ -772,7 +774,7 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
         }
     ]
 
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
@@ -857,8 +859,8 @@ def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
         "protocolIds": ["500", "501"],
     }
 
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
-    assert mapper.db.fetchCalls[1]["params"] == (1, 501, "501")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
+    assert mapper.db.fetchCalls[1]["params"] == (1, 501)
 
 
 def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
@@ -973,7 +975,6 @@ def test_LoadProjectForThumbnailsUsesPostgresqlWhenProjectDbIsMissing(
         "projectPath": str(
             projectPath
         ),
-        "enableWriteFallback": False,
     }]
 
 

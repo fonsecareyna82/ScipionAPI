@@ -278,7 +278,7 @@ def test_BuildWizardReadyProtocolResolvesPostgresqlProtocolId(
             "projectId": 1,
             "protocol": protocol,
             "params": {
-                "iterations": "7",
+                "iterations": 7,
             },
         }
     ]

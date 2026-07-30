@@ -728,10 +728,18 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
         "ScipionSetPostgresqlMapper",
         FakeScipionSetPostgresqlMapper,
     )
+    outputPersistenceServiceModule = (
+        importlib.import_module(
+            "app.backend.runtime."
+            "protocol_output_persistence_service"
+        )
+    )
+
     monkeypatch.setattr(
-        service,
-        "_resolvePostgresqlProtocolDbId",
-        lambda mapper, projectId, protocolId: 654,
+        outputPersistenceServiceModule
+        .ProtocolIdentityResolver,
+        "resolvePostgresqlProtocolDbId",
+        lambda self, protocolId: 654,
     )
 
     associatedTs = FakeAssociatedTiltSeries()

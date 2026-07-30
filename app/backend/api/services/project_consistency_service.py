@@ -36,7 +36,9 @@ from pyworkflow.protocol.params import PointerParam, MultiPointerParam, Relation
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
-
+from app.backend.runtime.protocol_step_persistence_service import (
+    RuntimeProtocolStepPersistenceService,
+)
 
 if TYPE_CHECKING:
     from app.backend.api.services.project_service import ProjectService
@@ -458,6 +460,7 @@ class ProjectConsistencyService:
         runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
         runtimeInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
         runtimeParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -523,7 +526,7 @@ class ProjectConsistencyService:
                 runtimeStepsByProtocolId.setdefault(protocolId, {})
 
                 try:
-                    for stepPayload in self._buildProtocolStepsForPostgresql(protocol):
+                    for stepPayload in runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(protocol):
                         stepIndex = self.toOptionalInt(stepPayload.get("index"))
                         if stepIndex is None:
                             continue

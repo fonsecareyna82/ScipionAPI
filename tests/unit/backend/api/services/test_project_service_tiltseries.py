@@ -826,10 +826,18 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
     )
     monkeypatch.setattr(projectServiceModule, "SetOfTiltSeries", FakeSetOfTiltSeriesFactory)
     monkeypatch.setattr(projectServiceModule, "TiltSeries", FakeCreatedTiltSeries)
+    outputPersistenceServiceModule = (
+        importlib.import_module(
+            "app.backend.runtime."
+            "protocol_output_persistence_service"
+        )
+    )
+
     monkeypatch.setattr(
-        service,
-        "_resolvePostgresqlProtocolDbId",
-        lambda mapper, projectId, protocolId: 321,
+        outputPersistenceServiceModule
+        .ProtocolIdentityResolver,
+        "resolvePostgresqlProtocolDbId",
+        lambda self, protocolId: 321,
     )
 
     mapper = FakeMapper()
