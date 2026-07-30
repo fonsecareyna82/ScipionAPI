@@ -577,7 +577,7 @@ def test_SaveProtocolWrapsUnexpectedException(
 
 
 def test_SuggestionProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.get("/projects/1/protocols/10/suggestions/next")
 
@@ -1221,10 +1221,10 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
     )
 
 
-def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+def test_RestartProtocolAllIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="restart protocol subtree succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
     response = projectClient.post(
@@ -1232,11 +1232,13 @@ def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakePro
         "?usePostgresqlRuntimeProject=false"
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["restart protocol subtree succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastRestartProtocolAllCall == {
@@ -1245,11 +1247,13 @@ def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakePro
         "protocolId": 10,
     }
 
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
-def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+
+def test_ResetProtocolFromIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="reset protocol from node succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
     response = projectClient.post(
@@ -1257,11 +1261,13 @@ def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProj
         "?usePostgresqlRuntimeProject=false"
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["reset protocol from node succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastResetProtocolFromCall == {
@@ -1269,6 +1275,8 @@ def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProj
         "projectId": 1,
         "protocolId": 10,
     }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolWrapsHttpException(projectClient, fakeProjectService):
@@ -1317,10 +1325,10 @@ def test_StopProtocolWrapsUnexpectedException(
     }
 
 
-def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+def test_StopProtocolIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="stop protocol succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
     response = projectClient.post(
@@ -1334,11 +1342,13 @@ def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectSe
         },
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["stop protocol succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastStopProtocolCall == {
@@ -1346,6 +1356,8 @@ def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectSe
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolRejectsMissingProtocolIds(projectClient):
