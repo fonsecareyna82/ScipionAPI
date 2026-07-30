@@ -50,7 +50,9 @@ class FakeProtocol:
 
 class FakeDb:
     def __init__(self, runtimeProtocolIdByDbId=None):
-        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+        self.runtimeProtocolIdByDbId = (
+            runtimeProtocolIdByDbId or {}
+        )
         self.fetchCalls = []
 
     def fetchOne(self, query, params):
@@ -59,22 +61,52 @@ class FakeDb:
             "params": params,
         })
 
-        if len(params) < 3:
+        if len(params) != 2:
             return None
 
-        protocolDbId = params[1]
-        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
-        if runtimeProtocolId is None:
+        projectId, protocolIdCandidate = params
+        queryText = " ".join(str(query).split())
+
+        if "FROM protocols" not in queryText:
             return None
 
-        return {
-            "protocolId": runtimeProtocolId,
-        }
+        if "AND id = %s" in queryText:
+            try:
+                protocolDbId = int(protocolIdCandidate)
+            except (TypeError, ValueError):
+                return None
+
+            runtimeProtocolId = self.runtimeProtocolIdByDbId.get(
+                protocolDbId
+            )
+
+            if runtimeProtocolId is None:
+                return None
+
+            return {
+                "id": protocolDbId,
+                "protocolId": str(runtimeProtocolId),
+            }
+
+        if 'AND "protocolId" = %s' in queryText:
+            runtimeProtocolIdText = str(protocolIdCandidate)
+
+            for protocolDbId, runtimeProtocolId in (
+                    self.runtimeProtocolIdByDbId.items()
+            ):
+                if str(runtimeProtocolId) == runtimeProtocolIdText:
+                    return {
+                        "id": int(protocolDbId),
+                        "protocolId": runtimeProtocolIdText,
+                    }
+
+        return None
 
 
 class FakeMapper:
     def __init__(self, runtimeProtocolIdByDbId=None):
         self.db = FakeDb(runtimeProtocolIdByDbId=runtimeProtocolIdByDbId)
+
 
 class FakeCurrentProject:
     # fakeCurrentProject
