@@ -743,6 +743,20 @@ class ThumbnailService:
             )
         )
 
+        cachePath = self._getProtocolOutputCachePath(protocolId=int(protocolId), outputName=outputName, size=int(size))
+
+        if not force and self._isValidCachedImage(cachePath):
+            return {
+                "protocolId": int(protocolId),
+                "protocolLabel": self._getProtocolLabel(protocol),
+                "status": self._getProtocolStatus(protocol),
+                "outputName": outputName,
+                "outputClassName": None,
+                "absolutePath": str(cachePath),
+                "cached": True,
+                "exists": True,
+            }
+
         if output is None:
             return {
                 "protocolId": int(
