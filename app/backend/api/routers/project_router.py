@@ -535,7 +535,6 @@ def _normalizeErrors(detail: Any) -> List[str]:
 def launchProtocol(
     projectId: int,
     request: ProtocolRequest,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -544,25 +543,12 @@ def launchProtocol(
     Launch, restart, schedule, or stop a protocol in a given project.
     """
     try:
-        if usePostgresqlRuntimeProject:
-            project = (
-                service
-                .loadPostgresqlRuntimeProjectForMutation(
-                    mapper=mapper,
-                    projectId=projectId,
-                    currentUser=currentUser,
-                )
-            )
 
-        else:
-            project = service.getProjectById(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-                refresh=True,
-                checkPid=False,
-                usePostgresqlRuntimeProject=False,
-            )
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -615,7 +601,6 @@ def launchProtocol(
 async def saveProtocol(
     projectId: int,
     request: ProtocolRequest,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -624,25 +609,11 @@ async def saveProtocol(
     Save protocol parameters in a given project.
     """
     try:
-        if usePostgresqlRuntimeProject:
-            project = (
-                service
-                .loadPostgresqlRuntimeProjectForMutation(
-                    mapper=mapper,
-                    projectId=projectId,
-                    currentUser=currentUser,
-                )
-            )
-        else:
-            project = service.getProjectById(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-                refresh=True,
-                checkPid=False,
-                loadWorkflowFromPostgresql=False,
-                usePostgresqlRuntimeProject=False,
-            )
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -660,7 +631,7 @@ async def saveProtocol(
 
         workflow = []
 
-        if not errors and usePostgresqlRuntimeProject:
+        if not errors:
             refreshedProject = service.getProjectById(
                 mapper,
                 projectId,
@@ -668,7 +639,6 @@ async def saveProtocol(
                 refresh=False,
                 checkPid=False,
                 loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
             )
 
             if refreshedProject:
@@ -705,29 +675,14 @@ def suggestionProtocol(
     projectId: int,
     protocolId: int,
     currentUser=Depends(getCurrentUser),
-    usePostgresqlRuntimeProject: bool = Query(True),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = (
-            service
-            .loadPostgresqlRuntimeProjectForMutation(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -770,9 +725,6 @@ def renameProtocol(
         projectId: int,
         protocolId: int,
         payload: ProtocolRenameIn,
-        usePostgresqlRuntimeProject: bool = Query(
-            True
-        ),
         currentUser=Depends(
             getCurrentUser
         ),
@@ -784,26 +736,11 @@ def renameProtocol(
         ),
 ):
     try:
-        if usePostgresqlRuntimeProject:
-            project = (
-                service
-                .loadPostgresqlRuntimeProjectForMutation(
-                    mapper=mapper,
-                    projectId=projectId,
-                    currentUser=currentUser,
-                )
-            )
-        else:
-            project = service.getProjectById(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-                refresh=True,
-                checkPid=False,
-                loadWorkflowFromPostgresql=False,
-                usePostgresqlRuntimeProject=False,
-            )
-
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=(
@@ -935,30 +872,15 @@ def renameProtocol(
 def duplicateProtocol(
     projectId: int,
     payload: DuplicatePayload = None,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = (
-            service
-            .loadPostgresqlRuntimeProjectForMutation(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -980,19 +902,17 @@ def duplicateProtocol(
         result = service.duplicateProtocol(mapper, projectId, items) or {}
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
+        refreshedProject = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
 
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
         # Keep 201 on success, but still return unified schema
         response = {
             "status": result.get("status", 0),
@@ -1023,31 +943,16 @@ def duplicateProtocol(
 def deleteProtocol(
     projectId: int,
     payload: DeletePayload = None,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        if usePostgresqlRuntimeProject:
-            project = (
-                service
-                .loadPostgresqlRuntimeProjectForMutation(
-                    mapper=mapper,
-                    projectId=projectId,
-                    currentUser=currentUser,
-                )
-            )
-        else:
-            project = service.getProjectById(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-                refresh=True,
-                checkPid=False,
-                loadWorkflowFromPostgresql=False,
-                usePostgresqlRuntimeProject=False,
-            )
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1068,19 +973,17 @@ def deleteProtocol(
         result = service.deleteProtocol(mapper, projectId, protocolIds) or {}
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
+        refreshedProject = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
 
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
             "status": result.get(
@@ -1134,30 +1037,15 @@ def deleteProtocol(
 def restartProtocolAll(
     projectId: int,
     protocolId: int,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = (
-            service
-            .loadPostgresqlRuntimeProjectForMutation(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1171,43 +1059,25 @@ def restartProtocolAll(
 
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
-
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
-
-            response = {
-                "status": result.get("status", 0),
-                "errors": result.get("errors", []),
-                "workflow": workflow,
-            }
-
-            return _appendProtocolSyncCounts(response, result)
-
-        syncResult = service.syncProjectGraphAfterMutation(
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="restart protocol subtree",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1233,30 +1103,15 @@ def restartProtocolAll(
 def continueProtocolAll(
     projectId: int,
     protocolId: int,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = (
-            service
-            .loadPostgresqlRuntimeProjectForMutation(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1267,43 +1122,25 @@ def continueProtocolAll(
         result = service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
-
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
-
-            response = {
-                "status": result.get("status", 0),
-                "errors": result.get("errors", []),
-                "workflow": workflow,
-            }
-
-            return _appendProtocolSyncCounts(response, result)
-
-        syncResult = service.syncProjectGraphAfterMutation(
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="continue protocol subtree",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1325,31 +1162,15 @@ def continueProtocolAll(
 def resetProtocolFrom(
     projectId: int,
     protocolId: int,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = (
-            service
-            .loadPostgresqlRuntimeProjectForMutation(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-        )
-
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1361,43 +1182,25 @@ def resetProtocolFrom(
 
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
-
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
-
-            response = {
-                "status": result.get("status", 0),
-                "errors": result.get("errors", []),
-                "workflow": workflow,
-            }
-
-            return _appendProtocolSyncCounts(response, result)
-
-        syncResult = service.syncProjectGraphAfterMutation(
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="reset protocol from node",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1415,27 +1218,15 @@ def resetProtocolFrom(
 def stopProtocol(
     projectId: int,
     payload: DeletePayload = None,
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    if usePostgresqlRuntimeProject:
-        project = service.loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-        )
-    else:
-        project = service.getProjectById(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=True,
-            checkPid=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
-        )
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1462,43 +1253,25 @@ def stopProtocol(
 
         workflow = []
 
-        if usePostgresqlRuntimeProject:
-            refreshedProject = service.getProjectById(
-                mapper,
-                projectId,
-                currentUser,
-                refresh=False,
-                checkPid=False,
-                loadWorkflowFromPostgresql=True,
-                usePostgresqlRuntimeProject=True,
-            )
-
-            if refreshedProject:
-                workflow = refreshedProject.get("protocols", [])
-
-            response = {
-                "status": result.get("status", 0),
-                "errors": result.get("errors", []),
-                "workflow": workflow,
-            }
-
-            return _appendProtocolSyncCounts(response, result)
-
-        syncResult = service.syncProjectGraphAfterMutation(
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="stop protocol",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+            loadWorkflowFromPostgresql=True,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
