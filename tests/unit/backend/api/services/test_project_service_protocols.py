@@ -933,56 +933,84 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
         checkPid=True,
     )
 
-    assert result == {
-        "protocols": 1,
-        "dependencies": 0,
-        "inputRefs": 0,
-        "steps": 0,
-        "stepsProtocols": 0,
-        "stepErrors": [],
-        "outputsDeclared": 5,
-        "outputs": 2,
-        "outputsMissing": 3,
-        "outputsByKind": {
-            "flat_set": 1,
-            "tree": 1,
-        },
-        "outputMissing": [
-            {
-                "protocolId": "10",
-                "outputName": "unsupportedOutput",
-                "outputClassName": "UnsupportedOutput",
-                "reason": "unsupported_output_type",
-            },
-            {
-                "protocolId": "10",
-                "outputName": "badOutput",
-                "outputClassName": "SetOfBad",
-                "reason": "persistence_error",
-                "error": "boom",
-            },
-            {
-                "protocolId": "10",
-                "outputName": "orphanOutput",
-                "outputClassName": "SetOfOrphan",
-                "reason": "not_persisted",
-            },
-        ],
-        "outputErrors": [
-            {
-                "protocolId": "10",
-                "outputName": "unsupportedOutput",
-                "outputClassName": "UnsupportedOutput",
-                "reason": "unsupported_output_type",
-            },
-            {
-                "protocolId": "10",
-                "outputName": "badOutput",
-                "outputClassName": "SetOfBad",
-                "error": "boom",
-            },
-        ],
+    assert result["protocols"] == 1
+    assert result["dependencies"] == 0
+    assert result["inputRefs"] == 0
+
+    assert result["steps"] == 0
+    assert result["stepsProtocols"] == 0
+    assert result["stepErrors"] == []
+
+    assert result["outputsDeclared"] == 5
+    assert result["outputs"] == 2
+    assert result["outputsRemoved"] == 0
+    assert result["removedOutputs"] == []
+    assert result["outputsMissing"] == 3
+
+    assert result["outputsByKind"] == {
+        "flat_set": 1,
+        "tree": 1,
     }
+
+    assert result["objects"] == 2
+    assert result["sets"] == 1
+    assert result["setItems"] == 0
+
+    assert result["outputMissing"] == [
+        {
+            "protocolId": "10",
+            "outputName": "unsupportedOutput",
+            "outputClassName": "UnsupportedOutput",
+            "reason": "unsupported_output_type",
+        },
+        {
+            "protocolId": "10",
+            "outputName": "badOutput",
+            "outputClassName": "SetOfBad",
+            "reason": "persistence_error",
+            "error": "boom",
+        },
+        {
+            "protocolId": "10",
+            "outputName": "orphanOutput",
+            "outputClassName": "SetOfOrphan",
+            "reason": "not_persisted",
+        },
+    ]
+
+    assert result["outputErrors"] == [
+        {
+            "protocolId": "10",
+            "outputName": "unsupportedOutput",
+            "outputClassName": "UnsupportedOutput",
+            "reason": "unsupported_output_type",
+        },
+        {
+            "protocolId": "10",
+            "outputName": "badOutput",
+            "outputClassName": "SetOfBad",
+            "error": "boom",
+        },
+    ]
+
+    assert result["outputPreparationWarnings"] == []
+    assert result["purgedProtocols"] == 0
+
+    assert result["complete"] is False
+    assert len(result["fatalErrors"]) == 5
+    assert {
+        error["kind"]
+        for error in result["fatalErrors"]
+    } == {
+        "output",
+    }
+
+    assert result["relationsDeclared"] == 0
+    assert result["relations"] == 0
+    assert result["relationsStale"] == 0
+    assert result["staleRelations"] == []
+    assert result["relationMissing"] == []
+    assert result["relationErrors"] == []
 
     assert mapper.savedProtocolContexts == [
         {
