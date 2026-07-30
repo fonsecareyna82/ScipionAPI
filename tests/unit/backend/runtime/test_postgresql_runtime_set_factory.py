@@ -60,40 +60,8 @@ class ExampleSet(Set):
     def getSamplingRate(self):
         return self._samplingRate.get()
 
-
-class ExampleCreatableSet(ExampleSet):
-    @classmethod
-    def create(
-            cls,
-            outputPath,
-            prefix=None,
-            suffix=None,
-            ext=None,
-            **kwargs,
-    ):
-        createdSet = cls()
-        createdSet.creationArgs = {
-            "outputPath": outputPath,
-            "prefix": prefix,
-            "suffix": suffix,
-            "ext": ext,
-            "kwargs": kwargs,
-        }
-        return createdSet
-
-    def createCopy(
-            self,
-            outputPath,
-            prefix=None,
-            suffix=None,
-            ext=None,
-    ):
-        return self.create(
-            outputPath,
-            prefix=prefix,
-            suffix=suffix,
-            ext=ext,
-        )
+    def hasAlignment(self):
+        return False
 
 
 class ExampleLinkedSet(Set):
@@ -784,47 +752,37 @@ def test_RuntimeSetExposesNativeClassForSetConstruction():
     assert not isinstance(newSet, PostgresqlRuntimeSetMixin)
 
 
-def test_RuntimeSetCreateCopyBuildsNativeWritableSet():
-    parent = FakeParent()
-    parent.setObjId(5)
+def test_RefreshRuntimePropertiesSkipsCallableAliases():
+    _, runtimeSet = buildRuntimeSet()
 
-    runtimeSet = PostgresqlRuntimeSetFactory().build(
-        db=FakeDb(),
-        parent=parent,
-        outputName="outputParticles",
-        outputInfo={
-            "setId": 31,
-            "objectId": 900,
-            "runtimeObjectId": 44,
-            "className": "ExampleCreatableSet",
-            "itemClassName": "ExampleItem",
-            "itemsCount": 1,
-            "properties": {},
-        },
-        classes={
-            "ExampleCreatableSet": ExampleCreatableSet,
-            "ExampleItem": ExampleItem,
-        },
+    class FakePropertyMapper:
+        def getPropertyKeys(self):
+            return [
+                "_samplingRate",
+                "hasAlignment",
+            ]
+
+        def getProperty(self, propertyName):
+            return {
+                "_samplingRate": 2.5,
+                "hasAlignment": True,
+            }[propertyName]
+
+    runtimeSet._refreshPostgresqlRuntimeProperties(
+        FakePropertyMapper()
     )
 
-    copiedSet = runtimeSet.createCopy(
-        "/tmp/generated-output",
-        prefix="filtered",
-        ext="sqlite",
-    )
-
-    assert isinstance(runtimeSet, PostgresqlRuntimeSetMixin)
-    assert runtimeSet.getClass() is ExampleCreatableSet
-
-    assert type(copiedSet) is ExampleCreatableSet
-    assert not isinstance(copiedSet, PostgresqlRuntimeSetMixin)
-    assert not hasattr(copiedSet, "_postgresqlMapperFactory")
-    assert copiedSet.creationArgs == {
-        "outputPath": "/tmp/generated-output",
-        "prefix": "filtered",
-        "suffix": None,
-        "ext": "sqlite",
-        "kwargs": {},
+    assert runtimeSet.getSamplingRate() == 2.5
+    assert runtimeSet.hasAlignment() is False
+    assert runtimeSet.getPostgresqlRuntimeProperties() == {
+        "_samplingRate": 2.5,
+        "_streamState": Set.STREAM_CLOSED,
+        "_mapperPath": [
+            "/legacy/output.sqlite",
+            "",
+        ],
+        "fileName": "/legacy/output.sqlite",
+        "hasAlignment": True,
     }
 
 

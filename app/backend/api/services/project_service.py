@@ -1197,6 +1197,184 @@ class ProjectService:
             "protocolDbId": int(protocolDbId),
         }
 
+    def _createWritableGeneratedPostgresqlSet(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            protocol,
+            outputName: str,
+            sourceSet,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            raise RuntimeError(
+                "Generated Sets require a PostgreSQL mapper"
+            )
+
+        db = getattr(mapper, "db", None)
+
+        if db is None:
+            raise RuntimeError(
+                "Generated Sets require a PostgreSQL database"
+            )
+
+        protocolDbId = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        ).resolvePostgresqlProtocolDbId(protocolId)
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
+            )
+
+        allocator = getattr(
+            mapper,
+            "allocateProjectObjectId",
+            None,
+        )
+
+        if not callable(allocator):
+            raise RuntimeError(
+                "PostgreSQL mapper does not expose allocateProjectObjectId()"
+            )
+
+        nativeSetClass = sourceSet.getClass()
+
+        if not isinstance(nativeSetClass, type):
+            raise RuntimeError(
+                f"Could not resolve native Set class for '{outputName}'"
+            )
+
+        seedSet = nativeSetClass()
+
+        copyInfo = getattr(
+            seedSet,
+            "copyInfo",
+            None,
+        )
+
+        if callable(copyInfo):
+            copyInfo(sourceSet)
+        else:
+            seedSet.copy(
+                sourceSet,
+                copyId=False,
+            )
+
+        runtimeObjectId = int(
+            allocator(int(projectId))
+        )
+
+        seedSet.setObjId(runtimeObjectId)
+        seedSet.setName(outputName)
+        seedSet.setObjLabel(outputName)
+
+        from app.backend.mapper.scipion_set_mapper import (
+            ScipionSetPostgresqlMapper,
+        )
+        from app.backend.runtime.postgresql_runtime_set_factory import (
+            PostgresqlRuntimeSetFactory,
+        )
+
+        setMapper = ScipionSetPostgresqlMapper(db)
+
+        reservation = setMapper.reserveRuntimeSet(
+            projectId=int(projectId),
+            protocolDbId=int(protocolDbId),
+            outputName=outputName,
+            scipionSet=seedSet,
+            reservationToken=str(uuid4()),
+        )
+
+        runtimeSetFactory = PostgresqlRuntimeSetFactory()
+
+        try:
+            outputInfo = dict(reservation)
+            outputInfo["exists"] = True
+            outputInfo["itemsCount"] = 0
+
+            outputSet = runtimeSetFactory.build(
+                db=db,
+                parent=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+            )
+
+            outputSet.enablePostgresqlWrite()
+
+        except Exception:
+            setMapper.discardReservedRuntimeSet(
+                projectId=int(projectId),
+                protocolDbId=int(protocolDbId),
+                runtimeObjectId=runtimeObjectId,
+            )
+            raise
+
+        return {
+            "outputSet": outputSet,
+            "setMapper": setMapper,
+            "runtimeSetFactory": runtimeSetFactory,
+            "reservation": reservation,
+            "protocolDbId": int(protocolDbId),
+            "runtimeObjectId": runtimeObjectId,
+        }
+
+    def _cloneGeneratedNestedSet(self, sourceSet):
+        nativeSetClass = sourceSet.getClass()
+
+        if not isinstance(nativeSetClass, type):
+            raise RuntimeError(
+                "Could not resolve native nested Set class"
+            )
+
+        result = nativeSetClass()
+        result.copy(
+            sourceSet,
+            copyId=False,
+        )
+
+        return result
+
+    def _finalizeGeneratedPostgresqlSet(
+            self,
+            context: Dict[str, Any],
+            projectId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        return context["setMapper"].finalizeRuntimeSetOutput(
+            projectId=int(projectId),
+            protocolDbId=int(context["protocolDbId"]),
+            outputName=outputName,
+            scipionSet=context["outputSet"],
+        )
+
+    def _discardGeneratedPostgresqlSet(
+            self,
+            context: Optional[Dict[str, Any]],
+            projectId: int,
+    ) -> bool:
+        if not context:
+            return False
+
+        reservation = context.get("reservation") or {}
+        runtimeObjectId = reservation.get(
+            "runtimeObjectId",
+            context.get("runtimeObjectId"),
+        )
+
+        if runtimeObjectId is None:
+            return False
+
+        return bool(
+            context["setMapper"].discardReservedRuntimeSet(
+                projectId=int(projectId),
+                protocolDbId=int(context["protocolDbId"]),
+                runtimeObjectId=int(runtimeObjectId),
+            )
+        )
+
     def _storeGeneratedSetInPostgresql(
             self,
             mapper,
@@ -10568,19 +10746,6 @@ class ProjectService:
         restack: bool,
         mapper=None,
     ) -> Dict[str, Any]:
-        """
-        Create a new SetOfCTFTomoSeries applying per-series and per-tilt exclusions.
-
-        Exclusions schema:
-
-        {
-          "<tsId>": {
-            "excluded": bool,           # exclude entire tilt series
-            "tiltimages": [1, 5, 12],   # per-tilt indices (1-based)
-          },
-          ...
-        }
-        """
         protocol, inputSet = self._resolveOutputForCtftomoSeries(
             protocolId=protocolId,
             outputName=outputName,
@@ -10588,8 +10753,8 @@ class ProjectService:
             projectId=projectId,
         )
 
-        # Normalize exclusions keys to strings
         normalizedExclusions: Dict[str, Dict[str, Any]] = {}
+
         for key, value in (exclusions or {}).items():
             normalizedExclusions[str(key)] = value or {}
 
@@ -10600,81 +10765,152 @@ class ProjectService:
             protocol=protocol,
             outputPrefix="CTFTomoSeries",
         )
-        # New output name and set object
         newOutputName = outputIdentity["outputName"]
-        outputSet = inputSet.createCopy(protocol._getPath(), prefix=newOutputName, copyInfo=True)
-        createdCount = 0
-        for seriesIndex, ctfSeries in enumerate(inputSet.iterItems(iterate=False)):
-            tsId = ctfSeries.getTsId()
-            tsKey = str(tsId)
-            tsExcl = normalizedExclusions.get(tsKey, {})
-            seriesExcluded = bool(tsExcl.get("excluded", False))
-            rawTiltIndices = tsExcl.get("tiltimages") or []
-            newSeries = ctfSeries.clone()
-            newSeries.setEnabled(True)
 
-            if seriesExcluded:
-                continue
-
-            outputSet.append(newSeries)
-            createdCount += 1
-            outputSet.setSetOfTiltSeries(inputSet.getSetOfTiltSeries())
-            for ctfObj in ctfSeries.iterItems(iterate=False):
-                ctfEstItem = ctfObj.clone()
-                ctfEstItem.setEnabled(ctfObj.getIndex() not in rawTiltIndices)
-                newSeries.append(ctfEstItem)
-            try:
-                newSeries.write()
-                outputSet.update(newSeries)
-                outputSet.write()
-            except Exception:
-                logger.exception("Error storing Ctftomo series %s in new set %s", tsId, newOutputName,)
-                continue
-
-        if outputSet.isEmpty():
-            logger.info("No Ctftomo series were generated in new set '%s'", newOutputName)
-            return {
-                "status": "empty",
-                "outputName": newOutputName,
-                "createdSeries": 0,
-                "restack": bool(restack),
-                "message": "No output was generated because it cannot be empty",
-            }
-        postgresqlSync = None
-        postgresqlError = None
+        generatedSetContext = self._createWritableGeneratedPostgresqlSet(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputName=newOutputName,
+            sourceSet=inputSet,
+        )
+        outputSet = generatedSetContext["outputSet"]
+        finalized = False
 
         try:
-            protocol._defineOutputs(**{newOutputName: outputSet})
+            linkedTiltSeries = inputSet.getSetOfTiltSeries()
+
+            if linkedTiltSeries is not None:
+                outputSet.setSetOfTiltSeries(
+                    linkedTiltSeries
+                )
+
+            createdCount = 0
+
+            for ctfSeries in inputSet.iterItems(
+                    iterate=False
+            ):
+                tsId = ctfSeries.getTsId()
+                tsExclusion = normalizedExclusions.get(
+                    str(tsId),
+                    {},
+                )
+
+                if bool(tsExclusion.get("excluded", False)):
+                    continue
+
+                excludedTiltIndices = set()
+
+                for value in tsExclusion.get("tiltimages") or []:
+                    try:
+                        excludedTiltIndices.add(
+                            int(value)
+                        )
+                    except (TypeError, ValueError):
+                        continue
+
+                newSeries = self._cloneGeneratedNestedSet(
+                    ctfSeries
+                )
+                newSeries.setEnabled(True)
+                seriesAppended = False
+
+                try:
+                    outputSet.append(newSeries)
+                    seriesAppended = True
+
+                    for ctfObject in ctfSeries.iterItems(
+                            iterate=False
+                    ):
+                        newCtfObject = ctfObject.clone()
+                        newCtfObject.setEnabled(
+                            int(ctfObject.getIndex())
+                            not in excludedTiltIndices
+                        )
+                        newSeries.append(newCtfObject)
+
+                    outputSet.update(newSeries)
+                    createdCount += 1
+
+                except Exception:
+                    logger.exception(
+                        "Error storing CTF tomography series %s "
+                        "in generated PostgreSQL Set %s",
+                        tsId,
+                        newOutputName,
+                    )
+
+                    if seriesAppended:
+                        try:
+                            outputSet.remove(newSeries)
+                        except Exception:
+                            logger.exception(
+                                "Could not remove incomplete CTF "
+                                "tomography series %s from %s",
+                                tsId,
+                                newOutputName,
+                            )
+                            raise
+
+            if outputSet.isEmpty():
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
+                generatedSetContext = None
+
+                return {
+                    "status": "empty",
+                    "outputName": newOutputName,
+                    "createdSeries": 0,
+                    "restack": bool(restack),
+                    "message": (
+                        "No output was generated because "
+                        "it cannot be empty"
+                    ),
+                }
+
+            protocol._defineOutputs(
+                **{
+                    newOutputName: outputSet,
+                }
+            )
             protocol._store()
 
-            postgresqlStore = self._storeGeneratedSetInPostgresql(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=newOutputName,
-                scipionSet=outputSet,
-                contextLabel="CTFTomo",
+            postgresqlSync = (
+                self._finalizeGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                    outputName=newOutputName,
+                )
             )
-            postgresqlSync = postgresqlStore["postgresqlSync"]
-            postgresqlError = postgresqlStore["postgresqlError"]
+            finalized = True
+
+            logger.info(
+                "The new CTF tomography Set (%s) has been "
+                "created directly in PostgreSQL with %d series",
+                newOutputName,
+                createdCount,
+            )
+
+            return {
+                "status": 0,
+                "outputName": newOutputName,
+                "createdSeries": createdCount,
+                "restack": bool(restack),
+                "postgresqlSync": postgresqlSync,
+                "postgresqlError": None,
+            }
 
         except Exception:
-            logger.exception("Error attaching Ctftomo filtered set '%s' to protocol", newOutputName)
+            if not finalized:
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
 
-        logger.info(
-            "The new Ctftomo set (%s) has been created successfully with %d series",
-            newOutputName,
-            createdCount,
-        )
-
-        return {
-            "status": 0,
-            "outputName": newOutputName,
-            "createdSeries": createdCount,
-            "restack": bool(restack),
-            "postgresqlSync": postgresqlSync,
-            "postgresqlError": postgresqlError,
-        }
+            raise
 
     def _buildTiltSeriesPreviewCacheKey(
             self,
@@ -11134,17 +11370,26 @@ class ProjectService:
             outputPrefix="TiltSeries_",
         )
         newOutputName = outputIdentity["outputName"]
-        outputPath = os.path.join(protocol._getExtraPath(), newOutputName)
-
-        outputSet = SetOfTiltSeries.create(
-            protocol.getPath(),
-            suffix=outputIdentity["outputSuffix"],
+        outputPath = os.path.join(
+            protocol._getExtraPath(),
+            newOutputName,
         )
-        outputSet.copyInfo(inputSet)
-        outputSet.setDim(inputSet.getDim())
 
         if restack and not os.path.exists(outputPath):
             os.mkdir(outputPath)
+
+        generatedSetContext = (
+            self._createWritableGeneratedPostgresqlSet(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                outputName=newOutputName,
+                sourceSet=inputSet,
+            )
+        )
+        outputSet = generatedSetContext["outputSet"]
+        outputSet.setDim(inputSet.getDim())
 
         totalInputSeries = inputSet.getSize() if hasattr(inputSet, "getSize") else None
 
@@ -11275,7 +11520,6 @@ class ProjectService:
 
                 newTs.setDim(ts.getDim())
                 newTs.setAnglesCount(newTs.getSize())
-                newTs.write()
                 outputSet.update(newTs)
 
             except Exception:
@@ -11290,7 +11534,14 @@ class ProjectService:
 
         createdCount = outputSet.getSize()
         if not createdCount:
-            logger.info("No output was generated because it cannot be empty")
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+
+            logger.info(
+                "No output was generated because it cannot be empty"
+            )
             return {
                 "status": "empty",
                 "outputName": newOutputName,
@@ -11300,20 +11551,29 @@ class ProjectService:
                 "message": "No output was generated because it cannot be empty",
             }
 
-        outputSet.write()
-        protocol._defineOutputs(**{newOutputName: outputSet})
+        protocol._defineOutputs(
+            **{
+                newOutputName: outputSet,
+            }
+        )
         protocol._store()
 
-        postgresqlStore = self._storeGeneratedSetInPostgresql(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=newOutputName,
-            scipionSet=outputSet,
-            contextLabel="TiltSeries",
-        )
-        postgresqlSync = postgresqlStore["postgresqlSync"]
-        postgresqlError = postgresqlStore["postgresqlError"]
+        try:
+            postgresqlSync = (
+                self._finalizeGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                    outputName=newOutputName,
+                )
+            )
+        except Exception:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+            raise
+
+        postgresqlError = None
 
         logger.info("The new set (%s) has been created successfully", newOutputName)
 

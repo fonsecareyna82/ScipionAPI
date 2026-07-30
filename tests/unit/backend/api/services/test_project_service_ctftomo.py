@@ -213,8 +213,10 @@ class FakeCtftomoOutputSet:
     def getSetOfTiltSeries(self):
         return self._associatedTiltSeriesSet
 
-    def createCopy(self, protocolPath, prefix=None, copyInfo=True):
-        return FakeCtftomoOutputSet(seriesList=[], associatedTiltSeriesSet=self._associatedTiltSeriesSet)
+    def createCopy(self, *args, **kwargs):
+        raise AssertionError(
+            "Generated CTF tomography Sets must not use createCopy()"
+        )
 
     def append(self, item):
         self._seriesList.append(item)
@@ -1035,3 +1037,100 @@ def test_GetCtftomoSeriesViewsServiceRaisesPostgresqlUnavailableWithReaderReason
     assert exc.value.status_code == 404
     assert "ctftomo_series_item_not_found" in str(exc.value.detail)
     assert "TS_999" in str(exc.value.detail)
+
+
+def test_CreateNewSetOfCtftomoSeriesDoesNotCreateSqliteSet(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    associatedTiltSeries = FakeAssociatedTiltSeries()
+    inputSeries = FakeCtftomoSeries(
+        tsId="TS_001",
+        label="Series 1",
+        tiltSeries=associatedTiltSeries,
+        items=[],
+    )
+    inputSet = FakeCtftomoOutputSet(
+        seriesList=[inputSeries],
+        associatedTiltSeriesSet=associatedTiltSeries,
+    )
+    outputSet = FakeCtftomoOutputSet(
+        seriesList=[],
+        associatedTiltSeriesSet=associatedTiltSeries,
+    )
+    protocol = FakeProtocol(
+        "outputCtftomo",
+        inputSet,
+        tmp_path,
+    )
+    service.currentProject = FakeCurrentProject(protocol)
+
+    generatedContext = {
+        "outputSet": outputSet,
+    }
+    finalizedCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForCtftomoSeries",
+        lambda **kwargs: (
+            protocol,
+            inputSet,
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "CTFTomoSeries2",
+            "outputSuffix": "1",
+            "protocolDbId": 654,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        lambda **kwargs: generatedContext,
+    )
+    monkeypatch.setattr(
+        service,
+        "_cloneGeneratedNestedSet",
+        lambda sourceSet: sourceSet.clone(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        lambda **kwargs: finalizedCalls.append(kwargs) or {
+            "stored": True,
+            "outputName": "CTFTomoSeries2",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        lambda **kwargs: True,
+    )
+
+    result = service.createNewSetOfCtftomoSeriesService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCtftomo",
+        exclusions={},
+        restack=False,
+        mapper=object(),
+    )
+
+    assert result["status"] == 0
+    assert result["outputName"] == "CTFTomoSeries2"
+    assert result["postgresqlError"] is None
+    assert protocol._definedOutputs == {
+        "CTFTomoSeries2": outputSet,
+    }
+    assert finalizedCalls == [
+        {
+            "context": generatedContext,
+            "projectId": 1,
+            "outputName": "CTFTomoSeries2",
+        }
+    ]
