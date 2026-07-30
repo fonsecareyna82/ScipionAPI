@@ -111,6 +111,7 @@ from app.backend.runtime.project_runtime_repository import ProjectRuntimeReposit
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime import (
+    RuntimeOutputProxyService,
     RuntimeOutputRelationRepairService,
     RuntimeOutputMapperRepairService,
     RuntimeArtifactReportService,
@@ -13053,6 +13054,38 @@ class ProjectService:
             detail=f"Could not resolve output class for action '{actionName}'",
         )
 
+    def _resolveMetadataActionInputOutput(self, mapper, projectId: int, protocolId: int, outputName: str):
+        protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
+
+        protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
+        protocolRow = protocolIdentityResolver.getProtocolRowByDbId(protocolDbId)
+
+        if protocolRow is None:
+            raise HTTPException(status_code=404, detail=f"Protocol '{protocolId}' not found in PostgreSQL")
+
+        scipionProtocolId = protocolIdentityResolver.toOptionalInt(protocolRow.get("protocolId"))
+
+        if scipionProtocolId is None:
+            raise HTTPException(status_code=404, detail=f"Protocol '{protocolId}' has no Scipion runtime id")
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+        outputInfo = self._getPostgresqlRuntimeOutputInfo(mapper=mapper, projectId=projectId, parentProtocolDbId=int(protocolDbId), outputName=outputName)
+
+        if not outputInfo.get("exists"):
+            raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in PostgreSQL")
+
+        runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+        if runtimeMapper is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="PostgreSQL runtime mapper is not available")
+
+        output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(parentProtocol=protocol, outputName=outputName, outputInfo=outputInfo, mapper=runtimeMapper)
+
+        if output is None:
+            raise HTTPException(status_code=404, detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL")
+
+        return output
+
     def runMetadataTableActionService(
             self,
             projectId: int,
@@ -13067,24 +13100,10 @@ class ProjectService:
     ) -> Any:
         selectionIds = self._normalizeMetadataSelectionIds(ids)
 
-        protocol = self._getScipionProtocolForRuntime(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        if not hasattr(protocol, outputName):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Output '{outputName}' not found in protocol",
-            )
-
-        output = getattr(protocol, outputName)
-        if output is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Output '{outputName}' is None",
-            )
+        output = self._resolveMetadataActionInputOutput(mapper=mapper,
+                                                        projectId=projectId,
+                                                        protocolId=protocolId,
+                                                        outputName=outputName)
 
         with _metadataLock:
             objMgr, table = self._openMetadataTable(
