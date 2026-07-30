@@ -736,6 +736,19 @@ def test_BuildReturnsNativeScipionSet():
     )
 
 
+def test_RuntimeSetExposesNativeClassForSetConstruction():
+    _, runtimeSet = buildRuntimeSet()
+
+    setClass = runtimeSet.getClass()
+    newSet = setClass()
+
+    assert isinstance(runtimeSet, PostgresqlRuntimeSetMixin)
+    assert runtimeSet.__class__ is not ExampleSet
+    assert setClass is ExampleSet
+    assert type(newSet) is ExampleSet
+    assert not isinstance(newSet, PostgresqlRuntimeSetMixin)
+
+
 def test_IterItemsReturnsNativeScipionItems():
     _, runtimeSet = buildRuntimeSet()
 
@@ -1821,6 +1834,8 @@ def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
     runtimeClone = runtimeSet.clone()
 
     assert runtimeClone is not runtimeSet
+    assert isinstance(runtimeClone, PostgresqlRuntimeSetMixin)
+    assert runtimeClone.getClass() is ExampleSet
     assert runtimeClone._mapper is None
 
     assert callable(
@@ -1866,6 +1881,8 @@ def test_NestedRuntimeSetCloneCanIterateChildren():
     nestedClone = nestedSet.clone()
 
     assert nestedClone is not nestedSet
+    assert isinstance(nestedClone, PostgresqlRuntimeSetMixin)
+    assert nestedClone.getClass() is ExampleNestedSet
     assert nestedClone._mapper is None
 
     assert callable(

@@ -63,6 +63,14 @@ class PostgresqlRuntimeSetMixin:
     PostgreSQL mapper instead of opening the legacy SQLite file.
     """
 
+    def getClass(self):
+        nativeSetClass = getattr(self, "_postgresqlNativeSetClass", None)
+
+        if isinstance(nativeSetClass, type):
+            return nativeSetClass
+
+        return super().getClass()
+
     def load(self):
         mapperFactory = getattr(
             self,
@@ -488,11 +496,7 @@ class PostgresqlRuntimeSetMixin:
             mapper.count()
         )
 
-    def clone(
-            self,
-            *args,
-            **kwargs,
-    ):
+    def clone(self, *args, **kwargs):
         """
         Clone a PostgreSQL runtime Set while preserving its
         read-only mapper and SQLite compatibility infrastructure.
@@ -580,6 +584,22 @@ class PostgresqlRuntimeSetMixin:
                     self.getObjId(),
                 )
             )
+
+        originalCloneClass = runtimeClone.__class__
+
+        if originalCloneClass is not self.__class__:
+            try:
+                runtimeClone.__class__ = self.__class__
+            except TypeError as error:
+                raise TypeError(
+                    "Could not promote cloned native Scipion Set. "
+                    "originalClass=%s runtimeClass=%s objectId=%s"
+                    % (
+                        originalCloneClass.__name__,
+                        self.__class__.__name__,
+                        self.getObjId(),
+                    )
+                ) from error
 
         for attributeName in (
                 "_postgresqlRuntimeInfo",
