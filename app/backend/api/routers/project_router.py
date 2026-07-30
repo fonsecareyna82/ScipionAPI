@@ -108,12 +108,10 @@ def applyWorkflowToProject(
     """
     Apply a predefined workflow to an existing project.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
