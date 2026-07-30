@@ -61,6 +61,41 @@ class ExampleSet(Set):
         return self._samplingRate.get()
 
 
+class ExampleCreatableSet(ExampleSet):
+    @classmethod
+    def create(
+            cls,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+            **kwargs,
+    ):
+        createdSet = cls()
+        createdSet.creationArgs = {
+            "outputPath": outputPath,
+            "prefix": prefix,
+            "suffix": suffix,
+            "ext": ext,
+            "kwargs": kwargs,
+        }
+        return createdSet
+
+    def createCopy(
+            self,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+    ):
+        return self.create(
+            outputPath,
+            prefix=prefix,
+            suffix=suffix,
+            ext=ext,
+        )
+
+
 class ExampleLinkedSet(Set):
     ITEM_TYPE = ExampleItem
 
@@ -747,6 +782,50 @@ def test_RuntimeSetExposesNativeClassForSetConstruction():
     assert setClass is ExampleSet
     assert type(newSet) is ExampleSet
     assert not isinstance(newSet, PostgresqlRuntimeSetMixin)
+
+
+def test_RuntimeSetCreateCopyBuildsNativeWritableSet():
+    parent = FakeParent()
+    parent.setObjId(5)
+
+    runtimeSet = PostgresqlRuntimeSetFactory().build(
+        db=FakeDb(),
+        parent=parent,
+        outputName="outputParticles",
+        outputInfo={
+            "setId": 31,
+            "objectId": 900,
+            "runtimeObjectId": 44,
+            "className": "ExampleCreatableSet",
+            "itemClassName": "ExampleItem",
+            "itemsCount": 1,
+            "properties": {},
+        },
+        classes={
+            "ExampleCreatableSet": ExampleCreatableSet,
+            "ExampleItem": ExampleItem,
+        },
+    )
+
+    copiedSet = runtimeSet.createCopy(
+        "/tmp/generated-output",
+        prefix="filtered",
+        ext="sqlite",
+    )
+
+    assert isinstance(runtimeSet, PostgresqlRuntimeSetMixin)
+    assert runtimeSet.getClass() is ExampleCreatableSet
+
+    assert type(copiedSet) is ExampleCreatableSet
+    assert not isinstance(copiedSet, PostgresqlRuntimeSetMixin)
+    assert not hasattr(copiedSet, "_postgresqlMapperFactory")
+    assert copiedSet.creationArgs == {
+        "outputPath": "/tmp/generated-output",
+        "prefix": "filtered",
+        "suffix": None,
+        "ext": "sqlite",
+        "kwargs": {},
+    }
 
 
 def test_IterItemsReturnsNativeScipionItems():
