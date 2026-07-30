@@ -4195,15 +4195,12 @@ class ProjectService:
         Apply a predefined workflow template to an existing project.
         Returns a JSON-serializable dict suitable for sending to the frontend.
         """
-        # 1) Check that the target project exists and is accessible
-        project = self.getProjectById(mapper, projectId, currentUser)
-        if not project:
+        if self.currentProject is None or not self._currentProjectUsesPostgresqlRuntimeMapper():
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project {projectId} not found or not accessible",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL runtime project context is not loaded",
             )
-
-        # 2) Get available templates/workflows
+        # 1) Get available templates/workflows
         templates = self.listProjectWorkflows(raw=True) or []
         if not templates:
             raise HTTPException(
@@ -4282,21 +4279,65 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Workflow '{workflowIdStr}' did not generate a valid template file",
             )
-
-        # 6) Apply the workflow to the current project in Scipion
+        # 6) Import only the workflow protocols through the PostgreSQL runtime mapper.
         workflowImportInfo = self._prepareWorkflowFileForImport(workflowFile)
         importWorkflowFile = workflowImportInfo.get("workflowFile") or workflowFile
         cleanupFile = workflowImportInfo.get("cleanupFile")
 
         try:
-            loadResult = self.currentProject.loadProtocols(importWorkflowFile)
+            workflowText = Path(str(importWorkflowFile)).expanduser().read_text(encoding="utf-8")
+            workflowContent = json.loads(self._extractWorkflowJsonText(workflowText))
+
+            if not isinstance(workflowContent, (list, dict)):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow content must be a JSON list or object",
+                )
+
+            workflowJson = json.dumps(workflowContent, ensure_ascii=False)
+            loadResult = self.currentProject.loadProtocols(jsonStr=workflowJson)
+
+            importErrors = self._normalizeWorkflowImportErrors(loadResult)
+            if importErrors:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=importErrors,
+                )
+
+            importedProtocols = self._workflowProtocolMapToProtocols(loadResult)
+            if not importedProtocols:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow did not create any protocols",
+                )
+
+            pointerParamsByProtocolId = self._buildImportedWorkflowPointerParamsByProtocolId(
+                workflowContent=workflowContent,
+                importedProtocolMap=loadResult,
+            )
+
+            syncInfo = self._syncImportedPostgresqlRuntimeProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=importedProtocols,
+                pointerParamsByProtocolId=pointerParamsByProtocolId,
+            )
+
         except HTTPException:
             raise
-        except Exception as e:
+
+        except Exception as error:
+            logger.exception(
+                "Failed to apply PostgreSQL workflow. projectId=%s workflowId=%s",
+                projectId,
+                workflowIdStr,
+            )
+
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {e}",
+                detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {error}",
             )
+
         finally:
             if cleanupFile:
                 try:
@@ -4307,26 +4348,6 @@ class ProjectService:
                         cleanupFile,
                         exc_info=True,
                     )
-
-        # 7) Sync protocols + dependencies to PostgreSQL
-        try:
-            syncInfo = self.syncProjectProtocolsAndDependencies(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
-            )
-        except Exception as e:
-            logger.exception(
-                "Failed to sync workflow-applied project graph. projectId=%s workflowId=%s",
-                projectId,
-                workflowIdStr,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Workflow was applied but graph sync to PostgreSQL failed: {e}",
-            )
-
         # 8) Return a compact, useful payload for the frontend
         return {
             "status": 0,
@@ -4334,8 +4355,10 @@ class ProjectService:
             "workflowId": workflowIdStr,
             "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
             "workflowFile": str(workflowFile),
-            "protocolsCount": syncInfo.get("protocols"),
-            "dependenciesCount": syncInfo.get("dependencies"),
+            "protocolsCount": int(syncInfo.get("protocols", 0)),
+            "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+            "inputRefsCount": int(syncInfo.get("inputRefs", 0)),
+            "syncReports": syncInfo.get("reports") or [],
             "loadResult": str(loadResult) if loadResult is not None else None,
             "scipionWebWrapped": bool(workflowImportInfo.get("wrapped")),
             "scipionWebMetadata": bool(workflowImportInfo.get("hasScipionWebMetadata")),
