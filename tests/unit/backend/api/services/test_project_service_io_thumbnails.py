@@ -678,7 +678,7 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     }
 
 
-def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
+def test_GetProtocolOutputThumbnailsBatchDelegatesPostgresqlProtocolId(
     service,
     monkeypatch,
     tmp_path,
@@ -732,6 +732,7 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
             "absolutePath": str(thumbnailFile),
             "exists": True,
             "cached": False,
+            "outputClassName": "FakeOutput",
         }
 
     monkeypatch.setattr(
@@ -786,7 +787,6 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
         }
     ]
 
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
