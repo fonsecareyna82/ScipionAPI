@@ -747,7 +747,11 @@ def test_RenderCtfTomoPsdImageServiceDelegatesToOutputsPreview(projectServiceMod
     }
 
 
-def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(service, tmp_path):
+def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(
+    service,
+    monkeypatch,
+    tmp_path,
+):
     associatedTs = FakeAssociatedTiltSeries()
     series1 = FakeCtftomoSeries(
         tsId="TS_001",
@@ -755,9 +759,72 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
         tiltSeries=associatedTs,
         items=[],
     )
-    inputSet = FakeCtftomoOutputSet(seriesList=[series1], associatedTiltSeriesSet=associatedTs)
-    protocol = FakeProtocol("outputCtftomo", inputSet, tmp_path)
+    inputSet = FakeCtftomoOutputSet(
+        seriesList=[series1],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    outputSet = FakeCtftomoOutputSet(
+        seriesList=[],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    protocol = FakeProtocol(
+        "outputCtftomo",
+        inputSet,
+        tmp_path,
+    )
     service.currentProject = FakeCurrentProject(protocol)
+
+    mapper = object()
+    generatedContext = {
+        "outputSet": outputSet,
+        "protocolDbId": 654,
+    }
+    createCalls = []
+    discardCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForCtftomoSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "CTFTomoSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 654,
+        },
+    )
+
+    def createWritableGeneratedPostgresqlSet(**kwargs):
+        createCalls.append(kwargs)
+        return generatedContext
+
+    def discardGeneratedPostgresqlSet(**kwargs):
+        discardCalls.append(kwargs)
+        return True
+
+    def failFinalize(**kwargs):
+        raise AssertionError(
+            "An empty generated Set must not be finalized"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        createWritableGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        discardGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        failFinalize,
+    )
 
     result = service.createNewSetOfCtftomoSeriesService(
         projectId=1,
@@ -770,6 +837,7 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
             }
         },
         restack=False,
+        mapper=mapper,
     )
 
     assert result == {
@@ -779,66 +847,29 @@ def test_CreateNewSetOfCtftomoSeriesServiceReturnsEmptyWhenEverythingExcluded(se
         "restack": False,
         "message": "No output was generated because it cannot be empty",
     }
+    assert createCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "protocol": protocol,
+            "outputName": "CTFTomoSeries_0",
+            "sourceSet": inputSet,
+        }
+    ]
+    assert discardCalls == [
+        {
+            "context": generatedContext,
+            "projectId": 1,
+        }
+    ]
+    assert outputSet.isEmpty() is True
 
 
-def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
+def test_CreateNewSetOfCtftomoSeriesServiceFinalizesGeneratedPostgresqlSet(
     service,
     monkeypatch,
 ):
-    storedCalls = []
-
-    class FakeDb:
-        # fakeDb
-        def fetchOne(self, *args, **kwargs):
-            return None
-
-    class FakeMapper:
-        # fakeMapper
-        def __init__(self):
-            self.db = FakeDb()
-
-    class FakeScipionSetPostgresqlMapper:
-        # fakeScipionSetPostgresqlMapper
-        def __init__(self, db):
-            self.db = db
-
-        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
-            storedCalls.append(
-                {
-                    "projectId": projectId,
-                    "protocolDbId": protocolDbId,
-                    "outputName": outputName,
-                    "scipionSet": scipionSet,
-                }
-            )
-            return {
-                "stored": True,
-                "protocolDbId": protocolDbId,
-                "outputName": outputName,
-            }
-
-    scipionSetMapperModule = importlib.import_module(
-        "app.backend.mapper.scipion_set_mapper"
-    )
-    monkeypatch.setattr(
-        scipionSetMapperModule,
-        "ScipionSetPostgresqlMapper",
-        FakeScipionSetPostgresqlMapper,
-    )
-    outputPersistenceServiceModule = (
-        importlib.import_module(
-            "app.backend.runtime."
-            "protocol_output_persistence_service"
-        )
-    )
-
-    monkeypatch.setattr(
-        outputPersistenceServiceModule
-        .ProtocolIdentityResolver,
-        "resolvePostgresqlProtocolDbId",
-        lambda self, protocolId: 654,
-    )
-
     associatedTs = FakeAssociatedTiltSeries()
     ctf1 = FakeCtfMeasurement(
         objId=100,
@@ -862,19 +893,29 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
         seriesList=[inputSeries],
         associatedTiltSeriesSet=associatedTs,
     )
-    protocol = FakeProtocol("outputCtftomo", inputSet, "/tmp/fake-protocol")
+    outputSet = FakeCtftomoOutputSet(
+        seriesList=[],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    protocol = FakeProtocol(
+        "outputCtftomo",
+        inputSet,
+        "/tmp/fake-protocol",
+    )
     service.currentProject = FakeCurrentProject(protocol)
 
-    mapper = FakeMapper()
-    outputIdentityCalls = []
-
-    def getGeneratedSetOutputIdentity(**kwargs):
-        outputIdentityCalls.append(kwargs)
-        return {
-            "outputName": "CTFTomoSeries2",
-            "outputSuffix": "1",
-            "protocolDbId": 654,
-        }
+    mapper = object()
+    generatedContext = {
+        "outputSet": outputSet,
+        "protocolDbId": 654,
+    }
+    finalSync = {
+        "stored": True,
+        "protocolDbId": 654,
+        "outputName": "CTFTomoSeries_0",
+    }
+    createCalls = []
+    finalizeCalls = []
 
     monkeypatch.setattr(
         service,
@@ -884,7 +925,45 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
     monkeypatch.setattr(
         service,
         "_getGeneratedSetOutputIdentity",
-        getGeneratedSetOutputIdentity,
+        lambda **kwargs: {
+            "outputName": "CTFTomoSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 654,
+        },
+    )
+
+    def createWritableGeneratedPostgresqlSet(**kwargs):
+        createCalls.append(kwargs)
+        return generatedContext
+
+    def finalizeGeneratedPostgresqlSet(**kwargs):
+        finalizeCalls.append(kwargs)
+        return finalSync
+
+    def failDiscard(**kwargs):
+        raise AssertionError(
+            "A successful generated Set must not be discarded"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        createWritableGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_cloneGeneratedNestedSet",
+        lambda sourceSet: sourceSet.clone(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        finalizeGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        failDiscard,
     )
 
     result = service.createNewSetOfCtftomoSeriesService(
@@ -901,34 +980,46 @@ def test_CreateNewSetOfCtftomoSeriesServiceStoresSetWithResolvedProtocolDbId(
         mapper=mapper,
     )
 
-    assert result["status"] == 0
-    assert result["outputName"] == "CTFTomoSeries2"
-    assert result["postgresqlSync"] == {
-        "stored": True,
-        "protocolDbId": 654,
-        "outputName": "CTFTomoSeries2",
+    assert result == {
+        "status": 0,
+        "outputName": "CTFTomoSeries_0",
+        "createdSeries": 1,
+        "restack": False,
+        "postgresqlSync": finalSync,
+        "postgresqlError": None,
     }
-    assert result["postgresqlError"] is None
-    assert outputIdentityCalls == [
+    assert createCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "protocolId": 10,
             "protocol": protocol,
-            "outputPrefix": "CTFTomoSeries",
+            "outputName": "CTFTomoSeries_0",
+            "sourceSet": inputSet,
         }
     ]
-    assert storedCalls == [
+    assert finalizeCalls == [
         {
+            "context": generatedContext,
             "projectId": 1,
-            "protocolDbId": 654,
-            "outputName": "CTFTomoSeries2",
-            "scipionSet": protocol._definedOutputs["CTFTomoSeries2"],
+            "outputName": "CTFTomoSeries_0",
         }
     ]
+    assert protocol._definedOutputs == {
+        "CTFTomoSeries_0": outputSet,
+    }
+    assert protocol._stored is True
+    assert outputSet._linkedTiltSeries is associatedTs
+    assert len(outputSet._seriesList) == 1
+    assert len(outputSet._seriesList[0]._items) == 1
+    assert outputSet._seriesList[0]._items[0]._enabled is True
 
 
-def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_path):
+def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(
+    service,
+    monkeypatch,
+    tmp_path,
+):
     associatedTs = FakeAssociatedTiltSeries()
     ctf1 = FakeCtfMeasurement(
         objId=100,
@@ -960,9 +1051,77 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
         tiltSeries=associatedTs,
         items=[ctf1, ctf2],
     )
-    inputSet = FakeCtftomoOutputSet(seriesList=[inputSeries], associatedTiltSeriesSet=associatedTs)
-    protocol = FakeProtocol("outputCtftomo", inputSet, tmp_path)
+    inputSet = FakeCtftomoOutputSet(
+        seriesList=[inputSeries],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    outputSet = FakeCtftomoOutputSet(
+        seriesList=[],
+        associatedTiltSeriesSet=associatedTs,
+    )
+    protocol = FakeProtocol(
+        "outputCtftomo",
+        inputSet,
+        tmp_path,
+    )
     service.currentProject = FakeCurrentProject(protocol)
+
+    mapper = object()
+    generatedContext = {
+        "outputSet": outputSet,
+        "protocolDbId": 654,
+    }
+    finalSync = {
+        "stored": True,
+        "protocolDbId": 654,
+        "outputName": "CTFTomoSeries_0",
+    }
+    finalizeCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForCtftomoSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "CTFTomoSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 654,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        lambda **kwargs: generatedContext,
+    )
+    monkeypatch.setattr(
+        service,
+        "_cloneGeneratedNestedSet",
+        lambda sourceSet: sourceSet.clone(),
+    )
+
+    def finalizeGeneratedPostgresqlSet(**kwargs):
+        finalizeCalls.append(kwargs)
+        return finalSync
+
+    def failDiscard(**kwargs):
+        raise AssertionError(
+            "A successful generated Set must not be discarded"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        finalizeGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        failDiscard,
+    )
 
     result = service.createNewSetOfCtftomoSeriesService(
         projectId=1,
@@ -975,22 +1134,36 @@ def test_CreateNewSetOfCtftomoSeriesServiceCreatesFilteredSeries(service, tmp_pa
             }
         },
         restack=False,
+        mapper=mapper,
     )
 
-    assert result["status"] == 0
-    assert result["outputName"] == "CTFTomoSeries_0"
-    assert result["createdSeries"] == 1
-    assert result["restack"] is False
-    assert result["postgresqlSync"] is None
-    assert result["postgresqlError"] is None
-    assert "CTFTomoSeries_0" in protocol._definedOutputs
-    createdSet = protocol._definedOutputs["CTFTomoSeries_0"]
-    assert createdSet.isEmpty() is False
-    createdSeries = createdSet._seriesList[0]
+    assert result == {
+        "status": 0,
+        "outputName": "CTFTomoSeries_0",
+        "createdSeries": 1,
+        "restack": False,
+        "postgresqlSync": finalSync,
+        "postgresqlError": None,
+    }
+    assert protocol._definedOutputs == {
+        "CTFTomoSeries_0": outputSet,
+    }
+    assert protocol._stored is True
+    assert outputSet.isEmpty() is False
+    assert len(outputSet._seriesList) == 1
+
+    createdSeries = outputSet._seriesList[0]
+
     assert len(createdSeries._items) == 2
     assert createdSeries._items[0]._enabled is True
     assert createdSeries._items[1]._enabled is False
-    assert protocol._stored is True
+    assert finalizeCalls == [
+        {
+            "context": generatedContext,
+            "projectId": 1,
+            "outputName": "CTFTomoSeries_0",
+        }
+    ]
 
 
 @pytest.fixture
