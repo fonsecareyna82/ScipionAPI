@@ -1098,36 +1098,34 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
 
     mapper = FakeMapper()
     calls = []
-    syncCalls = []
+    protocolSyncCalls = []
+    inputSyncCalls = []
     syncResult = {
-        "protocols": 2,
+        "protocols": 1,
         "dependencies": 1,
+        "inputRefs": 1,
+        "protocolId": "900",
     }
 
-    def syncProjectProtocolsAndDependencies(
-            mapperArg,
-            projectIdArg,
-            refresh=True,
-            checkPid=True,
-    ):
-        syncCalls.append(
-            {
-                "mapper": mapperArg,
-                "projectId": projectIdArg,
-                "refresh": refresh,
-                "checkPid": checkPid,
-            }
-        )
-        return syncResult
+    def syncPostgresqlRuntimeProtocol(**kwargs):
+        protocolSyncCalls.append(kwargs)
+        return {"protocols": 1}
+
+    def syncPostgresqlRuntimeProtocolInputsAndDependencies(**kwargs):
+        inputSyncCalls.append(kwargs)
+        return {"dependencies": 1, "inputRefsSaved": 1}
+
+    def failGlobalSync(*args, **kwargs):
+        raise AssertionError("Subset creation must not synchronize parent protocols or outputs")
 
     patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        syncProjectProtocolsAndDependencies,
-    )
+    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", syncPostgresqlRuntimeProtocol)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        syncPostgresqlRuntimeProtocolInputsAndDependencies)
+    monkeypatch.setattr(service, "syncProjectProtocolsAndDependencies", failGlobalSync)
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -1147,12 +1145,24 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         "postgresqlSync": syncResult,
         "postgresqlError": None,
     }
-    assert syncCalls == [
+    launchedProtocol = service.currentProject.launchedProtocols[0]
+
+    assert protocolSyncCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
-            "refresh": True,
-            "checkPid": True,
+            "protocolId": 900,
+            "registerOutputs": False,
+            "syncRelations": False,
+            "protocol": launchedProtocol,
+            "authoritativeProtocolState": True,
+        }
+    ]
+    assert inputSyncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocol": launchedProtocol,
         }
     ]
     assert calls == [
@@ -1230,16 +1240,6 @@ def test_RunMetadataTableActionServiceUsesRuntimeResolverWithMapper(
         )
         return protocol
 
-    def syncProjectProtocolsAndDependencies(
-            mapperArg,
-            projectIdArg,
-            refresh=True,
-            checkPid=True,
-    ):
-        return {
-            "protocols": 2,
-            "dependencies": 1,
-        }
 
     patchOpenMetadataTable(
         service,
@@ -1256,11 +1256,10 @@ def test_RunMetadataTableActionServiceUsesRuntimeResolverWithMapper(
         "_getScipionProtocolForRuntime",
         getScipionProtocolForRuntime,
     )
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        syncProjectProtocolsAndDependencies,
-    )
+    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        lambda **kwargs: {"dependencies": 1, "inputRefsSaved": 1})
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -1326,6 +1325,10 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        lambda **kwargs: {"dependencies": 1, "inputRefsSaved": 1})
 
     result = service.runMetadataTableActionService(
         projectId=1,

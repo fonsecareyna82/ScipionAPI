@@ -13122,12 +13122,23 @@ class ProjectService:
 
             postgresqlSync = None
             try:
-                postgresqlSync = self.syncProjectProtocolsAndDependencies(
-                    mapper,
-                    projectId,
-                    refresh=True,
-                    checkPid=True,
-                )
+                batchProtocolId = self._getScipionObjectId(batchProt)
+                if batchProtocolId is None:
+                    raise RuntimeError("Subset protocol was launched without a runtime id")
+
+                protocolSync = self.syncPostgresqlRuntimeProtocol(mapper=mapper, projectId=projectId,
+                                                                  protocolId=batchProtocolId, registerOutputs=False,
+                                                                  syncRelations=False, protocol=batchProt,
+                                                                  authoritativeProtocolState=True) or {}
+                inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(mapper=mapper, projectId=projectId,
+                                                                                    protocol=batchProt) or {}
+
+                postgresqlSync = {
+                    "protocols": int(protocolSync.get("protocols", 0) or 0),
+                    "dependencies": int(inputSync.get("dependencies", 0) or 0),
+                    "inputRefs": int(inputSync.get("inputRefsSaved", 0) or 0),
+                    "protocolId": str(batchProtocolId),
+                }
             except Exception as syncError:
                 logger.exception(
                     "Subset protocol was launched but PostgreSQL sync failed. projectId=%s protocolId=%s outputName=%s tableName=%s",
