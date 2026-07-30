@@ -23,24 +23,90 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import inspect
+import ast
+from pathlib import Path
 
-from app.backend.api.routers import project_router
+
+MUTATION_HANDLER_NAMES = {
+    "launchProtocol",
+    "saveProtocol",
+    "suggestionProtocol",
+    "renameProtocol",
+    "duplicateProtocol",
+    "deleteProtocol",
+    "restartProtocolAll",
+    "continueProtocolAll",
+    "resetProtocolFrom",
+    "stopProtocol",
+}
+
+
+def _getProjectRouterSyntaxTree():
+    for parentPath in Path(__file__).resolve().parents:
+        routerPath = parentPath / "app/backend/api/routers/project_router.py"
+
+        if routerPath.is_file():
+            return ast.parse(
+                routerPath.read_text(encoding="utf-8"),
+                filename=str(routerPath),
+            )
+
+    raise AssertionError("Could not locate app/backend/api/routers/project_router.py")
+
+
+def _getFunctionArgumentNames(functionNode):
+    arguments = functionNode.args
+    argumentNodes = (
+        list(arguments.posonlyargs)
+        + list(arguments.args)
+        + list(arguments.kwonlyargs)
+    )
+
+    argumentNames = {
+        argument.arg
+        for argument in argumentNodes
+    }
+
+    if arguments.vararg is not None:
+        argumentNames.add(arguments.vararg.arg)
+
+    if arguments.kwarg is not None:
+        argumentNames.add(arguments.kwarg.arg)
+
+    return argumentNames
 
 
 def test_ProtocolMutationRoutesDoNotExposeLegacyRuntimeSwitch():
-    mutationHandlers = [
-        project_router.launchProtocol,
-        project_router.saveProtocol,
-        project_router.suggestionProtocol,
-        project_router.renameProtocol,
-        project_router.duplicateProtocol,
-        project_router.deleteProtocol,
-        project_router.restartProtocolAll,
-        project_router.continueProtocolAll,
-        project_router.resetProtocolFrom,
-        project_router.stopProtocol,
-    ]
+    syntaxTree = _getProjectRouterSyntaxTree()
 
-    for handler in mutationHandlers:
-        assert "usePostgresqlRuntimeProject" not in inspect.signature(handler).parameters
+    functionNodes = {
+        node.name: node
+        for node in syntaxTree.body
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+            ),
+        )
+    }
+
+    missingHandlers = (
+        MUTATION_HANDLER_NAMES
+        - set(functionNodes)
+    )
+
+    assert not missingHandlers, (
+        "Missing protocol mutation handlers: %s"
+        % sorted(missingHandlers)
+    )
+
+    for handlerName in sorted(MUTATION_HANDLER_NAMES):
+        argumentNames = _getFunctionArgumentNames(
+            functionNodes[handlerName]
+        )
+
+        assert "usePostgresqlRuntimeProject" not in argumentNames, (
+            "%s still exposes the legacy runtime switch"
+            % handlerName
+        )
