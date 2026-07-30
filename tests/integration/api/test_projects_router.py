@@ -393,6 +393,17 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
         "errors": [],
     }
 
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
+        json={"action": "create subset", "ids": [1, 2, 3]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "message": "Subset created",
+    }
+
     assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
         "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
         "projectId": 1,
@@ -404,17 +415,6 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
         "enableWriteFallback": False,
     }
     assert fakeProjectService.lastGetProjectByIdCall is None
-
-    response = projectClient.post(
-        "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
-        json={"action": "create subset", "ids": [1, 2, 3]},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "success": True,
-        "message": "Subset created",
-    }
 
     assert fakeProjectService.lastRunMetadataTableActionCall == {
         "projectId": 1,
