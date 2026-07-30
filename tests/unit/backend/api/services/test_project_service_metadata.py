@@ -262,12 +262,29 @@ class FakeProtocol:
         return {"batchProtocol": True, "kwargs": kwargs}
 
 
+class FakeRuntimeMapper:
+    def __init__(self, events):
+        self.events = events
+        self.storeCalls = []
+        self.commitCalls = 0
+
+    def store(self, protocol):
+        self.storeCalls.append(protocol)
+        self.events.append(("store", protocol))
+
+    def commit(self):
+        self.commitCalls += 1
+        self.events.append(("commit", None))
+
+
 class FakeCurrentProject:
     # fakeCurrentProject
     def __init__(self, protocol, projectPath=None):
         self._protocol = protocol
         self._projectPath = projectPath
         self.launchedProtocols = []
+        self.events = []
+        self.mapper = FakeRuntimeMapper(self.events)
 
     def getProtocol(self, protocolId):
         return self._protocol
@@ -281,6 +298,7 @@ class FakeCurrentProject:
         return self._protocol.newProtocol(*args, **kwargs)
 
     def launchProtocol(self, protocol):
+        self.events.append(("launch", protocol))
         self.launchedProtocols.append(protocol)
 
 
@@ -1108,17 +1126,26 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         "protocolId": "900",
     }
 
-    def resolveMetadataActionInputOutput(**kwargs):
+    def resolveMetadataActionInputContext(**kwargs):
         inputOutputCalls.append(kwargs)
-        return output
+        return {
+            "output": output,
+            "parentProtocolId": 10,
+        }
 
     def syncPostgresqlRuntimeProtocol(**kwargs):
         protocolSyncCalls.append(kwargs)
+        service.currentProject.events.append(("protocol-sync", kwargs["protocol"]))
         return {"protocols": 1}
 
     def syncPostgresqlRuntimeProtocolInputsAndDependencies(**kwargs):
         inputSyncCalls.append(kwargs)
-        return {"dependencies": 1, "inputRefsSaved": 1}
+        service.currentProject.events.append(("input-sync", kwargs["protocol"]))
+        return {
+            "dependencies": 1,
+            "inputRefsSaved": 1,
+            "parentProtocolIds": [10],
+        }
 
     def failGlobalSync(*args, **kwargs):
         raise AssertionError("Subset creation must not synchronize parent protocols or outputs")
@@ -1126,7 +1153,7 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(service, "_resolveMetadataActionInputOutput", resolveMetadataActionInputOutput)
+    monkeypatch.setattr(service, "_resolveMetadataActionInputContext", resolveMetadataActionInputContext)
     monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", syncPostgresqlRuntimeProtocol)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
@@ -1177,8 +1204,29 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
             "mapper": mapper,
             "projectId": 1,
             "protocol": launchedProtocol,
-        }
+            "params": {
+                "inputObject": "10.outputParticles",
+            },
+        },
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocol": launchedProtocol,
+            "params": {
+                "inputObject": "10.outputParticles",
+            },
+        },
     ]
+    assert [event[0] for event in service.currentProject.events] == [
+        "store",
+        "commit",
+        "input-sync",
+        "launch",
+        "protocol-sync",
+        "input-sync",
+    ]
+    assert service.currentProject.mapper.storeCalls == [launchedProtocol]
+    assert service.currentProject.mapper.commitCalls == 1
     assert calls == [
         {
             "projectId": 1,
@@ -1204,7 +1252,7 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     assert selectionFiles[0].read_text(encoding="utf-8") == "3 5 7 "
 
 
-def test_ResolveMetadataActionInputOutputBuildsReadOnlyPostgresqlProxy(
+def test_ResolveMetadataActionInputContextBuildsReadOnlyPostgresqlProxy(
     service,
     projectServiceModule,
     monkeypatch,
@@ -1275,9 +1323,13 @@ def test_ResolveMetadataActionInputOutputBuildsReadOnlyPostgresqlProxy(
     monkeypatch.setattr(service, "_getPostgresqlRuntimeOutputInfo", getPostgresqlRuntimeOutputInfo)
     monkeypatch.setattr(projectServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
 
-    result = service._resolveMetadataActionInputOutput(mapper=mapper, projectId=1, protocolId=6115, outputName="outputSet")
+    result = service._resolveMetadataActionInputContext(mapper=mapper, projectId=1, protocolId=6115,
+                                                        outputName="outputSet")
 
-    assert result is proxyOutput
+    assert result == {
+        "output": proxyOutput,
+        "parentProtocolId": 6115,
+    }
     assert protocolCalls == [6115]
     assert outputInfoCalls == [
         {
@@ -1330,11 +1382,27 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(service, "_resolveMetadataActionInputOutput", lambda **kwargs: output)
+    monkeypatch.setattr(
+        service,
+        "_resolveMetadataActionInputContext",
+        lambda **kwargs: {
+            "output": output,
+            "parentProtocolId": 10,
+        },
+    )
     monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
                         lambda **kwargs: {"dependencies": 1, "inputRefsSaved": 1})
+    monkeypatch.setattr(
+                        service,
+                        "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        lambda **kwargs: {
+                            "dependencies": 1,
+                            "inputRefsSaved": 1,
+                            "parentProtocolIds": [10],
+                        },
+                    )
 
     result = service.runMetadataTableActionService(
         projectId=1,
