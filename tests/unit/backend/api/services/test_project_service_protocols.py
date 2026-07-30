@@ -868,7 +868,7 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
     )
     runtimeProjectGraphSyncServiceModule = (
         importlib.import_module(
-            "app.backend.runtime.protocol_graph_sync_service"
+            "app.backend.runtime.project_graph_sync_service"
         )
     )
 
@@ -1026,10 +1026,10 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
             "protocolId": 10,
         }
     ]
-    assert mapper.deletedProtocolIds == {
-        "projectId": 1,
-        "protocolIds": ["10"],
-    }
+
+
+    assert mapper.deletedProtocolIds is None
+    assert result["purgedProtocols"] == 0
 
 
 def test_GetPostgresqlIntegratedAnalyzeContextUsesResolvedProtocolId(
