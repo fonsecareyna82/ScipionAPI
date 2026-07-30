@@ -866,11 +866,19 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
             "protocolId": protocol.getObjId(),
         },
     )
-    monkeypatch.setattr(
-        service,
-        "_shouldRegisterProtocolOutputs",
-        lambda protocol: True,
+    runtimeProjectGraphSyncServiceModule = (
+        importlib.import_module(
+            "app.backend.runtime.protocol_graph_sync_service"
+        )
     )
+
+    monkeypatch.setattr(
+        runtimeProjectGraphSyncServiceModule
+        .RuntimeProtocolOutputPersistenceService,
+        "shouldSyncProtocolOutputs",
+        lambda self, protocol: True,
+    )
+
     monkeypatch.setattr(
         service,
         "registerOutput",
