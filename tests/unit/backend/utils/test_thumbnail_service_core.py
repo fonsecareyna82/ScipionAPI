@@ -674,3 +674,35 @@ def test_NativeProtocolOutputWinsOverPostgresqlFallback(
     ]
 
 
+def test_BuildProtocolOutputThumbnailReturnsNegativeCacheWithoutResolvingOutput(service, monkeypatch, tmp_path):
+    protocol = FakeProtocol(10, label="Prot 10", status="finished")
+    service.currentProject._protocols = {10: protocol}
+
+    pngCachePath = tmp_path / "protocol_10_outputVol_128_v1.png"
+    negativeCachePath = tmp_path / "protocol_10_outputVol_128_v1.missing.json"
+    negativeCachePath.write_text(json.dumps({"createdAt": time.time(), "outputClassName": "SetOfParticles", "error": "Thumbnail not available"}), encoding="utf-8")
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: pngCachePath)
+    monkeypatch.setattr(service, "_getProtocolOutputNegativeCachePath", lambda protocolId, outputName, size: negativeCachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: False)
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("Negative cache must avoid output hydration")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    result = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputVol", force=False, size=128)
+
+    assert result == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputVol",
+        "outputClassName": "SetOfParticles",
+        "absolutePath": None,
+        "cached": True,
+        "exists": False,
+        "error": "Thumbnail not available",
+    }
+
+
