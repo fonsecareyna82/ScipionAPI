@@ -71,47 +71,6 @@ class PostgresqlRuntimeSetMixin:
 
         return super().getClass()
 
-    @classmethod
-    def create(
-            cls,
-            outputPath,
-            prefix=None,
-            suffix=None,
-            ext=None,
-            **kwargs,
-    ):
-        """
-        Create a new native writable Scipion Set.
-
-        PostgreSQL runtime subclasses are read-only projections of existing
-        outputs and must never leak into newly created protocol outputs.
-        """
-        nativeSetClass = getattr(
-            cls,
-            "_postgresqlNativeSetClass",
-            None,
-        )
-
-        if (
-                not isinstance(nativeSetClass, type)
-                or nativeSetClass is cls
-        ):
-            return super().create(
-                outputPath,
-                prefix=prefix,
-                suffix=suffix,
-                ext=ext,
-                **kwargs,
-            )
-
-        return nativeSetClass.create(
-            outputPath,
-            prefix=prefix,
-            suffix=suffix,
-            ext=ext,
-            **kwargs,
-        )
-
     def load(self):
         mapperFactory = getattr(
             self,
@@ -194,8 +153,29 @@ class PostgresqlRuntimeSetMixin:
             if self._isPostgresqlRuntimePointerProperty(propertyName):
                 continue
 
+            currentAttribute = self
+
+            for attributeName in propertyName.split("."):
+                currentAttribute = getattr(
+                    currentAttribute,
+                    attributeName,
+                    None,
+                )
+
+                if currentAttribute is None:
+                    break
+
+            setter = getattr(
+                currentAttribute,
+                "set",
+                None,
+            )
+
+            if not callable(setter):
+                continue
+
             try:
-                self.setAttributeValue(propertyName, propertyValue)
+                setter(propertyValue)
             except Exception:
                 logger.warning(
                     "Could not refresh PostgreSQL runtime Set property. "
@@ -3224,7 +3204,6 @@ class PostgresqlRuntimeSetFactory:
             ),
             {
                 "__module__": nativeSetClass.__module__,
-                "_postgresqlNativeSetClass": nativeSetClass,
             },
         )
 
