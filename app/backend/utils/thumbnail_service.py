@@ -1228,7 +1228,7 @@ class ThumbnailService:
                         "outputClassName": outputClassName,
                         "exists": True,
                         "thumbnailUrl": (
-                            f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName))}/thumbnail"
+                            f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName), safe='')}/thumbnail"
                         ),
                         "thumbnailDataUrl": thumbnailDataUrl,
                         "thumbnailRebuildUrl": None,

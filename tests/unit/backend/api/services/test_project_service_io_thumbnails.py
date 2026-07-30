@@ -465,6 +465,18 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
     ]
 
 
+def test_ThumbnailServiceIsReusedWhileProjectContextIsLoaded(projectServiceModule, service, monkeypatch):
+    FakeThumbnailService.instances = []
+    monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
+
+    service.buildProjectThumbnail(force=False, size=640, maxProtocols=6)
+    service.buildProtocolThumbnail(protocolId=10, force=False, size=320)
+    service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputA", force=False, size=128)
+    service.listProjectThumbnailItems(projectId=1, size=128, maxProtocols=4, maxOutputsPerProtocol=2)
+
+    assert len(FakeThumbnailService.instances) == 1
+
+
 def test_ListProjectThumbnailItemsKeepsDetachedPostgresqlOutputs(
         projectServiceModule,
         service,
