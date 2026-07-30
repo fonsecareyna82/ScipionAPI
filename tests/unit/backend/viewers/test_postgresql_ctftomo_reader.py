@@ -102,6 +102,47 @@ def test_PostgresqlCtftomoReaderBuildsMeasurementFrameFromCommonAliases(authTest
     assert frame["excluded"] is False
 
 
+def test_PostgresqlCtftomoReaderPrefersStoredEnabledColumn(authTestEnv):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_ctftomo_reader"
+    )
+
+    reader = module.PostgresqlCtftomoReader(
+        db=object(),
+        projectId=1,
+        protocolId=500,
+        outputName="outputCTF",
+    )
+
+    excludedFrame = reader._buildCtftomoMeasurementFrame(
+        {
+            "scipionItemId": 11,
+            "enabled": False,
+
+            # Simula metadata legacy contradictoria. La columna
+            # PostgreSQL directa debe tener prioridad.
+            "values": {
+                "_enabled": True,
+            },
+        },
+        position=0,
+    )
+
+    includedFrame = reader._buildCtftomoMeasurementFrame(
+        {
+            "scipionItemId": 12,
+            "enabled": True,
+            "values": {
+                "_enabled": False,
+            },
+        },
+        position=1,
+    )
+
+    assert excludedFrame["excluded"] is True
+    assert includedFrame["excluded"] is False
+
+
 def test_PostgresqlCtftomoReaderRejectsInvalidDims(authTestEnv):
     module = importlib.import_module("app.backend.viewers.postgresql_ctftomo_reader")
 

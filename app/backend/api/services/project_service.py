@@ -11427,11 +11427,25 @@ class ProjectService:
                     newOddBinaryName = os.path.join(outputPath, f"{tsId}_odd.mrcs")
                     newEvenBinaryName = os.path.join(outputPath, f"{tsId}_even.mrcs")
 
-                # Create new stacks if restacking is enabled
-                properties = {"sr": ts.getSamplingRate()}
-                stack = ImageStack(properties)
-                oddStack = ImageStack(properties)
-                evenStack = ImageStack(properties)
+                stack = None
+                oddStack = None
+                evenStack = None
+
+                if restack:
+                    properties = {
+                        "sr": ts.getSamplingRate(),
+                    }
+                    stack = ImageStack(
+                        properties=properties
+                    )
+
+                    if hasOddEven:
+                        oddStack = ImageStack(
+                            properties=properties
+                        )
+                        evenStack = ImageStack(
+                            properties=properties
+                        )
 
                 index = 1  # new index when restacking
                 validImages = 0
