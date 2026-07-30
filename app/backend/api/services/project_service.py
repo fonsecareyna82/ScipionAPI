@@ -1144,6 +1144,59 @@ class ProjectService:
             protocolId=protocolId,
         ) or protocolId
 
+    def _getGeneratedSetOutputIdentity(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            protocol,
+            outputPrefix: str,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            return {
+                "outputName": protocol.getNextOutputName(outputPrefix),
+                "outputSuffix": str(protocol.getOutputsSize()),
+                "protocolDbId": None,
+            }
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
+            )
+
+        outputNames = RuntimeProtocolOutputPersistenceService().loadPersistedProtocolOutputNames(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+        )
+
+        maxCounter = -1
+
+        for attributeName in outputNames:
+            nameSuffix = str(attributeName).replace(outputPrefix, "")
+
+            try:
+                counter = int(nameSuffix)
+            except (TypeError, ValueError):
+                counter = 1
+
+            maxCounter = max(counter, maxCounter)
+
+        nextNameSuffix = str(maxCounter + 1) if maxCounter > 0 else ""
+
+        return {
+            "outputName": outputPrefix + nextNameSuffix,
+            "outputSuffix": str(len(outputNames)),
+            "protocolDbId": int(protocolDbId),
+        }
+
     def _storeGeneratedSetInPostgresql(
             self,
             mapper,
@@ -8756,15 +8809,59 @@ class ProjectService:
             mapper=None,
     ):
         """
-        Resolve protocol + SetOfTiltSeries-like output for tilt series operations.
+        Resolve a protocol and its SetOfTiltSeries output.
 
-        protocolId can be either the PostgreSQL protocols.id or the Scipion protocolId.
+        PostgreSQL outputs are reconstructed as independent runtime proxies.
+        The owner protocol and its existing outputs remain unchanged.
         """
         protocol = self._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+
+            if output is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, output
 
         if not hasattr(protocol, outputName):
             raise HTTPException(
@@ -8773,6 +8870,7 @@ class ProjectService:
             )
 
         output = getattr(protocol, outputName)
+
         if output is None:
             raise HTTPException(
                 status_code=404,
@@ -10976,14 +11074,19 @@ class ProjectService:
         for key, value in (exclusions or {}).items():
             normalizedExclusions[str(key)] = value or {}
 
-        # New output name and path for the created SetOfTiltSeries
-        newOutputName = protocol.getNextOutputName("TiltSeries_")
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix="TiltSeries_",
+        )
+        newOutputName = outputIdentity["outputName"]
         outputPath = os.path.join(protocol._getExtraPath(), newOutputName)
 
-        # Create the output set with copied info
         outputSet = SetOfTiltSeries.create(
             protocol.getPath(),
-            suffix=str(protocol.getOutputsSize()),
+            suffix=outputIdentity["outputSuffix"],
         )
         outputSet.copyInfo(inputSet)
         outputSet.setDim(inputSet.getDim())

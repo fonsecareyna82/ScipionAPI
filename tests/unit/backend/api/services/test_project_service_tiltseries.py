@@ -281,6 +281,173 @@ def service(projectServiceModule):
     return instance
 
 
+def test_ResolveOutputForTiltSeriesBuildsReadOnlyPostgresqlProxy(
+    service,
+    projectServiceModule,
+    monkeypatch,
+):
+    parentProtocol = object()
+    proxyOutput = object()
+    runtimeMapper = object()
+    outputInfo = {
+        "exists": True,
+        "setId": 77,
+        "runtimeObjectId": 9001,
+        "outputName": "TiltSeries",
+        "className": "SetOfTiltSeries",
+    }
+
+    class FakeRuntimeProject:
+        pass
+
+    service.currentProject = FakeRuntimeProject()
+    service.currentProject.mapper = runtimeMapper
+
+    protocolCalls = []
+    outputInfoCalls = []
+    proxyCalls = []
+
+    def getScipionProtocolForRuntime(**kwargs):
+        protocolCalls.append(kwargs)
+        return parentProtocol
+
+    def getPostgresqlRuntimeOutputInfo(**kwargs):
+        outputInfoCalls.append(kwargs)
+        return outputInfo
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(
+                self,
+                parentProtocol,
+                outputName,
+                outputInfo,
+                mapper=None,
+        ):
+            proxyCalls.append({
+                "parentProtocol": parentProtocol,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
+                "mapper": mapper,
+            })
+            return proxyOutput
+
+    mapper = object()
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        getScipionProtocolForRuntime,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlReaderProtocolId",
+        lambda **kwargs: 321,
+    )
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlRuntimeOutputInfo",
+        getPostgresqlRuntimeOutputInfo,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeOutputProxyService",
+        FakeRuntimeOutputProxyService,
+    )
+
+    protocol, output = service._resolveOutputForTiltSeries(
+        protocolId=5,
+        outputName="TiltSeries",
+        projectId=344,
+        mapper=mapper,
+    )
+
+    assert protocol is parentProtocol
+    assert output is proxyOutput
+    assert protocolCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "protocolId": 5,
+        }
+    ]
+    assert outputInfoCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "parentProtocolDbId": 321,
+            "outputName": "TiltSeries",
+        }
+    ]
+    assert proxyCalls == [
+        {
+            "parentProtocol": parentProtocol,
+            "outputName": "TiltSeries",
+            "outputInfo": outputInfo,
+            "mapper": runtimeMapper,
+        }
+    ]
+    assert not hasattr(parentProtocol, "TiltSeries")
+
+
+def test_GetGeneratedSetOutputIdentityUsesPostgresqlOutputs(
+    service,
+    projectServiceModule,
+    monkeypatch,
+):
+    class FakeMapper:
+        pass
+
+    class FakeProtocolIdentityResolver:
+        def __init__(self, mapper, projectId):
+            self.mapper = mapper
+            self.projectId = projectId
+
+        def resolvePostgresqlProtocolDbId(self, protocolId):
+            assert protocolId == 5
+            return 321
+
+    class FakeOutputPersistenceService:
+        def loadPersistedProtocolOutputNames(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 344
+            assert protocolDbId == 321
+
+            return {
+                "TiltSeries",
+                "TiltSeries_2",
+                "outputCoordinates",
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        FakeOutputPersistenceService,
+    )
+
+    result = service._getGeneratedSetOutputIdentity(
+        mapper=FakeMapper(),
+        projectId=344,
+        protocolId=5,
+        protocol=object(),
+        outputPrefix="TiltSeries_",
+    )
+
+    assert result == {
+        "outputName": "TiltSeries_3",
+        "outputSuffix": "3",
+        "protocolDbId": 321,
+    }
+
+
 def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -814,6 +981,21 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
     )
     protocol = FakeProtocol("outputTiltSeries", inputSet)
     service.currentProject = FakeCurrentProject(protocol)
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForTiltSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "TiltSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 321,
+        },
+    )
 
     scipionSetMapperModule = importlib.import_module(
         "app.backend.mapper.scipion_set_mapper"
