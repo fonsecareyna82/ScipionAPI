@@ -4,6 +4,7 @@ import os
 import hashlib
 from email.utils import formatdate
 from urllib.parse import quote
+from time import perf_counter
 
 from fastapi import (
     APIRouter,
@@ -4122,6 +4123,10 @@ def getProtocolOutputThumbnailsBatch(
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: ProjectService = Depends(getProjectService),
 ):
+    requestStartedAt = perf_counter()
+    projectLoadMs = 0.0
+    thumbnailBuildMs = 0.0
+    cacheHits = 0
     try:
         requestedOutputs = payload.outputs or []
 
@@ -4139,10 +4144,10 @@ def getProtocolOutputThumbnailsBatch(
             if not dbProj:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            service.loadProjectForThumbnails(
-                dbProj,
-                mapper=mapper,
-            )
+            projectLoadStartedAt = perf_counter()
+            service.loadProjectForThumbnails(dbProj, mapper=mapper)
+            projectLoadMs = (perf_counter() - projectLoadStartedAt) * 1000
+            thumbnailBuildStartedAt = perf_counter()
 
             seen = set()
 
@@ -4179,6 +4184,8 @@ def getProtocolOutputThumbnailsBatch(
                         projectId=projectId,
                     )
                     item["outputClassName"] = result.get("outputClassName")
+                    if result.get("cached"):
+                        cacheHits += 1
 
                 except Exception as exc:
                     logger.debug(
@@ -4218,6 +4225,7 @@ def getProtocolOutputThumbnailsBatch(
 
                 items.append(item)
 
+        thumbnailBuildMs = (perf_counter() - thumbnailBuildStartedAt) * 1000
         response = JSONResponse(
             {
                 "projectId": projectId,
@@ -4225,8 +4233,14 @@ def getProtocolOutputThumbnailsBatch(
                 "items": items,
             }
         )
+        totalMs = (perf_counter() - requestStartedAt) * 1000
         response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
-        response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
+        response.headers[
+            "Server-Timing"] = f"project;dur={projectLoadMs:.1f}, thumbnails;dur={thumbnailBuildMs:.1f}, total;dur={totalMs:.1f}"
+        response.headers["X-Thumbnail-Items"] = str(len(items))
+        response.headers["X-Thumbnail-Cache-Hits"] = str(cacheHits)
+        response.headers[
+            "Access-Control-Expose-Headers"] = "Cache-Control, Server-Timing, X-Thumbnail-Items, X-Thumbnail-Cache-Hits"
         return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
