@@ -736,13 +736,6 @@ class ThumbnailService:
                 "exists": False,
             }
 
-        output = (
-            self._findProtocolOutput(
-                protocol=protocol,
-                outputName=outputName,
-            )
-        )
-
         cachePath = self._getProtocolOutputCachePath(protocolId=int(protocolId), outputName=outputName, size=int(size))
 
         if not force and self._isValidCachedImage(cachePath):
@@ -756,6 +749,8 @@ class ThumbnailService:
                 "cached": True,
                 "exists": True,
             }
+
+        output = self._findProtocolOutput(protocol=protocol, outputName=outputName)
 
         if output is None:
             return {
