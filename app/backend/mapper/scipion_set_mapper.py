@@ -66,6 +66,34 @@ POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS = (
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
 
+    def _getObjectDisplayText(
+            self,
+            scipionObj: Any,
+    ) -> Optional[str]:
+        if isinstance(
+                scipionObj,
+                ScipionSet,
+        ):
+            return None
+
+        return super()._getObjectDisplayText(
+            scipionObj
+        )
+
+    def _getObjectValueText(
+            self,
+            scipionObj: Any,
+    ) -> Optional[str]:
+        if isinstance(
+                scipionObj,
+                ScipionSet,
+        ):
+            return None
+
+        return super()._getObjectValueText(
+            scipionObj
+        )
+
     def serializeRuntimeItem(
             self,
             item: Any,

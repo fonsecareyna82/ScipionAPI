@@ -672,6 +672,44 @@ def test_CreateWritableGeneratedPostgresqlSetReservesOutputWithoutSqlite(
     assert context["runtimeObjectId"] == 1000026
 
 
+def test_ScipionSetPostgresqlMapperDoesNotStringifySets(authTestEnv):
+    from pyworkflow.object import Set as ScipionSet
+
+    mapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+
+    class ExplodingSet(ScipionSet):
+        def __str__(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be converted to text"
+            )
+
+        def getObjValue(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be treated as scalar values"
+            )
+
+        def get(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be treated as scalar values"
+            )
+
+    mapper = object.__new__(
+        mapperModule.ScipionSetPostgresqlMapper
+    )
+    scipionSet = object.__new__(
+        ExplodingSet
+    )
+
+    assert mapper._getObjectDisplayText(
+        scipionSet
+    ) is None
+    assert mapper._getObjectValueText(
+        scipionSet
+    ) is None
+
+
 def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -1249,6 +1287,18 @@ def test_CreateNewSetOfTiltSeriesServiceFinalizesGeneratedPostgresqlSet(
     }
     createCalls = []
     finalizeCalls = []
+
+    class UnexpectedImageStack:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "ImageStack must not be created when restack=False"
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ImageStack",
+        UnexpectedImageStack,
+    )
 
     monkeypatch.setattr(
         projectServiceModule,
