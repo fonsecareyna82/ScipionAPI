@@ -28,7 +28,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-from pyworkflow.protocol import STATUS_ABORTED
+from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED
 from app.backend.runtime.postgresql_runtime_event_service import (
     PostgresqlRuntimeEventPublisher,
 )
@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 class RuntimeProtocolStatusSyncService:
     """Manage PostgreSQL runtime protocol status, timing and process metadata."""
     RUNTIME_METADATA_KEY = "_scipionWebRuntime"
+
+    ACTIVE_STATUS_TEXTS = {
+        "launched",
+        "running",
+        "scheduled",
+    }
+
+    TERMINAL_STATUS_TEXTS = {
+        "finished",
+        "failed",
+        "aborted",
+        "interactive",
+    }
 
     FINAL_SYNC_PENDING_KEY = "finalSyncPending"
     ELAPSED_UPDATED_AT_KEY = (
@@ -410,6 +423,21 @@ class RuntimeProtocolStatusSyncService:
             params = {}
 
         return dict(params)
+
+    def mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):
+        storedText = str(storedStatus or "").strip().lower()
+        runtimeText = str(runtimeStatus or "").strip().lower()
+
+        if not runtimeText:
+            return storedStatus or STATUS_NEW
+
+        if runtimeText == "new" and storedText in self.ACTIVE_STATUS_TEXTS:
+            return storedStatus
+
+        if storedText in self.TERMINAL_STATUS_TEXTS and runtimeText not in self.TERMINAL_STATUS_TEXTS:
+            return storedStatus
+
+        return runtimeStatus
 
     def getEffectiveElapsedTimeSeconds(self, runtimeMetadata: Any, statusValue, nowEpochSeconds: Optional[float] = None, fallbackElapsedSeconds: Any = None) -> float:
         fallbackSeconds = max(0.0, float(self.toSeconds(fallbackElapsedSeconds) or 0.0))
