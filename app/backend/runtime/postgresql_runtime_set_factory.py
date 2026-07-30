@@ -71,6 +71,47 @@ class PostgresqlRuntimeSetMixin:
 
         return super().getClass()
 
+    @classmethod
+    def create(
+            cls,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+            **kwargs,
+    ):
+        """
+        Create a new native writable Scipion Set.
+
+        PostgreSQL runtime subclasses are read-only projections of existing
+        outputs and must never leak into newly created protocol outputs.
+        """
+        nativeSetClass = getattr(
+            cls,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        if (
+                not isinstance(nativeSetClass, type)
+                or nativeSetClass is cls
+        ):
+            return super().create(
+                outputPath,
+                prefix=prefix,
+                suffix=suffix,
+                ext=ext,
+                **kwargs,
+            )
+
+        return nativeSetClass.create(
+            outputPath,
+            prefix=prefix,
+            suffix=suffix,
+            ext=ext,
+            **kwargs,
+        )
+
     def load(self):
         mapperFactory = getattr(
             self,
@@ -3183,6 +3224,7 @@ class PostgresqlRuntimeSetFactory:
             ),
             {
                 "__module__": nativeSetClass.__module__,
+                "_postgresqlNativeSetClass": nativeSetClass,
             },
         )
 
