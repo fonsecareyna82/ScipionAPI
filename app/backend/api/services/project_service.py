@@ -179,6 +179,7 @@ class ProjectService:
         # Real per-instance state
         self.currentProject: Optional[ScipionProject] = None
         self.tomoList: Dict[Any, Any] = {}
+        self._thumbnailService: Optional[ThumbnailService] = None
 
     @staticmethod
     def _resolveProjectsPath() -> Path:
@@ -231,6 +232,19 @@ class ProjectService:
         """Clear per-request project and tomogram cache."""
         self.currentProject = None
         self.tomoList = {}
+        self._thumbnailService = None
+
+    def _getThumbnailService(self) -> ThumbnailService:
+        if self.currentProject is None:
+            raise RuntimeError("Cannot create thumbnail service without a loaded project")
+
+        thumbnailService = getattr(self, "_thumbnailService", None)
+
+        if thumbnailService is None or thumbnailService.currentProject is not self.currentProject:
+            thumbnailService = ThumbnailService(self.currentProject)
+            self._thumbnailService = thumbnailService
+
+        return thumbnailService
 
     def _currentProjectUsesPostgresqlRuntimeMapper(self) -> bool:
         project = getattr(self, "currentProject", None)
@@ -5170,41 +5184,24 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        thumbnailService = ThumbnailService(self.currentProject)
-        return thumbnailService.buildProtocolOutputThumbnail(
-            protocolId=scipionProtocolId,
-            outputName=outputName,
-            force=force,
-            size=size,
-        )
+        return self._getThumbnailService().buildProtocolOutputThumbnail(protocolId=scipionProtocolId,
+                                                                        outputName=outputName,
+                                                                        force=force,
+                                                                        size=size)
 
-    def listProjectThumbnailItems(
-            self,
-            projectId: int,
-            force: bool = False,
-            size: int = 320,
-            maxProtocols: int = 12,
-            maxOutputsPerProtocol: int = 4,
-            inlineImages: bool = False,
-            mapper=None,
-    ):
-        thumbnailService = ThumbnailService(
-            self.currentProject
-        )
+    def listProjectThumbnailItems(self,
+                                  projectId: int,
+                                  force: bool = False,
+                                  size: int = 320,
+                                  maxProtocols: int = 12,
+                                  maxOutputsPerProtocol: int = 4,
+                                  inlineImages: bool = False,
+                                  mapper=None):
 
-        return (
-            thumbnailService
-            .listProtocolThumbnailItems(
-                projectId=projectId,
-                force=force,
-                size=size,
-                maxProtocols=maxProtocols,
-                maxOutputsPerProtocol=(
-                    maxOutputsPerProtocol
-                ),
-                inlineImages=inlineImages,
-            )
-        )
+        return self._getThumbnailService().listProtocolThumbnailItems(projectId=projectId, force=force, size=size,
+                                                                      maxProtocols=maxProtocols,
+                                                                      maxOutputsPerProtocol=maxOutputsPerProtocol,
+                                                                      inlineImages=inlineImages)
 
     def _buildMissingOutputSyncItems(
             self,
@@ -8081,13 +8078,10 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        thumbnailService = ThumbnailService(self.currentProject)
-        return thumbnailService.buildProtocolThumbnail(
-            protocolId=scipionProtocolId,
-            force=force,
-            size=size,
-            outputName=outputName,
-        )
+        return self._getThumbnailService().buildProtocolThumbnail(protocolId=scipionProtocolId,
+                                                                  force=force,
+                                                                  size=size,
+                                                                  outputName=outputName)
 
     def buildProjectThumbnail(
         self,
@@ -8096,12 +8090,9 @@ class ProjectService:
         maxProtocols: int = 6,
     ) -> Dict[str, Any]:
         # buildProjectThumbnail
-        service = ThumbnailService(self.currentProject)
-        return service.buildProjectThumbnail(
-            force=force,
-            size=size,
-            maxProtocols=maxProtocols,
-        )
+        return self._getThumbnailService().buildProjectThumbnail(force=force,
+                                                                 size=size,
+                                                                 maxProtocols=maxProtocols)
 
     def exportProtocolsService(
             self,

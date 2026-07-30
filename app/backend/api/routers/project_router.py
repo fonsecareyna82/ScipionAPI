@@ -3,6 +3,7 @@ import logging
 import os
 import hashlib
 from email.utils import formatdate
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -4163,31 +4164,10 @@ def getProtocolOutputThumbnailsBatch(
                     "outputClassName": None,
                     "exists": False,
                     "cached": False,
-                    "thumbnailUrl": (
-                        f"/projects/{int(projectId)}/protocols/{requestedProtocolId}"
-                        f"/outputs/{outputName}/thumbnail"
-                    ),
+                    "thumbnailUrl": f"/projects/{int(projectId)}/protocols/{requestedProtocolId}/outputs/{quote(outputName, safe='')}/thumbnail",
                     "thumbnailDataUrl": None,
                     "error": None,
                 }
-
-                try:
-                    scipionProtocolId = service._resolveScipionProtocolId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=requestedProtocolId,
-                    )
-                    protocol = service.currentProject.getProtocol(int(scipionProtocolId))
-                except Exception:
-                    item["error"] = "Protocol not found"
-                    items.append(item)
-                    continue
-
-                try:
-                    outputObject = getattr(protocol, outputName)
-                    item["outputClassName"] = outputObject.__class__.__name__
-                except Exception:
-                    item["outputClassName"] = None
 
                 try:
                     result = service.buildProtocolOutputThumbnail(
@@ -4198,6 +4178,8 @@ def getProtocolOutputThumbnailsBatch(
                         mapper=mapper,
                         projectId=projectId,
                     )
+                    item["outputClassName"] = result.get("outputClassName")
+
                 except Exception as exc:
                     logger.debug(
                         "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
