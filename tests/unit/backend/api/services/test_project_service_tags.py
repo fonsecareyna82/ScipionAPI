@@ -272,7 +272,19 @@ def test_ListProtocolTagsResolvesPostgresqlProtocolDbId(
         }
     ]
 
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert [
+               call["params"]
+               for call in mapper.db.fetchOneCalls
+           ] == [
+               (
+                   1,
+                   "500",
+               ),
+               (
+                   1,
+                   500,
+               ),
+           ]
 
 
 def test_ListProtocolTagsAlsoAcceptsRuntimeProtocolId(
@@ -382,7 +394,19 @@ def test_SetProtocolTagsResolvesPostgresqlProtocolDbId(
 
     assert mapper.setProtocolTagIdsCalls == []
     assert mapper.protocolTagIdsByProtocolDbId[500] == ["good", "selected"]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert [
+               call["params"]
+               for call in mapper.db.fetchOneCalls
+           ] == [
+               (
+                   1,
+                   "500",
+               ),
+               (
+                   1,
+                   500,
+               ),
+           ]
 
 
 def test_SetProtocolTagsAlsoAcceptsRuntimeProtocolId(
