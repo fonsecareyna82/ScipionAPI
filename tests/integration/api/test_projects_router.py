@@ -358,6 +358,21 @@ def test_GetMetadataTableSchemaDelegatesMapperToService(projectClient, fakeProje
     assert fakeProjectService.lastGetProjectByIdCall is None
 
 
+def test_RunMetadataTableActionReturns404WhenPostgresqlRuntimeProjectIsMissing(projectClient, fakeProjectService):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
+        json={"action": "create subset", "ids": [1, 2]},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRunMetadataTableActionCall is None
+
+
 def test_RunMetadataTableActionRejectsMissingIds(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
@@ -377,6 +392,18 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
         "message": "Subset created",
         "errors": [],
     }
+
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "enableWriteFallback": False,
+    }
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
     response = projectClient.post(
         "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
