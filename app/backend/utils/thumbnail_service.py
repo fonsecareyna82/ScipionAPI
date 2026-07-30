@@ -31,7 +31,6 @@ import logging
 import os
 import re
 import json
-import time
 import hashlib
 from urllib.parse import quote
 from pathlib import Path
@@ -96,7 +95,6 @@ _thumbnailBuildLocks: Dict[str, threading.Lock] = {}
 class ThumbnailService:
     CACHE_VERSION = "v1"
     PROTOCOL_ASPECT_RATIO = 0.68
-    NEGATIVE_THUMBNAIL_CACHE_TTL_SECONDS = 300
 
     def __init__(self, currentProject):
         self.currentProject = currentProject
@@ -716,8 +714,7 @@ class ThumbnailService:
         )
 
     def _getProtocolOutputNegativeCachePath(self, protocolId: int, outputName: str, size: int) -> Path:
-        return self._getProtocolOutputCachePath(protocolId=protocolId, outputName=outputName, size=size).with_suffix(
-            ".missing.json")
+        return self._getProtocolOutputCachePath(protocolId=protocolId, outputName=outputName, size=size).with_suffix(".missing.json")
 
     def _readNegativeThumbnailCache(self, cachePath: Path) -> Optional[dict]:
         if not cachePath.is_file():
@@ -726,36 +723,28 @@ class ThumbnailService:
         try:
             payload = json.loads(cachePath.read_text(encoding="utf-8"))
         except Exception:
-            try:
-                cachePath.unlink()
-            except Exception:
-                pass
+            cachePath.unlink(missing_ok=True)
             return None
 
-        createdAt = float(payload.get("createdAt") or 0)
-
-        if createdAt <= 0 or (time.time() - createdAt) > NEGATIVE_THUMBNAIL_CACHE_TTL_SECONDS:
-            try:
-                cachePath.unlink()
-            except Exception:
-                pass
+        if not isinstance(payload, dict):
+            cachePath.unlink(missing_ok=True)
             return None
 
         return payload
 
-    def _writeNegativeThumbnailCache(self, cachePath: Path, outputClassName: Optional[str] = None,
-                                     error: Optional[str] = None) -> None:
-        cachePath.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"createdAt": time.time(), "outputClassName": outputClassName, "error": str(error) if error else None}
-        cachePath.write_text(json.dumps(payload), encoding="utf-8")
+    def _writeNegativeThumbnailCache(self, cachePath: Path, outputClassName: Optional[str] = None, error: Optional[str] = None) -> None:
+        try:
+            cachePath.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"outputClassName": outputClassName, "error": str(error) if error else None}
+            cachePath.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            logger.debug("Could not write negative thumbnail cache. cachePath=%s", cachePath, exc_info=True)
 
     def _clearNegativeThumbnailCache(self, cachePath: Path) -> None:
         try:
-            cachePath.unlink()
-        except FileNotFoundError:
-            pass
+            cachePath.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("Could not clear negative thumbnail cache. cachePath=%s", cachePath, exc_info=True)
 
     def buildProtocolOutputThumbnail(
             self,
@@ -786,6 +775,7 @@ class ThumbnailService:
                                                                      size=int(size))
 
         if not force and self._isValidCachedImage(cachePath):
+            self._clearNegativeThumbnailCache(negativeCachePath)
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
@@ -841,6 +831,8 @@ class ThumbnailService:
         score = self._scoreOutput(outputName, output)
 
         if score <= 0 and not self._looksRenderableOutput(output):
+            self._writeNegativeThumbnailCache(negativeCachePath, outputClassName=outputClassName,
+                                              error="Output is not renderable")
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
@@ -861,6 +853,7 @@ class ThumbnailService:
         buildLock = self._getThumbnailBuildLock(cachePath)
         with buildLock:
             if not force and self._isValidCachedImage(cachePath):
+                self._clearNegativeThumbnailCache(negativeCachePath)
                 return {
                     "protocolId": int(protocolId),
                     "protocolLabel": self._getProtocolLabel(protocol),
@@ -903,6 +896,8 @@ class ThumbnailService:
                     )
 
             if previewImage is None:
+                self._writeNegativeThumbnailCache(negativeCachePath, outputClassName=outputClassName,
+                                                  error="Thumbnail not available")
                 return {
                     "protocolId": int(protocolId),
                     "protocolLabel": self._getProtocolLabel(protocol),
@@ -920,6 +915,7 @@ class ThumbnailService:
                 protocolId=int(protocolId),
             )
             self._saveImage(thumbnail, cachePath)
+            self._clearNegativeThumbnailCache(negativeCachePath)
 
             return {
                 "protocolId": int(protocolId),
