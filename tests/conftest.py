@@ -399,6 +399,15 @@ class FakeProjectService:
             ],
         }
         self.lastGetCtftomoSeriesViewsCall = None
+        self.newCtftomoSeriesSetResult = {
+            "status": 0,
+            "outputName": "CTFTomoSeries2",
+            "createdSeries": 1,
+            "restack": False,
+            "postgresqlSync": {"stored": True},
+            "postgresqlError": None,
+        }
+        self.lastCreateNewSetOfCtftomoSeriesCall = None
 
         self.coords3dTomogramsResult = [
             {
@@ -1220,6 +1229,25 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.ctftomoSeriesViewsResult
+
+    def createNewSetOfCtftomoSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            exclusions,
+            restack,
+            mapper=None,
+    ):
+        self.lastCreateNewSetOfCtftomoSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "exclusions": exclusions,
+            "restack": restack,
+            "mapper": mapper,
+        }
+        return self.newCtftomoSeriesSetResult
 
     def listCoordinates3dTomogramsService(
             self,

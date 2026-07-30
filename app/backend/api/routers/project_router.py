@@ -2502,12 +2502,10 @@ def createNewSetOfCtftomoSeries(
     The backend is expected to duplicate the SetOfCTFTomoSeries and
     update excluded tilts per series.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
