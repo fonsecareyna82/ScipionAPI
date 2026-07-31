@@ -55,16 +55,15 @@ def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
                 "status": "active",
             }
 
+    def failLegacyProjectLoad(*args, **kwargs):
+        raise AssertionError(
+            "Legacy project.sqlite workflow loading must not be used"
+        )
+
     monkeypatch.setattr(
         service,
-        "loadProjectRuntimeContext",
-        lambda **kwargs: (
-            _ for _ in ()
-        ).throw(
-            AssertionError(
-                "Legacy project.sqlite context must not be loaded"
-            )
-        ),
+        "loadProject",
+        failLegacyProjectLoad,
     )
 
     def failRuntimeProjectLoad(**kwargs):
