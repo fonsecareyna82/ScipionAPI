@@ -36,6 +36,7 @@ from pwem.objects import Coordinate
 
 from app.backend.api.services.project_service import ProjectService
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.runtime import RuntimeOutputProxyService
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 logger = logging.getLogger(__name__)
@@ -85,13 +86,55 @@ class Coords2dService:
             protocolId=protocolId,
         )
 
-        if not hasattr(protocol, outputName):
+        if protocol is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                detail=f"Protocol '{protocolId}' not found",
             )
 
-        coordinatesSet = getattr(protocol, outputName)
+        if mapper is not None:
+            protocolDbId = self.projectService._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self.projectService._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            ) or {}
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                )
+
+            runtimeProject = getattr(self.projectService, "currentProject", None)
+            runtimeMapper = getattr(runtimeProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            coordinatesSet = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+        else:
+            if not hasattr(protocol, outputName):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                )
+
+            coordinatesSet = getattr(protocol, outputName)
 
         if coordinatesSet is None:
             raise HTTPException(
