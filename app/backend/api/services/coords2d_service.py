@@ -35,8 +35,9 @@ from PIL import Image, ImageEnhance, ImageOps
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import Coordinate
 
-from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
+from app.backend.api.services.project_service import ProjectService
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 logger = logging.getLogger(__name__)
 
@@ -418,45 +419,6 @@ class Coords2dService:
                 detail=f"Micrograph '{micId}' not found in coordinates output",
             )
         return micrograph
-
-    def _loadPostgresqlMicrograph(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        currentUser: Any,
-        protocolId: int,
-        outputName: str,
-        micId: str,
-    ) -> Any:
-        with _thumbnailProjectLock:
-            projectRow = self.projectService.getProjectDbRow(
-                mapper=mapper,
-                projectId=projectId,
-                currentUser=currentUser,
-            )
-
-            if not projectRow:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Project not found",
-                )
-
-            self.projectService.loadProjectForThumbnails(
-                projectRow,
-                mapper=mapper,
-            )
-
-            _, coordinatesSet = self._resolveCoordinatesOutput(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-            )
-
-            return self._findMicrograph(
-                coordinatesSet,
-                micId,
-            )
 
     def listCoordinatesForMicrograph(
             self,
@@ -869,27 +831,45 @@ class Coords2dService:
         size: int = 2200,
         fmt: str = "png",
     ) -> Response:
-        micrograph = self._loadPostgresqlMicrograph(
+        pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
-            currentUser=currentUser,
             protocolId=protocolId,
             outputName=outputName,
-            micId=micId,
         )
-        imageIndex, imagePath = self._micrographLocation(micrograph)
 
-        if not imagePath:
+        if pgReader is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Coordinates2D output is not available in PostgreSQL metadata",
+            )
+
+        micrographInfo = pgReader.getMicrographImageInfo(micId)
+
+        if micrographInfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Coordinates2D micrograph image is not available in PostgreSQL metadata: %s" % pgReader.lastSkipReason,
+            )
+
+        imageIndex = micrographInfo.get("locationIndex")
+        storedImagePath = str(micrographInfo.get("fileName") or "").strip()
+
+        if not storedImagePath:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Micrograph '{micId}' does not have a file path",
             )
 
-        imagePath = os.path.abspath(imagePath)
-        if not os.path.exists(imagePath):
+        imagePath = PostgresqlProjectPathResolver(
+            db=mapper.db,
+            projectId=projectId,
+        ).resolveExistingPath(storedImagePath)
+
+        if imagePath is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Micrograph image file not found: {imagePath}",
+                detail=f"Micrograph image file not found: {storedImagePath}",
             )
 
         try:
