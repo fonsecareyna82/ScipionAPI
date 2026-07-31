@@ -111,6 +111,15 @@ class FakeCoord:
     def getMatrix(self):
         return self._matrix
 
+    def clone(self):
+        cloned = FakeCreatedCoordinate3D()
+        cloned.setObjId(self._objId)
+        cloned.setPosition(self._x, self._y, self._z, "bottom-left")
+        cloned.setGroupId(self._classId if self._classId is not None else 0)
+        cloned.setScore(self._score if self._score is not None else 0)
+        cloned.setMatrix(np.array(self._matrix, copy=True))
+        return cloned
+
 
 class FakeCoordinatesSet:
     # fakeCoordinatesSet
@@ -149,6 +158,14 @@ class FakeCreatedCoordinatesSet:
         self.tomograms = None
         self.written = False
         self._samplingRate = 3.0
+        self.infoSource = None
+        self.boxSize = None
+
+    def copyInfo(self, source):
+        self.infoSource = source
+
+    def setBoxSize(self, value):
+        self.boxSize = value
 
     def setTomograms(self, tomograms):
         self.tomograms = tomograms
@@ -226,9 +243,9 @@ class FakeProtocol:
 
 
 class FakeCurrentProject:
-    # fakeCurrentProject
     def __init__(self, protocol):
         self._protocol = protocol
+        self.mapper = object()
 
     def getProtocol(self, protocolId):
         return self._protocol
@@ -553,7 +570,12 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
     assert len(response.body) > 0
 
 
-def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceModule, service, monkeypatch, tmp_path):
+def test_CreateCoords3dOutputFromPointsServiceCreatesNewPostgresqlOutput(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
     tomoPath = tmp_path / "tomo1.mrc"
     tomoPath.write_text("placeholder", encoding="utf-8")
 
@@ -565,16 +587,44 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
         dims=[128, 128, 64],
     )
 
-    output = FakeCoordinatesSet(
+    sourceSet = FakeCoordinatesSet(
         tomograms=[tomo],
         coordsByTomogram={},
         boxSize=48,
     )
-    protocol = FakeProtocol("outputCoords3d", output)
+    protocol = FakeProtocol("outputCoords3d", sourceSet)
+    createdSet = FakeCreatedCoordinatesSet()
+    mapper = object()
+    discardCalls = []
+
     service.currentProject = FakeCurrentProject(protocol)
-    service.tomoList = {"TS_001": tomo}
 
     monkeypatch.setattr(projectServiceModule, "Coordinate3D", FakeCreatedCoordinate3D)
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForCoordinates3d",
+        lambda **kwargs: (protocol, sourceSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {"outputName": "outputCoords3d_edited"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        lambda **kwargs: {"outputSet": createdSet},
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        lambda **kwargs: {"sets": 1, "items": 2},
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        lambda **kwargs: discardCalls.append(kwargs),
+    )
 
     payload = {
         "tomograms": [
@@ -585,8 +635,9 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
                         "x": 1.0,
                         "y": 2.0,
                         "z": 3.0,
-                        "groupId": 5,
+                        "classId": 5,
                         "score": 0.9,
+                        "radius": 48,
                         "matrix": [[1, 0], [0, 1]],
                         "tomoId": "TS_001",
                     },
@@ -606,20 +657,21 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
         protocolId=10,
         outputName="outputCoords3d",
         payload=payload,
+        mapper=mapper,
     )
 
     assert result["success"] is True
     assert result["outputName"] == "outputCoords3d_edited"
-    assert result["message"] == "Created new coords3d output 'outputCoords3d_edited'"
-    assert result["data"]["sourceOutputName"] == "outputCoords3d"
     assert result["data"]["replacedPoints"] == 2
     assert result["data"]["copiedPoints"] == 0
-    assert result["data"]["postgresqlStored"] is False
+    assert result["data"]["postgresqlStored"] is True
     assert result["data"]["postgresqlError"] is None
+    assert result["data"]["postgresqlSync"] == {"sets": 1, "items": 2}
 
-    assert "outputCoords3d_edited" in protocol.definedOutputs
-    createdSet = protocol.definedOutputs["outputCoords3d_edited"]
-    assert createdSet.written is True
+    assert createdSet.written is False
+    assert createdSet.infoSource is sourceSet
+    assert createdSet.tomograms is sourceSet.getTomograms()
+    assert createdSet.boxSize == 48
     assert len(createdSet.appended) == 2
 
     firstCoord = createdSet.appended[0]
@@ -629,11 +681,84 @@ def test_CreateCoords3dOutputFromPointsServiceCreatesNewOutput(projectServiceMod
     assert firstCoord.groupId == 5
     assert firstCoord.tomoId == "TS_001"
     assert firstCoord.score == 0.9
-    assert firstCoord.boxSize == 3.0
+    assert firstCoord.boxSize == 48
     assert firstCoord.matrix.tolist() == [[1, 0], [0, 1]]
 
-    secondCoord = createdSet.appended[1]
-    assert secondCoord.groupId == 0
-    assert secondCoord.score == 0
-
+    assert "outputCoords3d_edited" in protocol.definedOutputs
+    assert protocol.definedOutputs["outputCoords3d_edited"] is createdSet
     assert protocol.stored is True
+    assert discardCalls == []
+
+
+def test_CreateCoords3dOutputFromPointsServiceCopiesUntouchedTomograms(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    tomoPath1 = tmp_path / "tomo1.mrc"
+    tomoPath2 = tmp_path / "tomo2.mrc"
+    tomoPath1.write_text("placeholder", encoding="utf-8")
+    tomoPath2.write_text("placeholder", encoding="utf-8")
+
+    tomo1 = FakeTomogram("TS_001", "Tomogram 1", str(tomoPath1), 2.5, [128, 128, 64])
+    tomo2 = FakeTomogram("TS_002", "Tomogram 2", str(tomoPath2), 2.5, [128, 128, 64])
+
+    untouchedCoordinate = FakeCoord(
+        x=20.0,
+        y=30.0,
+        z=40.0,
+        objId=200,
+        classId=7,
+        score=0.8,
+    )
+
+    sourceSet = FakeCoordinatesSet(
+        tomograms=[tomo1, tomo2],
+        coordsByTomogram={
+            "TS_001": [],
+            "TS_002": [untouchedCoordinate],
+        },
+        boxSize=48,
+    )
+    protocol = FakeProtocol("outputCoords3d", sourceSet)
+    createdSet = FakeCreatedCoordinatesSet()
+
+    service.currentProject = FakeCurrentProject(protocol)
+
+    monkeypatch.setattr(projectServiceModule, "Coordinate3D", FakeCreatedCoordinate3D)
+    monkeypatch.setattr(service, "_resolveOutputForCoordinates3d", lambda **kwargs: (protocol, sourceSet))
+    monkeypatch.setattr(service, "_getGeneratedSetOutputIdentity", lambda **kwargs: {"outputName": "outputCoords3d_edited"})
+    monkeypatch.setattr(service, "_createWritableGeneratedPostgresqlSet", lambda **kwargs: {"outputSet": createdSet})
+    monkeypatch.setattr(service, "_finalizeGeneratedPostgresqlSet", lambda **kwargs: {"sets": 1, "items": 1})
+    monkeypatch.setattr(service, "_discardGeneratedPostgresqlSet", lambda **kwargs: None)
+
+    result = service.createCoords3dOutputFromPointsService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCoords3d",
+        payload={
+            "tomograms": [
+                {
+                    "tomoId": "TS_001",
+                    "coords": [],
+                }
+            ]
+        },
+        mapper=object(),
+    )
+
+    assert result["data"]["replacedPoints"] == 0
+    assert result["data"]["copiedPoints"] == 1
+    assert len(createdSet.appended) == 1
+
+    copiedCoordinate = createdSet.appended[0]
+    assert copiedCoordinate.objId is None
+    assert copiedCoordinate.volume is tomo2
+    assert copiedCoordinate.tomoId == "TS_002"
+    assert copiedCoordinate.position["x"] == 20.0
+    assert copiedCoordinate.position["y"] == 30.0
+    assert copiedCoordinate.position["z"] == 40.0
+    assert copiedCoordinate.groupId == 7
+
+

@@ -11692,7 +11692,49 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        output = getattr(protocol, outputName, None)
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol '{protocolId}' not found",
+            )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            ) or {}
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+        else:
+            output = getattr(protocol, outputName, None)
+
         if output is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -11700,6 +11742,46 @@ class ProjectService:
             )
 
         return protocol, output
+
+    @staticmethod
+    def _iterCoordinates3dTomograms(setOfCoordinates3D):
+        def asIterator(value):
+            iterItems = getattr(value, "iterItems", None)
+
+            if callable(iterItems):
+                try:
+                    return iterItems(iterate=False)
+                except TypeError:
+                    return iterItems()
+
+            return iter(value)
+
+        for methodName in ("iterTomograms", "iterVolumes"):
+            method = getattr(setOfCoordinates3D, methodName, None)
+
+            if not callable(method):
+                continue
+
+            try:
+                return asIterator(method())
+            except Exception:
+                continue
+
+        getTomograms = getattr(setOfCoordinates3D, "getTomograms", None)
+
+        if callable(getTomograms):
+            try:
+                return asIterator(getTomograms())
+            except Exception as error:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to iterate Coordinates3D tomograms: {error}",
+                )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SetOfCoordinates3D does not expose tomograms iterator",
+        )
 
     def listCoordinates3dTomogramsService(
             self,
@@ -11752,41 +11834,8 @@ class ProjectService:
         )
         self.tomoList = {}
         tomogramList: List[Dict[str, Any]] = []
-        tomosIter = None
 
-        for attrName in ("iterTomograms", "iterVolumes"):
-            func = getattr(setOfCoordinates3D, attrName, None)
-            if callable(func):
-                try:
-                    tomosIter = func()
-                    break
-                except Exception:
-                    tomosIter = None
-
-        if tomosIter is None:
-            getTomos = getattr(setOfCoordinates3D, "getTomograms", None)
-            if callable(getTomos):
-                try:
-                    tomos = getTomos()
-                    tomosIter = (
-                        tomos.iterItems() if hasattr(tomos, "iterItems") else iter(tomos)
-                    )
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to iterate tomograms: {e}",
-                    )
-
-        if tomosIter is None:
-            raise HTTPException(
-                status_code=500,
-                detail="SetOfCoordinates3D does not expose tomograms iterator",
-            )
-
-        if hasattr(tomosIter, "iterItems"):
-            iterator = tomosIter.iterItems()
-        else:
-            iterator = iter(tomosIter)
+        iterator = self._iterCoordinates3dTomograms(setOfCoordinates3D)
 
         for index, tomo in enumerate(iterator):
             tomoId = None
@@ -12594,14 +12643,38 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             payload: Any,
-            mapper=None
+            mapper=None,
     ) -> Dict[str, Any]:
+        if mapper is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL mapper is required to create a Coordinates3D output",
+            )
 
-        tomograms = payload['tomograms']
+        payload = payload or {}
+        replacementMap: Dict[str, List[Dict[str, Any]]] = {}
 
-        # ---------------------------------
-        # 1. Obtaining protocol and origin
-        # ---------------------------------
+        for tomogramPayload in payload.get("tomograms") or []:
+            if not isinstance(tomogramPayload, dict):
+                continue
+
+            tomoId = tomogramPayload.get("tomoId")
+
+            if tomoId is None:
+                continue
+
+            replacementMap[str(tomoId)] = [
+                point
+                for point in tomogramPayload.get("coords") or []
+                if isinstance(point, dict)
+            ]
+
+        if not replacementMap:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No Coordinates3D changes provided",
+            )
+
         protocol, srcSet = self._resolveOutputForCoordinates3d(
             protocolId=protocolId,
             outputName=outputName,
@@ -12609,100 +12682,212 @@ class ProjectService:
             projectId=projectId,
         )
 
-        runtimeProtocolId = getattr(protocol, "getObjId", lambda: protocolId)()
+        sourceTomograms = list(self._iterCoordinates3dTomograms(srcSet))
+        self.tomoList = {}
 
-        # -------------------------------
-        # 2. Ensure tomograms
-        # -------------------------------
-        if not self.tomoList:
-            self.listCoordinates3dTomogramsService(
-                projectId=projectId,
-                protocolId=runtimeProtocolId,
-                outputName=outputName,
-                mapper=None,
+        for index, tomoObj in enumerate(sourceTomograms):
+            tomoId = None
+
+            for methodName in ("getTsId", "getObjId"):
+                method = getattr(tomoObj, methodName, None)
+
+                if not callable(method):
+                    continue
+
+                try:
+                    tomoId = method()
+                except Exception:
+                    tomoId = None
+
+                if tomoId is not None:
+                    break
+
+            if tomoId is None:
+                tomoId = index
+
+            self.tomoList[str(tomoId)] = tomoObj
+
+        missingTomoIds = sorted(set(replacementMap) - set(self.tomoList))
+
+        if missingTomoIds:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tomogram(s) not found in source Coordinates3D output: {', '.join(missingTomoIds)}",
             )
 
-        # -----------------------------------
-        # 3. Creating new SetOfCoordinates3D
-        # -----------------------------------
-        try:
-            outName = protocol.getNextOutputName(outputName)
-        except Exception:
-            outName = f"{'SetOfCoordinates3D'}_{uuid4().hex[:6]}"
-
-        try:
-            dstSet = srcSet.createCopy(protocol._getPath(), prefix=outName, copyInfo=True)
-        except TypeError:
-            dstSet = srcSet.createCopy(protocol._getPath(), prefix=outName)
-
-        if hasattr(srcSet, "getTomograms"):
-            try:
-                dstSet.setTomograms(srcSet.getTomograms())
-            except Exception:
-                pass
-
-        # -------------------------------
-        # 4. Build new coordinates
-        # -------------------------------
-        replaced = 0
-        copied = 0
-
-        for tomoKey, tomoObj in self.tomoList.items():
-            for tomogram in tomograms:
-                if tomogram['tomoId'] == tomoKey:
-                    coords = tomogram['coords']
-                    for coord in coords:
-                        c = Coordinate3D()
-                        c.setObjId(None)
-                        c.setVolume(tomoObj)
-                        c.setPosition(coord['x'], coord['y'], coord['z'], BOTTOM_LEFT_CORNER)
-                        groupId = coord['groupId'] if 'groupId' in coord else 0
-                        c.setGroupId(groupId)
-                        c.setTomoId(coord['tomoId'])
-                        c.setBoxSize(dstSet.getSamplingRate())
-                        score = coord['score'] if 'score' in coord else 0
-                        c.setScore(score)
-                        transformMatrix = coord['matrix'] if 'matrix' in coord else None
-                        if transformMatrix:
-                            transformMatrix = np.array(transformMatrix)
-                            c.setMatrix(transformMatrix)
-                        dstSet.append(c)
-                        replaced += 1
-                    break
-        # ------------------------------------
-        # 5. Saving and registering the output
-        # ------------------------------------
-        try:
-            dstSet.write()
-        except Exception:
-            pass
-        try:
-            protocol._defineOutputs(**{outName: dstSet})
-            protocol._store()
-        except Exception as e:
-            raise HTTPException(500, f"Failed to attach new coords3d output: {e}")
-
-        postgresqlStore = self._storeGeneratedSetInPostgresql(
+        outputIdentity = self._getGeneratedSetOutputIdentity(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-            outputName=outName,
-            scipionSet=dstSet,
-            contextLabel="Coordinates3D",
+            protocol=protocol,
+            outputPrefix=outputName,
         )
-        postgresqlError = postgresqlStore["postgresqlError"]
-        postgresqlStored = mapper is not None and postgresqlError is None
+        newOutputName = outputIdentity["outputName"]
+
+        generatedSetContext = self._createWritableGeneratedPostgresqlSet(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputName=newOutputName,
+            sourceSet=srcSet,
+        )
+        dstSet = generatedSetContext["outputSet"]
+
+        try:
+            try:
+                dstSet.copyInfo(srcSet)
+            except Exception:
+                logger.debug(
+                    "Could not copy Coordinates3D Set metadata. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    exc_info=True,
+                )
+
+            try:
+                sourceTomogramsSet = srcSet.getTomograms()
+
+                if sourceTomogramsSet is not None:
+                    dstSet.setTomograms(sourceTomogramsSet)
+            except Exception:
+                logger.debug(
+                    "Could not copy Coordinates3D tomograms pointer. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    exc_info=True,
+                )
+
+            try:
+                sourceBoxSize = srcSet.getBoxSize()
+            except Exception:
+                sourceBoxSize = None
+
+            if sourceBoxSize is not None:
+                try:
+                    dstSet.setBoxSize(sourceBoxSize)
+                except Exception:
+                    pass
+
+            replaced = 0
+            copied = 0
+
+            for tomoId, tomoObj in self.tomoList.items():
+                replacementCoords = replacementMap.get(tomoId)
+
+                if replacementCoords is None:
+                    try:
+                        sourceCoordinates = srcSet.iterCoordinates(tomoObj)
+                    except Exception as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Could not read source coordinates for tomogram '{tomoId}': {error}",
+                        )
+
+                    for sourceCoord in sourceCoordinates:
+                        cloneMethod = getattr(sourceCoord, "clone", None)
+                        newCoord = cloneMethod() if callable(cloneMethod) else copy.deepcopy(sourceCoord)
+                        newCoord.setObjId(None)
+
+                        setVolume = getattr(newCoord, "setVolume", None)
+
+                        if callable(setVolume):
+                            setVolume(tomoObj)
+
+                        setTomoId = getattr(newCoord, "setTomoId", None)
+
+                        if callable(setTomoId):
+                            setTomoId(tomoId)
+
+                        dstSet.append(newCoord)
+                        copied += 1
+
+                    continue
+
+                for point in replacementCoords:
+                    try:
+                        x = float(point["x"])
+                        y = float(point["y"])
+                        z = float(point["z"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Invalid coordinate for tomogram '{tomoId}': {error}",
+                        )
+
+                    coordinate = Coordinate3D()
+                    coordinate.setObjId(None)
+                    coordinate.setVolume(tomoObj)
+                    coordinate.setPosition(x, y, z, BOTTOM_LEFT_CORNER)
+
+                    groupId = point.get("groupId", point.get("classId", 0))
+
+                    if groupId in (None, ""):
+                        groupId = 0
+
+                    coordinate.setGroupId(groupId)
+                    coordinate.setTomoId(point.get("tomoId", tomoId))
+
+                    boxSize = point.get("radius", sourceBoxSize)
+
+                    if boxSize is not None:
+                        coordinate.setBoxSize(float(boxSize))
+
+                    score = point.get("score", 0)
+
+                    if score is None:
+                        score = 0
+
+                    coordinate.setScore(float(score))
+
+                    transformMatrix = point.get("matrix")
+
+                    if transformMatrix:
+                        coordinate.setMatrix(np.asarray(transformMatrix))
+
+                    dstSet.append(coordinate)
+                    replaced += 1
+
+            protocol._defineOutputs(**{newOutputName: dstSet})
+            protocol._store()
+
+            postgresqlSync = self._finalizeGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+                outputName=newOutputName,
+            )
+
+        except HTTPException:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+            raise
+
+        except Exception as error:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not persist Coordinates3D output in PostgreSQL: {error}",
+            )
 
         return {
             "success": True,
-            "outputName": outName,
-            "message": f"Created new coords3d output '{outName}'",
+            "outputName": newOutputName,
+            "message": f"Created new coords3d output '{newOutputName}'",
             "data": {
                 "sourceOutputName": outputName,
                 "replacedPoints": replaced,
                 "copiedPoints": copied,
-                "postgresqlStored": postgresqlStored,
-                "postgresqlError": postgresqlError,
+                "postgresqlStored": True,
+                "postgresqlError": None,
+                "postgresqlSync": postgresqlSync,
             },
         }
 
