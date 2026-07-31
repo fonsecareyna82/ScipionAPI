@@ -2813,24 +2813,51 @@ def createCoords3dOutputFromPoints(projectId: int,
     """ Create a new SetOfCoordinates3D output from an edited full point list for a given tomogram.
     The backend must interpret `coords` as a full replacement for that tomogram inside `outputName`. """
 
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        result = service.createCoords3dOutputFromPointsService(projectId=projectId,
-                                                               protocolId=protocolId,
-                                                               outputName=outputName,
-                                                               payload=payload,
-                                                               mapper=mapper,)
-        resp = JSONResponse(result or {"success": True, "outputName": result['outputName']})
-        resp.headers["X-Debug-Auth"] = "ok"
-        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
-        resp.headers["Vary"] = "Authorization"
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
 
-        return resp
-    except HTTPException as e:
-        logger.exception("Error in createCoords3dOutputFromPoints: %s", e)
-        raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        result = service.createCoords3dOutputFromPointsService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            payload=payload,
+            mapper=mapper,
+        )
+
+        response = JSONResponse(result or {"success": True})
+        userId = currentUser.get("id", "") if isinstance(currentUser, dict) else getattr(currentUser, "id", "")
+
+        response.headers["X-Debug-Auth"] = "ok"
+        response.headers["X-Debug-UserId"] = str(userId)
+        response.headers["Vary"] = "Authorization"
+
+        return response
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error creating Coordinates3D output. projectId=%s protocolId=%s outputName=%s",
+            projectId,
+            protocolId,
+            outputName,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create coords3d output from points: {error}",
+        )
 
 
 @router.get(
