@@ -498,7 +498,6 @@ class ProtocolWizardService:
                 mapper=mapper,
                 projectId=projectId,
                 currentUser=currentUser,
-                enableWriteFallback=False,
             )
         )
 
