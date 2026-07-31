@@ -137,7 +137,7 @@ class FakeProjectService:
         self.runtimeCalls = []
         self.castParamValueCalls = []
         self.applyParamsToProtocolCalls = []
-        self.getProjectByIdCalls = []
+        self.loadPostgresqlRuntimeProjectCalls = []
         self.projectRow = {"id": 1}
 
     def _getScipionProtocolForRuntime(self, mapper, projectId, protocolId):
@@ -170,15 +170,24 @@ class FakeProjectService:
         })
         return []
 
-    def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
-        self.getProjectByIdCalls.append({
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            enableWriteFallback=True,
+    ):
+        self.loadPostgresqlRuntimeProjectCalls.append({
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "refresh": refresh,
-            "checkPid": checkPid,
+            "enableWriteFallback": enableWriteFallback,
         })
-        return self.projectRow
+
+        if self.projectRow is None:
+            return None
+
+        return self.currentProject
 
 
 class FakePayload:
@@ -435,15 +444,15 @@ def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
         },
     }
 
-    assert projectService.getProjectByIdCalls == [
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "currentUser": {"id": 1},
-            "refresh": False,
-            "checkPid": False,
+            "enableWriteFallback": False,
         }
     ]
+    assert wizardService.currentProject is currentProject
 
     assert projectService.runtimeCalls == [
         {
@@ -499,3 +508,11 @@ def test_ExecuteProtocolWizardReturns404WhenProjectDoesNotExist(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Project not found"
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": {"id": 1},
+            "enableWriteFallback": False,
+        }
+    ]

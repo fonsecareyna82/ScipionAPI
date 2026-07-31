@@ -492,18 +492,23 @@ class ProtocolWizardService:
         if self.projectService is None:
             raise RuntimeError("projectService is required to execute protocol wizards")
 
-        project = self.projectService.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
+        project = (
+            self.projectService
+            .loadPostgresqlRuntimeProjectForMutation(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                enableWriteFallback=False,
+            )
         )
+
         if not project:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
+
+        self.currentProject = project
 
         protocol = self._buildWizardReadyProtocol(
             protocolId=getattr(payload, "protocolId", None),
