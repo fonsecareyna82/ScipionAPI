@@ -150,7 +150,7 @@ class ProtocolService:
                 "for subprocess protocol build"
             )
 
-        code =         code = """
+        code = """
     import contextlib
     import os
     import sys
