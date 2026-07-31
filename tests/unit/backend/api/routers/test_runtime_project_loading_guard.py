@@ -54,7 +54,18 @@ ALLOWED_LEGACY_LOAD_PROJECT_CALLS = {
 }
 
 ALLOWED_PROJECT_DB_LOADS = {
-    ("app/backend/api/services/project_service.py", "loadProject"),
+    (
+        "app/backend/api/services/project_service.py",
+        "_validateImportableScipionProject",
+    ),
+    (
+        "app/backend/api/services/project_service.py",
+        "_loadLegacyProjectForImport",
+    ),
+    (
+        "app/backend/api/services/project_service.py",
+        "loadProject",
+    ),
     (
         "app/backend/api/services/project_consistency_service.py",
         "_loadLegacyProjectForConsistency",
@@ -273,6 +284,14 @@ def getProject(service, validateConsistency):
 
 def test_ProjectRuntimeLoadingGuardAllowsApprovedLegacyProjectDbLoads():
     projectServiceSource = """
+def _validateImportableScipionProject(project):
+    project.load(dbPath=project.getDbPath())
+
+
+def _loadLegacyProjectForImport(project):
+    project.load(dbPath=project.getDbPath())
+
+
 def loadProject(project):
     project.load(dbPath=project.getDbPath())
 
