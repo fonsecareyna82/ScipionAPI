@@ -29,10 +29,20 @@ from typing import List, Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
-ROUTERS_ROOT = PROJECT_ROOT / "app" / "backend" / "api" / "routers"
+
+SCANNED_ROOTS = (
+    PROJECT_ROOT / "app" / "backend" / "api" / "routers",
+    PROJECT_ROOT / "app" / "backend" / "api" / "services",
+    PROJECT_ROOT / "app" / "backend" / "runtime",
+)
+
+LEGACY_PROJECT_LOAD_CALLS = {
+    "getProjectById",
+    "getProjectByIdCallback",
+}
 
 ALLOWED_DYNAMIC_LOADS = {
-    ("project_router.py", "getProject"),
+    ("app/backend/api/routers/project_router.py", "getProject"),
 }
 
 
@@ -40,6 +50,16 @@ def _getKeywordValue(call: ast.Call, keywordName: str) -> Optional[ast.AST]:
     for keyword in call.keywords:
         if keyword.arg == keywordName:
             return keyword.value
+
+    return None
+
+
+def _getCalledFunctionName(call: ast.Call) -> Optional[str]:
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+
+    if isinstance(call.func, ast.Name):
+        return call.func.id
 
     return None
 
@@ -86,13 +106,11 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
         finally:
             self.functionStack.pop()
 
-    def visit_Call(self, node: ast.Call):
-        isGetProjectByIdCall = (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "getProjectById"
-        )
 
-        if isGetProjectByIdCall:
+    def visit_Call(self, node: ast.Call):
+        callName = _getCalledFunctionName(node)
+
+        if callName in LEGACY_PROJECT_LOAD_CALLS:
             functionName = self.functionStack[-1] if self.functionStack else "<module>"
             loadWorkflowValue = _getKeywordValue(
                 node,
@@ -138,10 +156,33 @@ def unsafeRoute(service):
     ]
 
 
-def test_ProjectRouteLoadingGuardAllowsExplicitPostgresqlLoads():
+def test_ProjectRuntimeLoadingGuardRejectsUnsafeLegacyCallbackLoad():
+    source = """
+def unsafeRuntime(getProjectByIdCallback):
+    return getProjectByIdCallback(None, 1, {})
+"""
+
+    assert _findUnsafeProjectLoads(
+        source=source,
+        relativePath="unsafe_runtime.py",
+    ) == [
+        "unsafe_runtime.py:3:unsafeRuntime",
+    ]
+
+
+def test_ProjectRuntimeLoadingGuardAllowsExplicitPostgresqlLoads():
     source = """
 def refreshWorkflow(service):
     return service.getProjectById(
+        None,
+        1,
+        {},
+        loadWorkflowFromPostgresql=True,
+    )
+
+
+def refreshRuntime(getProjectByIdCallback):
+    return getProjectByIdCallback(
         None,
         1,
         {},
@@ -160,29 +201,31 @@ def getProject(service, validateConsistency):
 
     assert _findUnsafeProjectLoads(
         source=source,
-        relativePath="project_router.py",
+        relativePath="app/backend/api/routers/project_router.py",
     ) == []
 
 
-def test_ProjectRoutersDoNotUseUnsafeLegacyProjectLoads():
+def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
     violations: List[str] = []
 
-    for sourcePath in sorted(ROUTERS_ROOT.rglob("*.py")):
-        relativePath = sourcePath.relative_to(ROUTERS_ROOT).as_posix()
-        source = sourcePath.read_text(encoding="utf-8")
+    for sourceRoot in SCANNED_ROOTS:
+        for sourcePath in sorted(sourceRoot.rglob("*.py")):
+            relativePath = sourcePath.relative_to(PROJECT_ROOT).as_posix()
+            source = sourcePath.read_text(encoding="utf-8")
 
-        violations.extend(
-            _findUnsafeProjectLoads(
-                source=source,
-                relativePath=relativePath,
+            violations.extend(
+                _findUnsafeProjectLoads(
+                    source=source,
+                    relativePath=relativePath,
+                )
             )
-        )
 
     assert not violations, (
-        "Unsafe getProjectById() calls were found in API routers.\n"
-        "Runtime routes must use loadPostgresqlRuntimeProjectForMutation(), "
+        "Unsafe getProjectById() calls were found in API or runtime code.\n"
+        "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
         "getProjectDbRow(), or explicitly pass "
         "loadWorkflowFromPostgresql=True.\n"
+        "Legacy project-loader callbacks are also forbidden.\n"
         "Only the project consistency endpoint may use "
         "loadWorkflowFromPostgresql=not validateConsistency.\n"
         + "\n".join(violations)
