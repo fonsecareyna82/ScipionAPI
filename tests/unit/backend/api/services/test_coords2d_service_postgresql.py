@@ -29,6 +29,16 @@ import pytest
 from app.backend.api.services.coords2d_service import Coords2dService
 
 
+class FakeProjectService:
+    pass
+
+
+@pytest.fixture
+def service(monkeypatch):
+    monkeypatch.setattr("app.backend.api.services.coords2d_service.ProjectService", FakeProjectService)
+    return Coords2dService()
+
+
 class FakeReader:
     def __init__(self, micrographs=None, coordinates=None):
         self.micrographs = micrographs
@@ -42,8 +52,7 @@ class FakeReader:
         return self.coordinates
 
 
-def test_Coords2dServiceListMicrographsUsesPostgresqlReader(monkeypatch):
-    service = Coords2dService()
+def test_Coords2dServiceListMicrographsUsesPostgresqlReader(service, monkeypatch):
     expected = {
         "micrographs": [{"id": "10", "particles": 2}],
         "totalMicrographs": 1,
@@ -68,8 +77,7 @@ def test_Coords2dServiceListMicrographsUsesPostgresqlReader(monkeypatch):
     assert payload == expected
 
 
-def test_Coords2dServiceListCoordinatesUsesPostgresqlReader(monkeypatch):
-    service = Coords2dService()
+def test_Coords2dServiceListCoordinatesUsesPostgresqlReader(service, monkeypatch):
     expected = {
         "coordinates": [
             {"id": 1, "micId": "10", "x": 11.5, "y": 22.5}
@@ -94,8 +102,7 @@ def test_Coords2dServiceListCoordinatesUsesPostgresqlReader(monkeypatch):
     assert payload == expected
 
 
-def test_Coords2dServiceRaisesWhenPostgresqlReaderMissing(monkeypatch):
-    service = Coords2dService()
+def test_Coords2dServiceRaisesWhenPostgresqlReaderMissing(service, monkeypatch):
 
     monkeypatch.setattr(
         service,
