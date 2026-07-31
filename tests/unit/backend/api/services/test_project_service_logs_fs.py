@@ -328,100 +328,29 @@ def test_GetProtocolLogsReadsAllChannelsFromOffsets(service, tmp_path):
     }
 
 
-def test_ListProtocolLogChannelsServiceResolvesPostgresqlProtocolId(service, tmp_path):
-    stdoutLog = tmp_path / "stdout.log"
-    stderrLog = tmp_path / "stderr.log"
-    scheduleLog = tmp_path / "schedule.log"
+def test_GetProtocolLogsUsesPostgresqlPathsBeforeRuntime(
+        service,
+        tmp_path,
+):
+    projectPath = tmp_path / "DemoProject"
+    protocolPath = projectPath / "Runs" / "000010_ProtImport"
+    logsPath = protocolPath / "logs"
+    logsPath.mkdir(parents=True, exist_ok=True)
 
-    stdoutLog.write_text("hello\n", encoding="utf-8")
-    stderrLog.write_text("error\n", encoding="utf-8")
-    scheduleLog.write_text("schedule\n", encoding="utf-8")
+    (logsPath / "run.stdout").write_text("abc\ndef\n", encoding="utf-8")
+    (logsPath / "run.stderr").write_text("ERR1\nERR2\n", encoding="utf-8")
+    (logsPath / "schedule.log").write_text("SCH1\nSCH2\n", encoding="utf-8")
 
-    service.currentProject.protocols[10] = FakeProtocol(
-        stdoutLog=str(stdoutLog),
-        stderrLog=str(stderrLog),
-        scheduleLog=str(scheduleLog),
+    mapper = FakePgMapper(
+        projectPath=projectPath,
+        runtimeProtocolIdByDbId={500: 10},
     )
 
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("runtime should not be used")
 
-    result = service.listProtocolLogChannelsService(
-        projectId=1,
-        protocolId=500,
-        mapper=mapper,
-    )
-
-    assert result["projectId"] == 1
-    assert result["protocolId"] == 10
-    assert result["channels"] == [
-        {"id": "stdout", "label": "Output", "order": 1},
-        {"id": "stderr", "label": "Errors", "order": 2},
-        {"id": "schedule", "label": "Schedule", "order": 3},
-    ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
-
-
-def test_PollProtocolLogsServiceResolvesPostgresqlProtocolId(service, tmp_path):
-    stdoutLog = tmp_path / "stdout.log"
-    scheduleLog = tmp_path / "schedule.log"
-
-    stdoutLog.write_text("line1\nline2\nline3\n", encoding="utf-8")
-    scheduleLog.write_text("sched1\nsched2\n", encoding="utf-8")
-
-    service.currentProject.protocols[10] = FakeProtocol(
-        stdoutLog=str(stdoutLog),
-        stderrLog=str(tmp_path / "missing-stderr.log"),
-        scheduleLog=str(scheduleLog),
-    )
-
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
-
-    result = service.pollProtocolLogsService(
-        projectId=1,
-        protocolId=500,
-        offsets={
-            "stdoutLog": 6,
-            "err": 0,
-            "schedule": 7,
-        },
-        maxBytes=64,
-        maxLines=1,
-        mapper=mapper,
-    )
-
-    assert result["projectId"] == 1
-    assert result["protocolId"] == 10
-    assert result["channels"]["stdout"] == {
-        "content": "line2\n",
-        "offset": 12,
-    }
-    assert result["channels"]["stderr"] == {
-        "content": "",
-        "offset": 0,
-    }
-    assert result["channels"]["schedule"] == {
-        "content": "sched2\n",
-        "offset": 14,
-    }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
-
-
-def test_GetProtocolLogsResolvesPostgresqlProtocolId(service, tmp_path):
-    stdoutLog = tmp_path / "stdout.log"
-    stderrLog = tmp_path / "stderr.log"
-    scheduleLog = tmp_path / "schedule.log"
-
-    stdoutLog.write_text("abc\ndef\n", encoding="utf-8")
-    stderrLog.write_text("ERR1\nERR2\n", encoding="utf-8")
-    scheduleLog.write_text("SCH1\nSCH2\n", encoding="utf-8")
-
-    service.currentProject.protocols[10] = FakeProtocol(
-        stdoutLog=str(stdoutLog),
-        stderrLog=str(stderrLog),
-        scheduleLog=str(scheduleLog),
-    )
-
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+    service._getScipionProtocolByRuntimeId = failRuntime
+    service.getProjectById = failRuntime
 
     result = service.getProtocolLogs(
         projectId=1,
@@ -440,7 +369,6 @@ def test_GetProtocolLogsResolvesPostgresqlProtocolId(service, tmp_path):
         "scheduleLog": "SCH2\n",
         "scheduleOffset": 10,
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_GetProtocolPathReturnsGlobalBrowserPayload(service, monkeypatch, tmp_path):
@@ -910,38 +838,79 @@ def test_PollProtocolLogsServiceUsesPostgresqlPathsBeforeRuntime(
     }
 
 
-def test_ProtocolLogsFallbackToRuntimeWhenPostgresqlLogsAreMissing(
-    service,
-    tmp_path,
+def test_PostgresqlProtocolLogsDoNotFallbackToRuntimeWhenFilesAreMissing(
+        service,
+        tmp_path,
 ):
     projectPath = tmp_path / "DemoProject"
     protocolPath = projectPath / "Runs" / "000010_ProtImport"
     protocolPath.mkdir(parents=True, exist_ok=True)
-
-    runtimeStdout = tmp_path / "runtime.stdout"
-    runtimeStdout.write_text("runtime\n", encoding="utf-8")
-
-    service.currentProject.protocols[10] = FakeProtocol(
-        stdoutLog=str(runtimeStdout),
-        stderrLog=str(tmp_path / "missing.stderr"),
-        scheduleLog=str(tmp_path / "missing.schedule"),
-    )
 
     mapper = FakePgMapper(
         projectPath=projectPath,
         runtimeProtocolIdByDbId={500: 10},
     )
 
-    result = service.pollProtocolLogsService(
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("runtime should not be used")
+
+    service._getScipionProtocolByRuntimeId = failRuntime
+    service.getProjectById = failRuntime
+
+    channels = service.listProtocolLogChannelsService(
         projectId=1,
         protocolId=500,
-        offsets={"stdout": 0},
+        mapper=mapper,
+    )
+
+    assert channels == {
+        "projectId": 1,
+        "protocolId": 10,
+        "channels": [
+            {"id": "stdout", "label": "Output", "order": 1},
+            {"id": "stderr", "label": "Errors", "order": 2},
+            {"id": "schedule", "label": "Schedule", "order": 3},
+        ],
+    }
+
+    pollResult = service.pollProtocolLogsService(
+        projectId=1,
+        protocolId=500,
+        offsets={
+            "stdout": 0,
+            "stderr": 0,
+            "schedule": 0,
+        },
         maxBytes=64,
         maxLines=10,
         mapper=mapper,
     )
 
-    assert result["channels"]["stdout"] == {
-        "content": "runtime\n",
-        "offset": len("runtime\n"),
+    assert pollResult == {
+        "projectId": 1,
+        "protocolId": 10,
+        "channels": {
+            "stdout": {
+                "content": "",
+                "offset": 0,
+            },
+            "stderr": {
+                "content": "",
+                "offset": 0,
+            },
+            "schedule": {
+                "content": "",
+                "offset": 0,
+            },
+        },
     }
+
+    with pytest.raises(HTTPException) as exc:
+        service.getProtocolLogs(
+            projectId=1,
+            protocolId=500,
+            mapper=mapper,
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "No logs found"

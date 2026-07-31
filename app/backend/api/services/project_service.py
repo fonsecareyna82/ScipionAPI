@@ -6093,13 +6093,8 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-            currentProject=getattr(self, "currentProject", None),
-            currentUser=currentUser,
             resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
-            resolvePostgresqlProjectPathForFilesystemCallback=(
-                self._resolvePostgresqlProjectPathForFilesystem
-            ),
-            getProjectByIdCallback=self.getProjectById,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
 
@@ -6122,13 +6117,8 @@ class ProjectService:
             offsets=offsets,
             maxBytes=maxBytes,
             maxLines=maxLines,
-            currentProject=getattr(self, "currentProject", None),
-            currentUser=currentUser,
             resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
-            resolvePostgresqlProjectPathForFilesystemCallback=(
-                self._resolvePostgresqlProjectPathForFilesystem
-            ),
-            getProjectByIdCallback=self.getProjectById,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
 
@@ -6151,6 +6141,7 @@ class ProjectService:
             errOffset=errOffset,
             scheduleOffset=scheduleOffset,
             resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
 
@@ -12932,26 +12923,6 @@ class ProjectService:
             )
 
         return None
-
-    def _ensureRuntimeProjectForFscRows(
-            self,
-            mapper,
-            projectId: int,
-            currentUser: Optional[dict] = None,
-    ) -> None:
-        if getattr(self, "currentProject", None) is not None:
-            return
-
-        if mapper is None or currentUser is None:
-            return
-
-        self.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
-        )
 
     def getFscRowsService(
             self,

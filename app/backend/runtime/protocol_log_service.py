@@ -147,9 +147,6 @@ class RuntimeProtocolLogService:
             ),
         )
 
-        if not protocolPath:
-            return None
-
         logCandidates = {
             "stdout": [
                 "logs/run.stdout",
@@ -178,14 +175,16 @@ class RuntimeProtocolLogService:
         }
 
         paths = {
-            channelId: self.firstExistingLogPath(protocolPath, candidates)
-            for channelId, candidates in logCandidates.items()
+            "stdout": None,
+            "stderr": None,
+            "schedule": None,
         }
 
-        # If we cannot find any known log file, do not guess. Let runtime fallback
-        # resolve the exact Scipion log paths.
-        if not any(paths.values()):
-            return None
+        if protocolPath:
+            paths = {
+                channelId: self.firstExistingLogPath(protocolPath, candidates)
+                for channelId, candidates in logCandidates.items()
+            }
 
         return {
             "protocolId": scipionProtocolId,
@@ -363,40 +362,14 @@ class RuntimeProtocolLogService:
             },
         }
 
-    def ensureRuntimeProjectForLogs(
-            self,
-            *,
-            currentProject,
-            mapper,
-            projectId: int,
-            currentUser: Optional[dict],
-            getProjectByIdCallback: Callable,
-    ) -> None:
-        if currentProject is not None:
-            return
-
-        if currentUser is None:
-            return
-
-        getProjectByIdCallback(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
-        )
-
     def listProtocolLogChannels(
             self,
             *,
             mapper,
             projectId: int,
             protocolId: int,
-            currentProject,
-            currentUser: Optional[dict],
             resolveScipionProtocolIdCallback: Callable,
             resolvePostgresqlProjectPathForFilesystemCallback: Callable,
-            getProjectByIdCallback: Callable,
             getProtocolByRuntimeIdCallback: Callable,
     ) -> Dict[str, Any]:
         pgLogs = self.resolvePostgresqlProtocolLogPaths(
@@ -404,25 +377,21 @@ class RuntimeProtocolLogService:
             projectId=projectId,
             protocolId=protocolId,
             resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
-            resolvePostgresqlProjectPathForFilesystemCallback=(
-                resolvePostgresqlProjectPathForFilesystemCallback
-            ),
+            resolvePostgresqlProjectPathForFilesystemCallback=resolvePostgresqlProjectPathForFilesystemCallback,
         )
 
-        if pgLogs is not None:
+        if mapper is not None:
+            if pgLogs is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Protocol logs are not available in the PostgreSQL project workspace",
+                )
+
             return self.buildProtocolLogChannelsPayload(
                 projectId=projectId,
                 protocolId=pgLogs["protocolId"],
                 logPaths=pgLogs["paths"],
             )
-
-        self.ensureRuntimeProjectForLogs(
-            currentProject=currentProject,
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            getProjectByIdCallback=getProjectByIdCallback,
-        )
 
         scipionProtocolId = resolveScipionProtocolIdCallback(
             mapper=mapper,
@@ -455,11 +424,8 @@ class RuntimeProtocolLogService:
             offsets: Dict[str, int],
             maxBytes: Optional[int],
             maxLines: Optional[int],
-            currentProject,
-            currentUser: Optional[dict],
             resolveScipionProtocolIdCallback: Callable,
             resolvePostgresqlProjectPathForFilesystemCallback: Callable,
-            getProjectByIdCallback: Callable,
             getProtocolByRuntimeIdCallback: Callable,
     ) -> Dict[str, Any]:
         pgLogs = self.resolvePostgresqlProtocolLogPaths(
@@ -467,12 +433,16 @@ class RuntimeProtocolLogService:
             projectId=projectId,
             protocolId=protocolId,
             resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
-            resolvePostgresqlProjectPathForFilesystemCallback=(
-                resolvePostgresqlProjectPathForFilesystemCallback
-            ),
+            resolvePostgresqlProjectPathForFilesystemCallback=resolvePostgresqlProjectPathForFilesystemCallback,
         )
 
-        if pgLogs is not None:
+        if mapper is not None:
+            if pgLogs is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Protocol logs are not available in the PostgreSQL project workspace",
+                )
+
             return self.pollProtocolLogPaths(
                 projectId=projectId,
                 protocolId=pgLogs["protocolId"],
@@ -481,14 +451,6 @@ class RuntimeProtocolLogService:
                 maxBytes=maxBytes,
                 maxLines=maxLines,
             )
-
-        self.ensureRuntimeProjectForLogs(
-            currentProject=currentProject,
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            getProjectByIdCallback=getProjectByIdCallback,
-        )
 
         scipionProtocolId = resolveScipionProtocolIdCallback(
             mapper=mapper,
@@ -525,8 +487,57 @@ class RuntimeProtocolLogService:
             errOffset: int = 0,
             scheduleOffset: int = 0,
             resolveScipionProtocolIdCallback: Callable,
+            resolvePostgresqlProjectPathForFilesystemCallback: Callable,
             getProtocolByRuntimeIdCallback: Callable,
     ) -> Dict[str, Any]:
+        if mapper is not None:
+            pgLogs = self.resolvePostgresqlProtocolLogPaths(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
+                resolvePostgresqlProjectPathForFilesystemCallback=resolvePostgresqlProjectPathForFilesystemCallback,
+            )
+
+            if pgLogs is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Protocol logs are not available in the PostgreSQL project workspace",
+                )
+
+            logPaths = pgLogs["paths"]
+
+            if not any(path and os.path.exists(path) for path in logPaths.values()):
+                raise HTTPException(status_code=404, detail="No logs found")
+
+            stdoutChunk = self.readProtocolLogChunk(
+                logPaths.get("stdout"),
+                offset,
+                maxBytes=None,
+                maxLines=None,
+            )
+            stderrChunk = self.readProtocolLogChunk(
+                logPaths.get("stderr"),
+                errOffset,
+                maxBytes=None,
+                maxLines=None,
+            )
+            scheduleChunk = self.readProtocolLogChunk(
+                logPaths.get("schedule"),
+                scheduleOffset,
+                maxBytes=None,
+                maxLines=None,
+            )
+
+            return {
+                "stdoutLog": stdoutChunk["content"],
+                "stderrLog": stderrChunk["content"],
+                "stdoutOffset": stdoutChunk["offset"],
+                "stderrOffset": stderrChunk["offset"],
+                "scheduleLog": scheduleChunk["content"],
+                "scheduleOffset": scheduleChunk["offset"],
+            }
+
         scipionProtocolId = resolveScipionProtocolIdCallback(
             mapper=mapper,
             projectId=projectId,
