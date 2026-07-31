@@ -97,3 +97,40 @@ def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
     assert service.currentProject is None
 
 
+def test_LoadLegacyProjectForImportLoadsProjectSqlite(
+        authTestEnv,
+        tmp_path,
+        monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.api.services.project_service"
+    )
+
+    service = object.__new__(module.ProjectService)
+    service.currentProject = None
+
+    loadCalls = []
+
+    class FakeLegacyProject:
+        def __init__(self, domain, path):
+            self.domain = domain
+            self.path = path
+
+        def getDbPath(self):
+            return str(tmp_path / "project.sqlite")
+
+        def load(self, dbPath):
+            loadCalls.append(dbPath)
+
+    monkeypatch.setattr(
+        module,
+        "ScipionProject",
+        FakeLegacyProject,
+    )
+
+    project = service._loadLegacyProjectForImport(str(tmp_path))
+
+    assert project.path == str(tmp_path)
+    assert loadCalls == [str(tmp_path / "project.sqlite")]
+    assert service.currentProject is project
+

@@ -912,6 +912,20 @@ class ProjectService:
             "status": statusValue or "active",
         }
 
+    def _loadLegacyProjectForImport(self, projectPath: str) -> ScipionProject:
+        """
+        Load project.sqlite exclusively as the source of a legacy project import.
+
+        This method must not be used by the normal PostgreSQL runtime,
+        viewers or protocol operations.
+        """
+        legacyProjectPath = Path(projectPath)
+        project = ScipionProject(pyworkflow.Config.getDomain(), str(legacyProjectPath))
+        project.load(dbPath=project.getDbPath())
+
+        self.currentProject = project
+        return project
+
     def _shouldRegisterProtocolOutputs(self, protocol: Any) -> bool:
         runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
 
@@ -2156,9 +2170,7 @@ class ProjectService:
         projectMapperClosed = False
 
         try:
-            project = self.loadProjectForThumbnails({
-                "name": projectPath,
-            })
+            project = self._loadLegacyProjectForImport(projectPath)
 
             outputProjectPaths = [
                 os.path.abspath(
