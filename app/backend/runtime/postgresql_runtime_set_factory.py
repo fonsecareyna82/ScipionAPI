@@ -470,13 +470,180 @@ class PostgresqlRuntimeSetMixin:
         self.enablePostgresqlWrite()
         self._getMapper().enableAppend()
 
+    def _preparePostgresqlAppendItem(
+            self,
+            item,
+    ) -> None:
+        """
+        Preserve the metadata preparation normally performed by
+        native Scipion SetOfImages/TiltSeries append methods.
+
+        PostgreSQL persistence remains atomic and is still handled
+        exclusively by PostgresqlSetRuntimeMapper.appendItem().
+        """
+        getContainerTsId = getattr(
+            self,
+            "getTsId",
+            None,
+        )
+        setItemTsId = getattr(
+            item,
+            "setTsId",
+            None,
+        )
+
+        if (
+                callable(getContainerTsId)
+                and callable(setItemTsId)
+        ):
+            setItemTsId(
+                getContainerTsId()
+            )
+
+        getContainerSamplingRate = getattr(
+            self,
+            "getSamplingRate",
+            None,
+        )
+        getItemSamplingRate = getattr(
+            item,
+            "getSamplingRate",
+            None,
+        )
+        setItemSamplingRate = getattr(
+            item,
+            "setSamplingRate",
+            None,
+        )
+
+        if (
+                callable(getContainerSamplingRate)
+                and callable(getItemSamplingRate)
+                and callable(setItemSamplingRate)
+        ):
+            containerSamplingRate = (
+                getContainerSamplingRate()
+            )
+            itemSamplingRate = (
+                getItemSamplingRate()
+            )
+
+            if (
+                    containerSamplingRate
+                    or not itemSamplingRate
+            ):
+                setItemSamplingRate(
+                    containerSamplingRate
+                )
+
+        containerHasAcquisition = getattr(
+            self,
+            "hasAcquisition",
+            None,
+        )
+        getContainerAcquisition = getattr(
+            self,
+            "getAcquisition",
+            None,
+        )
+        itemHasAcquisition = getattr(
+            item,
+            "hasAcquisition",
+            None,
+        )
+        setItemAcquisition = getattr(
+            item,
+            "setAcquisition",
+            None,
+        )
+
+        if (
+                callable(containerHasAcquisition)
+                and callable(getContainerAcquisition)
+                and callable(itemHasAcquisition)
+                and callable(setItemAcquisition)
+                and containerHasAcquisition()
+                and not itemHasAcquisition()
+        ):
+            setItemAcquisition(
+                getContainerAcquisition()
+            )
+
+    def _updatePostgresqlAppendMetadata(
+            self,
+            item,
+            wasEmpty: bool,
+    ) -> None:
+        """
+        Restore container metadata normally updated by native
+        SetOfImages.append() and TiltSeries.append().
+        """
+        if wasEmpty:
+            getItemDim = getattr(
+                item,
+                "getDim",
+                None,
+            )
+            setContainerDim = getattr(
+                self,
+                "setDim",
+                None,
+            )
+
+            if (
+                    callable(getItemDim)
+                    and callable(setContainerDim)
+            ):
+                itemDim = getItemDim()
+
+                if itemDim is not None:
+                    setContainerDim(
+                        itemDim
+                    )
+
+        for attributeName, getterName in (
+                (
+                    "_hasAlignment",
+                    "hasTransform",
+                ),
+                (
+                    "_hasOddEven",
+                    "hasOddEven",
+                ),
+        ):
+            targetAttribute = getattr(
+                self,
+                attributeName,
+                None,
+            )
+            setter = getattr(
+                targetAttribute,
+                "set",
+                None,
+            )
+            getter = getattr(
+                item,
+                getterName,
+                None,
+            )
+
+            if (
+                    callable(setter)
+                    and callable(getter)
+            ):
+                setter(
+                    bool(
+                        getter()
+                    )
+                )
+
     def append(
             self,
             item,
     ) -> None:
         """
-        Append through PostgreSQL so item-id allocation is
-        atomic and safe across concurrent workers.
+        Append through PostgreSQL while preserving the native
+        Scipion metadata invariants of image-based Sets.
         """
         mapper = self._getMapper()
 
@@ -497,10 +664,23 @@ class PostgresqlRuntimeSetMixin:
                 "provide appendItem()."
             )
 
+        wasEmpty = bool(
+            self.isEmpty()
+        )
+
+        self._preparePostgresqlAppendItem(
+            item
+        )
+
         itemId = int(
             appendItem(
                 item
             )
+        )
+
+        self._updatePostgresqlAppendMetadata(
+            item=item,
+            wasEmpty=wasEmpty,
         )
 
         self._idCount = max(
