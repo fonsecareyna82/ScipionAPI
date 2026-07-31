@@ -492,7 +492,7 @@ class ProtocolWizardService:
         if self.projectService is None:
             raise RuntimeError("projectService is required to execute protocol wizards")
 
-        project = (
+        projectRow = (
             self.projectService
             .loadPostgresqlRuntimeProjectForMutation(
                 mapper=mapper,
@@ -501,10 +501,18 @@ class ProtocolWizardService:
             )
         )
 
-        if not project:
+        if not projectRow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
+            )
+
+        project = self.projectService.currentProject
+
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL runtime project was not loaded",
             )
 
         self.currentProject = project

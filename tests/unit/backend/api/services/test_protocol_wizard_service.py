@@ -185,7 +185,7 @@ class FakeProjectService:
         if self.projectRow is None:
             return None
 
-        return self.currentProject
+        return self.projectRow
 
 
 class FakePayload:
@@ -505,6 +505,41 @@ def test_ExecuteProtocolWizardReturns404WhenProjectDoesNotExist(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Project not found"
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": {"id": 1},
+        }
+    ]
+
+
+def test_ExecuteProtocolWizardFailsWhenRuntimeProjectWasNotLoaded(
+        wizardService,
+        projectService,
+        mapper,
+):
+    projectService.currentProject = None
+
+    payload = FakePayload(
+        protocolId=None,
+        protocolClassName="FakeProtocol",
+        paramName="radius",
+        wizardId="fake.wizard.Wizard",
+        formValues={},
+        wizardInputs={},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        wizardService.executeProtocolWizard(
+            mapper=mapper,
+            projectId=1,
+            currentUser={"id": 1},
+            payload=payload,
+        )
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "PostgreSQL runtime project was not loaded"
     assert projectService.loadPostgresqlRuntimeProjectCalls == [
         {
             "mapper": mapper,
