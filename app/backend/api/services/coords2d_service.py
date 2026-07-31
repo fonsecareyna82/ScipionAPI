@@ -35,7 +35,7 @@ from PIL import Image, ImageEnhance, ImageOps
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import Coordinate
 
-from app.backend.api.services.project_service import ProjectService
+from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 logger = logging.getLogger(__name__)
@@ -46,12 +46,12 @@ class Coords2dService:
         self.projectService = ProjectService()
 
     def _loadCoordinatesOutput(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        currentUser: Any,
-        protocolId: int,
-        outputName: str,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: Any,
+            protocolId: int,
+            outputName: str,
     ) -> Tuple[Any, Any]:
         project = self.projectService.getProjectById(
             mapper,
@@ -60,12 +60,27 @@ class Coords2dService:
             refresh=False,
             checkPid=False,
         )
+
         if not project:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
 
+        return self._resolveCoordinatesOutput(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+    def _resolveCoordinatesOutput(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Tuple[Any, Any]:
         protocol = self.projectService._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
@@ -79,6 +94,7 @@ class Coords2dService:
             )
 
         coordinatesSet = getattr(protocol, outputName)
+
         if coordinatesSet is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -402,6 +418,45 @@ class Coords2dService:
                 detail=f"Micrograph '{micId}' not found in coordinates output",
             )
         return micrograph
+
+    def _loadPostgresqlMicrograph(
+        self,
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        currentUser: Any,
+        protocolId: int,
+        outputName: str,
+        micId: str,
+    ) -> Any:
+        with _thumbnailProjectLock:
+            projectRow = self.projectService.getProjectDbRow(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+            )
+
+            if not projectRow:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Project not found",
+                )
+
+            self.projectService.loadProjectForThumbnails(
+                projectRow,
+                mapper=mapper,
+            )
+
+            _, coordinatesSet = self._resolveCoordinatesOutput(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+            )
+
+            return self._findMicrograph(
+                coordinatesSet,
+                micId,
+            )
 
     def listCoordinatesForMicrograph(
             self,
@@ -814,15 +869,14 @@ class Coords2dService:
         size: int = 2200,
         fmt: str = "png",
     ) -> Response:
-        _, coordinatesSet = self._loadCoordinatesOutput(
-            mapper,
-            projectId,
-            currentUser,
-            protocolId,
-            outputName,
+        micrograph = self._loadPostgresqlMicrograph(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            protocolId=protocolId,
+            outputName=outputName,
+            micId=micId,
         )
-
-        micrograph = self._findMicrograph(coordinatesSet, micId)
         imageIndex, imagePath = self._micrographLocation(micrograph)
 
         if not imagePath:
