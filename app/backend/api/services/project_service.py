@@ -885,32 +885,53 @@ class ProjectService:
                 detail="Source project path must be a directory",
             )
 
+        importedProject = None
+
         try:
             importedProject = ScipionProject(
                 pyworkflow.Config.getDomain(),
                 str(sourcePath),
             )
-            importedProject.load(dbPath=importedProject.getDbPath())
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Source path is not a valid Scipion project: {e}",
+            importedProject.load(
+                dbPath=importedProject.getDbPath()
             )
 
-        try:
-            description = importedProject.getComment() or ""
-        except Exception:
-            description = ""
+            try:
+                description = importedProject.getComment() or ""
+            except Exception:
+                description = ""
 
-        try:
-            statusValue = str(importedProject.getStatus()) if importedProject.getStatus() else "active"
-        except Exception:
-            statusValue = "active"
+            try:
+                importedStatus = importedProject.getStatus()
+                statusValue = str(importedStatus) if importedStatus else "active"
+            except Exception:
+                statusValue = "active"
 
-        return {
-            "description": description,
-            "status": statusValue or "active",
-        }
+            return {
+                "description": description,
+                "status": statusValue or "active",
+            }
+
+        except HTTPException:
+            raise
+
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Source path is not a valid Scipion project: {error}",
+            ) from error
+
+        finally:
+            if importedProject is not None:
+                try:
+                    importedProject.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close source project mapper after validation. "
+                        "path=%s",
+                        sourcePath,
+                        exc_info=True,
+                    )
 
     def _loadLegacyProjectForImport(self, projectPath: str) -> ScipionProject:
         """
@@ -2523,38 +2544,11 @@ class ProjectService:
                 detail="Source project path must be a directory",
             )
 
-        # Validate that this is a real Scipion project before importing it
-        try:
-            importedProject = ScipionProject(
-                pyworkflow.Config.getDomain(),
-                str(sourcePath),
-            )
-            importedProject.load(dbPath=importedProject.getDbPath())
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Source path is not a valid Scipion project: {e}",
-            )
-
-        try:
-            description = importedProject.getComment() or ""
-        except Exception:
-            description = ""
-
-        try:
-            importedStatus = importedProject.getStatus()
-            statusValue = str(importedStatus) if importedStatus else "active"
-        except Exception:
-            statusValue = "active"
-
-        try:
-            importedProject.closeMapper()
-        except Exception:
-            logger.debug(
-                "Could not close source project mapper after validation. path=%s",
-                sourcePath,
-                exc_info=True,
-            )
+        importMetadata = self._validateImportableScipionProject(
+            sourcePath
+        )
+        description = importMetadata["description"]
+        statusValue = importMetadata["status"]
 
         requestedName = (getattr(projectData, "projectName", None) or "").strip()
         rawName = requestedName or sourcePath.name
