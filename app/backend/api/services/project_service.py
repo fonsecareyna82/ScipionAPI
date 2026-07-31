@@ -4055,28 +4055,6 @@ class ProjectService:
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
 
-    def loadProjectRuntimeContext(
-            self,
-            dbProj: dict,
-    ) -> None:
-        """
-        Load only the Scipion project context required to initialize the
-        PostgreSQL runtime project.
-
-        Do not refresh the runs graph here. Runtime status synchronization
-        reads active protocols directly from their logs/run.db files.
-        """
-        projPath = Path(dbProj["name"])
-
-        self.currentProject = ScipionProject(
-            pyworkflow.Config.getDomain(),
-            str(projPath),
-        )
-
-        self.currentProject.load(
-            dbPath=self.currentProject.getDbPath()
-        )
-
     def loadProjectFromPostgresql(
             self,
             dbProj: dict,
