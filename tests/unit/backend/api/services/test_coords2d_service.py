@@ -40,6 +40,7 @@ class FakeProjectService:
         self.projectRow = {"id": 1}
         self.runtimeProtocolIdByDbId = {}
         self.getProjectByIdCalls = []
+        self.loadPostgresqlRuntimeProjectForMutationCalls = []
         self.getProjectDbRowCalls = []
         self.loadProjectForThumbnailsCalls = []
         self.runtimeCalls = []
@@ -78,6 +79,20 @@ class FakeProjectService:
             "refresh": refresh,
             "checkPid": checkPid,
         })
+        return self.projectRow
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.loadPostgresqlRuntimeProjectForMutationCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        })
+
         return self.projectRow
 
     def _getScipionProtocolForRuntime(self, mapper, projectId, protocolId):
@@ -351,15 +366,15 @@ def test_LoadCoordinatesOutputResolvesPostgresqlProtocolId(
     assert loadedProtocol is protocol
     assert loadedCoordinatesSet is coordinatesSet
 
-    assert projectService.getProjectByIdCalls == [
+    assert projectService.loadPostgresqlRuntimeProjectForMutationCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "currentUser": currentUser,
-            "refresh": False,
-            "checkPid": False,
         }
     ]
+
+    assert projectService.getProjectByIdCalls == []
 
     assert projectService.runtimeCalls == [
         {
@@ -387,6 +402,13 @@ def test_LoadCoordinatesOutputRaisesWhenProjectDoesNotExist(
             outputName="outputCoordinates",
         )
 
+    assert projectService.loadPostgresqlRuntimeProjectForMutationCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": currentUser,
+        }
+    ]
     assert exc.value.status_code == 404
     assert exc.value.detail == "Project not found"
     assert projectService.runtimeCalls == []
