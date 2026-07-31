@@ -28,7 +28,6 @@ import io
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
 
 from fastapi import HTTPException, Response, status
 from PIL import Image, ImageEnhance, ImageOps
@@ -54,12 +53,10 @@ class Coords2dService:
             protocolId: int,
             outputName: str,
     ) -> Tuple[Any, Any]:
-        project = self.projectService.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
+        project = self.projectService.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
         )
 
         if not project:
@@ -648,13 +645,34 @@ class Coords2dService:
                 if objId is not None:
                     maxObjId = max(maxObjId, objId)
 
+        requestedOutputName = str(payload.get("outputName") or "").strip()
+
+        if requestedOutputName and not hasattr(protocol, requestedOutputName):
+            nextOutputName = requestedOutputName
+        else:
+            try:
+                nextOutputName = protocol.getNextOutputName("coordinates_")
+            except Exception:
+                nextOutputName = f"coordinates_{protocol.getOutputsSize()}"
+
+        generatedSetContext = None
+
         try:
-            suffix = f"{protocol.getOutputsSize()}_{uuid4().hex[:8]}"
-            coordSet = protocol._createSetOfCoordinates(micrographsSet, suffix=suffix)
+            generatedSetContext = self.projectService._createWritableGeneratedPostgresqlSet(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                outputName=nextOutputName,
+                sourceSet=coordinatesSet,
+            )
+            coordSet = generatedSetContext["outputSet"]
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not create coordinates output: {e}",
+                detail=f"Could not create PostgreSQL coordinates output: {e}",
             )
 
         try:
@@ -718,48 +736,53 @@ class Coords2dService:
                     totalCoordinates += 1
 
         except HTTPException:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise
         except Exception as e:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Could not append coordinates: {e}",
             )
 
         try:
-            coordSet.write()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not write coordinates output: {e}",
-            )
-
-        requestedOutputName = str(payload.get("outputName") or "").strip()
-
-        if requestedOutputName and not hasattr(protocol, requestedOutputName):
-            nextOutputName = requestedOutputName
-        else:
-            try:
-                nextOutputName = protocol.getNextOutputName("coordinates_")
-            except Exception:
-                nextOutputName = f"coordinates_{protocol.getOutputsSize()}"
-
-        try:
             protocol._defineOutputs(**{nextOutputName: coordSet})
+            protocol._store()
+
+            postgresqlSync = self.projectService._finalizeGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+                outputName=nextOutputName,
+            )
         except Exception as e:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not define coordinates output: {e}",
+                detail=f"Could not persist coordinates output in PostgreSQL: {e}",
             )
 
         try:
             protocol._defineSourceRelation(micrographsSet, coordSet)
         except Exception:
-            logger.warning("Could not define source relation for coords2d output", exc_info=True)
+            logger.warning(
+                "Could not define source relation for coords2d output",
+                exc_info=True,
+            )
 
         return {
             "success": True,
             "outputName": nextOutputName,
             "totalCoordinates": int(totalCoordinates),
+            "postgresqlSync": postgresqlSync,
             "message": f"The new set of coordinates has been created: {nextOutputName}",
         }
 
