@@ -607,6 +607,21 @@ class RuntimeProjectRelationSyncService:
 
         return mergedEndpoint
 
+    @staticmethod
+    def _isNestedScalarRelationEndpoint(endpoint) -> bool:
+        if not isinstance(endpoint, dict):
+            return False
+
+        className = str(endpoint.get("className") or "").strip()
+        outputName = str(endpoint.get("outputName") or "").strip()
+
+        if className not in {"Boolean", "Float", "Integer", "Scalar", "String"}:
+            return False
+
+        objectId, separator, attributeName = outputName.partition(".")
+
+        return separator == "." and objectId.isdigit() and attributeName.startswith("_")
+
     def collectProtocolRelations(
             self,
             protocolCandidates,
@@ -823,6 +838,7 @@ class RuntimeProjectRelationSyncService:
 
         declared = []
         persisted = []
+        skipped = []
         missing = []
         errors = []
         cleanupItems = []
@@ -959,6 +975,34 @@ class RuntimeProjectRelationSyncService:
             preparedRelations = []
 
             for relationItem in protocolRelations:
+                skippedEndpoints = [
+                    endpointName
+                    for endpointName, endpointKey in (
+                        ("parent", "parentEndpoint"),
+                        ("child", "childEndpoint"),
+                    )
+                    if self._isNestedScalarRelationEndpoint(relationItem.get(endpointKey))
+                ]
+
+                if skippedEndpoints:
+                    skippedRelation = {
+                        **relationItem,
+                        "reason": "nested_scalar_endpoint",
+                        "endpoints": skippedEndpoints,
+                    }
+                    skipped.append(skippedRelation)
+
+                    logger.warning(
+                        "Skipping unsupported nested scalar relation during PostgreSQL migration. "
+                        "projectId=%s protocolId=%s relationId=%s endpoints=%s",
+                        projectId,
+                        protocolIdText,
+                        relationItem.get("relationId"),
+                        skippedEndpoints,
+                    )
+
+                    continue
+
                 parentObject = (
                     self
                     ._resolvePersistedRelationEndpoint(
@@ -1091,6 +1135,8 @@ class RuntimeProjectRelationSyncService:
         return {
             "relationsDeclared": len(declared),
             "relations": len(persisted),
+            "relationsSkipped": len(skipped),
+            "skippedRelations": skipped,
             "relationsStale": len(stale),
             "staleRelations": stale,
             "relationMissing": missing,

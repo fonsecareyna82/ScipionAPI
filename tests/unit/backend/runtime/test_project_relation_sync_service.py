@@ -371,6 +371,108 @@ def test_SyncProjectRelationsPreservesSnapshotWhenOutputIsMissing(
     assert repository.insertCalls == []
 
 
+def test_SyncProjectRelationsSkipsNestedScalarEndpointWithoutHidingValidRelations(
+        monkeypatch,
+):
+    repository = FakeRepository({
+        101: {
+            "objectId": 1001,
+            "protocolDbId": 200,
+            "protocolId": "20",
+            "outputName": "outputParticles",
+        },
+        202: {
+            "objectId": 2002,
+            "protocolDbId": 300,
+            "protocolId": "30",
+            "outputName": "outputClasses",
+        },
+    })
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "ProtocolGraphRepository",
+        lambda: repository,
+    )
+
+    nestedScalarRelation = {
+        "id": 1277,
+        "parent_id": 20,
+        "name": "relation_datasource",
+        "object_parent_id": 67927,
+        "object_child_id": 68120,
+        "object_parent_extended": None,
+        "object_child_extended": None,
+        "_parentEndpoint": {
+            "runtimeObjectId": 67927,
+            "producerProtocolId": 375,
+            "outputName": "67921._classId",
+            "className": "Integer",
+        },
+        "_childEndpoint": {
+            "runtimeObjectId": 68120,
+            "producerProtocolId": 20,
+            "outputName": "Tomograms",
+            "className": "SetOfTomograms",
+        },
+    }
+
+    report = RuntimeProjectRelationSyncService().syncProjectRelations(
+        mapper=SimpleNamespace(),
+        projectId=4,
+        protocolsByScipionId={
+            "20": FakeProtocol([
+                buildRelation(),
+                nestedScalarRelation,
+            ]),
+        },
+        protocolDbIdByScipionId={
+            "20": 200,
+        },
+    )
+
+    assert report["relationsDeclared"] == 2
+    assert report["relations"] == 1
+    assert report["relationsSkipped"] == 1
+    assert report["relationMissing"] == []
+    assert report["relationErrors"] == []
+    assert report["complete"] is True
+
+    assert report["skippedRelations"] == [{
+        "relationId": 1277,
+        "relationName": "relation_datasource",
+        "creatorProtocolId": 20,
+        "parentRuntimeObjectId": 67927,
+        "childRuntimeObjectId": 68120,
+        "parentExtended": None,
+        "childExtended": None,
+        "parentEndpoint": {
+            "runtimeObjectId": 67927,
+            "producerProtocolId": 375,
+            "outputName": "67921._classId",
+            "className": "Integer",
+        },
+        "childEndpoint": {
+            "runtimeObjectId": 68120,
+            "producerProtocolId": 20,
+            "outputName": "Tomograms",
+            "className": "SetOfTomograms",
+        },
+        "reason": "nested_scalar_endpoint",
+        "endpoints": ["parent"],
+    }]
+
+    assert repository.cleanupCalls == [{
+        "projectId": 4,
+        "creatorProtocolDbId": 200,
+        "creatorProtocolId": 20,
+    }]
+
+    assert len(repository.insertCalls) == 1
+    assert repository.insertCalls[0]["metadata"]["sqliteRelationId"] == 7
+
+
+
 class FakeCursor:
     def __init__(self, rowcount):
         self.rowcount = rowcount
