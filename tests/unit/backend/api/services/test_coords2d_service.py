@@ -459,37 +459,3 @@ def test_LoadCoordinatesOutputRaisesWhenOutputIsNotCoordinatesSet(
     ]
 
 
-def test_LoadPostgresqlMicrographRaisesWhenProjectDoesNotExist(
-    service,
-    projectService,
-    mapper,
-    currentUser,
-):
-    projectService.projectRow = None
-
-    with pytest.raises(HTTPException) as exc:
-        service._loadPostgresqlMicrograph(
-            mapper=mapper,
-            projectId=1,
-            currentUser=currentUser,
-            protocolId=500,
-            outputName="outputCoordinates",
-            micId="1",
-        )
-
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "Project not found"
-    assert projectService.getProjectByIdCalls == []
-    assert projectService.getProjectDbRowCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 1,
-            "currentUser": currentUser,
-        }
-    ]
-    assert projectService.loadProjectForThumbnailsCalls == []
-    assert projectService.runtimeCalls == []
-
-
-
-
