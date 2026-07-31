@@ -182,6 +182,11 @@ class FakeProjectService:
             "currentUser": currentUser,
         })
 
+        if self.projectRow is None:
+            return None
+
+        return self.currentProject
+
 
 class FakePayload:
     def __init__(self, **kwargs):

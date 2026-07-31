@@ -88,6 +88,8 @@ class FakeProtocolRouterService:
             "currentUser": currentUser,
         }
 
+        return self.postgresqlRuntimeMutationResult
+
     def getProjectById(self, mapper, projectId, currentUser):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
