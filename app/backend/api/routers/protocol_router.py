@@ -51,7 +51,6 @@ async def loadProtocol(
         mapper=mapper,
         projectId=projectId,
         currentUser=currentUser,
-        enableWriteFallback=False,
     )
 
     if not project:
@@ -79,7 +78,6 @@ async def loadNewProtocol(
         mapper=mapper,
         projectId=projectId,
         currentUser=currentUser,
-        enableWriteFallback=False,
     )
 
     if not project:

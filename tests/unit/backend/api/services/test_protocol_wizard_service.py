@@ -175,19 +175,12 @@ class FakeProjectService:
             mapper,
             projectId,
             currentUser,
-            enableWriteFallback=True,
     ):
         self.loadPostgresqlRuntimeProjectCalls.append({
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "enableWriteFallback": enableWriteFallback,
         })
-
-        if self.projectRow is None:
-            return None
-
-        return self.currentProject
 
 
 class FakePayload:
@@ -449,7 +442,6 @@ def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
             "mapper": mapper,
             "projectId": 1,
             "currentUser": {"id": 1},
-            "enableWriteFallback": False,
         }
     ]
     assert wizardService.currentProject is currentProject
@@ -513,6 +505,5 @@ def test_ExecuteProtocolWizardReturns404WhenProjectDoesNotExist(
             "mapper": mapper,
             "projectId": 1,
             "currentUser": {"id": 1},
-            "enableWriteFallback": False,
         }
     ]

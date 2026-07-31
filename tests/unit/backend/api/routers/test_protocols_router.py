@@ -81,16 +81,12 @@ class FakeProtocolRouterService:
             mapper,
             projectId,
             currentUser,
-            enableWriteFallback=False,
     ):
         self.lastLoadPostgresqlRuntimeProjectForMutationCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "enableWriteFallback": enableWriteFallback,
         }
-
-        return self.postgresqlRuntimeMutationResult
 
     def getProjectById(self, mapper, projectId, currentUser):
         self.lastGetProjectByIdCall = {
@@ -242,7 +238,6 @@ def test_LoadProtocolUsesPostgresqlRuntimeContextAndReturnsProtocolParams(
                 "email": "user@example.com",
                 "role": "user",
             },
-            "enableWriteFallback": False,
         }
     )
 
@@ -264,7 +259,11 @@ def test_LoadNewProtocolReturns404WhenProjectMissing(protocolClient, fakeProtoco
     assert response.json()["detail"] == "Project not found"
 
 
-def test_LoadNewProtocolReturnsProtocolTemplate(protocolClient, fakeProtocolRouterService):
+def test_LoadNewProtocolReturnsProtocolTemplate(
+        protocolClient,
+        fakeProtocolRouterService,
+        fakeProjectMapper,
+):
     response = protocolClient.get("/protocols/1/protclass/MyProtClass")
 
     assert response.status_code == 200
@@ -278,11 +277,17 @@ def test_LoadNewProtocolReturnsProtocolTemplate(protocolClient, fakeProtocolRout
         "protClassName": "MyProtClass",
     }
     assert (
-        fakeProtocolRouterService
-        .lastLoadPostgresqlRuntimeProjectForMutationCall[
-            "enableWriteFallback"
-        ]
-        is False
+            fakeProtocolRouterService
+            .lastLoadPostgresqlRuntimeProjectForMutationCall
+            == {
+                "mapper": fakeProjectMapper,
+                "projectId": 1,
+                "currentUser": {
+                    "id": 1,
+                    "email": "user@example.com",
+                    "role": "user",
+                },
+            }
     )
 
 
