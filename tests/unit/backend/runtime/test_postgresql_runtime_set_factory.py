@@ -26,6 +26,7 @@
 import pytest
 from pathlib import Path
 from pyworkflow.object import (
+    Boolean,
     Float,
     Object,
     Pointer,
@@ -63,6 +64,88 @@ class ExampleSet(Set):
     def hasAlignment(self):
         return False
 
+
+class ExampleAppendItem(Object):
+    def __init__(
+            self,
+            dim=(64, 64, 1),
+            samplingRate=None,
+            hasTransform=True,
+            hasOddEven=True,
+            **kwargs,
+    ):
+        super().__init__(
+            **kwargs
+        )
+        self._dim = dim
+        self._samplingRate = samplingRate
+        self._acquisition = None
+        self._tsId = None
+        self._hasTransformValue = hasTransform
+        self._hasOddEvenValue = hasOddEven
+
+    def getDim(self):
+        return self._dim
+
+    def getSamplingRate(self):
+        return self._samplingRate
+
+    def setSamplingRate(self, value):
+        self._samplingRate = value
+
+    def hasAcquisition(self):
+        return self._acquisition is not None
+
+    def setAcquisition(self, value):
+        self._acquisition = value
+
+    def getAcquisition(self):
+        return self._acquisition
+
+    def setTsId(self, value):
+        self._tsId = value
+
+    def getTsId(self):
+        return self._tsId
+
+    def hasTransform(self):
+        return self._hasTransformValue
+
+    def hasOddEven(self):
+        return self._hasOddEvenValue
+
+
+class ExampleAppendSet(Set):
+    ITEM_TYPE = ExampleAppendItem
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            **kwargs
+        )
+        self._dim = None
+        self._samplingRateValue = 2.5
+        self._tsIdValue = "TS_001"
+        self._acquisitionValue = object()
+        self._hasAlignment = Boolean(False)
+        self._hasOddEven = Boolean(False)
+
+    def getDim(self):
+        return self._dim
+
+    def setDim(self, value):
+        self._dim = value
+
+    def getSamplingRate(self):
+        return self._samplingRateValue
+
+    def getTsId(self):
+        return self._tsIdValue
+
+    def hasAcquisition(self):
+        return True
+
+    def getAcquisition(self):
+        return self._acquisitionValue
 
 class ExampleLinkedSet(Set):
     ITEM_TYPE = ExampleItem
@@ -750,6 +833,84 @@ def test_RuntimeSetExposesNativeClassForSetConstruction():
     assert setClass is ExampleSet
     assert type(newSet) is ExampleSet
     assert not isinstance(newSet, PostgresqlRuntimeSetMixin)
+
+
+def test_RuntimeSetAppendPreservesNativeImageMetadataHooks():
+    class FakeWritableMapper:
+        def __init__(self):
+            self.items = []
+            self.snapshots = []
+
+        def isWritable(self):
+            return True
+
+        def appendItem(self, item):
+            if not item.hasObjId():
+                item.setObjId(
+                    len(self.items) + 1
+                )
+
+            self.snapshots.append({
+                "tsId": item.getTsId(),
+                "samplingRate": item.getSamplingRate(),
+                "acquisition": item.getAcquisition(),
+            })
+            self.items.append(
+                item
+            )
+
+            return item.getObjId()
+
+        def count(self):
+            return len(
+                self.items
+            )
+
+    runtimeClass = type(
+        "ExampleRuntimeAppendSet",
+        (
+            PostgresqlRuntimeSetMixin,
+            ExampleAppendSet,
+        ),
+        {
+            "__module__": __name__,
+        },
+    )
+
+    runtimeSet = runtimeClass()
+    mapper = FakeWritableMapper()
+
+    runtimeSet._mapper = mapper
+    runtimeSet._postgresqlWritable = True
+    runtimeSet._postgresqlSupportsNativeWrite = True
+
+    item = ExampleAppendItem(
+        dim=(128, 96, 1),
+        samplingRate=None,
+        hasTransform=True,
+        hasOddEven=True,
+    )
+
+    runtimeSet.append(
+        item
+    )
+
+    assert mapper.snapshots == [
+        {
+            "tsId": "TS_001",
+            "samplingRate": 2.5,
+            "acquisition": runtimeSet.getAcquisition(),
+        }
+    ]
+    assert item.getObjId() == 1
+    assert runtimeSet.getSize() == 1
+    assert runtimeSet.getDim() == (
+        128,
+        96,
+        1,
+    )
+    assert runtimeSet._hasAlignment.get() is True
+    assert runtimeSet._hasOddEven.get() is True
 
 
 def test_RefreshRuntimePropertiesSkipsCallableAliases():

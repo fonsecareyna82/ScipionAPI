@@ -11389,7 +11389,13 @@ class ProjectService:
             )
         )
         outputSet = generatedSetContext["outputSet"]
-        outputSet.setDim(inputSet.getDim())
+
+        inputSetDim = inputSet.getDim()
+
+        if inputSetDim is not None:
+            outputSet.setDim(
+                inputSetDim
+            )
 
         totalInputSeries = inputSet.getSize() if hasattr(inputSet, "getSize") else None
 
@@ -11532,9 +11538,19 @@ class ProjectService:
                 if excludedTiltIndices and len(excludedTiltIndices) == ts.getSize():
                     newTs.setEnabled(False)
 
-                newTs.setDim(ts.getDim())
-                newTs.setAnglesCount(newTs.getSize())
-                outputSet.update(newTs)
+                sourceDim = ts.getDim()
+
+                if sourceDim is not None:
+                    newTs.setDim(
+                        sourceDim
+                    )
+
+                newTs.setAnglesCount(
+                    newTs.getSize()
+                )
+                outputSet.update(
+                    newTs
+                )
 
             except Exception:
                 logger.exception(
