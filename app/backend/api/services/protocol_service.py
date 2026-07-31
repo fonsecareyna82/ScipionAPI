@@ -150,40 +150,63 @@ class ProtocolService:
                 "for subprocess protocol build"
             )
 
-        code = """
+        code =         code = """
     import contextlib
     import os
     import sys
 
     with contextlib.redirect_stdout(sys.stderr):
-        from pyworkflow.project import Manager
+        from app.backend.database import getMapper
         from app.backend.api.services.project_service import ProjectService
 
         projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
         projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
         protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
 
-        manager = Manager()
-        project = manager.loadProject(projectPath)
+        mapper = getMapper()
+        projectService = ProjectService()
+        project = None
 
-        domain = project.getDomain()
-        protocolClass = domain.getProtocols().get(protocolClassName)
-
-        if protocolClass is None:
-            raise RuntimeError(
-                f"Protocol class not found: {protocolClassName}"
+        try:
+            project = projectService._loadPostgresqlRuntimeProject(
+                mapper=mapper,
+                projectId=projectId,
+                projectPath=projectPath,
             )
 
-        protocol = project.newProtocol(protocolClass)
-        project._fixProtParamsConfiguration(protocol)
+            domain = project.getDomain()
+            protocolClass = domain.getProtocols().get(
+                protocolClassName
+            )
 
-        projectService = ProjectService()
-        projectService.currentProject = project
+            if protocolClass is None:
+                raise RuntimeError(
+                    f"Protocol class not found: {protocolClassName}"
+                )
 
-        _scipionPayload = projectService._buildProtocolContext(
-            projectId,
-            protocol,
-        )
+            protocol = project.newProtocol(
+                protocolClass
+            )
+            project._fixProtParamsConfiguration(
+                protocol
+            )
+
+            _scipionPayload = projectService._buildProtocolContext(
+                projectId,
+                protocol,
+            )
+
+        finally:
+            if project is not None:
+                try:
+                    project.closeMapper()
+                except Exception:
+                    pass
+
+            try:
+                mapper.db.close()
+            except Exception:
+                pass
     """
 
         jsonSubprocessRunner = JsonSubprocessRunner()
