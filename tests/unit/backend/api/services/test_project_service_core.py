@@ -281,7 +281,7 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
     assert resolved == browserRoot.resolve()
 
 
-def test_ReplaceCurrentProjectWithPostgresqlProjectDoesNotConfigureReadFallback(
+def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
         projectService,
         projectServiceModule,
         monkeypatch,

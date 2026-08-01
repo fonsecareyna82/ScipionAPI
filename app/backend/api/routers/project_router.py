@@ -637,7 +637,6 @@ async def saveProtocol(
                 currentUser,
                 refresh=False,
                 checkPid=False,
-                loadWorkflowFromPostgresql=True,
             )
 
             if refreshedProject:
@@ -907,7 +906,6 @@ def duplicateProtocol(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:
@@ -978,7 +976,6 @@ def deleteProtocol(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:
@@ -1054,7 +1051,6 @@ def restartProtocolAll(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:
@@ -1117,7 +1113,6 @@ def continueProtocolAll(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:
@@ -1177,7 +1172,6 @@ def resetProtocolFrom(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:
@@ -1248,7 +1242,6 @@ def stopProtocol(
             currentUser,
             refresh=False,
             checkPid=False,
-            loadWorkflowFromPostgresql=True,
         )
 
         if refreshedProject:

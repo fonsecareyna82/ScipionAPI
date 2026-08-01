@@ -41,6 +41,11 @@ FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS = {
     "loadProjectRuntimeContext",
 }
 
+RETIRED_PROJECT_LOADING_KEYWORDS = {
+    "loadWorkflowFromPostgresql",
+    "usePostgresqlRuntimeProject",
+}
+
 
 ALLOWED_PROJECT_DB_LOADS = {
     (
@@ -106,6 +111,17 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
         callName = _getCalledFunctionName(node)
         functionName = self.functionStack[-1] if self.functionStack else "<module>"
         location = self.relativePath, functionName
+        if callName in {"getProjectById", "getProjectByIdCallback"}:
+            usesRetiredKeyword = any(
+                keyword.arg in RETIRED_PROJECT_LOADING_KEYWORDS
+                for keyword in node.keywords
+            )
+
+            if usesRetiredKeyword:
+                self.violations.append(
+                    f"{self.relativePath}:{node.lineno}:{functionName}"
+                )
+
 
         if callName in FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS:
             self.violations.append(
@@ -148,6 +164,25 @@ def unsafeRuntime(service):
         relativePath="unsafe_runtime.py",
     ) == [
         "unsafe_runtime.py:3:unsafeRuntime",
+    ]
+
+
+def test_ProjectRuntimeLoadingGuardRejectsRetiredProjectLoadingSwitches():
+    source = """
+def refreshWorkflow(service):
+    return service.getProjectById(None, 1, {}, loadWorkflowFromPostgresql=True)
+
+
+def refreshRuntime(getProjectByIdCallback):
+    return getProjectByIdCallback(None, 1, {}, usePostgresqlRuntimeProject=True)
+"""
+
+    assert _findUnsafeProjectLoads(
+        source=source,
+        relativePath="unsafe_runtime.py",
+    ) == [
+        "unsafe_runtime.py:3:refreshWorkflow",
+        "unsafe_runtime.py:7:refreshRuntime",
     ]
 
 
@@ -255,6 +290,7 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
             "Unsafe legacy project loads were found in API or runtime code.\n"
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
             "getProjectDbRow(), or PostgreSQL project loaders.\n"
+            "Retired getProjectById loading switches must not be passed.\n"
             "Direct loadProject() calls are forbidden.\n"
             "Direct load(dbPath=...) calls are forbidden outside "
             "their approved legacy boundaries.\n"
