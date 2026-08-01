@@ -96,6 +96,119 @@ def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
     assert service.currentProject is None
 
 
+def test_GetProjectByIdLoadsPostgresqlWorkflowBeforeConsistencyAudit(
+        authTestEnv,
+        tmp_path,
+        monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.api.services.project_service"
+    )
+    consistencyModule = importlib.import_module(
+        "app.backend.api.services.project_consistency_service"
+    )
+
+    service = object.__new__(
+        module.ProjectService
+    )
+    service.currentProject = None
+
+    class FakeMapper:
+        def getProject(self, projectId, userId):
+            assert projectId == 7
+            assert userId == 11
+
+            return {
+                "id": 7,
+                "ownerId": 11,
+                "name": str(tmp_path),
+                "createdAt": "2026-07-24T12:30:00",
+                "updatedAt": None,
+                "status": "active",
+            }
+
+    mapper = FakeMapper()
+
+    def failLegacyProjectLoad(*args, **kwargs):
+        raise AssertionError(
+            "getProjectById must not load project.sqlite"
+        )
+
+    def failRuntimeProjectLoad(**kwargs):
+        raise AssertionError(
+            "Consistency requests must not create a PostgreSQL runtime project"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "loadProject",
+        failLegacyProjectLoad,
+    )
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeProjectLoad,
+    )
+    monkeypatch.setattr(
+        service,
+        "loadProjectFromPostgresql",
+        lambda dbProj, mapper: {
+            "id": dbProj["id"],
+            "protocols": {},
+        },
+    )
+
+    auditCalls = []
+
+    def validateConsistency(
+            consistencyService,
+            **kwargs,
+    ):
+        auditCalls.append(kwargs)
+
+        return {
+            "ok": True,
+            "projectId": kwargs["projectId"],
+        }
+
+    monkeypatch.setattr(
+        consistencyModule.ProjectConsistencyService,
+        "validateProjectPostgresqlConsistency",
+        validateConsistency,
+    )
+
+    result = service.getProjectById(
+        mapper=mapper,
+        projectId=7,
+        currentUser={"id": 11},
+        refresh=False,
+        checkPid=False,
+        validateConsistency=True,
+        failOnConsistencyError=True,
+        loadWorkflowFromPostgresql=False,
+        usePostgresqlRuntimeProject=True,
+    )
+
+    assert result == {
+        "id": 7,
+        "protocols": {},
+        "postgresqlConsistency": {
+            "ok": True,
+            "projectId": 7,
+        },
+    }
+
+    assert auditCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 7,
+            "currentUser": {"id": 11},
+            "refresh": False,
+            "checkPid": False,
+        },
+    ]
+
+
 def test_LoadLegacyProjectForImportLoadsProjectSqlite(
         authTestEnv,
         tmp_path,

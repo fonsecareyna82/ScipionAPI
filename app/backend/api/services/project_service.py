@@ -3041,17 +3041,10 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        usingPostgresqlRuntimeProject = self._shouldUsePostgresqlRuntimeProject(
-            usePostgresqlRuntimeProject
+        project = self.loadProjectFromPostgresql(
+            dbProj=dbProj,
+            mapper=mapper,
         )
-
-        if loadWorkflowFromPostgresql and not validateConsistency:
-            project = self.loadProjectFromPostgresql(dbProj=dbProj, mapper=mapper)
-        else:
-            project = self.loadProject(dbProj, mapper, refresh=refresh, checkPid=checkPid, syncPostgresqlGraph=False)
-
-            if usingPostgresqlRuntimeProject:
-                self._replaceCurrentProjectWithPostgresqlProject(mapper=mapper, projectId=projectId)
 
         if validateConsistency:
             try:
