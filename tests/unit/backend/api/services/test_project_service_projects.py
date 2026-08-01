@@ -1275,7 +1275,7 @@ def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     assert graph["20"]["status"] == "running"
 
 
-def test_GetProjectByIdCanLoadWorkflowFromPostgresql(
+def test_GetProjectByIdLoadsWorkflowFromPostgresql(
     service,
     mapper,
     currentUser,
@@ -1331,7 +1331,6 @@ def test_GetProjectByIdCanLoadWorkflowFromPostgresql(
         refresh=True,
         checkPid=True,
         validateConsistency=False,
-        loadWorkflowFromPostgresql=True,
     )
 
     assert result["id"] == 1
@@ -1340,7 +1339,7 @@ def test_GetProjectByIdCanLoadWorkflowFromPostgresql(
     assert capturedPgLoad["mapper"] is mapper
 
 
-def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequestedWithPgWorkflowFlag(
+def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequested(
         service,
         mapper,
         currentUser,
@@ -1423,7 +1422,6 @@ def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequestedWithPgWor
         checkPid=True,
         validateConsistency=True,
         failOnConsistencyError=True,
-        loadWorkflowFromPostgresql=True,
     )
 
     assert result == {

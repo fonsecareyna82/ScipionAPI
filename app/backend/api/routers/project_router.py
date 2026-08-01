@@ -172,20 +172,17 @@ def importProject(
 def getProject(
     projectId: int,
     validateConsistency: bool = Query(False),
-    usePostgresqlRuntimeProject: bool = Query(True),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
     project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
         refresh=True,
         checkPid=True,
         validateConsistency=validateConsistency,
-        loadWorkflowFromPostgresql=not validateConsistency,
-        usePostgresqlRuntimeProject=usePostgresqlRuntimeProject,
     )
 
     if not project:

@@ -84,9 +84,7 @@ def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
                                     projectId=7,
                                     currentUser={"id": 11},
                                     refresh=False,
-                                    checkPid=False,
-                                    loadWorkflowFromPostgresql=True,
-                                    usePostgresqlRuntimeProject=True)
+                                    checkPid=False)
 
     assert result == {
         "id": 7,
@@ -185,8 +183,6 @@ def test_GetProjectByIdLoadsPostgresqlWorkflowBeforeConsistencyAudit(
         checkPid=False,
         validateConsistency=True,
         failOnConsistencyError=True,
-        loadWorkflowFromPostgresql=False,
-        usePostgresqlRuntimeProject=True,
     )
 
     assert result == {
