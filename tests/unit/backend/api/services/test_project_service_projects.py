@@ -1340,12 +1340,12 @@ def test_GetProjectByIdCanLoadWorkflowFromPostgresql(
     assert capturedPgLoad["mapper"] is mapper
 
 
-def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFlag(
-    service,
-    mapper,
-    currentUser,
-    monkeypatch,
-    tmp_path,
+def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequestedWithPgWorkflowFlag(
+        service,
+        mapper,
+        currentUser,
+        monkeypatch,
+        tmp_path,
 ):
     projectPath = tmp_path / "demo-project"
     projectPath.mkdir(parents=True, exist_ok=True)
@@ -1363,27 +1363,56 @@ def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFl
         "permission": "owner",
     }
 
-    def failPgOnlyLoad(*args, **kwargs):
-        raise AssertionError("consistency validation should not use PG-only workflow load")
+    consistencyModule = importlib.import_module(
+        "app.backend.api.services.project_consistency_service"
+    )
 
-    monkeypatch.setattr(service, "loadProjectFromPostgresql", failPgOnlyLoad)
-    monkeypatch.setattr(
-        service,
-        "loadProject",
-        lambda dbProj, mapper, refresh=True, checkPid=True,
-               syncPostgresqlGraph=False: {
+    def failLegacyProjectLoad(*args, **kwargs):
+        raise AssertionError(
+            "getProjectById must not load project.sqlite directly"
+        )
+
+    capturedPgLoad = {}
+
+    def fakeLoadProjectFromPostgresql(dbProj, mapper):
+        capturedPgLoad["dbProj"] = dbProj
+        capturedPgLoad["mapper"] = mapper
+
+        return {
             "id": dbProj["id"],
             "name": dbProj["name"],
             "protocols": {},
-        },
-    )
-    monkeypatch.setattr(
-        service,
-        "validateProjectPostgresqlConsistency",
-        lambda mapper, projectId, currentUser, refresh=True, checkPid=True: {
+        }
+
+    consistencyCalls = []
+
+    def fakeValidateConsistency(
+            consistencyService,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=True,
+            checkPid=True,
+    ):
+        consistencyCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "refresh": refresh,
+            "checkPid": checkPid,
+        })
+
+        return {
             "ok": True,
             "issues": {},
-        },
+        }
+
+    monkeypatch.setattr(service, "loadProject", failLegacyProjectLoad)
+    monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
+    monkeypatch.setattr(
+        consistencyModule.ProjectConsistencyService,
+        "validateProjectPostgresqlConsistency",
+        fakeValidateConsistency,
     )
 
     result = service.getProjectById(
@@ -1393,10 +1422,34 @@ def test_GetProjectByIdUsesRuntimeWhenConsistencyIsRequestedEvenWithPgWorkflowFl
         refresh=True,
         checkPid=True,
         validateConsistency=True,
+        failOnConsistencyError=True,
         loadWorkflowFromPostgresql=True,
     )
 
-    assert result["id"] == 1
+    assert result == {
+        "id": 1,
+        "name": str(projectPath),
+        "protocols": {},
+        "postgresqlConsistency": {
+            "ok": True,
+            "issues": {},
+        },
+    }
+
+    assert capturedPgLoad == {
+        "dbProj": mapper.projectsById[(1, 1)],
+        "mapper": mapper,
+    }
+
+    assert consistencyCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": currentUser,
+            "refresh": True,
+            "checkPid": True,
+        },
+    ]
 
 
 def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
