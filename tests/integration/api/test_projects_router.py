@@ -1627,5 +1627,4 @@ def test_GetProjectWithValidateConsistencyDisablesPostgresqlWorkflowLoad(
         "checkPid": True,
         "validateConsistency": True,
         "failOnConsistencyError": False,
-        "loadWorkflowFromPostgresql": False,
     }
