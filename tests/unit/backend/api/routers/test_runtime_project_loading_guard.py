@@ -49,10 +49,6 @@ ALLOWED_DYNAMIC_LOADS = {
     ("app/backend/api/routers/project_router.py", "getProject"),
 }
 
-ALLOWED_LEGACY_LOAD_PROJECT_CALLS = {
-    ("app/backend/api/services/project_service.py", "getProjectById"),
-}
-
 ALLOWED_PROJECT_DB_LOADS = {
     (
         "app/backend/api/services/project_service.py",
@@ -163,10 +159,7 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
                     f"{self.relativePath}:{node.lineno}:{functionName}"
                 )
 
-        if (
-                callName == "loadProject"
-                and location not in ALLOWED_LEGACY_LOAD_PROJECT_CALLS
-        ):
+        if callName == "loadProject":
             self.violations.append(
                 f"{self.relativePath}:{node.lineno}:{functionName}"
             )
@@ -247,6 +240,20 @@ def unsafeRuntime(project):
     ]
 
 
+def test_ProjectRuntimeLoadingGuardRejectsLegacyProjectLoader():
+    source = """
+def unsafeRuntime(service):
+    return service.loadProject({})
+"""
+
+    assert _findUnsafeProjectLoads(
+        source=source,
+        relativePath="unsafe_service.py",
+    ) == [
+        "unsafe_service.py:3:unsafeRuntime",
+    ]
+
+
 def test_ProjectRuntimeLoadingGuardAllowsExplicitPostgresqlLoads():
     source = """
 def refreshWorkflow(service):
@@ -294,10 +301,6 @@ def _loadLegacyProjectForImport(project):
 
 def loadProject(project):
     project.load(dbPath=project.getDbPath())
-
-
-def getProjectById(service):
-    return service.loadProject({})
 """
 
     assert _findUnsafeProjectLoads(
@@ -339,8 +342,9 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
             "getProjectDbRow(), or explicitly pass "
             "loadWorkflowFromPostgresql=True.\n"
-            "Direct loadProject() and load(dbPath=...) calls are forbidden "
-            "outside their approved legacy boundaries.\n"
+            "Direct loadProject() calls are forbidden.\n"
+            "Direct load(dbPath=...) calls are forbidden outside "
+            "their approved legacy boundaries.\n"
             "loadProjectRuntimeContext() must not be restored.\n"
             "Only the project consistency endpoint may use "
             "loadWorkflowFromPostgresql=not validateConsistency.\n"
