@@ -1607,7 +1607,7 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
     }
 
 
-def test_GetProjectWithValidateConsistencyDisablesPostgresqlWorkflowLoad(
+def test_GetProjectWithValidateConsistencyPassesAuditFlag(
     projectClient,
     fakeProjectService,
 ):

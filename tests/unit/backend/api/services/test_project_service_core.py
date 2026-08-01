@@ -281,81 +281,10 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
     assert resolved == browserRoot.resolve()
 
 
-def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
+def test_LegacyProjectReplacementHelperIsRemoved(projectService):
+    assert not hasattr(
         projectService,
-        projectServiceModule,
-        monkeypatch,
-        tmp_path,
-):
-    projectPath = tmp_path / "runtime-project"
-    projectPath.mkdir()
-
-    captured = {}
-
-    class FakeLegacyProject:
-        def __init__(self, path):
-            self.path = str(path)
-
-        def getDomain(self):
-            return "test-domain"
-
-        def closeMapper(self):
-            captured["legacyClosed"] = True
-
-    class FakePostgresqlProject:
-        def __init__(
-                self,
-                domain,
-                path,
-                projectId,
-                flatMapper,
-        ):
-            captured.update({
-                "domain": domain,
-                "path": path,
-                "projectId": projectId,
-                "flatMapper": flatMapper,
-            })
-
-        def load(self, chdir=False, loadAllConfig=True):
-            captured["loadChdir"] = chdir
-            captured["loadAllConfig"] = loadAllConfig
-
-    monkeypatch.setenv(
-        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
-        "true",
-    )
-
-    monkeypatch.setattr(
-        projectServiceModule,
-        "PostgresqlProject",
-        FakePostgresqlProject,
-    )
-
-    projectService.currentProject = FakeLegacyProject(
-        projectPath
-    )
-
-    mapper = object()
-
-    projectService._replaceCurrentProjectWithPostgresqlProject(
-        mapper=mapper,
-        projectId=7,
-    )
-
-    assert captured == {
-        "legacyClosed": True,
-        "domain": "test-domain",
-        "path": str(projectPath),
-        "projectId": 7,
-        "flatMapper": mapper,
-        "loadChdir": True,
-        "loadAllConfig": False,
-    }
-
-    assert (
-        projectService.currentProject.__class__
-        is FakePostgresqlProject
+        "_replaceCurrentProjectWithPostgresqlProject",
     )
 
 
