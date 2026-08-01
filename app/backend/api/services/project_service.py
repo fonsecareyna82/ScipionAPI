@@ -261,13 +261,6 @@ class ProjectService:
 
         return isinstance(getattr(project, "mapper", None), PostgresqlRuntimeMapper)
 
-    def _shouldUsePostgresqlRuntimeProject(self, explicit: bool = False) -> bool:
-        if explicit:
-            return True
-
-        value = os.environ.get("SCIPIONWEB_USE_POSTGRESQL_RUNTIME_PROJECT", "")
-        return str(value).strip().lower() in ("1", "true", "yes", "on")
-
     def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
                                       projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
         """
@@ -305,54 +298,6 @@ class ProjectService:
         logger.info("Loaded PostgreSQL runtime project directly. projectId=%s path=%s", projectId, projectPath)
 
         return postgresqlProject
-
-    def _replaceCurrentProjectWithPostgresqlProject(self, mapper: PostgresqlFlatMapper, projectId: int) -> None:
-        """
-        Replace the currently loaded Scipion Project with a PostgreSQL-aware
-        Project wrapper.
-
-        This keeps Scipion paths/settings/hosts but makes Project.mapper and
-        Protocol.mapper delegate writes to PostgreSQL.
-        """
-        currentProject = getattr(self, "currentProject", None)
-        if currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current project loaded",
-            )
-
-        if self._currentProjectUsesPostgresqlRuntimeMapper():
-            return
-
-        projectPath = getattr(currentProject, "path", None)
-        if not projectPath:
-            try:
-                projectPath = currentProject.getPath()
-            except Exception:
-                projectPath = None
-
-        if not projectPath:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Cannot enable PostgreSQL runtime project: missing project path",
-            )
-
-        domain = currentProject.getDomain()
-
-        try:
-            currentProject.closeMapper()
-        except Exception:
-            logger.debug(
-                "Could not close legacy project mapper before PostgreSQL runtime replacement.",
-                exc_info=True,
-            )
-
-        self._loadPostgresqlRuntimeProject(
-            mapper=mapper,
-            projectId=projectId,
-            projectPath=projectPath,
-            domain=domain,
-        )
 
     def _createObjectManager(self) -> ObjectManager:
         """Create and configure a fresh ObjectManager instance.
@@ -3028,8 +2973,6 @@ class ProjectService:
             checkPid: bool = True,
             validateConsistency: bool = False,
             failOnConsistencyError: bool = False,
-            loadWorkflowFromPostgresql: bool = False,
-            usePostgresqlRuntimeProject: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]

@@ -36,18 +36,11 @@ SCANNED_ROOTS = (
     PROJECT_ROOT / "app" / "backend" / "runtime",
 )
 
-LEGACY_PROJECT_LOAD_CALLS = {
-    "getProjectById",
-    "getProjectByIdCallback",
-}
 
 FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS = {
     "loadProjectRuntimeContext",
 }
 
-ALLOWED_DYNAMIC_LOADS = {
-    ("app/backend/api/routers/project_router.py", "getProject"),
-}
 
 ALLOWED_PROJECT_DB_LOADS = {
     (
@@ -87,26 +80,6 @@ def _getCalledFunctionName(call: ast.Call) -> Optional[str]:
     return None
 
 
-def _isExplicitPostgresqlWorkflowLoad(value: Optional[ast.AST]) -> bool:
-    return isinstance(value, ast.Constant) and value.value is True
-
-
-def _isAllowedConsistencyLoad(
-        relativePath: str,
-        functionName: str,
-        value: Optional[ast.AST],
-) -> bool:
-    if (relativePath, functionName) not in ALLOWED_DYNAMIC_LOADS:
-        return False
-
-    return (
-        isinstance(value, ast.UnaryOp)
-        and isinstance(value.op, ast.Not)
-        and isinstance(value.operand, ast.Name)
-        and value.operand.id == "validateConsistency"
-    )
-
-
 class ProjectRouteLoadingVisitor(ast.NodeVisitor):
     def __init__(self, relativePath: str):
         self.relativePath = relativePath
@@ -139,26 +112,6 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
                 f"{self.relativePath}:{node.lineno}:{functionName}"
             )
 
-        elif callName in LEGACY_PROJECT_LOAD_CALLS:
-            loadWorkflowValue = _getKeywordValue(
-                node,
-                "loadWorkflowFromPostgresql",
-            )
-
-            isAllowed = (
-                    _isExplicitPostgresqlWorkflowLoad(loadWorkflowValue)
-                    or _isAllowedConsistencyLoad(
-                relativePath=self.relativePath,
-                functionName=functionName,
-                value=loadWorkflowValue,
-            )
-            )
-
-            if not isAllowed:
-                self.violations.append(
-                    f"{self.relativePath}:{node.lineno}:{functionName}"
-                )
-
         if callName == "loadProject":
             self.violations.append(
                 f"{self.relativePath}:{node.lineno}:{functionName}"
@@ -182,34 +135,6 @@ def _findUnsafeProjectLoads(source: str, relativePath: str) -> List[str]:
     visitor.visit(tree)
 
     return visitor.violations
-
-
-def test_ProjectRouteLoadingGuardRejectsUnsafeLegacyLoad():
-    source = """
-def unsafeRoute(service):
-    return service.getProjectById(None, 1, {})
-"""
-
-    assert _findUnsafeProjectLoads(
-        source=source,
-        relativePath="unsafe_router.py",
-    ) == [
-        "unsafe_router.py:3:unsafeRoute",
-    ]
-
-
-def test_ProjectRuntimeLoadingGuardRejectsUnsafeLegacyCallbackLoad():
-    source = """
-def unsafeRuntime(getProjectByIdCallback):
-    return getProjectByIdCallback(None, 1, {})
-"""
-
-    assert _findUnsafeProjectLoads(
-        source=source,
-        relativePath="unsafe_runtime.py",
-    ) == [
-        "unsafe_runtime.py:3:unsafeRuntime",
-    ]
 
 
 def test_ProjectRuntimeLoadingGuardRejectsRemovedRuntimeContextLoader():
@@ -254,14 +179,13 @@ def unsafeRuntime(service):
     ]
 
 
-def test_ProjectRuntimeLoadingGuardAllowsExplicitPostgresqlLoads():
+def test_ProjectRuntimeLoadingGuardAllowsPostgresqlProjectLoads():
     source = """
 def refreshWorkflow(service):
     return service.getProjectById(
         None,
         1,
         {},
-        loadWorkflowFromPostgresql=True,
     )
 
 
@@ -270,22 +194,12 @@ def refreshRuntime(getProjectByIdCallback):
         None,
         1,
         {},
-        loadWorkflowFromPostgresql=True,
-    )
-
-
-def getProject(service, validateConsistency):
-    return service.getProjectById(
-        None,
-        1,
-        {},
-        loadWorkflowFromPostgresql=not validateConsistency,
     )
 """
 
     assert _findUnsafeProjectLoads(
         source=source,
-        relativePath="app/backend/api/routers/project_router.py",
+        relativePath="postgresql_runtime.py",
     ) == []
 
 
@@ -340,13 +254,10 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
     assert not violations, (
             "Unsafe legacy project loads were found in API or runtime code.\n"
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
-            "getProjectDbRow(), or explicitly pass "
-            "loadWorkflowFromPostgresql=True.\n"
+            "getProjectDbRow(), or PostgreSQL project loaders.\n"
             "Direct loadProject() calls are forbidden.\n"
             "Direct load(dbPath=...) calls are forbidden outside "
             "their approved legacy boundaries.\n"
             "loadProjectRuntimeContext() must not be restored.\n"
-            "Only the project consistency endpoint may use "
-            "loadWorkflowFromPostgresql=not validateConsistency.\n"
             + "\n".join(violations)
     )

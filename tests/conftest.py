@@ -594,8 +594,6 @@ class FakeProjectService:
             checkPid=False,
             validateConsistency=False,
             failOnConsistencyError=False,
-            loadWorkflowFromPostgresql=False,
-            usePostgresqlRuntimeProject=False,
             usePostgresqlRuntimeWriteFallback=False,
     ):
         self.lastGetProjectByIdCall = {
@@ -606,13 +604,9 @@ class FakeProjectService:
             "checkPid": checkPid,
             "validateConsistency": validateConsistency,
             "failOnConsistencyError": failOnConsistencyError,
-            "loadWorkflowFromPostgresql": loadWorkflowFromPostgresql,
         }
 
         self.lastGetProjectByIdRuntimeOptions = {
-            "usePostgresqlRuntimeProject": (
-                usePostgresqlRuntimeProject
-            ),
             "usePostgresqlRuntimeWriteFallback": (
                 usePostgresqlRuntimeWriteFallback
             ),

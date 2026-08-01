@@ -141,7 +141,6 @@ def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProject
         "checkPid": True,
         "validateConsistency": False,
         "failOnConsistencyError": False,
-        "loadWorkflowFromPostgresql": True,
     }
 
 
