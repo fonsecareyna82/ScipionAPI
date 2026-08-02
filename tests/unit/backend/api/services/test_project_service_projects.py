@@ -923,9 +923,15 @@ def test_GetProjectSummaryFromPostgresqlBuildsProjectOutWithoutLoadingRuntime(
     monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
 
     def failRuntimeLoad(*args, **kwargs):
-        raise AssertionError("getProjectSummaryFromPostgresql should not load runtime project")
+        raise AssertionError(
+            "getProjectSummaryFromPostgresql should not load runtime project"
+        )
 
-    service.loadProject = failRuntimeLoad
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeLoad,
+    )
 
     result = service.getProjectSummaryFromPostgresql(
         mapper=mapper,
@@ -1117,63 +1123,6 @@ def test_BuildProtocolsGraphUsesPostgresqlDependenciesWithoutRuntime(service):
     assert graph["20"]["parents"] == ["10"]
 
 
-def test_LoadProjectBuildsGraphWithoutRuntimeFallback(service, mapper, currentUser, monkeypatch, tmp_path):
-    projectPath = tmp_path / "demo-project"
-    projectPath.mkdir(parents=True, exist_ok=True)
-
-    dbProj = {
-        "id": 1,
-        "name": str(projectPath),
-        "createdAt": "2026-04-15T10:00:00",
-        "updatedAt": projectPath.stat().st_mtime,
-        "status": "active",
-        "ownerId": 1,
-    }
-
-    capturedBuildGraphCall = {}
-
-    def fakeBuildProtocolsGraph(*args, **kwargs):
-        capturedBuildGraphCall["args"] = args
-        capturedBuildGraphCall["kwargs"] = kwargs
-        return {"PROJECT": {"protocolId": "PROJECT"}}
-
-    monkeypatch.setattr(service, "buildProtocolsGraph", fakeBuildProtocolsGraph)
-    monkeypatch.setattr(service, "_loadPersistedOutputsByProtocolId", lambda mapper, projectId: {})
-
-    class FakeRunsGraph:
-        _nodesDict = {}
-
-    class FakeCurrentProject:
-        def __init__(self):
-            self.loaded = False
-
-        def load(self, dbPath=None):
-            self.loaded = True
-
-        def getDbPath(self):
-            return str(projectPath / "project.sqlite")
-
-        def getRunsGraph(self, refresh=True, checkPids=True):
-            return FakeRunsGraph()
-
-    def fakeScipionProject(domain, path):
-        assert path == str(projectPath)
-        return FakeCurrentProject()
-
-    import app.backend.api.services.project_service as project_service_module
-
-    monkeypatch.setattr(project_service_module, "ScipionProject", fakeScipionProject)
-
-    mapper.getProjectProtocolTagIdsByProtocolId = lambda projectId: {}
-    mapper.getProjectProtocolAdjacencyMap = lambda projectId: {}
-    mapper.getProtocols = lambda projectId: []
-    mapper.updateProjectModificationTime = lambda projectId, ownerId, updateAt: None
-
-    service.loadProject(dbProj, mapper, refresh=True, checkPid=True)
-
-    assert capturedBuildGraphCall["kwargs"]["allowRuntimeFallback"] is False
-
-
 def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     service,
     mapper,
@@ -1299,7 +1248,9 @@ def test_GetProjectByIdLoadsWorkflowFromPostgresql(
     }
 
     def failRuntimeLoad(*args, **kwargs):
-        raise AssertionError("getProjectById should not call loadProject when PG workflow is requested")
+        raise AssertionError(
+            "getProjectById should not create a runtime project"
+        )
 
     capturedPgLoad = {}
 
@@ -1321,7 +1272,11 @@ def test_GetProjectByIdLoadsWorkflowFromPostgresql(
             },
         }
 
-    monkeypatch.setattr(service, "loadProject", failRuntimeLoad)
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeLoad,
+    )
     monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
 
     result = service.getProjectById(
@@ -1366,9 +1321,9 @@ def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequested(
         "app.backend.api.services.project_consistency_service"
     )
 
-    def failLegacyProjectLoad(*args, **kwargs):
+    def failRuntimeProjectLoad(*args, **kwargs):
         raise AssertionError(
-            "getProjectById must not load project.sqlite directly"
+            "getProjectById must not create a runtime project"
         )
 
     capturedPgLoad = {}
@@ -1406,7 +1361,11 @@ def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequested(
             "issues": {},
         }
 
-    monkeypatch.setattr(service, "loadProject", failLegacyProjectLoad)
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeProjectLoad,
+    )
     monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
     monkeypatch.setattr(
         consistencyModule.ProjectConsistencyService,

@@ -57,10 +57,6 @@ ALLOWED_PROJECT_DB_LOADS = {
         "_loadLegacyProjectForImport",
     ),
     (
-        "app/backend/api/services/project_service.py",
-        "loadProject",
-    ),
-    (
         "app/backend/api/services/project_consistency_service.py",
         "_loadLegacyProjectForConsistency",
     ),
@@ -245,10 +241,6 @@ def _validateImportableScipionProject(project):
 
 
 def _loadLegacyProjectForImport(project):
-    project.load(dbPath=project.getDbPath())
-
-
-def loadProject(project):
     project.load(dbPath=project.getDbPath())
 """
 
