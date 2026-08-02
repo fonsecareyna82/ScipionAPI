@@ -40,7 +40,9 @@ from pyworkflow.protocol.params import (
     PointerParam,
     RelationParam,
 )
-
+from app.backend.runtime.protocol_graph_repository import (
+    ProtocolGraphRepository,
+)
 from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
@@ -448,18 +450,11 @@ class RuntimeProtocolResetService:
             protocolId=protocolId,
         )
 
-        mapper.db.execute(
-            """
-            UPDATE protocols
-               SET "relationsSynchronized" = FALSE,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND id = %s
-            """,
-            (
-                int(projectId),
-                protocolDbId,
-            ),
+        ProtocolGraphRepository().setProtocolRelationsSynchronized(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            synchronized=False,
         )
 
         protocol.setStatus(

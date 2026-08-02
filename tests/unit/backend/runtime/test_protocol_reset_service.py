@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
 import json
 from collections import OrderedDict
 
@@ -155,6 +156,21 @@ class FakeDb:
         })
 
 
+class FakeGraphRepository:
+    def __init__(self):
+        self.relationSyncCalls = []
+
+    def setProtocolRelationsSynchronized(
+            self,
+            **kwargs,
+    ):
+        self.relationSyncCalls.append(
+            kwargs
+        )
+
+        return True
+
+
 class FakeMapper:
     def __init__(self, protocolDbIds=None):
         self.protocolDbIds = dict(protocolDbIds or {})
@@ -236,6 +252,13 @@ def buildResult(message, **extra):
 
 @pytest.fixture
 def patchResetTypes(monkeypatch):
+    graphRepository = FakeGraphRepository()
+
+    monkeypatch.setattr(
+        resetModule,
+        "ProtocolGraphRepository",
+        lambda: graphRepository,
+    )
     monkeypatch.setattr(
         resetModule,
         "ProtocolIdentityResolver",
@@ -246,6 +269,7 @@ def patchResetTypes(monkeypatch):
     monkeypatch.setattr(resetModule, "RelationParam", FakeRelationParam)
     monkeypatch.setattr(resetModule, "Pointer", FakePointer)
     monkeypatch.setattr(resetModule, "PointerList", FakePointerList)
+    return graphRepository
 
 
 def callReset(
@@ -295,6 +319,16 @@ def callReset(
         ),
         buildProtocolMutationResultCallback=buildResult,
     )
+
+
+def test_ResetServiceDoesNotExecuteDirectPostgresqlQueries():
+    source = inspect.getsource(
+        RuntimeProtocolResetService
+    )
+
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
 
 
 def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
@@ -417,9 +451,21 @@ def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
         {"projectId": 1, "protocolId": 10},
         {"projectId": 1, "protocolId": 11},
     ]
-    assert [call["params"] for call in mapper.db.executeCalls] == [
-        (1, 110),
-        (1, 111),
+    assert mapper.db.executeCalls == []
+
+    assert patchResetTypes.relationSyncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "synchronized": False,
+        },
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 11,
+            "synchronized": False,
+        },
     ]
     assert [call["protocolId"] for call in metadataCalls] == [10, 11]
 
