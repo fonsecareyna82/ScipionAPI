@@ -38,6 +38,12 @@ SCANNED_ROOTS = (
 
 
 FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS = {
+    "loadProject",
+    "loadProjectRuntimeContext",
+}
+
+FORBIDDEN_LEGACY_PROJECT_LOAD_DEFINITIONS = {
+    "loadProject",
     "loadProjectRuntimeContext",
 }
 
@@ -93,6 +99,11 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
         self.violations: List[str] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
+        if node.name in FORBIDDEN_LEGACY_PROJECT_LOAD_DEFINITIONS:
+            self.violations.append(
+                f"{self.relativePath}:{node.lineno}:{node.name}"
+            )
+
         self.functionStack.append(node.name)
 
         try:
@@ -101,6 +112,11 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
             self.functionStack.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        if node.name in FORBIDDEN_LEGACY_PROJECT_LOAD_DEFINITIONS:
+            self.violations.append(
+                f"{self.relativePath}:{node.lineno}:{node.name}"
+            )
+
         self.functionStack.append(node.name)
 
         try:
@@ -145,10 +161,6 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
                 f"{self.relativePath}:{node.lineno}:{functionName}"
             )
 
-        if callName == "loadProject":
-            self.violations.append(
-                f"{self.relativePath}:{node.lineno}:{functionName}"
-            )
 
         if (
                 callName == "load"
@@ -255,6 +267,24 @@ def unsafeRuntime(service):
     ]
 
 
+def test_ProjectRuntimeLoadingGuardRejectsRemovedLegacyLoaderDefinitions():
+    source = """
+def loadProject():
+    return None
+
+
+async def loadProjectRuntimeContext():
+    return None
+"""
+
+    assert _findUnsafeProjectLoads(
+        source=source,
+        relativePath="unsafe_runtime.py",
+    ) == [
+        "unsafe_runtime.py:2:loadProject",
+        "unsafe_runtime.py:6:loadProjectRuntimeContext",
+    ]
+
 def test_ProjectRuntimeLoadingGuardAllowsPostgresqlProjectLoads():
     source = """
 def refreshWorkflow(service):
@@ -327,10 +357,10 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
             "Unsafe legacy project loads were found in API or runtime code.\n"
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
             "getProjectDbRow(), or PostgreSQL project loaders.\n"
+            "Retired project loading or fallback switches must not be passed.\n"
             "Retired SQLite runtime fallback environment variables are forbidden.\n"
-            "Direct loadProject() calls are forbidden.\n"
+            "loadProject() and loadProjectRuntimeContext() must not be defined or called.\n"
             "Direct load(dbPath=...) calls are forbidden outside "
             "their approved legacy boundaries.\n"
-            "loadProjectRuntimeContext() must not be restored.\n"
             + "\n".join(violations)
     )
