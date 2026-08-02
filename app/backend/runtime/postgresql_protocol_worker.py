@@ -688,15 +688,7 @@ class RuntimePostgresqlProtocolWorker:
         from app.backend.database import getMapper
         self.mapper = getMapper()
 
-        projectRow = self.mapper.db.fetchOne(
-            """
-            SELECT name
-              FROM projects
-             WHERE id = %s
-             LIMIT 1
-            """,
-            (self.projectId,),
-        )
+        projectRow = self.mapper.getProjectRuntimeMetadata(self.projectId)
 
         if not projectRow:
             raise RuntimeError(
