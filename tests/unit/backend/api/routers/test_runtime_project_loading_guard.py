@@ -48,6 +48,9 @@ RETIRED_PROJECT_LOADING_KEYWORDS = {
     "enableWriteFallback",
 }
 
+RETIRED_RUNTIME_ENVIRONMENT_VARIABLES = {
+    "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
+}
 
 ALLOWED_PROJECT_DB_LOADS = {
     (
@@ -104,6 +107,24 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
             self.generic_visit(node)
         finally:
             self.functionStack.pop()
+
+    def visit_Constant(self, node: ast.Constant):
+        functionName = (
+            self.functionStack[-1]
+            if self.functionStack
+            else "<module>"
+        )
+
+        if (
+                isinstance(node.value, str)
+                and node.value
+                in RETIRED_RUNTIME_ENVIRONMENT_VARIABLES
+        ):
+            self.violations.append(
+                f"{self.relativePath}:{node.lineno}:{functionName}"
+            )
+
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call):
         callName = _getCalledFunctionName(node)
@@ -189,6 +210,20 @@ def loadMutation(service):
         "unsafe_runtime.py:7:refreshRuntime",
         "unsafe_runtime.py:11:refreshWithWriteFallback",
         "unsafe_runtime.py:15:loadMutation",
+    ]
+
+
+def test_ProjectRuntimeLoadingGuardRejectsRetiredSqliteFallbackEnvironmentVariable():
+    source = """
+def configureRuntime():
+    return os.environ.get("SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK")
+"""
+
+    assert _findUnsafeProjectLoads(
+        source=source,
+        relativePath="unsafe_runtime.py",
+    ) == [
+        "unsafe_runtime.py:3:configureRuntime",
     ]
 
 
@@ -292,7 +327,7 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
             "Unsafe legacy project loads were found in API or runtime code.\n"
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
             "getProjectDbRow(), or PostgreSQL project loaders.\n"
-            "Retired project loading or fallback switches must not be passed.\n"
+            "Retired SQLite runtime fallback environment variables are forbidden.\n"
             "Direct loadProject() calls are forbidden.\n"
             "Direct load(dbPath=...) calls are forbidden outside "
             "their approved legacy boundaries.\n"

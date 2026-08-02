@@ -295,7 +295,7 @@ def test_LegacyProjectLoaderIsRemoved(projectService):
     )
 
 
-def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
+def test_LoadPostgresqlRuntimeProjectForMutationLoadsPostgresqlRuntimeDirectly(
         projectService,
         projectServiceModule,
         monkeypatch,
@@ -327,11 +327,6 @@ def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
 
         def closeMapper(self):
             captured["closed"] = True
-
-    monkeypatch.setenv(
-        "SCIPIONWEB_ENABLE_SQLITE_READ_FALLBACK",
-        "true",
-    )
 
     monkeypatch.setattr(
         projectServiceModule,
