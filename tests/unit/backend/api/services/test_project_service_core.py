@@ -288,6 +288,13 @@ def test_LegacyProjectReplacementHelperIsRemoved(projectService):
     )
 
 
+def test_LegacyProjectLoaderIsRemoved(projectService):
+    assert not hasattr(
+        projectService,
+        "loadProject",
+    )
+
+
 def test_LoadPostgresqlRuntimeProjectForMutationDoesNotConfigureReadFallback(
         projectService,
         projectServiceModule,

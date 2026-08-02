@@ -55,17 +55,6 @@ def test_GetProjectByIdLoadsWorkflowDirectlyFromPostgresql(
                 "status": "active",
             }
 
-    def failLegacyProjectLoad(*args, **kwargs):
-        raise AssertionError(
-            "Legacy project.sqlite workflow loading must not be used"
-        )
-
-    monkeypatch.setattr(
-        service,
-        "loadProject",
-        failLegacyProjectLoad,
-    )
-
     def failRuntimeProjectLoad(**kwargs):
         raise AssertionError("Read-only PostgreSQL workflow loading must not create a runtime project")
 
@@ -127,21 +116,11 @@ def test_GetProjectByIdLoadsPostgresqlWorkflowBeforeConsistencyAudit(
 
     mapper = FakeMapper()
 
-    def failLegacyProjectLoad(*args, **kwargs):
-        raise AssertionError(
-            "getProjectById must not load project.sqlite"
-        )
-
     def failRuntimeProjectLoad(**kwargs):
         raise AssertionError(
             "Consistency requests must not create a PostgreSQL runtime project"
         )
 
-    monkeypatch.setattr(
-        service,
-        "loadProject",
-        failLegacyProjectLoad,
-    )
     monkeypatch.setattr(
         service,
         "_loadPostgresqlRuntimeProject",
