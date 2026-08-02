@@ -26,7 +26,6 @@
 import threading
 from types import SimpleNamespace
 
-import app.backend.database as databaseModule
 import app.backend.runtime.postgresql_protocol_worker as postgresqlProtocolWorkerModule
 
 from pyworkflow.object import (
@@ -161,10 +160,12 @@ def buildWorker(
 
 
 def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
+        authTestEnv,
         monkeypatch,
         tmp_path,
 ):
     projectPath = tmp_path / "runtime-project"
+    import app.backend.database as databaseModule
     projectPath.mkdir()
 
     calls = {
