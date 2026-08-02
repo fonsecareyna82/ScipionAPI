@@ -2822,8 +2822,8 @@ class ProjectService:
         Return project metadata from PostgreSQL without loading Scipion runtime.
 
         This is the cheap read path for project screens that only need project
-        metadata. It must not call loadProject(), refresh runs, check PIDs or
-        populate currentProject.
+        metadata. It must not load a Scipion runtime project, refresh runs,
+        check PIDs or populate currentProject.
         """
         dbProj = mapper.getProject(
             projectId=projectId,
