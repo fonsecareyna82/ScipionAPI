@@ -195,7 +195,6 @@ def test_ApplyWorkflowToProjectDelegatesToService(projectClient, fakeProjectServ
             "email": "user@example.com",
             "role": "user",
         },
-        "enableWriteFallback": False,
     }
     assert response.status_code == 200
     assert response.json() == {"success": True, "workflowId": "wf-1"}

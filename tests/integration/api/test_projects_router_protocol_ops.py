@@ -88,7 +88,6 @@ def test_LoadProtocolUsesPostgresqlRuntimeContextAndReturnsParams(
                 "email": "user@example.com",
                 "role": "user",
             },
-            "enableWriteFallback": False,
         }
     )
 
@@ -185,7 +184,6 @@ def test_LoadNewProtocolUsesPostgresqlRuntimeMutationContext(
                 "email": "user@example.com",
                 "role": "user",
             },
-            "enableWriteFallback": False,
         }
     )
 
@@ -706,7 +704,6 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
                     ),
                     "role": "user",
                 },
-                "enableWriteFallback": False,
             }
     )
 
@@ -1052,7 +1049,6 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
                 "email": "user@example.com",
                 "role": "user",
             },
-            "enableWriteFallback": False,
         }
     )
 
@@ -1136,7 +1132,6 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
                     "email": "user@example.com",
                     "role": "user",
                 },
-                "enableWriteFallback": False,
             }
     )
 

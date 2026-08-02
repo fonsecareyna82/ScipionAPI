@@ -126,7 +126,6 @@ class FakeProjectService:
 
         self.projectByIdResult = makeProjectOut()
         self.lastGetProjectByIdCall = None
-        self.lastGetProjectByIdRuntimeOptions = None
 
         self.postgresqlRuntimeMutationResult = makeProjectOut()
         self.lastLoadPostgresqlRuntimeProjectForMutationCall = None
@@ -594,7 +593,6 @@ class FakeProjectService:
             checkPid=False,
             validateConsistency=False,
             failOnConsistencyError=False,
-            usePostgresqlRuntimeWriteFallback=False,
     ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
@@ -606,12 +604,6 @@ class FakeProjectService:
             "failOnConsistencyError": failOnConsistencyError,
         }
 
-        self.lastGetProjectByIdRuntimeOptions = {
-            "usePostgresqlRuntimeWriteFallback": (
-                usePostgresqlRuntimeWriteFallback
-            ),
-        }
-
         return self.projectByIdResult
 
     def loadPostgresqlRuntimeProjectForMutation(
@@ -619,13 +611,11 @@ class FakeProjectService:
             mapper,
             projectId,
             currentUser,
-            enableWriteFallback=False,
     ):
         self.lastLoadPostgresqlRuntimeProjectForMutationCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "enableWriteFallback": enableWriteFallback,
         }
 
         return self.postgresqlRuntimeMutationResult
