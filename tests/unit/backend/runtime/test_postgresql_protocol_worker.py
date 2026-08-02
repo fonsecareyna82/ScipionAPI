@@ -26,6 +26,9 @@
 import threading
 from types import SimpleNamespace
 
+import app.backend.database as databaseModule
+import app.backend.runtime.postgresql_protocol_worker as postgresqlProtocolWorkerModule
+
 from pyworkflow.object import (
     Object,
     Set,
@@ -155,6 +158,114 @@ def buildWorker(
     )
 
     return worker
+
+
+def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = tmp_path / "runtime-project"
+    projectPath.mkdir()
+
+    calls = {
+        "runtimeMetadata": [],
+    }
+
+    class ForbiddenDbStub:
+        def fetchOne(self, *args, **kwargs):
+            raise AssertionError(
+                "Worker load must not execute direct project SQL"
+            )
+
+    class MapperStub:
+        def __init__(self):
+            self.db = ForbiddenDbStub()
+
+        def getProjectRuntimeMetadata(self, projectId):
+            calls["runtimeMetadata"].append(projectId)
+
+            return {
+                "id": projectId,
+                "name": str(projectPath),
+            }
+
+    runtimeMapper = object()
+
+    class ProtocolStub:
+        def makeWorkingDir(self):
+            calls["workingDirCreated"] = True
+
+    protocol = ProtocolStub()
+
+    class ProjectStub:
+        def __init__(
+                self,
+                domain,
+                path,
+                projectId,
+                flatMapper,
+        ):
+            calls["projectInit"] = {
+                "domain": domain,
+                "path": path,
+                "projectId": projectId,
+                "flatMapper": flatMapper,
+            }
+
+        def load(self, chdir=False):
+            calls["projectLoadChdir"] = chdir
+
+        def getPostgresqlRuntimeMapper(self):
+            return runtimeMapper
+
+        def getProtocol(self, protocolId):
+            calls["loadedProtocolId"] = protocolId
+            return protocol
+
+    mapper = MapperStub()
+
+    monkeypatch.setattr(
+        databaseModule,
+        "getMapper",
+        lambda: mapper,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "PostgresqlProject",
+        ProjectStub,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.Config,
+        "getDomain",
+        lambda: "test-domain",
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=7,
+        protocolId=31,
+    )
+
+    worker.configureSchedulingLogging = lambda: None
+    worker.load()
+
+    assert calls == {
+        "runtimeMetadata": [7],
+        "projectInit": {
+            "domain": "test-domain",
+            "path": str(projectPath),
+            "projectId": 7,
+            "flatMapper": mapper,
+        },
+        "projectLoadChdir": True,
+        "loadedProtocolId": 31,
+        "workingDirCreated": True,
+    }
+
+    assert worker.mapper is mapper
+    assert worker.runtimeMapper is runtimeMapper
+    assert worker.protocol is protocol
 
 
 def test_NonStreamingProtocolWaitsForRunningParent():
