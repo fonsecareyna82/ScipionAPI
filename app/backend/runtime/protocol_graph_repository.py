@@ -1028,6 +1028,127 @@ class ProtocolGraphRepository:
 
         return self._rowsToDicts(rows)
 
+    def loadParentProtocolStatuses(
+            self,
+            mapper,
+            projectId: int,
+            childProtocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                parent.id AS "protocolDbId",
+                parent."protocolId",
+                parent.status
+              FROM protocol_dependencies dependency
+              JOIN protocols parent
+                ON parent."projectId" = dependency."projectId"
+               AND parent.id = dependency."parentProtocolDbId"
+             WHERE dependency."projectId" = %s
+               AND dependency."childProtocolDbId" = %s
+             ORDER BY parent.id
+            """,
+            (
+                int(projectId),
+                int(childProtocolDbId),
+            ),
+        )
+
+        return self._rowsToDicts(rows)
+
+    def loadProtocolStatusesByProtocolIds(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[int],
+    ) -> List[Dict[str, Any]]:
+        normalizedProtocolIds = sorted({
+            int(protocolId)
+            for protocolId in protocolIds or []
+        })
+
+        if not normalizedProtocolIds:
+            return []
+
+        rows = mapper.db.fetchAll(
+            """
+            SELECT
+                id AS "protocolDbId",
+                "protocolId",
+                status
+              FROM protocols
+             WHERE "projectId" = %s
+               AND "protocolId" = ANY(%s)
+             ORDER BY id
+            """,
+            (
+                int(projectId),
+                [
+                    str(protocolId)
+                    for protocolId in normalizedProtocolIds
+                ],
+            ),
+        )
+
+        return self._rowsToDicts(rows)
+
+    def updateResolvedInputRef(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            inputName: str,
+            itemIndex: int,
+            runtimeObjectId: int,
+            objectClassName,
+    ) -> bool:
+        cursor = mapper.db.execute(
+            """
+            UPDATE protocol_input_refs
+               SET "objectId" = %s,
+                   "objectClassName" = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "inputName" = %s
+               AND "itemIndex" = %s
+            """,
+            (
+                str(runtimeObjectId),
+                objectClassName,
+                int(projectId),
+                int(protocolDbId),
+                str(inputName),
+                int(itemIndex),
+            ),
+        )
+
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def setProtocolRelationsSynchronized(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            synchronized: bool,
+    ) -> bool:
+        cursor = mapper.db.execute(
+            """
+            UPDATE protocols
+               SET "relationsSynchronized" = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (
+                bool(synchronized),
+                int(projectId),
+                str(protocolId),
+            ),
+        )
+
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
     def loadSubworkflowRows(
             self,
             mapper,

@@ -861,34 +861,11 @@ class RuntimePostgresqlProtocolWorker:
         return int(protocolDbId)
 
     def loadParentStatuses(self) -> List[Dict[str, Any]]:
-        protocolDbId = self.getProtocolDbId()
-
-        rows = self.mapper.db.fetchAll(
-            """
-            SELECT
-                parent.id AS "protocolDbId",
-                parent."protocolId",
-                parent.status
-              FROM protocol_dependencies dependency
-              JOIN protocols parent
-                ON parent."projectId" =
-                   dependency."projectId"
-               AND parent.id =
-                   dependency."parentProtocolDbId"
-             WHERE dependency."projectId" = %s
-               AND dependency."childProtocolDbId" = %s
-             ORDER BY parent.id
-            """,
-            (
-                self.projectId,
-                protocolDbId,
-            ),
+        return ProtocolGraphRepository().loadParentProtocolStatuses(
+            mapper=self.mapper,
+            projectId=self.projectId,
+            childProtocolDbId=self.getProtocolDbId(),
         )
-
-        return [
-            dict(row)
-            for row in rows or []
-        ]
 
     def loadInputRefs(
             self,
@@ -1017,34 +994,10 @@ class RuntimePostgresqlProtocolWorker:
         if not normalizedIds:
             return {}
 
-        placeholders = ", ".join(
-            "%s"
-            for _
-            in normalizedIds
-        )
-
-        rows = self.mapper.db.fetchAll(
-            f"""
-            SELECT
-                id AS "protocolDbId",
-                "protocolId",
-                status
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" IN (
-                   {placeholders}
-               )
-            """,
-            tuple(
-                [
-                    self.projectId,
-                ]
-                + [
-                    str(protocolId)
-                    for protocolId
-                    in normalizedIds
-                ]
-            ),
+        rows = ProtocolGraphRepository().loadProtocolStatusesByProtocolIds(
+            mapper=self.mapper,
+            projectId=self.projectId,
+            protocolIds=normalizedIds,
         )
 
         result = {}
@@ -2176,32 +2129,14 @@ class RuntimePostgresqlProtocolWorker:
                 )
 
             if persistResolvedRefs:
-                self.mapper.db.execute(
-                    """
-                    UPDATE protocol_input_refs
-                       SET "objectId" = %s,
-                           "objectClassName" = %s,
-                           "updatedAt" = NOW()
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-                       AND "inputName" = %s
-                       AND "itemIndex" = %s
-                    """,
-                    (
-                        str(runtimeObjectId),
-                        outputInfo.get(
-                            "className"
-                        ),
-                        self.projectId,
-                        protocolDbId,
-                        inputName,
-                        int(
-                            ref.get(
-                                "itemIndex"
-                            )
-                            or 0
-                        ),
-                    ),
+                graphRepository.updateResolvedInputRef(
+                    mapper=self.mapper,
+                    projectId=self.projectId,
+                    protocolDbId=protocolDbId,
+                    inputName=inputName,
+                    itemIndex=int(ref.get("itemIndex") or 0),
+                    runtimeObjectId=runtimeObjectId,
+                    objectClassName=outputInfo.get("className"),
                 )
 
             restored.append({
@@ -2874,21 +2809,10 @@ class RuntimePostgresqlProtocolWorker:
 
             # Last-resort protection against protocols
             # remaining permanently Running/Launched.
-            self.mapper.db.execute(
-                """
-                UPDATE protocols
-                   SET status = %s,
-                       "updatedAt" = NOW()
-                 WHERE "projectId" = %s
-                   AND "protocolId" = %s
-                """,
-                (
-                    STATUS_FAILED,
-                    self.projectId,
-                    str(
-                        self.protocolId
-                    ),
-                ),
+            self.mapper.updateProjectProtocolStatus(
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+                statusValue=STATUS_FAILED,
             )
 
     def submitToQueue(self) -> int:
@@ -3068,19 +2992,11 @@ class RuntimePostgresqlProtocolWorker:
             }
         )
 
-        self.mapper.db.execute(
-            """
-            UPDATE protocols
-               SET "relationsSynchronized" = %s,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-            """,
-            (
-                relationsSynchronized,
-                self.projectId,
-                str(self.protocolId),
-            ),
+        ProtocolGraphRepository().setProtocolRelationsSynchronized(
+            mapper=self.mapper,
+            projectId=self.projectId,
+            protocolId=self.protocolId,
+            synchronized=relationsSynchronized,
         )
 
         return (

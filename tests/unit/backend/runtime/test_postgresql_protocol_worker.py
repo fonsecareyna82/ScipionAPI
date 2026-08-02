@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import threading
+import inspect
 from types import SimpleNamespace
 
 import app.backend.runtime.postgresql_protocol_worker as postgresqlProtocolWorkerModule
@@ -157,6 +158,14 @@ def buildWorker(
     )
 
     return worker
+
+
+def test_WorkerDoesNotExecuteDirectPostgresqlQueries():
+    source = inspect.getsource(RuntimePostgresqlProtocolWorker)
+
+    assert "self.mapper.db.fetchOne(" not in source
+    assert "self.mapper.db.fetchAll(" not in source
+    assert "self.mapper.db.execute(" not in source
 
 
 def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
