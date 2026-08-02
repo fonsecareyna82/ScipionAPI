@@ -547,39 +547,18 @@ class RuntimePostgresqlContinueLauncherService:
         # previous steps become SAVED, so the
         # streaming protocol can execute them
         # again while preserving its outputs.
-        stepsCursor = mapper.db.execute(
-            """
-            UPDATE protocol_steps
-               SET status = %s,
-                   "initTime" = NULL,
-                   "endTime" = NULL,
-                   "elapsedSeconds" = 0,
-                   error = NULL,
-                   event = %s,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-            """,
-            (
-                str(STATUS_SAVED),
-                "continue_resume",
-                int(projectId),
-                str(protocolId),
-            ),
+        stepsPrepared = mapper.prepareProtocolStepsForContinue(
+            projectId=projectId,
+            protocolId=protocolId,
+            statusValue=STATUS_SAVED,
+            event="continue_resume",
         )
 
-        mapper.db.execute(
-            """
-            UPDATE protocols
-               SET "relationsSynchronized" = FALSE,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND id = %s
-            """,
-            (
-                int(projectId),
-                protocolDbId,
-            ),
+        ProtocolGraphRepository().setProtocolRelationsSynchronized(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            synchronized=False,
         )
 
         return {
@@ -598,14 +577,7 @@ class RuntimePostgresqlContinueLauncherService:
             "interactive": False,
             "outputsPreserved": True,
             "workingDirectoryPreserved": True,
-            "stepsPrepared": int(
-                getattr(
-                    stepsCursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
-            ),
+            "stepsPrepared": stepsPrepared,
             "parentProtocolsModified": False,
         }
 
