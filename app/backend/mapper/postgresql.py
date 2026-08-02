@@ -10,10 +10,6 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Iterator, Tuple
 from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
-from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    setPostgresqlRuntimeParentReference,
-)
-
 POSTGRESQL_PROTOCOL_ID_START = 2
 POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
 
@@ -2241,6 +2237,36 @@ class PostgresqlFlatMapper(Mapper):
             cursor.rowcount
             or 0
         )
+
+    def prepareProtocolStepsForContinue(
+            self,
+            projectId: int,
+            protocolId: int,
+            statusValue,
+            event: str = "continue_resume",
+    ) -> int:
+        cursor = self.db.execute(
+            """
+            UPDATE protocol_steps
+               SET status = %s,
+                   "initTime" = NULL,
+                   "endTime" = NULL,
+                   "elapsedSeconds" = 0,
+                   error = NULL,
+                   event = %s,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolId" = %s
+            """,
+            (
+                str(statusValue),
+                str(event),
+                int(projectId),
+                str(protocolId),
+            ),
+        )
+
+        return int(cursor.rowcount or 0)
 
     def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int,
                              steps: List[Dict[str, Any]]) -> None:

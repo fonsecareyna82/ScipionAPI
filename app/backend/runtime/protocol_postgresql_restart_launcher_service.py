@@ -423,18 +423,11 @@ class RuntimePostgresqlRestartLauncherService:
             protocolId=protocolId,
         )
 
-        mapper.db.execute(
-            """
-            UPDATE protocols
-               SET "relationsSynchronized" = FALSE,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND id = %s
-            """,
-            (
-                projectId,
-                protocolDbId,
-            ),
+        ProtocolGraphRepository().setProtocolRelationsSynchronized(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            synchronized=False,
         )
 
         if protocol.isInteractive():

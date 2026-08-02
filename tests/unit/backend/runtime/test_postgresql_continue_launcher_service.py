@@ -23,11 +23,12 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
 from types import SimpleNamespace
 
 from pyworkflow.protocol import (
     MODE_RESUME,
-    STATUS_SCHEDULED,
+    STATUS_SCHEDULED, STATUS_SAVED,
 )
 
 import app.backend.runtime.protocol_postgresql_continue_launcher_service as continueModule
@@ -38,7 +39,9 @@ from app.backend.runtime.protocol_postgresql_continue_launcher_service import (
     CONTINUE_ACTION_SKIP,
     RuntimePostgresqlContinueLauncherService,
 )
-
+from app.backend.runtime.protocol_postgresql_restart_launcher_service import (
+    RuntimePostgresqlRestartLauncherService,
+)
 
 class ScalarStub:
     def __init__(self, value=None):
@@ -126,6 +129,7 @@ class IdentityResolverStub:
 class GraphRepositoryStub:
     def __init__(self):
         self.refsByProtocolDbId = {}
+        self.relationSyncCalls = []
 
     def loadInputRefsForProtocol(
             self,
@@ -149,32 +153,29 @@ class GraphRepositoryStub:
             "runtimeObjectId": 500,
         }
 
-
-class CursorStub:
-    def __init__(self, rowcount=0):
-        self.rowcount = rowcount
-
-
-class DbStub:
-    def __init__(self):
-        self.calls = []
-
-    def execute(
+    def setProtocolRelationsSynchronized(
             self,
-            sql,
-            params,
+            **kwargs,
     ):
-        self.calls.append({
-            "sql": sql,
-            "params": params,
-        })
+        self.relationSyncCalls.append(
+            kwargs
+        )
 
-        if "UPDATE protocol_steps" in sql:
-            return CursorStub(
-                rowcount=3
-            )
+        return True
 
-        return CursorStub()
+class MapperStub:
+    def __init__(self):
+        self.prepareContinueCalls = []
+
+    def prepareProtocolStepsForContinue(
+            self,
+            **kwargs,
+    ):
+        self.prepareContinueCalls.append(
+            kwargs
+        )
+
+        return 3
 
 
 class RuntimeMapperStub:
@@ -354,17 +355,20 @@ def test_ContinuePlanRejectsActiveProtocol(
     ] == "running"
 
 
-def test_ResumePreparationPreservesOutputsAndCpuTime():
+def test_ResumePreparationPreservesOutputsAndCpuTime(
+        monkeypatch,
+):
+    graphRepository = installPlanStubs(
+        monkeypatch
+    )
+
     protocol = ProtocolStub(
         1,
         status="failed",
         streaming=True,
     )
 
-    db = DbStub()
-    mapper = SimpleNamespace(
-        db=db
-    )
+    mapper = MapperStub()
 
     runtimeMapper = (
         RuntimeMapperStub()
@@ -427,13 +431,35 @@ def test_ResumePreparationPreservesOutputsAndCpuTime():
 
     assert runtimeMapper.commitCalls == 1
 
-    stepUpdate = next(
-        call
-        for call in db.calls
-        if "UPDATE protocol_steps"
-        in call["sql"]
-    )
+    assert mapper.prepareContinueCalls == [
+        {
+            "projectId": 7,
+            "protocolId": 1,
+            "statusValue": STATUS_SAVED,
+            "event": "continue_resume",
+        },
+    ]
 
-    assert stepUpdate["params"][1] == (
-        "continue_resume"
-    )
+    assert graphRepository.relationSyncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 7,
+            "protocolId": 1,
+            "synchronized": False,
+        },
+    ]
+
+
+def test_PostgresqlLaunchersDoNotExecuteDirectQueries():
+    for launcherClass in (
+            RuntimePostgresqlRestartLauncherService,
+            RuntimePostgresqlContinueLauncherService,
+    ):
+        source = inspect.getsource(
+            launcherClass
+        )
+
+        assert ".db.fetchOne(" not in source
+        assert ".db.fetchAll(" not in source
+        assert ".db.execute(" not in source
+
