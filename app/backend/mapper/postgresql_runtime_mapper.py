@@ -28,6 +28,7 @@ import json
 import logging
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import pyworkflow.object as pwobject
@@ -431,9 +432,15 @@ class PostgresqlRuntimeMapper(Mapper):
         ):
             return False
 
+        sqliteUri = (
+            f"{Path(sqlitePath).resolve().as_uri()}"
+            "?mode=ro"
+        )
+
         try:
             with sqlite3.connect(
-                    sqlitePath,
+                    sqliteUri,
+                    uri=True,
                     timeout=5.0,
             ) as connection:
                 connection.execute(
