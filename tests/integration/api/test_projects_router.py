@@ -411,7 +411,6 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
             "email": "user@example.com",
             "role": "user",
         },
-        "enableWriteFallback": False,
     }
     assert fakeProjectService.lastGetProjectByIdCall is None
 
@@ -664,7 +663,6 @@ def test_CreateNewSetOfTiltSeriesUsesPostgresqlRuntimeProject(
             "email": "user@example.com",
             "role": "user",
         },
-        "enableWriteFallback": False,
     }
     assert fakeProjectService.lastCreateNewSetOfTiltSeriesCall == {
         "projectId": 1,
@@ -765,7 +763,6 @@ def test_CreateNewSetOfCtftomoSeriesUsesPostgresqlRuntimeProject(
             "email": "user@example.com",
             "role": "user",
         },
-        "enableWriteFallback": False,
     }
     assert fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall == {
         "projectId": 1,

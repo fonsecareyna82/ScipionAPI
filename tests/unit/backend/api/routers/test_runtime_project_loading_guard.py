@@ -44,6 +44,8 @@ FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS = {
 RETIRED_PROJECT_LOADING_KEYWORDS = {
     "loadWorkflowFromPostgresql",
     "usePostgresqlRuntimeProject",
+    "usePostgresqlRuntimeWriteFallback",
+    "enableWriteFallback",
 }
 
 
@@ -107,17 +109,15 @@ class ProjectRouteLoadingVisitor(ast.NodeVisitor):
         callName = _getCalledFunctionName(node)
         functionName = self.functionStack[-1] if self.functionStack else "<module>"
         location = self.relativePath, functionName
-        if callName in {"getProjectById", "getProjectByIdCallback"}:
-            usesRetiredKeyword = any(
-                keyword.arg in RETIRED_PROJECT_LOADING_KEYWORDS
-                for keyword in node.keywords
+        usesRetiredKeyword = any(
+            keyword.arg in RETIRED_PROJECT_LOADING_KEYWORDS
+            for keyword in node.keywords
+        )
+
+        if usesRetiredKeyword:
+            self.violations.append(
+                f"{self.relativePath}:{node.lineno}:{functionName}"
             )
-
-            if usesRetiredKeyword:
-                self.violations.append(
-                    f"{self.relativePath}:{node.lineno}:{functionName}"
-                )
-
 
         if callName in FORBIDDEN_LEGACY_PROJECT_LOAD_CALLS:
             self.violations.append(
@@ -171,6 +171,14 @@ def refreshWorkflow(service):
 
 def refreshRuntime(getProjectByIdCallback):
     return getProjectByIdCallback(None, 1, {}, usePostgresqlRuntimeProject=True)
+
+
+def refreshWithWriteFallback(service):
+    return service.getProjectById(None, 1, {}, usePostgresqlRuntimeWriteFallback=True)
+
+
+def loadMutation(service):
+    return service.loadPostgresqlRuntimeProjectForMutation(None, 1, {}, enableWriteFallback=True)
 """
 
     assert _findUnsafeProjectLoads(
@@ -179,6 +187,8 @@ def refreshRuntime(getProjectByIdCallback):
     ) == [
         "unsafe_runtime.py:3:refreshWorkflow",
         "unsafe_runtime.py:7:refreshRuntime",
+        "unsafe_runtime.py:11:refreshWithWriteFallback",
+        "unsafe_runtime.py:15:loadMutation",
     ]
 
 
@@ -282,7 +292,7 @@ def test_ProjectRuntimeLayersDoNotUseUnsafeLegacyProjectLoads():
             "Unsafe legacy project loads were found in API or runtime code.\n"
             "Runtime operations must use loadPostgresqlRuntimeProjectForMutation(), "
             "getProjectDbRow(), or PostgreSQL project loaders.\n"
-            "Retired getProjectById loading switches must not be passed.\n"
+            "Retired project loading or fallback switches must not be passed.\n"
             "Direct loadProject() calls are forbidden.\n"
             "Direct load(dbPath=...) calls are forbidden outside "
             "their approved legacy boundaries.\n"
