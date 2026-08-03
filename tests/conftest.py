@@ -1840,13 +1840,6 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         lambda token, expected_type="refresh": {"sub": "user@example.com"} if token == "valid-refresh" else {},
     )
 
-    sentEmails: list[tuple[str, str]] = []
-
-    async def fakeSendVerificationEmail(email: str, code: str):
-        sentEmails.append((email, code))
-
-    monkeypatch.setattr(authRouterModule, "sendVerificationEmail", fakeSendVerificationEmail)
-
     app = FastAPI()
     app.include_router(authRouterModule.router)
 
@@ -1856,8 +1849,6 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         "email": "user@example.com",
         "role": "user",
     }
-
-    app.state.sentEmails = sentEmails
 
     with TestClient(app) as client:
         yield client
