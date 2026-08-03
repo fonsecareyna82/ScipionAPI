@@ -385,6 +385,86 @@ def test_ProjectOutputSummaryReaderDelegatesOutputRows(monkeypatch):
     assert ".db.execute(" not in source
 
 
+def test_ProtocolOutputNameReaderDelegatesOutputRows(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+    setReadCalls = []
+    treeReadCalls = []
+
+    class SetMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProtocolSetOutputNameRows(self, projectId, protocolDbId):
+            setReadCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return [
+                {
+                    "outputName": "outputParticles",
+                },
+                (
+                    "outputVolume",
+                ),
+            ]
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProtocolTreeOutputNameRows(self, projectId, protocolDbId):
+            treeReadCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return [
+                {
+                    "outputName": "outputVolume",
+                },
+                (
+                    "outputMask",
+                ),
+            ]
+
+    monkeypatch.setattr(backendMapperModule, "ScipionSetPostgresqlMapper", SetMapperStub)
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+
+    result = service.loadPersistedProtocolOutputNames(mapper=mapper, projectId=7, protocolDbId=31)
+
+    assert result == {
+        "outputParticles",
+        "outputVolume",
+        "outputMask",
+    }
+
+    assert setReadCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+    assert treeReadCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.loadPersistedProtocolOutputNames)
+
+    assert "setMapper.listProtocolSetOutputNameRows(" in source
+    assert "objectMapper.listProtocolTreeOutputNameRows(" in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):

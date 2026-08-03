@@ -298,6 +298,35 @@ def test_ListProtocolTreeOutputRowsExcludesStoredSetRoots():
     )
 
 
+def test_ListProtocolTreeOutputNameRowsExcludesStoredSetRoots():
+    expectedRows = [
+        {
+            "outputName": "outputVolume",
+        },
+    ]
+
+    database = FakeDatabase(rows=expectedRows)
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    result = mapper.listProtocolTreeOutputNameRows(projectId=7, protocolDbId=31)
+
+    assert result == expectedRows
+    assert len(database.calls) == 1
+    assert database.transactionCalls == 0
+
+    call = database.calls[0]
+
+    assert call["values"] == (7, 31)
+    assert 'AS "outputName"' in call["query"]
+    assert "FROM scipion_objects object_row" in call["query"]
+    assert 'object_row."projectId" = %s' in call["query"]
+    assert 'object_row."protocolDbId" = %s' in call["query"]
+    assert 'object_row."parentObjectId" IS NULL' in call["query"]
+    assert "NOT EXISTS" in call["query"]
+    assert "FROM scipion_sets stored_set" in call["query"]
+    assert 'stored_set."objectId" = object_row.id' in call["query"]
+
+
 def test_ListProjectTreeOutputRowsExcludesStoredSetRoots():
     expectedRows = [
         {

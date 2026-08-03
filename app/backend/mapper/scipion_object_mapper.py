@@ -467,6 +467,30 @@ class ScipionObjectPostgresqlMapper:
             ),
         ) or []
 
+    def listProtocolTreeOutputNameRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT COALESCE(
+                       NULLIF(object_row.path, ''),
+                       object_row.name
+                   ) AS "outputName"
+              FROM scipion_objects object_row
+             WHERE object_row."projectId" = %s
+               AND object_row."protocolDbId" = %s
+               AND object_row."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets stored_set
+                     WHERE stored_set."objectId" = object_row.id
+               )
+            """,
+            (int(projectId), int(protocolDbId)),
+        ) or []
+
     def listProjectTreeOutputRows(self, projectId: int) -> List[Dict[str, Any]]:
         query = """
             SELECT
