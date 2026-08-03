@@ -37,7 +37,7 @@ def test_SignupCreatesUser(authClient, fakeMapper):
 
     assert response.status_code == 201
     body = response.json()
-    assert body["message"] == "User created. Please check your inbox to verify your email."
+    assert body["message"] == "User created."
     assert body["userId"] == 1
 
     createdUser = fakeMapper.usersByEmail["new@example.com"]
@@ -128,7 +128,7 @@ def test_ResendCodeFailsWhenUserAlreadyVerified(authClient, fakeMapper):
     assert response.json()["detail"] == "User is already verified"
 
 
-def test_ResendCodeUpdatesCodeAndSendsEmail(authClient, fakeMapper):
+def test_ResendCodeUpdatesCode(authClient, fakeMapper):
     userId = fakeMapper.insertUser(
         email="pending@example.com",
         hashedPassword="hashed::secret123",
@@ -147,7 +147,7 @@ def test_ResendCodeUpdatesCodeAndSendsEmail(authClient, fakeMapper):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"message": "Verification code resent"}
+    assert response.json() == {"message": "Verification code updated"}
 
     assert len(fakeMapper.updatedVerificationCodes) == 1
     updatedUserId, newCode = fakeMapper.updatedVerificationCodes[0]

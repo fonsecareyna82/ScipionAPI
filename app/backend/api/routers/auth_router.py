@@ -31,7 +31,6 @@ from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginRespo
                                                  UserUpdate)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
-from app.backend.utils.email import sendVerificationEmail
 from app.backend.utils.security import hashPassword, verifyPassword
 from app.backend.utils.jwt import createAccessToken, createRefreshToken, verifyToken
 from app.backend.api.dependencies import getCurrentUser
@@ -69,16 +68,9 @@ async def signup(
         verificationCode=verificationCode,
     )
 
-    # Send verification email (errors here do not block signup)
-    # try:
-    #     await sendVerificationEmail(userData.email, verificationCode)
-    # except Exception as e:
-    #     # Log the error but do not abort user creation
-    #     print("Error sending verification email:", e)
-
     # Return confirmation message and new user ID
     return {
-        "message": "User created. Please check your inbox to verify your email.",
+        "message": "User created.",
         "userId": userId,
     }
 
@@ -117,8 +109,7 @@ async def resendVerificationCode(
         )
     newCode = str(uuid.uuid4())
     mapper.updateUserVerificationCode(user["id"], newCode)
-    await sendVerificationEmail(request.email, newCode)
-    return {"message": "Verification code resent"}
+    return {"message": "Verification code updated"}
 
 
 @router.post("/login", response_model=LoginResponse)
