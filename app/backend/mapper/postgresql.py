@@ -2104,6 +2104,36 @@ class PostgresqlFlatMapper(Mapper):
             (int(projectId), str(protocolId)),
         )
 
+    def getProjectProtocolByDbId(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            """
+            SELECT
+                id,
+                "projectId",
+                "protocolId",
+                "protocolClassName",
+                status,
+                params,
+                "parentIds",
+                "childIds",
+                "relationsSynchronized",
+                "createdAt",
+                "updatedAt"
+              FROM protocols
+             WHERE "projectId" = %s
+               AND id = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
     def countProjectProtocols(self, projectId: int) -> int:
         row = self.db.fetchOne(
             """

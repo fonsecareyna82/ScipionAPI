@@ -47,6 +47,26 @@ class ProtocolIdentityResolver:
         self.projectId = self.toOptionalInt(projectId)
         self.db = db if db is not None else getattr(mapper, "db", None)
 
+    def _getIdentityMapper(self):
+        mapper = self.mapper
+
+        if mapper is None and self.db is not None:
+            from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
+            mapper = PostgresqlFlatMapper(self.db)
+            self.mapper = mapper
+
+        flatMapper = getattr(
+            mapper,
+            "flatMapper",
+            None,
+        )
+
+        if flatMapper is not None:
+            return flatMapper
+
+        return mapper
+
     def resolveScipionProtocolId(self, protocolId: Any) -> Optional[int]:
         """
         Accept PostgreSQL protocols.id or Scipion protocols.protocolId.
@@ -94,49 +114,59 @@ class ProtocolIdentityResolver:
         return self.toOptionalInt(protocolId)
 
     def getProtocolRowByDbId(self, protocolDbId: Any) -> Optional[Dict[str, Any]]:
-        if self.db is None or self.projectId is None:
+        if self.projectId is None:
             return None
 
-        protocolDbId = self.toOptionalInt(protocolDbId)
+        protocolDbId = self.toOptionalInt(
+            protocolDbId
+        )
 
         if protocolDbId is None:
             return None
 
-        return self.db.fetchOne(
-            """
-            SELECT id, "protocolId"
-              FROM protocols
-             WHERE "projectId" = %s
-               AND id = %s
-             LIMIT 1
-            """,
-            (
-                int(self.projectId),
-                protocolDbId,
-            ),
+        identityMapper = self._getIdentityMapper()
+
+        reader = getattr(
+            identityMapper,
+            "getProjectProtocolByDbId",
+            None,
+        )
+
+        if not callable(reader):
+            return None
+
+        return reader(
+            projectId=int(self.projectId),
+            protocolDbId=protocolDbId,
         )
 
     def getProtocolRowByScipionProtocolId(self, protocolId: Any) -> Optional[Dict[str, Any]]:
-        if self.db is None or self.projectId is None:
+        if self.projectId is None:
             return None
 
-        protocolIdText = str(protocolId).strip() if protocolId not in (None, "") else ""
+        protocolIdText = (
+            str(protocolId).strip()
+            if protocolId not in (None, "")
+            else ""
+        )
 
         if not protocolIdText:
             return None
 
-        return self.db.fetchOne(
-            """
-            SELECT id, "protocolId"
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-             LIMIT 1
-            """,
-            (
-                int(self.projectId),
-                protocolIdText,
-            ),
+        identityMapper = self._getIdentityMapper()
+
+        reader = getattr(
+            identityMapper,
+            "getProjectProtocolByProtocolId",
+            None,
+        )
+
+        if not callable(reader):
+            return None
+
+        return reader(
+            projectId=int(self.projectId),
+            protocolId=protocolIdText,
         )
 
     def getProtocolRow(self, protocolId: Any) -> Optional[Dict[str, Any]]:
