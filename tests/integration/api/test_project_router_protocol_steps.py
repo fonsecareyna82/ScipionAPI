@@ -69,6 +69,8 @@ class FakeProtocolStepsProjectService:
         }
         self.updateProtocolStepStatusError = None
         self.lastUpdateProtocolStepStatusCall = None
+        self.projectDbRowResult = {"id": 1, "name": "Demo project"}
+        self.lastGetProjectDbRowCall = None
 
     def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
         self.lastGetProjectByIdCall = {
@@ -87,6 +89,14 @@ class FakeProtocolStepsProjectService:
             "protocolId": protocolId,
         }
         return self.protocolStepsResult
+
+    def getProjectDbRow(self, mapper, projectId, currentUser):
+        self.lastGetProjectDbRowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectDbRowResult
 
     def updateProtocolStepStatusService(
             self,
@@ -142,7 +152,7 @@ def test_ListProtocolStepsReturns404WhenProjectMissing(
     protocolStepsClient,
     fakeProtocolStepsProjectService,
 ):
-    fakeProtocolStepsProjectService.projectByIdResult = None
+    fakeProtocolStepsProjectService.projectDbRowResult = None
 
     response = protocolStepsClient.get("/projects/1/protocols/10/steps")
 
@@ -164,13 +174,23 @@ def test_ListProtocolStepsDelegatesToService(
         "projectId": 1,
         "protocolId": 10,
     }
+    assert fakeProtocolStepsProjectService.lastGetProjectDbRowCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+    assert fakeProtocolStepsProjectService.lastGetProjectByIdCall is None
 
 
 def test_UpdateProtocolStepStatusReturns404WhenProjectMissing(
     protocolStepsClient,
     fakeProtocolStepsProjectService,
 ):
-    fakeProtocolStepsProjectService.projectByIdResult = None
+    fakeProtocolStepsProjectService.projectDbRowResult = None
 
     response = protocolStepsClient.patch(
         "/projects/1/protocols/10/steps/2/status",
@@ -209,6 +229,23 @@ def test_UpdateProtocolStepStatusDelegatesToService(
         "stepIndex": 2,
         "stepStatus": "finished",
     }
+    assert (
+               fakeProtocolStepsProjectService
+               .lastGetProjectDbRowCall
+           ) == {
+               "mapper": fakeProjectMapper,
+               "projectId": 1,
+               "currentUser": {
+                   "id": 1,
+                   "email": "user@example.com",
+                   "role": "user",
+               },
+           }
+
+    assert (
+               fakeProtocolStepsProjectService
+               .lastGetProjectByIdCall
+           ) is None
 
 
 def test_UpdateProtocolStepStatusPropagatesHttpException(

@@ -36,6 +36,7 @@ from fastapi import HTTPException, status
 from pyworkflow.protocol.params import MultiPointerParam, PointerParam, RelationParam
 
 from app.backend.api.services.wizard_handlers import executeWizardHandler
+from app.utils.protocol_param import castProtocolParamValue
 
 logger = logging.getLogger(__name__)
 
@@ -335,9 +336,11 @@ class ProtocolWizardService:
         return "unknown"
 
     def _applyFormValuesToProtocolInstance(
-        self,
-        protocol,
-        params: Dict[str, Any],
+            self,
+            protocol,
+            params: Dict[str, Any],
+            mapper=None,
+            projectId: Optional[int] = None,
     ) -> List[str]:
         if self.projectService is None:
             raise RuntimeError("projectService is required to apply wizard form values")
@@ -375,7 +378,7 @@ class ProtocolWizardService:
                 continue
 
             try:
-                castedValue = self.projectService.castParamValue(param, value)
+                castedValue = castProtocolParamValue(param, value)
                 errors = param.validate(castedValue) if hasattr(param, "validate") else []
                 if errors:
                     errorList += ["**" + param.label.get() + "** " + error for error in errors]
@@ -390,22 +393,28 @@ class ProtocolWizardService:
                 cleaned = re.sub(r"[^A-Za-z0-9\s+\-*/=<>\!&|^%()\[\]{}_,.;:]", "", str(e))
                 errorList.append("**" + param.label.get() + "** " + cleaned)
 
-        errorList += self.projectService.applyParamsToProtocol(protocol, params)
+        errorList += self.projectService.applyParamsToProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params,
+        )
         return errorList
 
     def _buildWizardReadyProtocol(
-        self,
-        protocolId: Optional[int],
-        protocolClassName: str,
-        formValues: Dict[str, Any],
+            self,
+            protocolId: Optional[int],
+            protocolClassName: str,
+            formValues: Dict[str, Any],
+            mapper=None,
+            projectId: Optional[int] = None,
     ):
         if protocolId:
-            protocol = self.currentProject.getProtocol(int(protocolId))
-            if protocol is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Protocol not found",
-                )
+            protocol = self.projectService._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
         else:
             protClass = self.currentProject.getDomain().getProtocols().get(str(protocolClassName))
             if protClass is None:
@@ -418,7 +427,12 @@ class ProtocolWizardService:
         self.currentProject._fixProtParamsConfiguration(protocol)
 
         sanitizedFormValues = self._sanitizeWizardFormValues(formValues or {})
-        errors = self._applyFormValuesToProtocolInstance(protocol, sanitizedFormValues)
+        errors = self._applyFormValuesToProtocolInstance(
+            protocol,
+            sanitizedFormValues,
+            mapper=mapper,
+            projectId=projectId,
+        )
         if errors:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -478,23 +492,37 @@ class ProtocolWizardService:
         if self.projectService is None:
             raise RuntimeError("projectService is required to execute protocol wizards")
 
-        project = self.projectService.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
+        projectRow = (
+            self.projectService
+            .loadPostgresqlRuntimeProjectForMutation(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+            )
         )
-        if not project:
+
+        if not projectRow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
 
+        project = self.projectService.currentProject
+
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL runtime project was not loaded",
+            )
+
+        self.currentProject = project
+
         protocol = self._buildWizardReadyProtocol(
             protocolId=getattr(payload, "protocolId", None),
             protocolClassName=str(getattr(payload, "protocolClassName", "")).strip(),
             formValues=getattr(payload, "formValues", {}) or {},
+            mapper=mapper,
+            projectId=projectId,
         )
 
         paramName = str(getattr(payload, "paramName", "")).strip()

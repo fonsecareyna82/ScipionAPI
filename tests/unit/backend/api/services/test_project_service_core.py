@@ -279,3 +279,100 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
     resolved = projectService._getGlobalFsBrowserRoot()
 
     assert resolved == browserRoot.resolve()
+
+
+def test_LegacyProjectReplacementHelperIsRemoved(projectService):
+    assert not hasattr(
+        projectService,
+        "_replaceCurrentProjectWithPostgresqlProject",
+    )
+
+
+def test_LegacyProjectLoaderIsRemoved(projectService):
+    assert not hasattr(
+        projectService,
+        "loadProject",
+    )
+
+
+def test_LoadPostgresqlRuntimeProjectForMutationLoadsPostgresqlRuntimeDirectly(
+        projectService,
+        projectServiceModule,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = tmp_path / "runtime-project"
+    projectPath.mkdir()
+
+    captured = {}
+
+    class FakePostgresqlProject:
+        def __init__(
+                self,
+                domain,
+                path,
+                projectId,
+                flatMapper,
+        ):
+            captured.update({
+                "domain": domain,
+                "path": path,
+                "projectId": projectId,
+                "flatMapper": flatMapper,
+            })
+
+        def load(self, chdir=False, loadAllConfig=True):
+            captured["loadChdir"] = chdir
+            captured["loadAllConfig"] = loadAllConfig
+
+        def closeMapper(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "PostgresqlProject",
+        FakePostgresqlProject,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule.pyworkflow.Config,
+        "getDomain",
+        lambda: "test-domain",
+    )
+
+    projectService.getProjectDbRow = lambda **kwargs: {
+        "id": 7,
+        "name": str(projectPath),
+    }
+
+    mapper = object()
+
+    result = (
+        projectService
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=7,
+            currentUser={"id": 3},
+        )
+    )
+
+    assert result == {
+        "id": 7,
+        "name": str(projectPath),
+    }
+
+    assert captured == {
+        "domain": "test-domain",
+        "path": str(projectPath),
+        "projectId": 7,
+        "flatMapper": mapper,
+        "loadChdir": True,
+        "loadAllConfig": False,
+    }
+
+    assert (
+        projectService.currentProject.__class__
+        is FakePostgresqlProject
+    )
+
+

@@ -68,6 +68,9 @@ class FileHandlers:
         """
         Return the protocol browser paths.
 
+        protocolId must be a Scipion runtime protocol id. PostgreSQL protocol
+        ids must be resolved by ProjectService before calling FileHandlers.
+
         Returns:
           - rootAbs: absolute root boundary (project folder inferred)
           - startPath: relative to rootAbs ("" means rootAbs)

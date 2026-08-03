@@ -1,6 +1,6 @@
-scipion-pyworkflow @ git+https://github.com/scipion-em/scipion-pyworkflow.git@scipionWeb
-scipion-em @ git+https://github.com/scipion-em/scipion-em.git@scipionWeb
-scipion-app @ git+https://github.com/scipion-em/scipion-app.git@scipionWeb
+scipion-pyworkflow @ git+https://github.com/fonsecareyna82/scipion-pyworkflow.git@devel
+scipion-em @ git+https://github.com/fonsecareyna82//scipion-em.git@devel
+scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 scipion-em-tomo
 pyxmipp3
 

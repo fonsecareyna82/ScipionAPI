@@ -23,3 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper  # noqa: F401
+from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper  # noqa: F401
+from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
