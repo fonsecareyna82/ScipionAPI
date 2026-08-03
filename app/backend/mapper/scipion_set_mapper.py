@@ -1404,6 +1404,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             ),
         ) or []
 
+    def listProtocolSetOutputNameRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT "outputName"
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+            """,
+            (int(projectId), int(protocolDbId)),
+        ) or []
+
     def listProjectSetOutputRows(self, projectId: int) -> List[Dict[str, Any]]:
         query = """
             SELECT

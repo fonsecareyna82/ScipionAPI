@@ -2052,18 +2052,12 @@ class RuntimeProtocolOutputPersistenceService:
         """
         outputNames: Set[str] = set()
 
-        setRows = mapper.db.fetchAll(
-            """
-            SELECT "outputName"
-              FROM scipion_sets
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-            """,
-            (
-                projectId,
-                protocolDbId,
-            ),
-        )
+        from app.backend.mapper import ScipionObjectPostgresqlMapper, ScipionSetPostgresqlMapper
+
+        setMapper = ScipionSetPostgresqlMapper(mapper.db)
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+
+        setRows = setMapper.listProtocolSetOutputNameRows(projectId=projectId, protocolDbId=protocolDbId)
 
         for row in setRows or []:
             outputName = (
@@ -2081,27 +2075,7 @@ class RuntimeProtocolOutputPersistenceService:
                     outputNameText
                 )
 
-        treeRows = mapper.db.fetchAll(
-            """
-            SELECT COALESCE(
-                       NULLIF(o.path, ''),
-                       o.name
-                   ) AS "outputName"
-              FROM scipion_objects o
-             WHERE o."projectId" = %s
-               AND o."protocolDbId" = %s
-               AND o."parentObjectId" IS NULL
-               AND NOT EXISTS (
-                    SELECT 1
-                      FROM scipion_sets s
-                     WHERE s."objectId" = o.id
-               )
-            """,
-            (
-                projectId,
-                protocolDbId,
-            ),
-        )
+        treeRows = objectMapper.listProtocolTreeOutputNameRows(projectId=projectId, protocolDbId=protocolDbId)
 
         for row in treeRows or []:
             outputName = (
