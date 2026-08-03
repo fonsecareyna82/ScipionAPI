@@ -214,11 +214,34 @@ def test_StoreDetachedSetOutputDelegatesMetadataPersistence():
     }
 
 
-def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
+def test_ProtocolFormOutputReaderDelegatesSetRows(
         monkeypatch,
 ):
     mapper = FakeMapper()
     service = RuntimeProtocolOutputPersistenceService()
+    setReadCalls = []
+
+    class SetMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProtocolSetOutputRows(
+                self,
+                projectId,
+                protocolDbId,
+        ):
+            setReadCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return []
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionSetPostgresqlMapper",
+        SetMapperStub,
+    )
 
     monkeypatch.setattr(
         outputPersistenceModule.ProtocolIdentityResolver,
@@ -232,21 +255,23 @@ def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
         protocolId=19,
     ) == {}
 
-    setQuery = next(
-        call["query"]
-        for call in mapper.db.queries
-        if (
-            'FROM scipion_sets s '
-            'LEFT JOIN scipion_objects root '
-            'ON root.id = s."objectId"'
-        ) in call["query"]
+    assert setReadCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 17,
+        },
+    ]
+
+    assert len(mapper.db.queries) == 1
+    assert (
+        "FROM scipion_objects o"
+        in mapper.db.queries[0]["query"]
     )
 
     assert (
-        "COALESCE( "
-        "s.properties ->> 'runtimeReserved', "
-        "'false' ) <> 'true'"
-    ) in setQuery
+        "LEFT JOIN scipion_objects root"
+        not in mapper.db.queries[0]["query"]
+    )
 
 
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(

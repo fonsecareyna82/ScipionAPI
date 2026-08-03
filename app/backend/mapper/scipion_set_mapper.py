@@ -1372,6 +1372,38 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (projectId, protocolDbId),
         )
 
+    def listProtocolSetOutputRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT
+                stored_set."outputName",
+                stored_set."setClassName",
+                stored_set."itemClassName",
+                stored_set.properties,
+                stored_set.id AS "setId",
+                stored_set."objectId",
+                root_object."scipionObjId"
+              FROM scipion_sets stored_set
+              LEFT JOIN scipion_objects root_object
+                ON root_object.id = stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND COALESCE(
+                       stored_set.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
+             ORDER BY stored_set."outputName"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        ) or []
+
     def deleteStoredSetOutput(
             self,
             projectId: int,
