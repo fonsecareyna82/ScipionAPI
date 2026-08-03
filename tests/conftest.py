@@ -1608,9 +1608,13 @@ class FakeProjectService:
 def authTestEnv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     # authTestEnv
     scipionHome = tmp_path / "scipion_home"
+    projectsPath = tmp_path / "projects"
+
     scipionHome.mkdir(parents=True, exist_ok=True)
+    projectsPath.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+    monkeypatch.setenv("PROJECTS_PATH", str(projectsPath))
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     monkeypatch.setenv("DATABASE_NAME", "scipion_test")
     monkeypatch.setenv("DATABASE_USER", "scipion_test")
