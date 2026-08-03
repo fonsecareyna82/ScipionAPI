@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
 from app.backend.viewers.postgresql_coords2d_reader import PostgresqlCoords2dReader
 
 
@@ -220,4 +221,132 @@ def test_PostgresqlCoords2dReaderResolvesLinkedMicrographImage():
         "locationIndex": 1,
         "label": "micrograph_10",
     }
+
+
+def test_PostgresqlCoords2dReaderDelegatesRuntimeObjectMicrographLookup():
+    mapperCalls = []
+
+    expectedRow = {
+        "scipionItemId": 10,
+        "label": "Micrograph 10",
+        "comment": "",
+        "values": {},
+        "outputName": "outputMicrographs",
+        "protocolId": "1",
+    }
+
+    class ForbiddenDb:
+        def fetchOne(self, *args, **kwargs):
+            raise AssertionError("PostgresqlCoords2dReader must not query linked micrographs directly")
+
+    class SetMapperStub:
+        def getStoredSetItemByRuntimeObjectId(self, projectId, runtimeObjectId, scipionItemId):
+            mapperCalls.append({
+                "method": "getStoredSetItemByRuntimeObjectId",
+                "projectId": projectId,
+                "runtimeObjectId": runtimeObjectId,
+                "scipionItemId": scipionItemId,
+            })
+
+            return expectedRow
+
+        def getStoredSetItemByProtocolOutput(self, *args, **kwargs):
+            raise AssertionError("Runtime object lookup must have precedence")
+
+    reader = PostgresqlCoords2dReader(db=ForbiddenDb(), projectId=7, protocolId=2, outputName="coordinates")
+    reader.setMapper = SetMapperStub()
+
+    result = reader._findLinkedMicrographRow(
+        pointerReference={
+            "targetObjectId": 3000000050,
+            "targetParentObjectId": 1,
+            "targetObjectName": "1.outputMicrographs",
+        },
+        micrographId=10,
+    )
+
+    assert result == expectedRow
+
+    assert mapperCalls == [
+        {
+            "method": "getStoredSetItemByRuntimeObjectId",
+            "projectId": 7,
+            "runtimeObjectId": 3000000050,
+            "scipionItemId": 10,
+        },
+    ]
+
+    source = inspect.getsource(PostgresqlCoords2dReader._findLinkedMicrographRow)
+
+    assert "getStoredSetItemByRuntimeObjectId(" in source
+    assert "getStoredSetItemByProtocolOutput(" in source
+    assert ".fetchOne(" not in source
+    assert ".fetchAll(" not in source
+    assert ".execute(" not in source
+
+
+def test_PostgresqlCoords2dReaderFallsBackToProtocolOutputMicrographLookup():
+    mapperCalls = []
+
+    expectedRow = {
+        "scipionItemId": 10,
+        "label": "Micrograph 10",
+        "comment": "",
+        "values": {},
+        "outputName": "outputMicrographs",
+        "protocolId": "1",
+    }
+
+    class SetMapperStub:
+        def getStoredSetItemByRuntimeObjectId(self, projectId, runtimeObjectId, scipionItemId):
+            mapperCalls.append({
+                "method": "getStoredSetItemByRuntimeObjectId",
+                "projectId": projectId,
+                "runtimeObjectId": runtimeObjectId,
+                "scipionItemId": scipionItemId,
+            })
+
+            return None
+
+        def getStoredSetItemByProtocolOutput(self, projectId, protocolId, outputName, scipionItemId):
+            mapperCalls.append({
+                "method": "getStoredSetItemByProtocolOutput",
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "scipionItemId": scipionItemId,
+            })
+
+            return expectedRow
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="coordinates")
+    reader.setMapper = SetMapperStub()
+
+    result = reader._findLinkedMicrographRow(
+        pointerReference={
+            "targetObjectId": 3000000050,
+            "targetParentObjectId": 1,
+            "targetObjectName": "1.outputMicrographs",
+        },
+        micrographId=10,
+    )
+
+    assert result == expectedRow
+
+    assert mapperCalls == [
+        {
+            "method": "getStoredSetItemByRuntimeObjectId",
+            "projectId": 7,
+            "runtimeObjectId": 3000000050,
+            "scipionItemId": 10,
+        },
+        {
+            "method": "getStoredSetItemByProtocolOutput",
+            "projectId": 7,
+            "protocolId": 1,
+            "outputName": "outputMicrographs",
+            "scipionItemId": 10,
+        },
+    ]
+
 

@@ -252,47 +252,17 @@ class PostgresqlCoords2dReader:
             pointerReference: Dict[str, Any],
             micrographId: int,
     ) -> Optional[Dict[str, Any]]:
-        targetObjectId = self._toOptionalInt(
-            pointerReference.get("targetObjectId")
-        )
+        targetObjectId = self._toOptionalInt(pointerReference.get("targetObjectId"))
 
         if targetObjectId is not None:
-            row = self.db.fetchOne(
-                """
-                SELECT
-                    item."scipionItemId",
-                    item.label,
-                    item.comment,
-                    item."values",
-                    stored_set."outputName",
-                    protocol."protocolId"
-                FROM scipion_sets stored_set
-                JOIN scipion_objects object_row
-                  ON object_row."projectId" = stored_set."projectId"
-                 AND object_row.id = stored_set."objectId"
-                JOIN scipion_set_items item
-                  ON item."setId" = stored_set.id
-                JOIN protocols protocol
-                  ON protocol."projectId" = stored_set."projectId"
-                 AND protocol.id = stored_set."protocolDbId"
-                WHERE stored_set."projectId" = %s
-                  AND object_row."scipionObjId" = %s
-                  AND item."scipionItemId" = %s
-                LIMIT 1
-                """,
-                (
-                    int(self.projectId),
-                    int(targetObjectId),
-                    int(micrographId),
-                ),
-            )
+            row = self.setMapper.getStoredSetItemByRuntimeObjectId(projectId=self.projectId,
+                                                                   runtimeObjectId=targetObjectId,
+                                                                   scipionItemId=micrographId)
 
             if row is not None:
-                return dict(row)
+                return row
 
-        targetParentObjectId = self._toOptionalInt(
-            pointerReference.get("targetParentObjectId")
-        )
+        targetParentObjectId = self._toOptionalInt(pointerReference.get("targetParentObjectId"))
 
         targetObjectName = str(
             pointerReference.get("targetObjectName")
@@ -309,36 +279,9 @@ class PostgresqlCoords2dReader:
         if outputName.startswith(protocolPrefix):
             outputName = outputName[len(protocolPrefix):]
 
-        row = self.db.fetchOne(
-            """
-            SELECT
-                item."scipionItemId",
-                item.label,
-                item.comment,
-                item."values",
-                stored_set."outputName",
-                protocol."protocolId"
-            FROM scipion_sets stored_set
-            JOIN scipion_set_items item
-              ON item."setId" = stored_set.id
-            JOIN protocols protocol
-              ON protocol."projectId" = stored_set."projectId"
-             AND protocol.id = stored_set."protocolDbId"
-            WHERE stored_set."projectId" = %s
-              AND protocol."protocolId"::text = %s
-              AND stored_set."outputName" = %s
-              AND item."scipionItemId" = %s
-            LIMIT 1
-            """,
-            (
-                int(self.projectId),
-                str(targetParentObjectId),
-                outputName,
-                int(micrographId),
-            ),
-        )
-
-        return dict(row) if row is not None else None
+        return self.setMapper.getStoredSetItemByProtocolOutput(projectId=self.projectId,
+                                                               protocolId=targetParentObjectId, outputName=outputName,
+                                                               scipionItemId=micrographId)
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:

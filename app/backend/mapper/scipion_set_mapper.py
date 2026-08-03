@@ -1357,6 +1357,73 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         storedSet["items"] = self.getStoredSetItems(storedSet["id"], limit=limit, offset=offset)
         return storedSet
 
+    def getStoredSetItemByRuntimeObjectId(
+            self,
+            projectId: int,
+            runtimeObjectId: int,
+            scipionItemId: int,
+    ) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne(
+            """
+            SELECT
+                item."scipionItemId",
+                item.label,
+                item.comment,
+                item."values",
+                stored_set."outputName",
+                protocol."protocolId"
+              FROM scipion_sets stored_set
+              JOIN scipion_objects object_row
+                ON object_row."projectId" = stored_set."projectId"
+               AND object_row.id = stored_set."objectId"
+              JOIN scipion_set_items item
+                ON item."setId" = stored_set.id
+              JOIN protocols protocol
+                ON protocol."projectId" = stored_set."projectId"
+               AND protocol.id = stored_set."protocolDbId"
+             WHERE stored_set."projectId" = %s
+               AND object_row."scipionObjId" = %s
+               AND item."scipionItemId" = %s
+             LIMIT 1
+            """,
+            (int(projectId), int(runtimeObjectId), int(scipionItemId)),
+        )
+
+        return dict(row) if row is not None else None
+
+    def getStoredSetItemByProtocolOutput(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            scipionItemId: int,
+    ) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne(
+            """
+            SELECT
+                item."scipionItemId",
+                item.label,
+                item.comment,
+                item."values",
+                stored_set."outputName",
+                protocol."protocolId"
+              FROM scipion_sets stored_set
+              JOIN scipion_set_items item
+                ON item."setId" = stored_set.id
+              JOIN protocols protocol
+                ON protocol."projectId" = stored_set."projectId"
+               AND protocol.id = stored_set."protocolDbId"
+             WHERE stored_set."projectId" = %s
+               AND protocol."protocolId"::text = %s
+               AND stored_set."outputName" = %s
+               AND item."scipionItemId" = %s
+             LIMIT 1
+            """,
+            (int(projectId), str(protocolId), str(outputName), int(scipionItemId)),
+        )
+
+        return dict(row) if row is not None else None
+
     def listProtocolStoredSets(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
 
