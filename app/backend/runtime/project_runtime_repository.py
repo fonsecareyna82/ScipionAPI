@@ -23,7 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from typing import Optional
+from typing import Dict, Optional
 
 
 class ProjectRuntimeRepository:
@@ -52,3 +52,89 @@ class ProjectRuntimeRepository:
             return None
 
         return str(rawPath)
+
+    def getProjectRuntimeResourceCounts(
+            self,
+            mapper,
+            projectId: int,
+    ) -> Dict[str, int]:
+        resourceNames = (
+            "projects",
+            "protocols",
+            "dependencies",
+            "inputRefs",
+            "steps",
+            "outputs",
+            "objects",
+            "sets",
+            "setItems",
+            "relations",
+        )
+
+        row = mapper.db.fetchOne(
+            """
+            SELECT
+                (
+                    SELECT COUNT(*)
+                      FROM projects
+                     WHERE id = %s
+                ) AS "projects",
+                (
+                    SELECT COUNT(*)
+                      FROM protocols
+                     WHERE "projectId" = %s
+                ) AS "protocols",
+                (
+                    SELECT COUNT(*)
+                      FROM protocol_dependencies
+                     WHERE "projectId" = %s
+                ) AS "dependencies",
+                (
+                    SELECT COUNT(*)
+                      FROM protocol_input_refs
+                     WHERE "projectId" = %s
+                ) AS "inputRefs",
+                (
+                    SELECT COUNT(*)
+                      FROM protocol_steps
+                     WHERE "projectId" = %s
+                ) AS "steps",
+                (
+                    SELECT COUNT(*)
+                      FROM scipion_objects
+                     WHERE "projectId" = %s
+                       AND "parentObjectId" IS NULL
+                ) AS "outputs",
+                (
+                    SELECT COUNT(*)
+                      FROM scipion_objects
+                     WHERE "projectId" = %s
+                ) AS "objects",
+                (
+                    SELECT COUNT(*)
+                      FROM scipion_sets
+                     WHERE "projectId" = %s
+                ) AS "sets",
+                (
+                    SELECT COUNT(*)
+                      FROM scipion_set_items set_item
+                      JOIN scipion_sets stored_set
+                        ON stored_set.id = set_item."setId"
+                     WHERE stored_set."projectId" = %s
+                ) AS "setItems",
+                (
+                    SELECT COUNT(*)
+                      FROM scipion_relations
+                     WHERE "projectId" = %s
+                ) AS "relations"
+            """,
+            (int(projectId),) * len(resourceNames),
+        )
+
+        rowData = dict(row) if row else {}
+
+        return {
+            resourceName: int(rowData.get(resourceName) or 0)
+            for resourceName in resourceNames
+        }
+
