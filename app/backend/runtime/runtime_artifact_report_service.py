@@ -26,6 +26,7 @@
 import glob
 import os
 from typing import Any, Callable, Dict, Optional
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 
 
 class RuntimeArtifactReportService:
@@ -58,23 +59,7 @@ class RuntimeArtifactReportService:
         persistedSqliteReferences = set()
         workingDir = None
         projectPath = None
-
-        def rowToDict(row):
-            if row is None:
-                return {}
-
-            try:
-                return dict(row)
-            except Exception:
-                result = {}
-
-                try:
-                    for key in row.keys():
-                        result[key] = row[key]
-                except Exception:
-                    pass
-
-                return result
+        setCountsById = {}
 
         def safeSize(filePath):
             try:
@@ -122,53 +107,28 @@ class RuntimeArtifactReportService:
                 itemsCount = None
 
             setId = storedSet.get("id")
-            rootItemsCount = None
-            tablesCount = None
-            tableItemsCount = None
+            setCounts = {}
 
             try:
                 if setId is not None:
-                    row = mapper.db.fetchOne(
-                        """
-                        SELECT COUNT(*) AS count
-                          FROM scipion_set_items
-                         WHERE "setId" = %s
-                        """,
-                        (int(setId),),
+                    setCounts = setCountsById.get(
+                        int(setId),
+                        {},
                     )
-                    rootItemsCount = int(row.get("count") or 0) if row else 0
-            except Exception:
-                rootItemsCount = None
+            except (TypeError, ValueError):
+                setCounts = {}
 
-            try:
-                if setId is not None:
-                    row = mapper.db.fetchOne(
-                        """
-                        SELECT COUNT(*) AS count
-                          FROM scipion_set_tables
-                         WHERE "setId" = %s
-                        """,
-                        (int(setId),),
-                    )
-                    tablesCount = int(row.get("count") or 0) if row else 0
-            except Exception:
-                tablesCount = None
+            rootItemsCount = setCounts.get(
+                "rootItemsCount"
+            )
 
-            try:
-                if setId is not None:
-                    row = mapper.db.fetchOne(
-                        """
-                        SELECT COUNT(ti.id) AS count
-                          FROM scipion_set_tables t
-                          JOIN scipion_set_table_items ti
-                            ON ti."tableId" = t.id
-                         WHERE t."setId" = %s
-                        """,
-                        (int(setId),),
-                    )
-                    tableItemsCount = int(row.get("count") or 0) if row else 0
-            except Exception:
-                tableItemsCount = None
+            tablesCount = setCounts.get(
+                "tablesCount"
+            )
+
+            tableItemsCount = setCounts.get(
+                "tableItemsCount"
+            )
 
             supportedReader = None
 
@@ -308,47 +268,26 @@ class RuntimeArtifactReportService:
 
         runDbExists = bool(runDbPath and os.path.exists(str(runDbPath)))
 
-        persistedSetRows = mapper.db.fetchAll(
-            """
-            SELECT
-                s.id,
-                s."projectId",
-                s."protocolDbId",
-                s."objectId",
-                s."outputName",
-                s."setClassName",
-                s."itemClassName",
-                s.properties
-              FROM scipion_sets s
-              JOIN protocols p
-                ON p.id = s."protocolDbId"
-             WHERE s."projectId" = %s
-               AND p."protocolId" = %s
-             ORDER BY s."outputName"
-            """,
-            (projectId, str(scipionProtocolId)),
+        artifactRows = ProtocolGraphRepository().loadProtocolRuntimeArtifactRows(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=scipionProtocolId,
         )
 
-        persistedObjectRows = mapper.db.fetchAll(
-            """
-            SELECT
-                o.name,
-                o.path,
-                o."className",
-                o."scipionObjId"
-              FROM scipion_objects o
-              JOIN protocols p
-                ON p.id = o."protocolDbId"
-             WHERE o."projectId" = %s
-               AND p."protocolId" = %s
-               AND o."parentObjectId" IS NULL
-             ORDER BY o.path, o.name
-            """,
-            (projectId, str(scipionProtocolId)),
+        persistedSets = list(
+            artifactRows.get("sets")
+            or []
         )
 
-        persistedSets = [rowToDict(row) for row in (persistedSetRows or [])]
-        persistedObjects = [rowToDict(row) for row in (persistedObjectRows or [])]
+        persistedObjects = list(
+            artifactRows.get("objects")
+            or []
+        )
+
+        setCountsById = dict(
+            artifactRows.get("setCountsById")
+            or {}
+        )
 
         outputsPersisted = bool(persistedSets or persistedObjects)
 
