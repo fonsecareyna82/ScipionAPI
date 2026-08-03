@@ -523,3 +523,47 @@ def test_ListProjectSetOutputRowsIncludesConsistencySignatures():
     assert call["params"] == (7,)
     assert database.transactionCalls == 0
     assert database.executeCalls == []
+
+
+def test_ListProjectSetOutputSummaryRowsUsesLightweightQuery():
+    storedRows = [
+        {
+            "protocolId": "10",
+            "id": 71,
+            "objectId": 81,
+            "outputName": "outputParticles",
+            "setClassName": "SetOfParticles",
+            "itemClassName": "Particle",
+            "properties": {
+                "itemsCount": 24,
+            },
+        },
+    ]
+
+    database = FakeSetLifecycleDb(storedSets=storedRows)
+    mapper = ScipionSetPostgresqlMapper(db=database)
+
+    result = mapper.listProjectSetOutputSummaryRows(projectId=7)
+
+    assert result == storedRows
+    assert len(database.fetchAllCalls) == 1
+
+    call = database.fetchAllCalls[0]
+    query = " ".join(call["query"].split())
+
+    assert 'p."protocolId"' in query
+    assert "FROM scipion_sets s JOIN protocols p" in query
+    assert 'p.id = s."protocolDbId"' in query
+    assert 's."objectId"' in query
+    assert 's."outputName"' in query
+    assert 's."setClassName"' in query
+    assert 's."itemClassName"' in query
+    assert "s.properties" in query
+    assert "COALESCE( s.properties ->> 'runtimeReserved', 'false' ) <> 'true'" in query
+    assert "FROM scipion_set_items" not in query
+    assert "FROM scipion_set_columns" not in query
+    assert "FROM scipion_set_tables" not in query
+    assert "FROM scipion_set_properties" not in query
+    assert call["params"] == (7,)
+    assert database.transactionCalls == 0
+    assert database.executeCalls == []
