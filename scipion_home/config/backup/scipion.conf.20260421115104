@@ -1,9 +1,0 @@
-[PYWORKFLOW]
-CONDA_ACTIVATION_CMD=eval "$(/home/yunior/miniconda3/bin/conda shell.bash hook)"
-JAVA_HOME=/home/yunior/miniconda3/envs/scipion3Web/lib/jvm
-SCIPION_HOME=/home/yunior/Yunior/Projects/ScipionWeb/ScipionAPI/scipion_home
-SCIPION_LOCAL_CONFIG=/home/yunior/.config/scipion/scipion.conf
-SCIPION_PRIORITY_PACKAGE_LIST=pwem tomo pwchem
-SCIPION_USER_DATA=/home/yunior/ScipionUserData
-
-[PLUGINS]
