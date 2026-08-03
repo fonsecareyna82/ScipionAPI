@@ -38,7 +38,7 @@ class FakeProtocol:
     def __init__(self, status, outputs=None, steps=None, inputs=None, params=None, className="FakeProtocol"):
         self.status = status
         self.outputs = outputs or []
-        self.steps = steps or []
+        self._steps = steps or []
         self.inputs = inputs or []
         self.params = params or {}
         self.className = className
@@ -53,7 +53,7 @@ class FakeProtocol:
         return list(self.outputs)
 
     def loadSteps(self):
-        return list(self.steps)
+        return list(self._steps)
 
     def iterInputAttributes(self):
         return list(self.inputs)
@@ -461,12 +461,34 @@ def service(projectServiceModule):
     return instance
 
 
-def patchRuntimeProject(service, monkeypatch, currentProject):
-    def loadProjectForThumbnails(dbProj):
-        service.currentProject = currentProject
+def patchRuntimeProject(
+        service,
+        monkeypatch,
+        currentProject,
+):
+    consistencyServiceModule = (
+        importlib.import_module(
+            "app.backend.api.services."
+            "project_consistency_service"
+        )
+    )
+
+    def loadLegacyProjectForConsistency(
+            consistencyService,
+            dbProj,
+    ):
+        consistencyService.currentProject = (
+            currentProject
+        )
+
         return currentProject
 
-    monkeypatch.setattr(service, "loadProjectForThumbnails", loadProjectForThumbnails)
+    monkeypatch.setattr(
+        consistencyServiceModule
+        .ProjectConsistencyService,
+        "_loadLegacyProjectForConsistency",
+        loadLegacyProjectForConsistency,
+    )
 
 
 def test_ValidateProjectPostgresqlConsistencyReturnsOkWhenRuntimeAndDbMatch(
@@ -857,7 +879,7 @@ def test_ValidateProjectPostgresqlConsistencyReportsStepMismatches(
             ),
         }
     )
-    currentProject.nodes["10"].run.steps = [
+    currentProject.nodes["10"].run._steps = [
         FakeStep(index=1, name="importStep", status="finished"),
         FakeStep(index=2, name="processStep", status="running"),
     ]
@@ -991,10 +1013,10 @@ def test_ValidateProjectPostgresqlConsistencyCollectsStepsForAllRuntimeProtocols
     currentProject.nodes["11"].run.inputs = [
         ("inputParticles", FakePointer(parentProtocolId=10, outputName="outputParticles")),
     ]
-    currentProject.nodes["10"].run.steps = [
+    currentProject.nodes["10"].run._steps = [
         FakeStep(index=1, name="importStep", status="finished"),
     ]
-    currentProject.nodes["11"].run.steps = [
+    currentProject.nodes["11"].run._steps = [
         FakeStep(index=1, name="processStep", status="running"),
     ]
     patchRuntimeProject(service, monkeypatch, currentProject)

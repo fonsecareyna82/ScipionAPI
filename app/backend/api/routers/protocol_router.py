@@ -47,9 +47,17 @@ async def loadProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
 
     return service.getProtocolParams(
         mapper=mapper,
@@ -66,11 +74,22 @@ async def loadNewProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
 
-    return service.getNewProtocolParams(projectId, protClassName)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    return service.getNewProtocolParams(
+        projectId,
+        protClassName,
+    )
 
 
 # @router.post("/launch", response_model=Any)
@@ -95,26 +114,37 @@ async def loadNewProtocol(
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/logs/{projectId}/{protocolId}/{offset}/{errOffset}/{scheduleOffset}", response_model=Any)
+@router.get(
+    "/logs/{projectId}/{protocolId}/{offset}/{errOffset}/{scheduleOffset}",
+    response_model=Any,
+)
 async def getProtocolLogs(
-    projectId: int,
-    protocolId: int,
-    offset: int = 0,
-    errOffset: int = 0,
-    scheduleOffset: int = 0,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        projectId: int,
+        protocolId: int,
+        offset: int = 0,
+        errOffset: int = 0,
+        scheduleOffset: int = 0,
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.getProjectDbRow(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
 
     return service.getProtocolLogs(
-        projectId,
-        protocolId,
-        offset,
-        errOffset,
-        scheduleOffset,
+        projectId=projectId,
+        protocolId=protocolId,
+        offset=offset,
+        errOffset=errOffset,
+        scheduleOffset=scheduleOffset,
         mapper=mapper,
     )

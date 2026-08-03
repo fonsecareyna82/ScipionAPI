@@ -281,6 +281,435 @@ def service(projectServiceModule):
     return instance
 
 
+def test_ResolveOutputForTiltSeriesBuildsReadOnlyPostgresqlProxy(
+    service,
+    projectServiceModule,
+    monkeypatch,
+):
+    parentProtocol = object()
+    proxyOutput = object()
+    runtimeMapper = object()
+    outputInfo = {
+        "exists": True,
+        "setId": 77,
+        "runtimeObjectId": 9001,
+        "outputName": "TiltSeries",
+        "className": "SetOfTiltSeries",
+    }
+
+    class FakeRuntimeProject:
+        pass
+
+    service.currentProject = FakeRuntimeProject()
+    service.currentProject.mapper = runtimeMapper
+
+    protocolCalls = []
+    outputInfoCalls = []
+    proxyCalls = []
+
+    def getScipionProtocolForRuntime(**kwargs):
+        protocolCalls.append(kwargs)
+        return parentProtocol
+
+    def getPostgresqlRuntimeOutputInfo(**kwargs):
+        outputInfoCalls.append(kwargs)
+        return outputInfo
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(
+                self,
+                parentProtocol,
+                outputName,
+                outputInfo,
+                mapper=None,
+        ):
+            proxyCalls.append({
+                "parentProtocol": parentProtocol,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
+                "mapper": mapper,
+            })
+            return proxyOutput
+
+    mapper = object()
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        getScipionProtocolForRuntime,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlReaderProtocolId",
+        lambda **kwargs: 321,
+    )
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlRuntimeOutputInfo",
+        getPostgresqlRuntimeOutputInfo,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeOutputProxyService",
+        FakeRuntimeOutputProxyService,
+    )
+
+    protocol, output = service._resolveOutputForTiltSeries(
+        protocolId=5,
+        outputName="TiltSeries",
+        projectId=344,
+        mapper=mapper,
+    )
+
+    assert protocol is parentProtocol
+    assert output is proxyOutput
+    assert protocolCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "protocolId": 5,
+        }
+    ]
+    assert outputInfoCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+            "parentProtocolDbId": 321,
+            "outputName": "TiltSeries",
+        }
+    ]
+    assert proxyCalls == [
+        {
+            "parentProtocol": parentProtocol,
+            "outputName": "TiltSeries",
+            "outputInfo": outputInfo,
+            "mapper": runtimeMapper,
+        }
+    ]
+    assert not hasattr(parentProtocol, "TiltSeries")
+
+
+def test_GetGeneratedSetOutputIdentityUsesPostgresqlOutputs(
+    service,
+    projectServiceModule,
+    monkeypatch,
+):
+    class FakeMapper:
+        pass
+
+    class FakeProtocolIdentityResolver:
+        def __init__(self, mapper, projectId):
+            self.mapper = mapper
+            self.projectId = projectId
+
+        def resolvePostgresqlProtocolDbId(self, protocolId):
+            assert protocolId == 5
+            return 321
+
+    class FakeOutputPersistenceService:
+        def loadPersistedProtocolOutputNames(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 344
+            assert protocolDbId == 321
+
+            return {
+                "TiltSeries",
+                "TiltSeries_2",
+                "outputCoordinates",
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        FakeOutputPersistenceService,
+    )
+
+    result = service._getGeneratedSetOutputIdentity(
+        mapper=FakeMapper(),
+        projectId=344,
+        protocolId=5,
+        protocol=object(),
+        outputPrefix="TiltSeries_",
+    )
+
+    assert result == {
+        "outputName": "TiltSeries_3",
+        "outputSuffix": "3",
+        "protocolDbId": 321,
+    }
+
+
+def test_CreateWritableGeneratedPostgresqlSetReservesOutputWithoutSqlite(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    db = object()
+    protocol = object()
+    resolverCalls = []
+    reserveCalls = []
+    buildCalls = []
+    setMapperInstances = []
+    runtimeFactoryInstances = []
+
+    class FakeNativeSet:
+        @classmethod
+        def create(cls, *args, **kwargs):
+            raise AssertionError(
+                "Generated PostgreSQL Sets must not call native create()"
+            )
+
+        def __init__(self):
+            self.copiedFrom = None
+            self.objId = None
+            self.name = None
+            self.label = None
+
+        def copyInfo(self, sourceSet):
+            self.copiedFrom = sourceSet
+
+        def setObjId(self, value):
+            self.objId = value
+
+        def setName(self, value):
+            self.name = value
+
+        def setObjLabel(self, value):
+            self.label = value
+
+    class FakeSourceSet:
+        def getClass(self):
+            return FakeNativeSet
+
+        def createCopy(self, *args, **kwargs):
+            raise AssertionError(
+                "Generated PostgreSQL Sets must not call createCopy()"
+            )
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = db
+            self.allocateCalls = []
+
+        def allocateProjectObjectId(self, projectId):
+            self.allocateCalls.append(projectId)
+            return 1000026
+
+    class FakeProtocolIdentityResolver:
+        def __init__(self, mapper, projectId):
+            resolverCalls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+            })
+
+        def resolvePostgresqlProtocolDbId(self, protocolId):
+            assert protocolId == 5
+            return 321
+
+    class FakeScipionSetPostgresqlMapper:
+        def __init__(self, receivedDb):
+            assert receivedDb is db
+            setMapperInstances.append(self)
+
+        def reserveRuntimeSet(
+            self,
+            projectId,
+            protocolDbId,
+            outputName,
+            scipionSet,
+            reservationToken,
+        ):
+            reserveCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+                "scipionSet": scipionSet,
+                "reservationToken": reservationToken,
+            })
+            return {
+                "setId": 77,
+                "rootTableId": 78,
+                "objectId": 79,
+                "runtimeObjectId": 1000026,
+                "className": "FakeNativeSet",
+                "setClassName": "FakeNativeSet",
+                "itemClassName": "FakeItem",
+            }
+
+        def discardReservedRuntimeSet(self, **kwargs):
+            raise AssertionError(
+                "A successful reservation must not be discarded"
+            )
+
+    class FakeWritableRuntimeSet:
+        def __init__(self):
+            self.postgresqlWriteEnabled = False
+
+        def enablePostgresqlWrite(self):
+            self.postgresqlWriteEnabled = True
+
+    runtimeOutput = FakeWritableRuntimeSet()
+
+    class FakePostgresqlRuntimeSetFactory:
+        def __init__(self):
+            runtimeFactoryInstances.append(self)
+
+        def build(
+            self,
+            db,
+            parent,
+            outputName,
+            outputInfo,
+        ):
+            buildCalls.append({
+                "db": db,
+                "parent": parent,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
+            })
+            return runtimeOutput
+
+    setMapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+    runtimeSetFactoryModule = importlib.import_module(
+        "app.backend.runtime.postgresql_runtime_set_factory"
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+    monkeypatch.setattr(
+        setMapperModule,
+        "ScipionSetPostgresqlMapper",
+        FakeScipionSetPostgresqlMapper,
+    )
+    monkeypatch.setattr(
+        runtimeSetFactoryModule,
+        "PostgresqlRuntimeSetFactory",
+        FakePostgresqlRuntimeSetFactory,
+    )
+
+    mapper = FakeMapper()
+    sourceSet = FakeSourceSet()
+
+    context = service._createWritableGeneratedPostgresqlSet(
+        mapper=mapper,
+        projectId=344,
+        protocolId=5,
+        protocol=protocol,
+        outputName="TiltSeries_0",
+        sourceSet=sourceSet,
+    )
+
+    assert resolverCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 344,
+        }
+    ]
+    assert mapper.allocateCalls == [344]
+    assert len(reserveCalls) == 1
+
+    reserveCall = reserveCalls[0]
+    reservationToken = reserveCall["reservationToken"]
+    seedSet = reserveCall["scipionSet"]
+
+    assert isinstance(reservationToken, str)
+    assert reservationToken
+    assert {
+        key: value
+        for key, value in reserveCall.items()
+        if key not in {
+            "scipionSet",
+            "reservationToken",
+        }
+    } == {
+        "projectId": 344,
+        "protocolDbId": 321,
+        "outputName": "TiltSeries_0",
+    }
+    assert type(seedSet) is FakeNativeSet
+    assert seedSet.copiedFrom is sourceSet
+    assert seedSet.objId == 1000026
+    assert seedSet.name == "TiltSeries_0"
+    assert seedSet.label == "TiltSeries_0"
+
+    assert buildCalls == [
+        {
+            "db": db,
+            "parent": protocol,
+            "outputName": "TiltSeries_0",
+            "outputInfo": {
+                "setId": 77,
+                "rootTableId": 78,
+                "objectId": 79,
+                "runtimeObjectId": 1000026,
+                "className": "FakeNativeSet",
+                "setClassName": "FakeNativeSet",
+                "itemClassName": "FakeItem",
+                "exists": True,
+                "itemsCount": 0,
+            },
+        }
+    ]
+    assert runtimeOutput.postgresqlWriteEnabled is True
+    assert context["outputSet"] is runtimeOutput
+    assert context["setMapper"] is setMapperInstances[0]
+    assert context["runtimeSetFactory"] is runtimeFactoryInstances[0]
+    assert context["protocolDbId"] == 321
+    assert context["runtimeObjectId"] == 1000026
+
+
+def test_ScipionSetPostgresqlMapperDoesNotStringifySets(authTestEnv):
+    from pyworkflow.object import Set as ScipionSet
+
+    mapperModule = importlib.import_module(
+        "app.backend.mapper.scipion_set_mapper"
+    )
+
+    class ExplodingSet(ScipionSet):
+        def __str__(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be converted to text"
+            )
+
+        def getObjValue(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be treated as scalar values"
+            )
+
+        def get(self):
+            raise AssertionError(
+                "PostgreSQL Set roots must not be treated as scalar values"
+            )
+
+    mapper = object.__new__(
+        mapperModule.ScipionSetPostgresqlMapper
+    )
+    scipionSet = object.__new__(
+        ExplodingSet
+    )
+
+    assert mapper._getObjectDisplayText(
+        scipionSet
+    ) is None
+    assert mapper._getObjectValueText(
+        scipionSet
+    ) is None
+
+
 def test_GetPostgresqlTiltSeriesReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -607,20 +1036,153 @@ def test_RenderTiltSeriesImageServiceDelegatesToOutputsPreview(projectServiceMod
     }
 
 
-def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectServiceModule, service, monkeypatch):
+def test_RenderTiltSeriesImageServiceResolvesProjectRelativePostgresqlFramePath(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    FakeOutputsPreview.instances = []
+
+    projectPath = tmp_path / "project"
+    framePath = (
+        projectPath
+        / "Runs"
+        / "000084_ProtWarpTSMotionCorr"
+        / "extra"
+        / "warp_frameseries"
+        / "average"
+        / "TS_1.mrcs"
+    )
+    framePath.parent.mkdir(parents=True)
+    framePath.write_bytes(b"fake")
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlTiltSeriesReader:
+        lastSkipReason = None
+
+        def getTiltImageFrame(self, tiltSeriesId, index):
+            return {
+                "index": int(index),
+                "path": (
+                    f"{index}@"
+                    "Runs/000084_ProtWarpTSMotionCorr/extra/"
+                    "warp_frameseries/average/TS_1.mrcs"
+                ),
+                "rot": 12.0,
+                "shiftX": 1.5,
+                "shiftY": -2.5,
+            }
+
+    mapper = FakeMapper()
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlTiltSeriesReaderIfAvailable",
+        lambda **kwargs: FakePostgresqlTiltSeriesReader(),
+    )
+
+    result = service.renderTiltSeriesImageService(
+        projectId=246,
+        protocolId=180,
+        outputName="TiltSeries",
+        tiltSeriesId="TS_1",
+        index=1,
+        size=512,
+        fmt="png",
+        applyTransform=True,
+        inline=True,
+        mapper=mapper,
+    )
+
+    assert result == {
+        "rendered": True,
+        "filePath": str(framePath.resolve()),
+    }
+
+    assert FakeOutputsPreview.instances[0].lastRenderCall["filePath"] == str(framePath.resolve())
+    assert FakeOutputsPreview.instances[0].lastRenderCall["index"] == 1
+    assert FakeOutputsPreview.instances[0].lastRenderCall["rot"] == 12.0
+    assert FakeOutputsPreview.instances[0].lastRenderCall["shifts"] == (1.5, -2.5)
+
+
+def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(
+    service,
+    monkeypatch,
+):
     createdOutputSet = FakeCreatedTiltSeriesOutputSet()
-
-    class FakeSetOfTiltSeriesFactory:
-        # fakeSetOfTiltSeriesFactory
-        @staticmethod
-        def create(projectPath, suffix):
-            return createdOutputSet
-
-    inputSet = FakeTiltSeriesSet(items=[], hasOddEven=False, dims=[128, 128, 40])
-    protocol = FakeProtocol("outputTiltSeries", inputSet)
+    inputSet = FakeTiltSeriesSet(
+        items=[],
+        hasOddEven=False,
+        dims=[128, 128, 40],
+    )
+    protocol = FakeProtocol(
+        "outputTiltSeries",
+        inputSet,
+    )
     service.currentProject = FakeCurrentProject(protocol)
 
-    monkeypatch.setattr(projectServiceModule, "SetOfTiltSeries", FakeSetOfTiltSeriesFactory)
+    mapper = object()
+    generatedContext = {
+        "outputSet": createdOutputSet,
+        "protocolDbId": 321,
+    }
+    createCalls = []
+    discardCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveOutputForTiltSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "TiltSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 321,
+        },
+    )
+
+    def createWritableGeneratedPostgresqlSet(**kwargs):
+        createCalls.append(kwargs)
+        return generatedContext
+
+    def discardGeneratedPostgresqlSet(**kwargs):
+        discardCalls.append(kwargs)
+        return True
+
+    def failFinalize(**kwargs):
+        raise AssertionError(
+            "An empty generated Set must not be finalized"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        createWritableGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        discardGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        failFinalize,
+    )
 
     result = service.createNewSetOfTiltSeriesService(
         projectId=1,
@@ -628,6 +1190,7 @@ def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectS
         outputName="outputTiltSeries",
         exclusions={},
         restack=False,
+        mapper=mapper,
     )
 
     assert result == {
@@ -639,54 +1202,37 @@ def test_CreateNewSetOfTiltSeriesServiceReturnsEmptyWhenNoSeriesCreated(projectS
         "message": "No output was generated because it cannot be empty",
     }
     assert createdOutputSet.getSize() == 0
-    assert createdOutputSet._copiedInfoFrom is inputSet
     assert createdOutputSet._dim == [128, 128, 40]
+    assert createCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "protocol": protocol,
+            "outputName": "TiltSeries_0",
+            "sourceSet": inputSet,
+        }
+    ]
+    assert discardCalls == [
+        {
+            "context": generatedContext,
+            "projectId": 1,
+        }
+    ]
 
 
-def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
+def test_CreateNewSetOfTiltSeriesServiceFinalizesGeneratedPostgresqlSet(
     projectServiceModule,
     service,
     monkeypatch,
 ):
-    storedCalls = []
-
-    class FakeDb:
-        # fakeDb
-        def fetchOne(self, *args, **kwargs):
-            return None
-
-    class FakeMapper:
-        # fakeMapper
-        def __init__(self):
-            self.db = FakeDb()
-
-    class FakeScipionSetPostgresqlMapper:
-        # fakeScipionSetPostgresqlMapper
-        def __init__(self, db):
-            self.db = db
-
-        def storeSet(self, projectId, protocolDbId, outputName, scipionSet):
-            storedCalls.append(
-                {
-                    "projectId": projectId,
-                    "protocolDbId": protocolDbId,
-                    "outputName": outputName,
-                    "scipionSet": scipionSet,
-                }
-            )
-            return {
-                "stored": True,
-                "protocolDbId": protocolDbId,
-                "outputName": outputName,
-            }
-
     class FakeCreatedTiltSeries:
-        # fakeCreatedTiltSeries
         def __init__(self):
             self._items = []
             self._dim = None
             self._anglesCount = None
-            self._written = False
+            self._copiedInfoFrom = None
+            self._enabled = True
 
         def copyInfo(self, tiltSeries):
             self._copiedInfoFrom = tiltSeries
@@ -706,15 +1252,6 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
         def setAnglesCount(self, count):
             self._anglesCount = count
 
-        def write(self):
-            self._written = True
-
-    class FakeSetOfTiltSeriesFactory:
-        # fakeSetOfTiltSeriesFactory
-        @staticmethod
-        def create(projectPath, suffix):
-            return createdOutputSet
-
     createdOutputSet = FakeCreatedTiltSeriesOutputSet()
     createdOutputSet.update = lambda item: None
     createdOutputSet.remove = lambda item: None
@@ -732,27 +1269,85 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
         hasOddEven=False,
         dims=[128, 128, 40],
     )
-    protocol = FakeProtocol("outputTiltSeries", inputSet)
+    protocol = FakeProtocol(
+        "outputTiltSeries",
+        inputSet,
+    )
     service.currentProject = FakeCurrentProject(protocol)
 
-    scipionSetMapperModule = importlib.import_module(
-        "app.backend.mapper.scipion_set_mapper"
+    mapper = object()
+    generatedContext = {
+        "outputSet": createdOutputSet,
+        "protocolDbId": 321,
+    }
+    finalSync = {
+        "stored": True,
+        "protocolDbId": 321,
+        "outputName": "TiltSeries_0",
+    }
+    createCalls = []
+    finalizeCalls = []
+
+    class UnexpectedImageStack:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "ImageStack must not be created when restack=False"
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ImageStack",
+        UnexpectedImageStack,
     )
 
     monkeypatch.setattr(
-        scipionSetMapperModule,
-        "ScipionSetPostgresqlMapper",
-        FakeScipionSetPostgresqlMapper,
+        projectServiceModule,
+        "TiltSeries",
+        FakeCreatedTiltSeries,
     )
-    monkeypatch.setattr(projectServiceModule, "SetOfTiltSeries", FakeSetOfTiltSeriesFactory)
-    monkeypatch.setattr(projectServiceModule, "TiltSeries", FakeCreatedTiltSeries)
     monkeypatch.setattr(
         service,
-        "_resolvePostgresqlProtocolDbId",
-        lambda mapper, projectId, protocolId: 321,
+        "_resolveOutputForTiltSeries",
+        lambda **kwargs: (protocol, inputSet),
+    )
+    monkeypatch.setattr(
+        service,
+        "_getGeneratedSetOutputIdentity",
+        lambda **kwargs: {
+            "outputName": "TiltSeries_0",
+            "outputSuffix": "0",
+            "protocolDbId": 321,
+        },
     )
 
-    mapper = FakeMapper()
+    def createWritableGeneratedPostgresqlSet(**kwargs):
+        createCalls.append(kwargs)
+        return generatedContext
+
+    def finalizeGeneratedPostgresqlSet(**kwargs):
+        finalizeCalls.append(kwargs)
+        return finalSync
+
+    def failDiscard(**kwargs):
+        raise AssertionError(
+            "A successful generated Set must not be discarded"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_createWritableGeneratedPostgresqlSet",
+        createWritableGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalizeGeneratedPostgresqlSet",
+        finalizeGeneratedPostgresqlSet,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discardGeneratedPostgresqlSet",
+        failDiscard,
+    )
 
     result = service.createNewSetOfTiltSeriesService(
         projectId=1,
@@ -763,22 +1358,45 @@ def test_CreateNewSetOfTiltSeriesServiceStoresSetWithResolvedProtocolDbId(
         mapper=mapper,
     )
 
-    assert result["status"] == 0
-    assert result["outputName"] == "TiltSeries_0"
-    assert result["postgresqlSync"] == {
-        "stored": True,
-        "protocolDbId": 321,
+    assert result == {
+        "status": 0,
         "outputName": "TiltSeries_0",
+        "createdTiltSeries": 1,
+        "hasOddEven": False,
+        "restack": False,
+        "postgresqlSync": finalSync,
+        "postgresqlError": None,
     }
-    assert result["postgresqlError"] is None
-    assert storedCalls == [
+    assert createCalls == [
         {
+            "mapper": mapper,
             "projectId": 1,
-            "protocolDbId": 321,
+            "protocolId": 10,
+            "protocol": protocol,
             "outputName": "TiltSeries_0",
-            "scipionSet": createdOutputSet,
+            "sourceSet": inputSet,
         }
     ]
+    assert finalizeCalls == [
+        {
+            "context": generatedContext,
+            "projectId": 1,
+            "outputName": "TiltSeries_0",
+        }
+    ]
+    assert protocol._definedOutputs == {
+        "TiltSeries_0": createdOutputSet,
+    }
+    assert protocol._stored is True
+    assert createdOutputSet._dim == [128, 128, 40]
+    assert createdOutputSet.getSize() == 1
+
+    createdTiltSeries = createdOutputSet._items[0]
+
+    assert createdTiltSeries._copiedInfoFrom is tiltSeries
+    assert createdTiltSeries._dim == [128, 128, 40]
+    assert createdTiltSeries._anglesCount == 0
+
 
 def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
     class BrokenCurrentProject:

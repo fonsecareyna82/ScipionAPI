@@ -56,3 +56,11 @@ def prepareEnvironment():
             "SCIPION_PROTOCOL_STEPS_NOTIFIER",
             "app.backend.api.services.protocol_steps_sync:syncProtocolStepsEvent",
         )
+        os.environ.setdefault(
+            "SCIPION_PROTOCOL_STEPS_LOADER",
+            (
+                "app.backend.api.services."
+                "protocol_steps_sync:"
+                "loadProtocolSteps"
+            ),
+        )

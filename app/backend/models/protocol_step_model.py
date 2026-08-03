@@ -57,6 +57,11 @@ class ProtocolStep(Base):
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    stepClassName = Column(Text, nullable=True,)
+    argsText = Column(Text, nullable=True,)
+    resultFiles = Column(JSONB, nullable=True,)
+    schemaVersion = Column(Integer,  nullable=False,   server_default="1",)
+
     __table_args__ = (
         UniqueConstraint("projectId", "protocolDbId", "stepIndex", name="ux_protocol_steps_project_protocol_step"),
         Index("idx_protocol_steps_protocol", "projectId", "protocolDbId", "stepIndex"),

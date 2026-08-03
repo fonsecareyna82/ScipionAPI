@@ -28,7 +28,6 @@ import io
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
 
 from fastapi import HTTPException, Response, status
 from PIL import Image, ImageEnhance, ImageOps
@@ -37,6 +36,8 @@ from pwem.objects import Coordinate
 
 from app.backend.api.services.project_service import ProjectService
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.runtime import RuntimeOutputProxyService
+from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 logger = logging.getLogger(__name__)
 
@@ -46,39 +47,95 @@ class Coords2dService:
         self.projectService = ProjectService()
 
     def _loadCoordinatesOutput(
-        self,
-        mapper: PostgresqlFlatMapper,
-        projectId: int,
-        currentUser: Any,
-        protocolId: int,
-        outputName: str,
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: Any,
+            protocolId: int,
+            outputName: str,
     ) -> Tuple[Any, Any]:
-        project = self.projectService.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
+        project = self.projectService.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
         )
+
         if not project:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
 
+        return self._resolveCoordinatesOutput(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+    def _resolveCoordinatesOutput(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Tuple[Any, Any]:
         protocol = self.projectService._getScipionProtocolForRuntime(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
 
-        if not hasattr(protocol, outputName):
+        if protocol is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                detail=f"Protocol '{protocolId}' not found",
             )
 
-        coordinatesSet = getattr(protocol, outputName)
+        if mapper is not None:
+            protocolDbId = self.projectService._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self.projectService._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            ) or {}
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                )
+
+            runtimeProject = getattr(self.projectService, "currentProject", None)
+            runtimeMapper = getattr(runtimeProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            coordinatesSet = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+        else:
+            if not hasattr(protocol, outputName):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in protocol '{protocolId}'",
+                )
+
+            coordinatesSet = getattr(protocol, outputName)
+
         if coordinatesSet is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -631,13 +688,34 @@ class Coords2dService:
                 if objId is not None:
                     maxObjId = max(maxObjId, objId)
 
+        requestedOutputName = str(payload.get("outputName") or "").strip()
+
+        if requestedOutputName and not hasattr(protocol, requestedOutputName):
+            nextOutputName = requestedOutputName
+        else:
+            try:
+                nextOutputName = protocol.getNextOutputName("coordinates_")
+            except Exception:
+                nextOutputName = f"coordinates_{protocol.getOutputsSize()}"
+
+        generatedSetContext = None
+
         try:
-            suffix = f"{protocol.getOutputsSize()}_{uuid4().hex[:8]}"
-            coordSet = protocol._createSetOfCoordinates(micrographsSet, suffix=suffix)
+            generatedSetContext = self.projectService._createWritableGeneratedPostgresqlSet(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                outputName=nextOutputName,
+                sourceSet=coordinatesSet,
+            )
+            coordSet = generatedSetContext["outputSet"]
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not create coordinates output: {e}",
+                detail=f"Could not create PostgreSQL coordinates output: {e}",
             )
 
         try:
@@ -701,48 +779,53 @@ class Coords2dService:
                     totalCoordinates += 1
 
         except HTTPException:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise
         except Exception as e:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Could not append coordinates: {e}",
             )
 
         try:
-            coordSet.write()
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not write coordinates output: {e}",
-            )
-
-        requestedOutputName = str(payload.get("outputName") or "").strip()
-
-        if requestedOutputName and not hasattr(protocol, requestedOutputName):
-            nextOutputName = requestedOutputName
-        else:
-            try:
-                nextOutputName = protocol.getNextOutputName("coordinates_")
-            except Exception:
-                nextOutputName = f"coordinates_{protocol.getOutputsSize()}"
-
-        try:
             protocol._defineOutputs(**{nextOutputName: coordSet})
+            protocol._store()
+
+            postgresqlSync = self.projectService._finalizeGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+                outputName=nextOutputName,
+            )
         except Exception as e:
+            self.projectService._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Could not define coordinates output: {e}",
+                detail=f"Could not persist coordinates output in PostgreSQL: {e}",
             )
 
         try:
             protocol._defineSourceRelation(micrographsSet, coordSet)
         except Exception:
-            logger.warning("Could not define source relation for coords2d output", exc_info=True)
+            logger.warning(
+                "Could not define source relation for coords2d output",
+                exc_info=True,
+            )
 
         return {
             "success": True,
             "outputName": nextOutputName,
             "totalCoordinates": int(totalCoordinates),
+            "postgresqlSync": postgresqlSync,
             "message": f"The new set of coordinates has been created: {nextOutputName}",
         }
 
@@ -814,28 +897,45 @@ class Coords2dService:
         size: int = 2200,
         fmt: str = "png",
     ) -> Response:
-        _, coordinatesSet = self._loadCoordinatesOutput(
-            mapper,
-            projectId,
-            currentUser,
-            protocolId,
-            outputName,
+        pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
         )
 
-        micrograph = self._findMicrograph(coordinatesSet, micId)
-        imageIndex, imagePath = self._micrographLocation(micrograph)
+        if pgReader is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Coordinates2D output is not available in PostgreSQL metadata",
+            )
 
-        if not imagePath:
+        micrographInfo = pgReader.getMicrographImageInfo(micId)
+
+        if micrographInfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Coordinates2D micrograph image is not available in PostgreSQL metadata: %s" % pgReader.lastSkipReason,
+            )
+
+        imageIndex = micrographInfo.get("locationIndex")
+        storedImagePath = str(micrographInfo.get("fileName") or "").strip()
+
+        if not storedImagePath:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Micrograph '{micId}' does not have a file path",
             )
 
-        imagePath = os.path.abspath(imagePath)
-        if not os.path.exists(imagePath):
+        imagePath = PostgresqlProjectPathResolver(
+            db=mapper.db,
+            projectId=projectId,
+        ).resolveExistingPath(storedImagePath)
+
+        if imagePath is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Micrograph image file not found: {imagePath}",
+                detail=f"Micrograph image file not found: {storedImagePath}",
             )
 
         try:

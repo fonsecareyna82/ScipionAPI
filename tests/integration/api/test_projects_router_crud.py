@@ -170,7 +170,7 @@ def test_ListProjectSharesReturnsServiceResult(projectClient, fakeProjectService
 
 
 def test_ApplyWorkflowToProjectReturns404WhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.post(
         "/projects/1/workflows/load",
@@ -187,6 +187,15 @@ def test_ApplyWorkflowToProjectDelegatesToService(projectClient, fakeProjectServ
         json={"workflowId": "wf-1"},
     )
 
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
     assert response.status_code == 200
     assert response.json() == {"success": True, "workflowId": "wf-1"}
 

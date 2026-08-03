@@ -3,6 +3,8 @@ import logging
 import os
 import hashlib
 from email.utils import formatdate
+from urllib.parse import quote
+from time import perf_counter
 
 from fastapi import (
     APIRouter,
@@ -30,7 +32,7 @@ from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
-                                                    ProtocolWizardExecuteRequest)
+                                                    ProtocolWizardExecuteRequest, ProjectImportOut)
 from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
@@ -108,12 +110,10 @@ def applyWorkflowToProject(
     """
     Apply a predefined workflow to an existing project.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -158,7 +158,7 @@ def createProject(
     return service.createProject(mapper, projectData, currentUser)
 
 
-@router.post("/import", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
+@router.post("/import", response_model=ProjectImportOut, status_code=status.HTTP_201_CREATED)
 def importProject(
     projectData: ProjectImportIn,
     currentUser=Depends(getCurrentUser),
@@ -177,17 +177,48 @@ def getProject(
     service: ProjectService = Depends(getProjectService),
 ):
     project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
         refresh=True,
         checkPid=True,
         validateConsistency=validateConsistency,
     )
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
     return project
 
+@router.get(
+    "/{projectId}/summary",
+    response_model=ProjectOut,
+    status_code=status.HTTP_200_OK,
+)
+def getProjectSummary(
+        projectId: int,
+        includeDiskUsage: bool = Query(False),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        includeDiskUsage=includeDiskUsage,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    return project
 
 @router.get(
     "/{projectId}/effective-settings",
@@ -380,9 +411,17 @@ async def loadProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
+
     if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
 
     return service.getProtocolParams(
         mapper=mapper,
@@ -410,26 +449,46 @@ def listProtocolSteps(
     return service.listProtocolStepsService(mapper, projectId, protocolId)
 
 
-@router.patch("/{projectId}/protocols/{protocolId}/steps/{stepIndex}/status", response_model=Any)
+@router.patch(
+    "/{projectId}/protocols/{protocolId}/steps/{stepIndex}/status",
+    response_model=Any,
+)
 def updateProtocolStepStatus(
-    projectId: int,
-    protocolId: int,
-    stepIndex: int,
-    payload: ProtocolStepStatusUpdate,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        projectId: int,
+        protocolId: int,
+        stepIndex: int,
+        payload: ProtocolStepStatusUpdate,
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
-    return service.updateProtocolStepStatusService(
+    project = service.getProjectDbRow(
         mapper=mapper,
         projectId=projectId,
-        protocolId=protocolId,
-        stepIndex=stepIndex,
-        stepStatus=payload.status,
+        currentUser=currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+            ),
+            detail="Project not found",
+        )
+
+    return (
+        service
+        .updateProtocolStepStatusService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            stepIndex=stepIndex,
+            stepStatus=payload.status,
+        )
     )
 
 
@@ -441,11 +500,22 @@ async def loadNewProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
 
-    return service.getNewProtocolParams(projectId, protClassName)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    return service.getNewProtocolParams(
+        projectId,
+        protClassName,
+    )
 
 
 # ======================================================================
@@ -461,7 +531,7 @@ def _normalizeErrors(detail: Any) -> List[str]:
 
 
 @router.post("/{projectId}/launch", response_model=Any)
-async def launchProtocol(
+def launchProtocol(
     projectId: int,
     request: ProtocolRequest,
     currentUser=Depends(getCurrentUser),
@@ -472,7 +542,12 @@ async def launchProtocol(
     Launch, restart, schedule, or stop a protocol in a given project.
     """
     try:
-        project = service.getProjectById(mapper, projectId, currentUser)
+
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -533,7 +608,11 @@ async def saveProtocol(
     Save protocol parameters in a given project.
     """
     try:
-        project = service.getProjectById(mapper, projectId, currentUser)
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -549,9 +628,25 @@ async def saveProtocol(
         protocol, errors = service.saveProtocol(mapper, projectId, protocolId, protocolClassName, params)
         errors = errors or []
 
-        return {"status": 0 if not errors else 1,
-                "errors": [str(err) for err in errors],
-                "workflow": []}
+        workflow = []
+
+        if not errors:
+            refreshedProject = service.getProjectById(
+                mapper,
+                projectId,
+                currentUser,
+                refresh=False,
+                checkPid=False,
+            )
+
+            if refreshedProject:
+                workflow = refreshedProject.get("protocols", [])
+
+        return {
+            "status": 0 if not errors else 1,
+            "errors": [str(err) for err in errors],
+            "workflow": workflow,
+        }
 
     except HTTPException as e:
         return JSONResponse(
@@ -581,7 +676,11 @@ def suggestionProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -615,86 +714,155 @@ def suggestionProtocol(
         )
 
 
-@router.put("/{projectId}/protocols/{protocolId}/rename", response_model=Any, status_code=status.HTTP_200_OK)
+@router.put(
+    "/{projectId}/protocols/{protocolId}/rename",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
 def renameProtocol(
-    projectId: int,
-    protocolId: int,
-    payload: ProtocolRenameIn,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        projectId: int,
+        protocolId: int,
+        payload: ProtocolRenameIn,
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"status": 1,
-                     "errors": ["Project not found"],
-                     "workflow": []},
+    try:
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+        if not project:
+            return JSONResponse(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
+                content={
+                    "status": 1,
+                    "errors": [
+                        "Project not found"
+                    ],
+                    "workflow": [],
+                },
+            )
+
+        newName = getattr(
+            payload,
+            "runName",
+            None,
         )
 
-    try:
-        newName = getattr(payload, "runName", None)
-        newComment = getattr(payload, "comment", "")
+        newComment = getattr(
+            payload,
+            "comment",
+            "",
+        )
 
         if newName is None:
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
                 content={
                     "status": 1,
-                    "errors": ["Missing name"],
+                    "errors": [
+                        "Missing name"
+                    ],
                     "workflow": [],
                 },
             )
 
-        newNameText = str(newName)
-
-        if newNameText != "" and not newNameText.strip():
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                content={
-                    "status": 1,
-                    "errors": ["Missing name"],
-                    "workflow": [],
-                },
-            )
-
-        service.renameProtocol(
-            mapper,
-            projectId,
-            protocolId,
-            newNameText.strip(),
-            str(newComment or "").strip(),
+        newNameText = str(
+            newName
         )
-        syncResult = service.syncProjectGraphAfterMutation(
-            mapper,
-            projectId,
-            actionLabel="rename protocol",
-            refresh=True,
-            checkPid=True,
-        ) or {}
 
-        response = {
-            "status": 0,
-            "errors": [],
+        if (
+                newNameText != ""
+                and not newNameText.strip()
+        ):
+            return JSONResponse(
+                status_code=(
+                    status
+                    .HTTP_422_UNPROCESSABLE_ENTITY
+                ),
+                content={
+                    "status": 1,
+                    "errors": [
+                        "Missing name"
+                    ],
+                    "workflow": [],
+                },
+            )
+
+        renameResult = (
+            service.renameProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                newName=(
+                    newNameText.strip()
+                ),
+                newComment=str(
+                    newComment or ""
+                ).strip(),
+            )
+            or {}
+        )
+
+        return {
+            "status": renameResult.get(
+                "status",
+                0,
+            ),
+            "errors": renameResult.get(
+                "errors",
+                [],
+            ),
             "workflow": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
-
-    except HTTPException as e:
+    except HTTPException as error:
         return JSONResponse(
-            status_code=e.status_code,
-            content={"status": 1,
-                     "errors": _normalizeErrors(e.detail),
-                     "workflow": []},
+            status_code=error.status_code,
+            content={
+                "status": 1,
+                "errors": _normalizeErrors(
+                    error.detail
+                ),
+                "workflow": [],
+            },
         )
-    except Exception as e:
+
+    except Exception as error:
+        logger.exception(
+            "Error renaming protocol. "
+            "projectId=%s protocolId=%s",
+            projectId,
+            protocolId,
+        )
+
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"status": 1,
-                     "errors": [str(e)],
-                     "workflow": []},
+            status_code=(
+                status
+                .HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            content={
+                "status": 1,
+                "errors": [
+                    str(error)
+                ],
+                "workflow": [],
+            },
         )
 
 
@@ -706,7 +874,11 @@ def duplicateProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -726,11 +898,23 @@ def duplicateProtocol(
             )
 
         result = service.duplicateProtocol(mapper, projectId, items) or {}
+        workflow = []
+
+        refreshedProject = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
         # Keep 201 on success, but still return unified schema
         response = {
             "status": result.get("status", 0),
             "errors": result.get("errors", []),
-            "workflow": [],
+            "workflow": workflow,
             "duplicated": result.get("duplicated", []),
         }
 
@@ -761,7 +945,11 @@ def deleteProtocol(
     service: ProjectService = Depends(getProjectService),
 ):
     try:
-        project = service.getProjectById(mapper, projectId, currentUser)
+        project = service.loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
         if not project:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -780,12 +968,29 @@ def deleteProtocol(
             )
 
         result = service.deleteProtocol(mapper, projectId, protocolIds) or {}
+        workflow = []
+
+        refreshedProject = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
+
+        for key in ("message", "deleteInfo", "runtimeCleanup"):
+            value = result.get(key)
+            if value is not None:
+                response[key] = value
 
         return _appendProtocolSyncCounts(response, result)
 
@@ -822,7 +1027,11 @@ def restartProtocolAll(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -832,22 +1041,28 @@ def restartProtocolAll(
         )
 
     try:
-        service.restartProtocolAll(mapper, projectId, protocolId)
-        syncResult = service.syncProjectGraphAfterMutation(
+        result = service.restartProtocolAll(mapper, projectId, protocolId)
+
+        workflow = []
+
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="restart protocol subtree",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -877,7 +1092,11 @@ def continueProtocolAll(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -885,22 +1104,27 @@ def continueProtocolAll(
         )
 
     try:
-        service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
-        syncResult = service.syncProjectGraphAfterMutation(
+        result = service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
+        workflow = []
+
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="continue protocol subtree",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -926,7 +1150,11 @@ def resetProtocolFrom(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -934,22 +1162,28 @@ def resetProtocolFrom(
         )
 
     try:
-        service.resetProtocolFrom(mapper, projectId, protocolId)
-        syncResult = service.syncProjectGraphAfterMutation(
+        result = service.resetProtocolFrom(mapper, projectId, protocolId)
+
+        workflow = []
+
+        refreshedProject = service.getProjectById(
             mapper,
             projectId,
-            actionLabel="reset protocol from node",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -971,7 +1205,11 @@ def stopProtocol(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
     if not project:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -990,22 +1228,32 @@ def stopProtocol(
                          "workflow": []},
             )
 
-        service.stopProtocol(mapper, projectId, protocolIds)
-        syncResult = service.syncProjectGraphAfterMutation(
+        result = service.stopProtocol(
             mapper,
             projectId,
-            actionLabel="stop protocol",
-            refresh=True,
-            checkPid=True,
-        ) or {}
+            protocolIds,
+        )
+
+        workflow = []
+
+        refreshedProject = service.getProjectById(
+            mapper,
+            projectId,
+            currentUser,
+            refresh=False,
+            checkPid=False,
+        )
+
+        if refreshedProject:
+            workflow = refreshedProject.get("protocols", [])
 
         response = {
-            "status": 0,
-            "errors": [],
-            "workflow": [],
+            "status": result.get("status", 0),
+            "errors": result.get("errors", []),
+            "workflow": workflow,
         }
 
-        return _appendProtocolSyncCounts(response, syncResult)
+        return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
         return JSONResponse(
@@ -1021,6 +1269,7 @@ def stopProtocol(
                      "errors": [str(e)],
                      "workflow": []},
         )
+
 # ======================================================================
 #                            PROTOCOL LOGS
 # ======================================================================
@@ -1279,12 +1528,13 @@ def _ensureProjectForFsRequest(
     if _isGlobalFsBrowserMode(projectId, protocolId):
         return None
 
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=refresh,
-        checkPid=checkPid,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1409,12 +1659,13 @@ def exportProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(
@@ -1451,12 +1702,13 @@ def exportWorkflowProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(
@@ -1493,12 +1745,13 @@ def importWorkflowProtocols(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(
@@ -1572,7 +1825,14 @@ async def previewOutput(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+    )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -2108,12 +2368,10 @@ def createNewSetOfTiltSeries(
     The backend duplicates the SetOfTiltSeries and removes excluded views,
     optionally restacking files on disk.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -2234,12 +2492,10 @@ def createNewSetOfCtftomoSeries(
     The backend is expected to duplicate the SetOfCTFTomoSeries and
     update excluded tilts per series.
     """
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=False,
-        checkPid=False,
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -2547,24 +2803,51 @@ def createCoords3dOutputFromPoints(projectId: int,
     """ Create a new SetOfCoordinates3D output from an edited full point list for a given tomogram.
     The backend must interpret `coords` as a full replacement for that tomogram inside `outputName`. """
 
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=False, checkPid=False)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        result = service.createCoords3dOutputFromPointsService(projectId=projectId,
-                                                               protocolId=protocolId,
-                                                               outputName=outputName,
-                                                               payload=payload,
-                                                               mapper=mapper,)
-        resp = JSONResponse(result or {"success": True, "outputName": result['outputName']})
-        resp.headers["X-Debug-Auth"] = "ok"
-        resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
-        resp.headers["Vary"] = "Authorization"
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
 
-        return resp
-    except HTTPException as e:
-        logger.exception("Error in createCoords3dOutputFromPoints: %s", e)
-        raise HTTPException( status_code=500, detail=f"Failed to create coords3d output from points: {e}", )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    try:
+        result = service.createCoords3dOutputFromPointsService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            payload=payload,
+            mapper=mapper,
+        )
+
+        response = JSONResponse(result or {"success": True})
+        userId = currentUser.get("id", "") if isinstance(currentUser, dict) else getattr(currentUser, "id", "")
+
+        response.headers["X-Debug-Auth"] = "ok"
+        response.headers["X-Debug-UserId"] = str(userId)
+        response.headers["Vary"] = "Authorization"
+
+        return response
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error creating Coordinates3D output. projectId=%s protocolId=%s outputName=%s",
+            projectId,
+            protocolId,
+            outputName,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create coords3d output from points: {error}",
+        )
 
 
 @router.get(
@@ -2767,7 +3050,9 @@ def runMetadataTableAction(
     service: ProjectService = Depends(getProjectService),
 ):
     # runMetadataTableAction
-    project = service.getProjectById(mapper, projectId, currentUser, refresh=True, checkPid=False)
+    project = service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper,
+                                                              projectId=projectId,
+                                                              currentUser=currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -3111,12 +3396,13 @@ def listExternalViewers(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -3158,12 +3444,13 @@ def launchExternalViewer(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper,
-        projectId,
-        currentUser,
-        refresh=True,
-        checkPid=False,
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -3436,7 +3723,10 @@ def _loadThumbnailProjectContext(
     if not dbProj:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    service.loadProjectForThumbnails(dbProj)
+    service.loadProjectForThumbnails(
+        dbProj,
+        mapper=mapper,
+    )
     return dbProj
 
 
@@ -3701,7 +3991,10 @@ def listProjectThumbnailItems(
             if not dbProj:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            service.loadProjectForThumbnails(dbProj)
+            service.loadProjectForThumbnails(
+                dbProj,
+                mapper=mapper,
+            )
 
             items = service.listProjectThumbnailItems(
                 projectId=projectId,
@@ -3735,45 +4028,69 @@ def listProjectThumbnailItems(
     status_code=status.HTTP_200_OK,
 )
 def getProtocolOutputThumbnail(
-    request: Request,
-    projectId: int,
-    protocolId: int,
-    outputName: str,
-    size: int = Query(320, ge=128, le=1024),
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
+        request: Request,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        size: int = Query(
+            320,
+            ge=128,
+            le=1024,
+        ),
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
 ):
     try:
-        with _thumbnailProjectLock:
-            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-            if not dbProj:
-                raise HTTPException(status_code=404, detail="Project not found")
-
-            service.loadProjectForThumbnails(dbProj)
-
-            result = service.buildProtocolOutputThumbnail(
-                protocolId=protocolId,
-                outputName=outputName,
-                force=False,
-                size=size,
-                mapper=mapper,
-                projectId=projectId,
+        def buildThumbnail():
+            return (
+                service
+                .buildProtocolOutputThumbnail(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    force=False,
+                    size=size,
+                    mapper=mapper,
+                    projectId=projectId,
+                )
             )
 
-        thumbPath = result.get("absolutePath")
+        result = _runThumbnailProjectJob(
+            service=service,
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            job=buildThumbnail,
+        )
+
+        thumbPath = result.get(
+            "absolutePath"
+        )
+
         if not thumbPath:
             logger.warning(
-                "Protocol output thumbnail not found. projectId=%s protocolId=%s outputName=%s result=%s",
+                "Protocol output thumbnail not found. "
+                "projectId=%s protocolId=%s "
+                "outputName=%s result=%s",
                 projectId,
                 protocolId,
                 outputName,
                 result,
             )
+
             raise HTTPException(
                 status_code=404,
                 detail={
-                    "message": "Protocol output thumbnail not found",
+                    "message": (
+                        "Protocol output thumbnail "
+                        "not found"
+                    ),
                     "projectId": projectId,
                     "protocolId": protocolId,
                     "outputName": outputName,
@@ -3784,20 +4101,30 @@ def getProtocolOutputThumbnail(
         return _buildCachedThumbnailResponse(
             request=request,
             filePath=thumbPath,
-            filename=f"protocol_{protocolId}_{outputName}_thumbnail.png",
+            filename=(
+                f"protocol_{protocolId}_"
+                f"{outputName}_thumbnail.png"
+            ),
             currentUser=currentUser,
             maxAge=900,
         )
 
     except HTTPException:
         raise
+
     except Exception as e:
-        logger.exception("Error in getProtocolOutputThumbnail: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load protocol output thumbnail: {e}",
+        logger.exception(
+            "Error in getProtocolOutputThumbnail: %s",
+            e,
         )
 
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to load protocol output "
+                f"thumbnail: {e}"
+            ),
+        )
 
 @router.post(
     "/{projectId}/output-thumbnails",
@@ -3811,6 +4138,10 @@ def getProtocolOutputThumbnailsBatch(
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: ProjectService = Depends(getProjectService),
 ):
+    requestStartedAt = perf_counter()
+    projectLoadMs = 0.0
+    thumbnailBuildMs = 0.0
+    cacheHits = 0
     try:
         requestedOutputs = payload.outputs or []
 
@@ -3828,7 +4159,10 @@ def getProtocolOutputThumbnailsBatch(
             if not dbProj:
                 raise HTTPException(status_code=404, detail="Project not found")
 
-            service.loadProjectForThumbnails(dbProj)
+            projectLoadStartedAt = perf_counter()
+            service.loadProjectForThumbnails(dbProj, mapper=mapper)
+            projectLoadMs = (perf_counter() - projectLoadStartedAt) * 1000
+            thumbnailBuildStartedAt = perf_counter()
 
             seen = set()
 
@@ -3850,31 +4184,10 @@ def getProtocolOutputThumbnailsBatch(
                     "outputClassName": None,
                     "exists": False,
                     "cached": False,
-                    "thumbnailUrl": (
-                        f"/projects/{int(projectId)}/protocols/{requestedProtocolId}"
-                        f"/outputs/{outputName}/thumbnail"
-                    ),
+                    "thumbnailUrl": f"/projects/{int(projectId)}/protocols/{requestedProtocolId}/outputs/{quote(outputName, safe='')}/thumbnail",
                     "thumbnailDataUrl": None,
                     "error": None,
                 }
-
-                try:
-                    scipionProtocolId = service._resolveScipionProtocolId(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=requestedProtocolId,
-                    )
-                    protocol = service.currentProject.getProtocol(int(scipionProtocolId))
-                except Exception:
-                    item["error"] = "Protocol not found"
-                    items.append(item)
-                    continue
-
-                try:
-                    outputObject = getattr(protocol, outputName)
-                    item["outputClassName"] = outputObject.__class__.__name__
-                except Exception:
-                    item["outputClassName"] = None
 
                 try:
                     result = service.buildProtocolOutputThumbnail(
@@ -3885,6 +4198,10 @@ def getProtocolOutputThumbnailsBatch(
                         mapper=mapper,
                         projectId=projectId,
                     )
+                    item["outputClassName"] = result.get("outputClassName")
+                    if result.get("cached"):
+                        cacheHits += 1
+
                 except Exception as exc:
                     logger.debug(
                         "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
@@ -3923,6 +4240,7 @@ def getProtocolOutputThumbnailsBatch(
 
                 items.append(item)
 
+        thumbnailBuildMs = (perf_counter() - thumbnailBuildStartedAt) * 1000
         response = JSONResponse(
             {
                 "projectId": projectId,
@@ -3930,8 +4248,14 @@ def getProtocolOutputThumbnailsBatch(
                 "items": items,
             }
         )
+        totalMs = (perf_counter() - requestStartedAt) * 1000
         response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
-        response.headers["Access-Control-Expose-Headers"] = "Cache-Control"
+        response.headers[
+            "Server-Timing"] = f"project;dur={projectLoadMs:.1f}, thumbnails;dur={thumbnailBuildMs:.1f}, total;dur={totalMs:.1f}"
+        response.headers["X-Thumbnail-Items"] = str(len(items))
+        response.headers["X-Thumbnail-Cache-Hits"] = str(cacheHits)
+        response.headers[
+            "Access-Control-Expose-Headers"] = "Cache-Control, Server-Timing, X-Thumbnail-Items, X-Thumbnail-Cache-Hits"
         return _attachDebugHeaders(response, currentUser)
 
     except HTTPException:
@@ -3959,10 +4283,6 @@ def executeProtocolWizardRoute(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(mapper, projectId, currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
     return service.executeProtocolWizard(
         mapper=mapper,
         projectId=projectId,

@@ -262,12 +262,29 @@ class FakeProtocol:
         return {"batchProtocol": True, "kwargs": kwargs}
 
 
+class FakeRuntimeMapper:
+    def __init__(self, events):
+        self.events = events
+        self.storeCalls = []
+        self.commitCalls = 0
+
+    def store(self, protocol):
+        self.storeCalls.append(protocol)
+        self.events.append(("store", protocol))
+
+    def commit(self):
+        self.commitCalls += 1
+        self.events.append(("commit", None))
+
+
 class FakeCurrentProject:
     # fakeCurrentProject
     def __init__(self, protocol, projectPath=None):
         self._protocol = protocol
         self._projectPath = projectPath
         self.launchedProtocols = []
+        self.events = []
+        self.mapper = FakeRuntimeMapper(self.events)
 
     def getProtocol(self, protocolId):
         return self._protocol
@@ -281,6 +298,7 @@ class FakeCurrentProject:
         return self._protocol.newProtocol(*args, **kwargs)
 
     def launchProtocol(self, protocol):
+        self.events.append(("launch", protocol))
         self.launchedProtocols.append(protocol)
 
 
@@ -968,6 +986,98 @@ def test_RenderMetadataImageCellServiceResolvesProtocolIdForRelativeImagePaths(
     ]
 
 
+def test_RenderMetadataImageCellServiceResolvesProjectRelativePostgresqlImagePaths(
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "project"
+    imagePath = (
+            projectPath
+            / "Runs"
+            / "000002_ProtImportMicrographs"
+            / "extra"
+            / "016.png"
+    )
+    imagePath.parent.mkdir(parents=True)
+
+    try:
+        from PIL import Image
+
+        Image.new("L", (4, 4), 128).save(imagePath)
+    except Exception:
+        imagePath.write_bytes(b"")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeProjectWithoutRuntimeProtocolLookup:
+        def getPath(self):
+            raise AssertionError("currentProject.getPath should not be needed for PostgreSQL project-relative paths")
+
+        def getProtocol(self, protocolId):
+            raise AssertionError("currentProject.getProtocol should not be used")
+
+    columns = [FakeColumn("stack", "Stack", PathRenderer())]
+    table = FakeTable(name="objects", alias="Micrographs", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={
+            "objects": [
+                FakeRow(
+                    1,
+                    ["Runs/000002_ProtImportMicrographs/extra/016.png"],
+                )
+            ],
+        },
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/247/protocol/2/output/outputMicrographs",
+    )
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    mapper = FakeMapper()
+    service.currentProject = FakeProjectWithoutRuntimeProtocolLookup()
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    def failRuntimeProtocolLookup(*args, **kwargs):
+        raise AssertionError("_getScipionProtocolForRuntime should not be used")
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        failRuntimeProtocolLookup,
+    )
+
+    response = service.renderMetadataImageCellService(
+        projectId=247,
+        protocolId=2,
+        outputName="outputMicrographs",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        mapper=mapper,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert response.headers.get("x-image-placeholder") is None
+
+
 def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     service,
     projectServiceModule,
@@ -1006,36 +1116,49 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
 
     mapper = FakeMapper()
     calls = []
-    syncCalls = []
+    inputOutputCalls = []
+    protocolSyncCalls = []
+    inputSyncCalls = []
     syncResult = {
-        "protocols": 2,
+        "protocols": 1,
         "dependencies": 1,
+        "inputRefs": 1,
+        "protocolId": "900",
     }
 
-    def syncProjectProtocolsAndDependencies(
-            mapperArg,
-            projectIdArg,
-            refresh=True,
-            checkPid=True,
-    ):
-        syncCalls.append(
-            {
-                "mapper": mapperArg,
-                "projectId": projectIdArg,
-                "refresh": refresh,
-                "checkPid": checkPid,
-            }
-        )
-        return syncResult
+    def resolveMetadataActionInputContext(**kwargs):
+        inputOutputCalls.append(kwargs)
+        return {
+            "output": output,
+            "parentProtocolId": 10,
+        }
+
+    def syncPostgresqlRuntimeProtocol(**kwargs):
+        protocolSyncCalls.append(kwargs)
+        service.currentProject.events.append(("protocol-sync", kwargs["protocol"]))
+        return {"protocols": 1}
+
+    def syncPostgresqlRuntimeProtocolInputsAndDependencies(**kwargs):
+        inputSyncCalls.append(kwargs)
+        service.currentProject.events.append(("input-sync", kwargs["protocol"]))
+        return {
+            "dependencies": 1,
+            "inputRefsSaved": 1,
+            "parentProtocolIds": [10],
+        }
+
+    def failGlobalSync(*args, **kwargs):
+        raise AssertionError("Subset creation must not synchronize parent protocols or outputs")
 
     patchOpenMetadataTable(service, monkeypatch, objMgr, table, calls=calls)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        syncProjectProtocolsAndDependencies,
-    )
+    monkeypatch.setattr(service, "_resolveMetadataActionInputContext", resolveMetadataActionInputContext)
+    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", syncPostgresqlRuntimeProtocol)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        syncPostgresqlRuntimeProtocolInputsAndDependencies)
+    monkeypatch.setattr(service, "syncProjectProtocolsAndDependencies", failGlobalSync)
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -1055,14 +1178,55 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         "postgresqlSync": syncResult,
         "postgresqlError": None,
     }
-    assert syncCalls == [
+    launchedProtocol = service.currentProject.launchedProtocols[0]
+
+    assert inputOutputCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
-            "refresh": True,
-            "checkPid": True,
+            "protocolId": 10,
+            "outputName": "outputParticles",
         }
     ]
+    assert protocolSyncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 900,
+            "registerOutputs": False,
+            "syncRelations": False,
+            "protocol": launchedProtocol,
+            "authoritativeProtocolState": True,
+        }
+    ]
+    assert inputSyncCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocol": launchedProtocol,
+            "params": {
+                "inputObject": "10.outputParticles",
+            },
+        },
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocol": launchedProtocol,
+            "params": {
+                "inputObject": "10.outputParticles",
+            },
+        },
+    ]
+    assert [event[0] for event in service.currentProject.events] == [
+        "store",
+        "commit",
+        "input-sync",
+        "launch",
+        "protocol-sync",
+        "input-sync",
+    ]
+    assert service.currentProject.mapper.storeCalls == [launchedProtocol]
+    assert service.currentProject.mapper.commitCalls == 1
     assert calls == [
         {
             "projectId": 1,
@@ -1088,118 +1252,102 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     assert selectionFiles[0].read_text(encoding="utf-8") == "3 5 7 "
 
 
-def test_RunMetadataTableActionServiceUsesRuntimeResolverWithMapper(
+def test_ResolveMetadataActionInputContextBuildsReadOnlyPostgresqlProxy(
     service,
     projectServiceModule,
     monkeypatch,
-    tmp_path,
 ):
-    outputFile = tmp_path / "metadata.sqlite"
-    outputFile.write_text("placeholder", encoding="utf-8")
+    parentProtocol = object()
+    proxyOutput = object()
+    runtimeMapper = object()
+    outputInfo = {
+        "exists": True,
+        "projectId": 1,
+        "setId": 77,
+        "runtimeObjectId": 9001,
+        "outputName": "outputSet",
+        "className": "SetOfParticles",
+    }
 
-    output = FakeOutput(str(outputFile))
-    protocol = FakeProtocol("outputParticles", output)
-    service.currentProject = FakeCurrentProject(protocol, projectPath=tmp_path)
+    class FakeRuntimeProject:
+        pass
 
-    table = FakeTable(
-        name="objects",
-        alias="Particles",
-        columns=[],
-        actions=[FakeAction("create subset")],
-    )
-    dao = FakeDao(objectsType={"create subset": "SetOfParticles"})
-    objMgr = FakeObjectManager(
-        tables={"objects": table},
-        rowsByTable={"objects": []},
-        dao=dao,
-    )
+    service.currentProject = FakeRuntimeProject()
+    service.currentProject.mapper = runtimeMapper
 
     class FakeDb:
-        # fakeDb
-        def fetchOne(self, *args, **kwargs):
-            return None
+        def __init__(self):
+            self.fetchCalls = []
+
+        def fetchOne(self, query, params):
+            self.fetchCalls.append({"query": query, "params": params})
+
+            if '"protocolId" = %s' in query:
+                assert params == (1, "6115")
+                return {"id": 852, "protocolId": "6115"}
+
+            if "AND id = %s" in query:
+                assert params == (1, 852)
+                return {"id": 852, "protocolId": "6115"}
+
+            raise AssertionError("Unexpected protocol identity query")
 
     class FakeMapper:
-        # fakeMapper
         def __init__(self):
             self.db = FakeDb()
 
     mapper = FakeMapper()
-    resolverCalls = []
-    openTableCalls = []
+    protocolCalls = []
+    outputInfoCalls = []
+    proxyCalls = []
 
-    def getScipionProtocolForRuntime(mapper, projectId, protocolId):
-        resolverCalls.append(
-            {
+    def getScipionProtocolByRuntimeId(protocolId):
+        protocolCalls.append(protocolId)
+        return parentProtocol
+
+    def getPostgresqlRuntimeOutputInfo(**kwargs):
+        outputInfoCalls.append(kwargs)
+        return outputInfo
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(self, parentProtocol, outputName, outputInfo, mapper=None):
+            proxyCalls.append({
+                "parentProtocol": parentProtocol,
+                "outputName": outputName,
+                "outputInfo": outputInfo,
                 "mapper": mapper,
-                "projectId": projectId,
-                "protocolId": protocolId,
-            }
-        )
-        return protocol
+            })
+            return proxyOutput
 
-    def syncProjectProtocolsAndDependencies(
-            mapperArg,
-            projectIdArg,
-            refresh=True,
-            checkPid=True,
-    ):
-        return {
-            "protocols": 2,
-            "dependencies": 1,
-        }
+    monkeypatch.setattr(service, "_getScipionProtocolByRuntimeId", getScipionProtocolByRuntimeId)
+    monkeypatch.setattr(service, "_getPostgresqlRuntimeOutputInfo", getPostgresqlRuntimeOutputInfo)
+    monkeypatch.setattr(projectServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
 
-    patchOpenMetadataTable(
-        service,
-        monkeypatch,
-        objMgr,
-        table,
-        calls=openTableCalls,
-    )
+    result = service._resolveMetadataActionInputContext(mapper=mapper, projectId=1, protocolId=6115,
+                                                        outputName="outputSet")
 
-    monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
-    monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
-    monkeypatch.setattr(
-        service,
-        "_getScipionProtocolForRuntime",
-        getScipionProtocolForRuntime,
-    )
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        syncProjectProtocolsAndDependencies,
-    )
-
-    result = service.runMetadataTableActionService(
-        projectId=1,
-        protocolId=500,
-        outputName="outputParticles",
-        tableName="objects",
-        action="create subset",
-        subsetName="subset A",
-        ids=[3, 5, 7],
-        currentUser={"id": 1},
-        mapper=mapper,
-    )
-
-    assert result["success"] is True
-    assert resolverCalls == [
+    assert result == {
+        "output": proxyOutput,
+        "parentProtocolId": 6115,
+    }
+    assert protocolCalls == [6115]
+    assert outputInfoCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
-            "protocolId": 500,
+            "parentProtocolDbId": 852,
+            "outputName": "outputSet",
         }
     ]
-    assert openTableCalls == [
+    assert proxyCalls == [
         {
-            "projectId": 1,
-            "protocolId": 500,
-            "outputName": "outputParticles",
-            "tableName": "objects",
-            "mapper": mapper,
+            "parentProtocol": parentProtocol,
+            "outputName": "outputSet",
+            "outputInfo": outputInfo,
+            "mapper": runtimeMapper,
         }
     ]
-    assert len(protocol.newProtocolCalls) == 1
+    assert not hasattr(parentProtocol, "outputSet")
 
 
 def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
@@ -1234,6 +1382,25 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     patchOpenMetadataTable(service, monkeypatch, objMgr, table)
     monkeypatch.setattr(projectServiceModule, "OBJECT_TABLE", "objects")
     monkeypatch.setattr(projectServiceModule, "ProtUserSubSet", object())
+    monkeypatch.setattr(
+        service,
+        "_resolveMetadataActionInputContext",
+        lambda **kwargs: {
+            "output": output,
+            "parentProtocolId": 10,
+        },
+    )
+    monkeypatch.setattr(service, "_getScipionObjectId", lambda protocolArg: 900)
+    monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", lambda **kwargs: {"protocols": 1})
+    monkeypatch.setattr(
+                        service,
+                        "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+                        lambda **kwargs: {
+                            "dependencies": 1,
+                            "inputRefsSaved": 1,
+                            "parentProtocolIds": [10],
+                        },
+                    )
 
     result = service.runMetadataTableActionService(
         projectId=1,
@@ -1253,3 +1420,121 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     assert call["kwargs"]["outputClassName"] == "SetOfParticles"
     assert call["kwargs"]["sqliteFile"].startswith("Logs/selection_")
     assert call["kwargs"]["sqliteFile"].endswith(".txt,Class001")
+
+
+def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    from starlette.responses import Response
+
+    projectPath = tmp_path / "project"
+    imagePath = (
+        projectPath
+        / "Runs"
+        / "000077_XmippProtPreprocessMicrographs"
+        / "extra"
+        / "008.mrc"
+    )
+    imagePath.parent.mkdir(parents=True)
+    imagePath.write_bytes(b"fake mrc content")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    class FakeMapper:
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakeOutputsPreview:
+        instances = []
+
+        def __init__(self, currentProject, protocol, output, requestHeaders=None):
+            self.currentProject = currentProject
+            self.protocol = protocol
+            self.output = output
+            self.requestHeaders = requestHeaders
+            self.lastRenderCall = None
+            FakeOutputsPreview.instances.append(self)
+
+        def renderImageFromFilePath(
+            self,
+            filePath,
+            size,
+            fmt,
+            index,
+            applyTransform,
+            inline,
+            rot,
+            shifts,
+        ):
+            self.lastRenderCall = {
+                "filePath": filePath,
+                "size": size,
+                "fmt": fmt,
+                "index": index,
+                "applyTransform": applyTransform,
+                "inline": inline,
+                "rot": rot,
+                "shifts": shifts,
+            }
+            return Response(content=b"fake-webp", media_type="image/webp")
+
+    columns = [FakeColumn("stack", "Stack", PathRenderer())]
+    table = FakeTable(name="objects", alias="Micrographs", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={
+            "objects": [
+                FakeRow(
+                    1,
+                    ["Runs/000077_XmippProtPreprocessMicrographs/extra/008.mrc"],
+                )
+            ],
+        },
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/247/protocol/77/output/outputMicrographs",
+    )
+
+    mapper = FakeMapper()
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+
+    response = service.renderMetadataImageCellService(
+        projectId=247,
+        protocolId=77,
+        outputName="outputMicrographs",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=200,
+        applyTransform=False,
+        inline=True,
+        fmt="webp",
+        mapper=mapper,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/webp"
+    assert response.headers.get("x-image-placeholder") is None
+
+    assert FakeOutputsPreview.instances[0].lastRenderCall == {
+        "filePath": str(imagePath.resolve()),
+        "size": 200,
+        "fmt": "webp",
+        "index": 0,
+        "applyTransform": False,
+        "inline": True,
+        "rot": None,
+        "shifts": None,
+    }

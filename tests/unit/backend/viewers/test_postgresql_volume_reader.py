@@ -82,3 +82,32 @@ def test_PostgresqlVolumeReaderRejectsInvalidDims(authTestEnv):
     assert reader._extractDims({"dims": "128,foo,64"}) is None
     assert reader._extractDims({"dims": "128,64"}) is None
     assert reader._extractDims({"dims": "128,0,64"}) is None
+
+
+def test_PostgresqlVolumeReaderResolvesProjectRelativeVolumePath(
+    authTestEnv,
+    tmp_path,
+):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+
+    projectPath = tmp_path / "project"
+    volumePath = projectPath / "Runs" / "000134_ProtVolume" / "extra" / "volume.mrc"
+    volumePath.parent.mkdir(parents=True)
+    volumePath.write_bytes(b"fake")
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            if "FROM projects" in query:
+                return {"name": str(projectPath)}
+            return None
+
+    reader = module.PostgresqlVolumeReader(
+        db=FakeDb(),
+        projectId=249,
+        protocolId=134,
+        outputName="outputVolume",
+    )
+
+    assert reader._resolveExistingPath(
+        "Runs/000134_ProtVolume/extra/volume.mrc"
+    ) == str(volumePath.resolve())

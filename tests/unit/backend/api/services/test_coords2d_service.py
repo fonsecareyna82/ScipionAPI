@@ -34,13 +34,56 @@ class FakeMapper:
     pass
 
 
+class FakeRuntimeOutputProxyService:
+    def attachPostgresqlRuntimeOutputProxy(
+            self,
+            parentProtocol,
+            outputName,
+            outputInfo,
+            mapper=None,
+    ):
+        return outputInfo.get("output")
+
+
 class FakeProjectService:
     def __init__(self, currentProject):
         self.currentProject = currentProject
         self.projectRow = {"id": 1}
         self.runtimeProtocolIdByDbId = {}
+        self.outputInfoByName = {}
+        self.resolvePostgresqlReaderProtocolIdCalls = []
+        self.getPostgresqlRuntimeOutputInfoCalls = []
         self.getProjectByIdCalls = []
+        self.loadPostgresqlRuntimeProjectForMutationCalls = []
+        self.getProjectDbRowCalls = []
+        self.loadProjectForThumbnailsCalls = []
         self.runtimeCalls = []
+
+    def getProjectDbRow(
+        self,
+        mapper,
+        projectId,
+        currentUser,
+    ):
+        self.getProjectDbRowCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        })
+
+        return self.projectRow
+
+    def loadProjectForThumbnails(
+        self,
+        dbProj,
+        mapper,
+    ):
+        self.loadProjectForThumbnailsCalls.append({
+            "dbProj": dbProj,
+            "mapper": mapper,
+        })
+
+        return self.currentProject
 
     def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
         self.getProjectByIdCalls.append({
@@ -50,6 +93,20 @@ class FakeProjectService:
             "refresh": refresh,
             "checkPid": checkPid,
         })
+        return self.projectRow
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.loadPostgresqlRuntimeProjectForMutationCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        })
+
         return self.projectRow
 
     def _getScipionProtocolForRuntime(self, mapper, projectId, protocolId):
@@ -65,10 +122,44 @@ class FakeProjectService:
         )
         return self.currentProject.protocols[int(runtimeProtocolId)]
 
+    def _resolvePostgresqlReaderProtocolId(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+    ):
+        self.resolvePostgresqlReaderProtocolIdCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+
+        return protocolId
+
+    def _getPostgresqlRuntimeOutputInfo(
+            self,
+            mapper,
+            projectId,
+            parentProtocolDbId,
+            outputName,
+    ):
+        self.getPostgresqlRuntimeOutputInfoCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "parentProtocolDbId": parentProtocolDbId,
+            "outputName": outputName,
+        })
+
+        return self.outputInfoByName.get(
+            outputName,
+            {"exists": False},
+        )
+
 
 class FakeCurrentProject:
     def __init__(self):
         self.protocols = {}
+        self.mapper = object()
 
 
 class FakeProtocol:
@@ -236,7 +327,9 @@ def projectService(currentProject):
 
 
 @pytest.fixture
-def service(coords2dServiceModule, projectService):
+def service(coords2dServiceModule, projectService, monkeypatch):
+    monkeypatch.setattr(coords2dServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
+
     instance = object.__new__(coords2dServiceModule.Coords2dService)
     instance.projectService = projectService
     return instance
@@ -307,10 +400,14 @@ def test_LoadCoordinatesOutputResolvesPostgresqlProtocolId(
 ):
     protocol = FakeProtocol(objId=10)
     coordinatesSet = buildCoordinatesOutput()
-    protocol.outputCoordinates = coordinatesSet
 
     currentProject.protocols[10] = protocol
     projectService.runtimeProtocolIdByDbId[500] = 10
+    projectService.outputInfoByName["outputCoordinates"] = {
+        "exists": True,
+        "setId": 700,
+        "output": coordinatesSet,
+    }
 
     loadedProtocol, loadedCoordinatesSet = service._loadCoordinatesOutput(
         mapper=mapper,
@@ -322,22 +419,39 @@ def test_LoadCoordinatesOutputResolvesPostgresqlProtocolId(
 
     assert loadedProtocol is protocol
     assert loadedCoordinatesSet is coordinatesSet
+    assert not hasattr(protocol, "outputCoordinates")
 
-    assert projectService.getProjectByIdCalls == [
+    assert projectService.loadPostgresqlRuntimeProjectForMutationCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "currentUser": currentUser,
-            "refresh": False,
-            "checkPid": False,
         }
     ]
+
+    assert projectService.getProjectByIdCalls == []
 
     assert projectService.runtimeCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "protocolId": 500,
+        }
+    ]
+    assert projectService.resolvePostgresqlReaderProtocolIdCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 500,
+        }
+    ]
+
+    assert projectService.getPostgresqlRuntimeOutputInfoCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "parentProtocolDbId": 500,
+            "outputName": "outputCoordinates",
         }
     ]
 
@@ -359,6 +473,13 @@ def test_LoadCoordinatesOutputRaisesWhenProjectDoesNotExist(
             outputName="outputCoordinates",
         )
 
+    assert projectService.loadPostgresqlRuntimeProjectForMutationCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": currentUser,
+        }
+    ]
     assert exc.value.status_code == 404
     assert exc.value.detail == "Project not found"
     assert projectService.runtimeCalls == []
@@ -405,10 +526,14 @@ def test_LoadCoordinatesOutputRaisesWhenOutputIsNotCoordinatesSet(
     currentUser,
 ):
     protocol = FakeProtocol(objId=10)
-    protocol.outputVolume = object()
 
     currentProject.protocols[10] = protocol
     projectService.runtimeProtocolIdByDbId[500] = 10
+    projectService.outputInfoByName["outputVolume"] = {
+        "exists": True,
+        "setId": 701,
+        "output": object(),
+    }
 
     with pytest.raises(HTTPException) as exc:
         service._loadCoordinatesOutput(
@@ -429,4 +554,5 @@ def test_LoadCoordinatesOutputRaisesWhenOutputIsNotCoordinatesSet(
             "protocolId": 500,
         }
     ]
+
 

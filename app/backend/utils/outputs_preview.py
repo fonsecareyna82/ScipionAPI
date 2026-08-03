@@ -30,7 +30,7 @@ from app.backend.utils.constants import (
     maxThumbSize,
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
-from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.utils.volume_utils import readVolumeSlice2d
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import (
     SetOfClasses2D,
@@ -653,12 +653,13 @@ class OutputsPreview(FileHandlers):
             summary = f"{total} items" if total != 1 else "1 item"
         return tiles, labels, cols, tileSize, summary
 
+
     def renderImageFromFilePath(
             self,
             filePath: Union[str, Path],
             size: Optional[int] = None,
             fmt: str = "png",
-            index: int = 0,
+            index: Optional[int] = 0,
             inline: bool = True,
             quality: int = 75,
             applyTransform: bool = True,
@@ -690,7 +691,10 @@ class OutputsPreview(FileHandlers):
 
         # Try first image, fallback to central if needed
         try:
-            pilImg = reader.getImage(index=index, pilImage=True)
+            if index is None:
+                pilImg = reader.getCentralImage(pilImage=True)
+            else:
+                pilImg = reader.getImage(index=index, pilImage=True)
         except Exception:
             try:
                 pilImg = reader.getCentralImage(pilImage=True)
@@ -2041,36 +2045,15 @@ class OutputsPreview(FileHandlers):
         # Slow path
         if gray is None:
             try:
-                vol3d, props = readVolumeArray3d(str(absPath))  # Z, Y, X
-                if vol3d.ndim != 3:
-                    raise ValueError(
-                        f"Unsupported volume shape {vol3d.shape}, expected 3D"
-                    )
-
-                zdim, ydim, xdim = (
-                    int(vol3d.shape[0]),
-                    int(vol3d.shape[1]),
-                    int(vol3d.shape[2]),
+                slice2d, props, sliceMeta = readVolumeSlice2d(
+                    str(absPath),
+                    sliceIndex=sliceIndex,
+                    axis=axis,
+                    maxSide=thumb,
                 )
 
-                if axis == "z":
-                    dim = zdim
-                elif axis == "y":
-                    dim = ydim
-                else:
-                    dim = xdim
-
-                if dim <= 0:
-                    raise ValueError("Empty volume")
-
-                k = max(0, min(int(sliceIndex), dim - 1))
-
-                if axis == "z":
-                    slice2d = vol3d[k, :, :]
-                elif axis == "y":
-                    slice2d = vol3d[:, k, :]
-                else:
-                    slice2d = vol3d[:, :, k]
+                zdim, ydim, xdim = sliceMeta["dims"]
+                k = sliceMeta["index"]
 
                 gray = self._normMode2D(slice2d, mode=normalize or "minmax")
             except Exception as e:

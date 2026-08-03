@@ -26,23 +26,48 @@
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 
+class FakeCursor:
+    def __init__(self, rowcount=0):
+        self.rowcount = int(rowcount)
+
+
 class FakeDb:
     def __init__(self):
-        self.fetchOneCalls = []
-        self.fetchOneResult = {
+        self.executeReturningOneCalls = []
+        self.executeCalls = []
+        self.executeResult = FakeCursor(rowcount=3)
+
+        self.executeReturningOneResult = {
             "index": 2,
             "name": "processStep",
             "status": "finished",
         }
 
-    def fetchOne(self, query, params):
-        self.fetchOneCalls.append(
+    def execute(
+            self,
+            query,
+            params,
+    ):
+        self.executeCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        return self.executeResult
+
+    def executeReturningOne(
+            self,
+            query,
+            params,
+    ):
+        self.executeReturningOneCalls.append(
             {
                 "query": query,
                 "params": params,
             },
         )
-        return self.fetchOneResult
+
+        return self.executeReturningOneResult
 
 
 def test_UpdateProtocolStepStatusUpdatesSelectedStepAndReturnsRow():
@@ -61,9 +86,18 @@ def test_UpdateProtocolStepStatusUpdatesSelectedStepAndReturnsRow():
         "name": "processStep",
         "status": "finished",
     }
-    assert len(mapper.db.fetchOneCalls) == 1
+    assert (
+            len(
+                mapper.db
+                .executeReturningOneCalls
+            )
+            == 1
+    )
 
-    call = mapper.db.fetchOneCalls[0]
+    call = (
+        mapper.db
+        .executeReturningOneCalls[0]
+    )
     assert "UPDATE protocol_steps" in call["query"]
     assert "SET status = %s" in call["query"]
     assert '"updatedAt" = NOW()' in call["query"]
@@ -72,3 +106,74 @@ def test_UpdateProtocolStepStatusUpdatesSelectedStepAndReturnsRow():
     assert 'AND "stepIndex" = %s' in call["query"]
     assert '"stepIndex" AS index' in call["query"]
     assert call["params"] == ("finished", 1, "10", 2)
+
+
+def test_PrepareProtocolStepsForContinueResetsStoredExecutionState():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+
+    result = mapper.prepareProtocolStepsForContinue(
+        projectId=7,
+        protocolId=31,
+        statusValue="saved",
+        event="continue_resume",
+    )
+
+    assert result == 3
+    assert len(mapper.db.executeCalls) == 1
+
+    call = mapper.db.executeCalls[0]
+
+    assert "UPDATE protocol_steps" in call["query"]
+    assert 'SET status = %s' in call["query"]
+    assert '"initTime" = NULL' in call["query"]
+    assert '"endTime" = NULL' in call["query"]
+    assert '"elapsedSeconds" = 0' in call["query"]
+    assert "error = NULL" in call["query"]
+    assert "event = %s" in call["query"]
+    assert '"updatedAt" = NOW()' in call["query"]
+    assert 'WHERE "projectId" = %s' in call["query"]
+    assert 'AND "protocolId" = %s' in call["query"]
+
+    assert call["params"] == (
+        "saved",
+        "continue_resume",
+        7,
+        "31",
+    )
+
+
+def test_AbortRunningProtocolStepsUpdatesOnlyRunningRows():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+
+    result = mapper.abortRunningProtocolSteps(
+        projectId=7,
+        protocolDbId=101,
+        statusValue="aborted",
+        errorMessage="Protocol stopped by user.",
+    )
+
+    assert result == 3
+    assert len(mapper.db.executeCalls) == 1
+
+    call = mapper.db.executeCalls[0]
+
+    assert "UPDATE protocol_steps" in call["query"]
+    assert "SET status = %s" in call["query"]
+    assert '"endTime" = COALESCE' in call["query"]
+    assert "error = CASE" in call["query"]
+    assert "BTRIM(error) = ''" in call["query"]
+    assert '"updatedAt" = NOW()' in call["query"]
+    assert 'WHERE "projectId" = %s' in call["query"]
+    assert 'AND "protocolDbId" = %s' in call["query"]
+    assert "AND LOWER(status) = 'running'" in call["query"]
+
+    assert call["params"] == (
+        "aborted",
+        "Protocol stopped by user.",
+        7,
+        101,
+    )
+
+

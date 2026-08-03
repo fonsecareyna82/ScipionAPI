@@ -137,7 +137,7 @@ class FakeProjectService:
         self.runtimeCalls = []
         self.castParamValueCalls = []
         self.applyParamsToProtocolCalls = []
-        self.getProjectByIdCalls = []
+        self.loadPostgresqlRuntimeProjectCalls = []
         self.projectRow = {"id": 1}
 
     def _getScipionProtocolForRuntime(self, mapper, projectId, protocolId):
@@ -170,14 +170,21 @@ class FakeProjectService:
         })
         return []
 
-    def getProjectById(self, mapper, projectId, currentUser, refresh=False, checkPid=False):
-        self.getProjectByIdCalls.append({
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.loadPostgresqlRuntimeProjectCalls.append({
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "refresh": refresh,
-            "checkPid": checkPid,
         })
+
+        if self.projectRow is None:
+            return None
+
         return self.projectRow
 
 
@@ -253,7 +260,7 @@ def test_BuildWizardReadyProtocolResolvesPostgresqlProtocolId(
         protocolId=500,
         protocolClassName="ProtWizardTarget",
         formValues={
-            "iterations": "7",
+            "iterations": 7,
         },
         mapper=mapper,
         projectId=1,
@@ -278,7 +285,7 @@ def test_BuildWizardReadyProtocolResolvesPostgresqlProtocolId(
             "projectId": 1,
             "protocol": protocol,
             "params": {
-                "iterations": "7",
+                "iterations": 7,
             },
         }
     ]
@@ -406,7 +413,7 @@ def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
         protocolId=500,
         protocolClassName="ProtWizardTarget",
         formValues={
-            "iterations": "7",
+            "iterations": 7,
         },
         paramName="boxSize",
         wizardId="tests.FakeWizardClass",
@@ -435,15 +442,14 @@ def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
         },
     }
 
-    assert projectService.getProjectByIdCalls == [
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
         {
             "mapper": mapper,
             "projectId": 1,
             "currentUser": {"id": 1},
-            "refresh": False,
-            "checkPid": False,
         }
     ]
+    assert wizardService.currentProject is currentProject
 
     assert projectService.runtimeCalls == [
         {
@@ -499,3 +505,45 @@ def test_ExecuteProtocolWizardReturns404WhenProjectDoesNotExist(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Project not found"
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": {"id": 1},
+        }
+    ]
+
+
+def test_ExecuteProtocolWizardFailsWhenRuntimeProjectWasNotLoaded(
+        wizardService,
+        projectService,
+        mapper,
+):
+    projectService.currentProject = None
+
+    payload = FakePayload(
+        protocolId=None,
+        protocolClassName="FakeProtocol",
+        paramName="radius",
+        wizardId="fake.wizard.Wizard",
+        formValues={},
+        wizardInputs={},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        wizardService.executeProtocolWizard(
+            mapper=mapper,
+            projectId=1,
+            currentUser={"id": 1},
+            payload=payload,
+        )
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "PostgreSQL runtime project was not loaded"
+    assert projectService.loadPostgresqlRuntimeProjectCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": {"id": 1},
+        }
+    ]

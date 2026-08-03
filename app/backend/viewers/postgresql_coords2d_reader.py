@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 from typing import Any, Dict, List, Optional, Set
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
@@ -131,6 +132,213 @@ class PostgresqlCoords2dReader:
             return None
 
         return {"coordinates": coordinates}
+
+    def getMicrographImageInfo(self, micId: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
+
+        storedSet = self._getStoredSet()
+        if storedSet is None:
+            self.lastSkipReason = "stored_set_not_found"
+            return None
+
+        pointerReference = self._findMicrographsPointerReference(storedSet)
+        if pointerReference is None:
+            self.lastSkipReason = "micrographs_pointer_not_found"
+            return None
+
+        micrographId = self._toOptionalInt(micId)
+        if micrographId is None:
+            self.lastSkipReason = "invalid_micrograph_id micId=%s" % str(micId)
+            return None
+
+        micrographRow = self._findLinkedMicrographRow(
+            pointerReference=pointerReference,
+            micrographId=micrographId,
+        )
+
+        if micrographRow is None:
+            self.lastSkipReason = "linked_micrograph_not_found micId=%s" % str(micId)
+            return None
+
+        values = self._normalizeJsonObject(micrographRow.get("values"))
+
+        fileName = self._firstValueBySuffix(
+            values,
+            ["filename", "filepath", "imagefilename"],
+        )
+
+        locationIndex = self._toOptionalInt(
+            self._firstValueBySuffix(
+                values,
+                ["locationindex", "imageindex"],
+            )
+        )
+
+        if not fileName:
+            locationValue = self._firstValueBySuffix(
+                values,
+                ["location"],
+            )
+
+            parsedIndex, parsedFileName = self._parseImageLocation(locationValue)
+
+            if locationIndex is None:
+                locationIndex = parsedIndex
+
+            if parsedFileName:
+                fileName = parsedFileName
+
+        if not fileName:
+            self.lastSkipReason = "micrograph_file_not_found micId=%s" % str(micId)
+            return None
+
+        label = (
+            self._firstValueBySuffix(
+                values,
+                ["micname", "micrographname", "objlabel"],
+            )
+            or micrographRow.get("label")
+            or "Micrograph %s" % str(micId)
+        )
+
+        return {
+            "id": str(micId),
+            "fileName": str(fileName),
+            "locationIndex": locationIndex,
+            "label": str(label),
+        }
+
+    def _findMicrographsPointerReference(
+            self,
+            storedSet: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        properties = self._normalizeJsonObject(
+            storedSet.get("properties")
+        )
+
+        for key, value in properties.items():
+            reference = self._normalizePointerReference(value)
+            if reference is None:
+                continue
+
+            normalizedKey = self._normalizeKey(key)
+            targetClassName = self._normalizeKey(
+                reference.get("targetClassName")
+            )
+
+            if "micrograph" in normalizedKey or "micrograph" in targetClassName:
+                return reference
+
+        for propertyRow in storedSet.get("setProperties") or []:
+            key = str((propertyRow or {}).get("key") or "")
+            value = (propertyRow or {}).get("value")
+
+            reference = self._normalizePointerReference(value)
+            if reference is None:
+                continue
+
+            normalizedKey = self._normalizeKey(key)
+            targetClassName = self._normalizeKey(
+                reference.get("targetClassName")
+            )
+
+            if "micrograph" in normalizedKey or "micrograph" in targetClassName:
+                return reference
+
+        return None
+
+    def _findLinkedMicrographRow(
+            self,
+            pointerReference: Dict[str, Any],
+            micrographId: int,
+    ) -> Optional[Dict[str, Any]]:
+        targetObjectId = self._toOptionalInt(
+            pointerReference.get("targetObjectId")
+        )
+
+        if targetObjectId is not None:
+            row = self.db.fetchOne(
+                """
+                SELECT
+                    item."scipionItemId",
+                    item.label,
+                    item.comment,
+                    item."values",
+                    stored_set."outputName",
+                    protocol."protocolId"
+                FROM scipion_sets stored_set
+                JOIN scipion_objects object_row
+                  ON object_row."projectId" = stored_set."projectId"
+                 AND object_row.id = stored_set."objectId"
+                JOIN scipion_set_items item
+                  ON item."setId" = stored_set.id
+                JOIN protocols protocol
+                  ON protocol."projectId" = stored_set."projectId"
+                 AND protocol.id = stored_set."protocolDbId"
+                WHERE stored_set."projectId" = %s
+                  AND object_row."scipionObjId" = %s
+                  AND item."scipionItemId" = %s
+                LIMIT 1
+                """,
+                (
+                    int(self.projectId),
+                    int(targetObjectId),
+                    int(micrographId),
+                ),
+            )
+
+            if row is not None:
+                return dict(row)
+
+        targetParentObjectId = self._toOptionalInt(
+            pointerReference.get("targetParentObjectId")
+        )
+
+        targetObjectName = str(
+            pointerReference.get("targetObjectName")
+            or pointerReference.get("uniqueId")
+            or ""
+        ).strip()
+
+        if targetParentObjectId is None or not targetObjectName:
+            return None
+
+        outputName = targetObjectName
+        protocolPrefix = "%s." % targetParentObjectId
+
+        if outputName.startswith(protocolPrefix):
+            outputName = outputName[len(protocolPrefix):]
+
+        row = self.db.fetchOne(
+            """
+            SELECT
+                item."scipionItemId",
+                item.label,
+                item.comment,
+                item."values",
+                stored_set."outputName",
+                protocol."protocolId"
+            FROM scipion_sets stored_set
+            JOIN scipion_set_items item
+              ON item."setId" = stored_set.id
+            JOIN protocols protocol
+              ON protocol."projectId" = stored_set."projectId"
+             AND protocol.id = stored_set."protocolDbId"
+            WHERE stored_set."projectId" = %s
+              AND protocol."protocolId"::text = %s
+              AND stored_set."outputName" = %s
+              AND item."scipionItemId" = %s
+            LIMIT 1
+            """,
+            (
+                int(self.projectId),
+                str(targetParentObjectId),
+                outputName,
+                int(micrographId),
+            ),
+        )
+
+        return dict(row) if row is not None else None
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:
@@ -330,6 +538,89 @@ class PostgresqlCoords2dReader:
             return None
 
         return walk(value)
+
+    def _normalizeJsonObject(self, value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return {}
+
+            if isinstance(parsed, dict):
+                return dict(parsed)
+
+        return {}
+
+    def _normalizePointerReference(
+            self,
+            value: Any,
+    ) -> Optional[Dict[str, Any]]:
+        reference = self._normalizeJsonObject(value)
+
+        if not reference:
+            return None
+
+        if str(reference.get("kind") or "").lower() != "pointer":
+            return None
+
+        return reference
+
+    def _parseImageLocation(
+            self,
+            value: Any,
+    ):
+        if isinstance(value, dict):
+            fileName = (
+                value.get("fileName")
+                or value.get("filename")
+                or value.get("path")
+            )
+
+            locationIndex = self._toOptionalInt(
+                value.get("index")
+                or value.get("locationIndex")
+                or value.get("imageIndex")
+            )
+
+            return locationIndex, str(fileName) if fileName else None
+
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2:
+                return self._toOptionalInt(value[0]), str(value[1]) if value[1] else None
+
+            if len(value) == 1:
+                return self._parseImageLocation(value[0])
+
+            return None, None
+
+        text = str(value or "").strip()
+        if not text:
+            return None, None
+
+        if "@" in text:
+            indexText, fileName = text.split("@", 1)
+            locationIndex = self._toOptionalInt(indexText)
+
+            if locationIndex is not None and fileName:
+                return locationIndex, fileName
+
+        return None, text
+
+    @staticmethod
+    def _normalizeKey(value: Any) -> str:
+        return (
+            str(value or "")
+            .replace("_", "")
+            .replace(".", "")
+            .lower()
+        )
 
     def _toOptionalFloat(self, value: Any) -> Optional[float]:
         if value is None or value == "":
