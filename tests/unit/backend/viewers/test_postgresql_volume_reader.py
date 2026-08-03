@@ -226,3 +226,111 @@ def test_PostgresqlVolumeReaderFallsBackToScipionProtocolId(authTestEnv, monkeyp
             "protocolId": 10,
         },
     ]
+
+
+def test_PostgresqlVolumeReaderDelegatesStoredOutputReads(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+    mapperCalls = []
+
+    storedSet = {
+        "id": 11,
+        "projectId": 7,
+        "protocolDbId": 500,
+        "outputName": "outputVolumes",
+        "setClassName": "SetOfVolumes",
+        "itemClassName": "Volume",
+        "properties": {},
+        "items": [
+            {
+                "scipionItemId": 1,
+                "values": {
+                    "fileName": "volume.mrc",
+                },
+            },
+        ],
+    }
+
+    objectTree = [
+        {
+            "id": 21,
+            "projectId": 7,
+            "protocolDbId": 500,
+            "scipionObjId": 30,
+            "parentObjectId": None,
+            "name": "outputVolumes",
+            "path": "outputVolumes",
+            "className": "Volume",
+        },
+    ]
+
+    class ForbiddenDb:
+        def fetchOne(self, *args, **kwargs):
+            raise AssertionError("PostgresqlVolumeReader must not query stored outputs directly")
+
+        def fetchAll(self, *args, **kwargs):
+            raise AssertionError("PostgresqlVolumeReader must not query stored outputs directly")
+
+    class SetMapperStub:
+        def getStoredSet(self, projectId, protocolDbId, outputName):
+            mapperCalls.append({
+                "method": "getStoredSet",
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            })
+
+            return storedSet
+
+        def getStoredObjectTree(self, projectId, protocolDbId, outputName):
+            mapperCalls.append({
+                "method": "getStoredObjectTree",
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+            })
+
+            return objectTree
+
+    reader = module.PostgresqlVolumeReader(
+        db=ForbiddenDb(),
+        projectId=7,
+        protocolId=500,
+        outputName="outputVolumes",
+    )
+
+    reader.setMapper = SetMapperStub()
+    reader._protocolDbId = 500
+
+    assert reader._getStoredSet() == storedSet
+    assert reader._getStoredSet() == storedSet
+
+    assert reader._getStoredObjectTree() == objectTree
+    assert reader._getStoredObjectTree() == objectTree
+
+    assert mapperCalls == [
+        {
+            "method": "getStoredSet",
+            "projectId": 7,
+            "protocolDbId": 500,
+            "outputName": "outputVolumes",
+        },
+        {
+            "method": "getStoredObjectTree",
+            "projectId": 7,
+            "protocolDbId": 500,
+            "outputName": "outputVolumes",
+        },
+    ]
+
+    storedSetSource = inspect.getsource(module.PostgresqlVolumeReader._getStoredSet)
+    objectTreeSource = inspect.getsource(module.PostgresqlVolumeReader._getStoredObjectTree)
+
+    assert "setMapper.getStoredSet(" in storedSetSource
+    assert ".fetchOne(" not in storedSetSource
+    assert ".fetchAll(" not in storedSetSource
+    assert ".execute(" not in storedSetSource
+
+    assert "setMapper.getStoredObjectTree(" in objectTreeSource
+    assert ".fetchOne(" not in objectTreeSource
+    assert ".fetchAll(" not in objectTreeSource
+    assert ".execute(" not in objectTreeSource

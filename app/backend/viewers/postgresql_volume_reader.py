@@ -5,8 +5,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
-from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.utils.volume_utils import readVolumeArray3d
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
@@ -18,6 +19,7 @@ class PostgresqlVolumeReader:
         self.projectId = int(projectId)
         self.protocolId = int(protocolId)
         self.outputName = str(outputName)
+        self.setMapper = ScipionSetPostgresqlMapper(db)
         self.lastSkipReason = None
         self._protocolDbId = None
         self._storedSet = None
@@ -392,34 +394,12 @@ class PostgresqlVolumeReader:
         if protocolDbId is None:
             return None
 
-        storedSet = self.db.fetchOne(
-            """
-            SELECT id, "projectId", "protocolDbId", "objectId", "outputName",
-                   "setClassName", "itemClassName", properties, "createdAt", "updatedAt"
-              FROM scipion_sets
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-               AND "outputName" = %s
-            """,
-            (self.projectId, protocolDbId, self.outputName),
+        self._storedSet = self.setMapper.getStoredSet(
+            projectId=self.projectId,
+            protocolDbId=protocolDbId,
+            outputName=self.outputName,
         )
 
-        if storedSet is None:
-            return None
-
-        items = self.db.fetchAll(
-            """
-            SELECT id, "setId", "scipionItemId", enabled, label, comment,
-                   creation, "values", "createdAt", "updatedAt"
-              FROM scipion_set_items
-             WHERE "setId" = %s
-             ORDER BY "scipionItemId" ASC NULLS LAST, id ASC
-            """,
-            (storedSet["id"],),
-        )
-
-        storedSet["items"] = items or []
-        self._storedSet = storedSet
         return self._storedSet
 
     def _getStoredObjectTree(self) -> List[Dict[str, Any]]:
@@ -431,22 +411,12 @@ class PostgresqlVolumeReader:
             self._storedObjectTree = []
             return self._storedObjectTree
 
-        rootPath = str(self.outputName)
-        rows = self.db.fetchAll(
-            """
-            SELECT id, "projectId", "protocolDbId", "scipionObjId", "parentObjectId",
-                   name, path, "className", value, label, comment, creation,
-                   metadata, "createdAt", "updatedAt"
-              FROM scipion_objects
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-               AND (path = %s OR path LIKE %s)
-             ORDER BY path ASC
-            """,
-            (self.projectId, protocolDbId, rootPath, rootPath + ".%"),
-        )
+        self._storedObjectTree = self.setMapper.getStoredObjectTree(
+            projectId=self.projectId,
+            protocolDbId=protocolDbId,
+            outputName=self.outputName,
+        ) or []
 
-        self._storedObjectTree = rows or []
         return self._storedObjectTree
 
     def _resolveProtocolDbId(self) -> Optional[int]:
