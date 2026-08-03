@@ -431,3 +431,54 @@ def test_CloseProtocolOutputSetsDoesNothingWithoutStoredSets():
     assert database.transactionCalls == 0
     assert database.executeCalls == []
 
+def test_ListProtocolSetOutputRowsExcludesReservedRuntimeSets():
+    storedRows = [
+        {
+            "outputName": "outputParticles",
+            "setClassName": "SetOfParticles",
+            "itemClassName": "Particle",
+            "properties": {
+                "itemsCount": 24,
+            },
+            "setId": 71,
+            "objectId": 81,
+            "scipionObjId": 91,
+        },
+    ]
+
+    database = FakeSetLifecycleDb(
+        storedSets=storedRows
+    )
+
+    mapper = ScipionSetPostgresqlMapper(
+        db=database
+    )
+
+    result = mapper.listProtocolSetOutputRows(
+        projectId=7,
+        protocolDbId=31,
+    )
+
+    assert result == storedRows
+    assert len(database.fetchAllCalls) == 1
+
+    call = database.fetchAllCalls[0]
+    query = " ".join(call["query"].split())
+
+    assert "FROM scipion_sets stored_set" in query
+    assert (
+        "LEFT JOIN scipion_objects root_object "
+        'ON root_object.id = stored_set."objectId"'
+    ) in query
+    assert (
+        "COALESCE( "
+        "stored_set.properties ->> 'runtimeReserved', "
+        "'false' ) <> 'true'"
+    ) in query
+    assert call["params"] == (
+        7,
+        31,
+    )
+
+    assert database.transactionCalls == 0
+    assert database.executeCalls == []

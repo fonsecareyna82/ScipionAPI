@@ -1654,32 +1654,14 @@ class RuntimeProtocolOutputPersistenceService:
             Dict[str, Any],
         ] = {}
 
-        setRows = mapper.db.fetchAll(
-            """
-            SELECT
-                s."outputName",
-                s."setClassName",
-                s."itemClassName",
-                s.properties,
-                s.id AS "setId",
-                s."objectId",
-                root."scipionObjId"
-              FROM scipion_sets s
-              LEFT JOIN scipion_objects root
-                ON root.id = s."objectId"
-             WHERE s."projectId" = %s
-               AND s."protocolDbId" = %s
-               AND COALESCE(
-                       s.properties ->> 'runtimeReserved',
-                       'false'
-                   ) <> 'true'
-             ORDER BY s."outputName"
-            """,
-            (
-                projectId,
-                int(protocolDbId),
-            ),
-        ) or []
+        from app.backend.mapper import ScipionSetPostgresqlMapper
+
+        setMapper = ScipionSetPostgresqlMapper(mapper.db)
+
+        setRows = setMapper.listProtocolSetOutputRows(
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+        )
 
         for row in setRows:
             outputName = str(
