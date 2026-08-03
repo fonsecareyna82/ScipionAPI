@@ -46,19 +46,23 @@ class ProtocolStub:
             self,
             streaming=False,
             prerequisites=None,
+            inputConditions=None,
     ):
         self.streaming = streaming
-        self.prerequisites = (
-            []
-            if prerequisites is None
-            else prerequisites
-        )
+        self.prerequisites = [] if prerequisites is None else prerequisites
+        self.inputConditions = dict(inputConditions or {})
 
     def worksInStreaming(self):
         return self.streaming
 
     def getPrerequisites(self):
         return self.prerequisites
+
+    def getParam(self, paramName):
+        return SimpleNamespace()
+
+    def evalParamCondition(self, paramName):
+        return self.inputConditions.get(paramName, True)
 
 
 def buildWorker(
@@ -69,6 +73,7 @@ def buildWorker(
         prerequisiteStatuses=None,
         validationErrors=None,
         inputRestoreErrors=None,
+        inputCondition=True,
 ):
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -78,6 +83,9 @@ def buildWorker(
     worker.protocol = ProtocolStub(
         streaming=streaming,
         prerequisites=prerequisites,
+        inputConditions={
+            "inputSet": inputCondition,
+        },
     )
 
     worker.loadParentStatuses = lambda: [
@@ -145,7 +153,7 @@ def buildWorker(
     )
 
     worker.validateAvailableInputs = (
-        lambda: {
+        lambda inputRefs=None: {
             "inputRestoreErrors": list(
                 inputRestoreErrors
                 or []
@@ -449,6 +457,38 @@ def test_StreamingProtocolWaitsUntilParentOutputExists():
             ),
         },
     ]
+
+
+def test_StreamingProtocolIgnoresInputDisabledByCondition():
+    validatedInputRefs = []
+
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="scheduled",
+        outputExists=False,
+        inputCondition=False,
+        validationErrors=[],
+    )
+
+    def validateAvailableInputs(inputRefs=None):
+        validatedInputRefs.append(list(inputRefs or []))
+
+        return {
+            "inputRestoreErrors": [],
+            "validationErrors": [],
+        }
+
+    worker.validateAvailableInputs = validateAvailableInputs
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["missingPrerequisites"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+    assert validatedInputRefs == [[]]
 
 
 def test_StreamingProtocolWaitsWhileValidationFails():

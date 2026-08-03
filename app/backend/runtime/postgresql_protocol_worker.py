@@ -1192,6 +1192,44 @@ class RuntimePostgresqlProtocolWorker:
 
             return None
 
+    def isInputRefActive(self, inputRef) -> bool:
+        inputName = str(inputRef.get("inputName") or "").strip()
+
+        if not inputName:
+            return True
+
+        try:
+            param = self.protocol.getParam(inputName)
+        except Exception:
+            param = None
+
+        if param is None:
+            return True
+
+        try:
+            return bool(self.protocol.evalParamCondition(inputName))
+        except Exception:
+            logger.warning(
+                "Could not evaluate protocol input condition. projectId=%s protocolId=%s inputName=%s",
+                self.projectId,
+                self.protocolId,
+                inputName,
+                exc_info=True,
+            )
+            return True
+
+    def partitionInputRefsByCondition(self, inputRefs):
+        activeInputRefs = []
+        inactiveInputRefs = []
+
+        for inputRef in inputRefs or []:
+            if self.isInputRefActive(inputRef):
+                activeInputRefs.append(dict(inputRef))
+            else:
+                inactiveInputRefs.append(dict(inputRef))
+
+        return activeInputRefs, inactiveInputRefs
+
     def validateProtocolInputs(
             self,
     ) -> List[str]:
@@ -1219,12 +1257,9 @@ class RuntimePostgresqlProtocolWorker:
 
     def validateAvailableInputs(
             self,
+            inputRefs=None,
     ) -> Dict[str, Any]:
-        inputReport = (
-            self.restoreExecutionInputs(
-                persistResolvedRefs=False
-            )
-        )
+        inputReport = self.restoreExecutionInputs(persistResolvedRefs=False, inputRefs=inputRefs)
 
         inputRestoreErrors = list(
             inputReport.get(
@@ -1259,6 +1294,8 @@ class RuntimePostgresqlProtocolWorker:
         inputRefs = (
             self.loadInputRefs()
         )
+
+        activeInputRefs, inactiveInputRefs = self.partitionInputRefsByCondition(inputRefs)
 
         streaming = bool(
             self.protocol
@@ -1301,58 +1338,27 @@ class RuntimePostgresqlProtocolWorker:
         inputParentProtocolIds = set()
 
         for inputRef in inputRefs:
+            try:
+                inputParentDbIds.add(int(inputRef["parentProtocolDbId"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        for inputRef in activeInputRefs:
             parentProtocolDbId = None
 
             try:
-                parentProtocolDbId = int(
-                    inputRef[
-                        "parentProtocolDbId"
-                    ]
-                )
-
-                inputParentDbIds.add(
-                    parentProtocolDbId
-                )
-
-            except (
-                    KeyError,
-                    TypeError,
-                    ValueError,
-            ):
+                parentProtocolDbId = int(inputRef["parentProtocolDbId"])
+            except (KeyError, TypeError, ValueError):
                 pass
 
-            parentProtocolId = inputRef.get(
-                "parentProtocolId"
-            )
+            parentProtocolId = inputRef.get("parentProtocolId")
 
-            if (
-                    parentProtocolId
-                    in (None, "")
-                    and parentProtocolDbId
-                    is not None
-            ):
-                parentProtocolId = (
-                    parentRowsByDbId
-                    .get(
-                        parentProtocolDbId,
-                        {},
-                    )
-                    .get(
-                        "protocolId"
-                    )
-                )
+            if parentProtocolId in (None, "") and parentProtocolDbId is not None:
+                parentProtocolId = parentRowsByDbId.get(parentProtocolDbId, {}).get("protocolId")
 
             try:
-                inputParentProtocolIds.add(
-                    int(
-                        parentProtocolId
-                    )
-                )
-
-            except (
-                    TypeError,
-                    ValueError,
-            ):
+                inputParentProtocolIds.add(int(parentProtocolId))
+            except (TypeError, ValueError):
                 continue
 
         def addPending(
@@ -1479,7 +1485,7 @@ class RuntimePostgresqlProtocolWorker:
                 )
 
         # Check every parent required by an input pointer.
-        for inputRef in inputRefs:
+        for inputRef in activeInputRefs:
             try:
                 parentProtocolDbId = int(
                     inputRef[
@@ -1669,9 +1675,7 @@ class RuntimePostgresqlProtocolWorker:
                 and not missingInputs
                 and not missingPrerequisites
         ):
-            validationReport = (
-                self.validateAvailableInputs()
-            )
+            validationReport = self.validateAvailableInputs(inputRefs=activeInputRefs)
 
             inputRestoreErrors = list(
                 validationReport.get(
@@ -1964,6 +1968,7 @@ class RuntimePostgresqlProtocolWorker:
     def restoreExecutionInputs(
             self,
             persistResolvedRefs: bool = True,
+            inputRefs=None,
     ) -> Dict[str, Any]:
         protocolDbId = self.getProtocolDbId()
 
@@ -1971,14 +1976,11 @@ class RuntimePostgresqlProtocolWorker:
             ProtocolGraphRepository()
         )
 
-        refs = (
-            graphRepository
-            .loadInputRefsForProtocol(
-                mapper=self.mapper,
-                projectId=self.projectId,
-                protocolDbId=protocolDbId,
-            )
-        )
+        if inputRefs is None:
+            refs = graphRepository.loadInputRefsForProtocol(mapper=self.mapper, projectId=self.projectId,
+                                                            protocolDbId=protocolDbId)
+        else:
+            refs = [dict(inputRef) for inputRef in inputRefs or []]
 
         restored = []
         errors = []
@@ -2875,9 +2877,9 @@ class RuntimePostgresqlProtocolWorker:
 
     def execute(self) -> int:
 
-        inputReport = (
-            self.restoreExecutionInputs()
-        )
+        inputRefs = self.loadInputRefs()
+        activeInputRefs, _ = self.partitionInputRefsByCondition(inputRefs)
+        inputReport = self.restoreExecutionInputs(inputRefs=activeInputRefs)
 
         if inputReport.get("errors"):
             raise RuntimeError(
