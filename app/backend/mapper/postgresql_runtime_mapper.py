@@ -3981,6 +3981,7 @@ class PostgresqlRuntimeMapper(Mapper):
             provisionalOutputName: str,
             constructorKwargs=None,
             reservationToken=None,
+            runtimeSet=None,
     ):
         capability = (
             self
@@ -4013,19 +4014,35 @@ class PostgresqlRuntimeMapper(Mapper):
                 "Set without its owner protocol."
             )
 
-        runtimeSetClass = (
-            self.runtimeSetFactory
-            ._getRuntimeSetClass(
-                setClass
+        if runtimeSet is None:
+            runtimeSetClass = (
+                self.runtimeSetFactory
+                ._getRuntimeSetClass(
+                    setClass
+                )
             )
-        )
 
-        runtimeSet = runtimeSetClass(
-            **dict(
-                constructorKwargs
-                or {}
+            runtimeSet = runtimeSetClass(
+                **dict(
+                    constructorKwargs
+                    or {}
+                )
             )
-        )
+
+        else:
+            if not isinstance(runtimeSet, setClass):
+                raise TypeError(
+                    "Cannot adopt output Set %s as %s."
+                    % (
+                        runtimeSet.__class__.__name__,
+                        setClass.__name__,
+                    )
+                )
+
+            self.runtimeSetFactory._promoteRuntimeSetInstance(
+                runtimeSet=runtimeSet,
+                nativeSetClass=setClass,
+            )
 
         runtimeObjectId = self._ensureObjId(
             runtimeSet

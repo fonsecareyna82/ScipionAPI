@@ -606,9 +606,7 @@ class RuntimePostgresqlOutputSetAdapter:
             None,
         )
 
-        if not callable(
-                originalInsertChild
-        ):
+        if not callable(originalInsertChild):
             raise RuntimeError(
                 "Protocol does not expose _insertChild()."
             )
@@ -620,8 +618,15 @@ class RuntimePostgresqlOutputSetAdapter:
                 key,
                 child,
         ):
+            outputName = str(key)
+
+            child = adapter._adoptDirectOutputSet(
+                outputName=outputName,
+                child=child,
+            )
+
             adapter._finalizeOutputSet(
-                outputName=str(key),
+                outputName=outputName,
                 child=child,
             )
 
@@ -634,6 +639,107 @@ class RuntimePostgresqlOutputSetAdapter:
             self.INSERT_CHILD_ATTRIBUTE,
             insertChild,
         )
+
+    def _adoptDirectOutputSet(
+            self,
+            outputName: str,
+            child,
+    ):
+        if not isinstance(child, ScipionSet):
+            return child
+
+        if id(child) in self._createdSets:
+            return child
+
+        runtimeChecker = getattr(
+            child,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if callable(runtimeChecker) and runtimeChecker():
+            return child
+
+        setClass = child.__class__
+
+        if not self._shouldRedirectSetClass(setClass):
+            return child
+
+        capability = (
+            self.runtimeMapper
+            .getPostgresqlOutputSetCapability(
+                setClass
+            )
+        )
+
+        if not capability.get("supported"):
+            raise NotImplementedError(
+                "Directly constructed output Set cannot be "
+                "stored natively in PostgreSQL. "
+                "outputName=%s setClass=%s reason=%s"
+                % (
+                    outputName,
+                    setClass.__name__,
+                    capability.get("reason"),
+                )
+            )
+
+        if not child.isEmpty():
+            raise RuntimeError(
+                "Directly constructed output Set must be "
+                "declared before appending items. "
+                "outputName=%s setClass=%s size=%s"
+                % (
+                    outputName,
+                    setClass.__name__,
+                    child.getSize(),
+                )
+            )
+
+        legacyPath = None
+
+        try:
+            legacyPath = child.getFileName()
+        except Exception:
+            pass
+
+        closeSet = getattr(
+            child,
+            "close",
+            None,
+        )
+
+        if callable(closeSet):
+            closeSet()
+
+        if legacyPath:
+            pwutils.cleanPath(
+                legacyPath
+            )
+
+        runtimeSet = self._createPostgresqlRuntimeSet(
+            setClass=setClass,
+            constructorKwargs={},
+            creatorKind="direct-constructor",
+            creationMetadata={
+                "declaredOutputName": outputName,
+                "legacyPath": legacyPath,
+            },
+            existingSet=child,
+        )
+
+        if runtimeSet is not child:
+            raise RuntimeError(
+                "Directly constructed output Set was not "
+                "promoted in place. "
+                "outputName=%s setClass=%s"
+                % (
+                    outputName,
+                    setClass.__name__,
+                )
+            )
+
+        return child
 
     def _createSetFromClassCreator(
             self,
@@ -849,6 +955,7 @@ class RuntimePostgresqlOutputSetAdapter:
             constructorKwargs,
             creatorKind: str,
             creationMetadata=None,
+            existingSet=None,
     ):
         reservationToken = (
             uuid.uuid4().hex
@@ -864,16 +971,10 @@ class RuntimePostgresqlOutputSetAdapter:
             .createPostgresqlOutputSet(
                 protocol=self.protocol,
                 setClass=setClass,
-                provisionalOutputName=(
-                    provisionalOutputName
-                ),
-                constructorKwargs=dict(
-                    constructorKwargs
-                    or {}
-                ),
-                reservationToken=(
-                    reservationToken
-                ),
+                provisionalOutputName=provisionalOutputName,
+                constructorKwargs=dict(constructorKwargs or {}),
+                reservationToken=reservationToken,
+                runtimeSet=existingSet,
             )
         )
 

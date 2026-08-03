@@ -265,8 +265,14 @@ class RuntimeMapperStub:
             provisionalOutputName,
             constructorKwargs,
             reservationToken,
+            runtimeSet=None,
     ):
-        runtimeSet = setClass()
+        providedRuntimeSet = runtimeSet
+
+        if runtimeSet is None:
+            runtimeSet = setClass()
+
+        runtimeSet.setObjId(91)
         runtimeSet.setObjId(91)
 
         self.created.append({
@@ -282,6 +288,7 @@ class RuntimeMapperStub:
                 reservationToken
             ),
             "runtimeSet": runtimeSet,
+            "providedRuntimeSet": providedRuntimeSet,
         })
 
         return runtimeSet
@@ -365,6 +372,56 @@ def test_SpaCreatorReturnsPostgresqlSetAndFinalizesOnInsertChild():
             outputSet,
         ),
     ]
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+
+
+def test_InsertChildAdoptsDirectlyConstructedOutputSet():
+    class DirectConstructorProtocolStub(
+            ProtocolStub
+    ):
+        _possibleOutputs = {
+            "outputMicrographs": OutputSetStub,
+        }
+
+    protocol = DirectConstructorProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    outputSet = OutputSetStub()
+    originalIdentity = id(outputSet)
+
+    protocol._insertChild(
+        "outputMicrographs",
+        outputSet,
+    )
+
+    assert id(outputSet) == originalIdentity
+
+    assert protocol.inserted == [
+        (
+            "outputMicrographs",
+            outputSet,
+        ),
+    ]
+
+    assert len(runtimeMapper.created) == 1
+    assert runtimeMapper.created[0]["setClass"] is OutputSetStub
+    assert runtimeMapper.created[0]["providedRuntimeSet"] is outputSet
+    assert runtimeMapper.created[0]["runtimeSet"] is outputSet
+
+    assert len(runtimeMapper.finalized) == 1
+    assert runtimeMapper.finalized[0]["outputName"] == "outputMicrographs"
+    assert runtimeMapper.finalized[0]["runtimeSet"] is outputSet
 
     adapter.uninstall()
 
