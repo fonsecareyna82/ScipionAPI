@@ -362,6 +362,79 @@ def test_ListProjectTreeOutputRowsExcludesStoredSetRoots():
     assert 'ORDER BY protocol_row."protocolId", object_row.path' in call["query"]
 
 
+def test_DeleteProtocolOutputSnapshotsUsesSingleTransaction():
+    class SnapshotCursor:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+
+    class SnapshotDatabase:
+        def __init__(self):
+            self.calls = []
+            self.transactionCalls = 0
+            self.rowcounts = iter([1, 3, 0, 2])
+
+        @contextmanager
+        def transaction(self):
+            self.transactionCalls += 1
+            yield self
+
+        def execute(self, query, values, commit=True):
+            self.calls.append({
+                "query": query,
+                "values": values,
+                "commit": commit,
+            })
+
+            return SnapshotCursor(next(self.rowcounts))
+
+    database = SnapshotDatabase()
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    result = mapper.deleteProtocolOutputSnapshots(
+        projectId=7,
+        protocolDbId=31,
+        outputNames=[
+            "outputMask",
+            "outputParticles",
+        ],
+    )
+
+    assert result == [
+        {
+            "outputName": "outputMask",
+            "setsDeleted": 1,
+            "objectsDeleted": 3,
+        },
+        {
+            "outputName": "outputParticles",
+            "setsDeleted": 0,
+            "objectsDeleted": 2,
+        },
+    ]
+
+    assert database.transactionCalls == 1
+    assert len(database.calls) == 4
+    assert all(call["commit"] is False for call in database.calls)
+
+    firstSetDelete = database.calls[0]
+    firstObjectDelete = database.calls[1]
+    secondSetDelete = database.calls[2]
+    secondObjectDelete = database.calls[3]
+
+    assert "DELETE FROM scipion_sets" in firstSetDelete["query"]
+    assert firstSetDelete["values"] == (7, 31, "outputMask")
+
+    assert "DELETE FROM scipion_objects" in firstObjectDelete["query"]
+    assert "CHAR_LENGTH(%s) + 1" in firstObjectDelete["query"]
+    assert firstObjectDelete["values"] == (7, 31, "outputMask", "outputMask", "outputMask")
+
+    assert "DELETE FROM scipion_sets" in secondSetDelete["query"]
+    assert secondSetDelete["values"] == (7, 31, "outputParticles")
+
+    assert "DELETE FROM scipion_objects" in secondObjectDelete["query"]
+    assert secondObjectDelete["values"] == (7, 31, "outputParticles", "outputParticles", "outputParticles")
+
+
 def test_DeleteStoredObjectSubtreesUsesRecursiveSafeDelete():
     database = FakeDatabase(
         row={
