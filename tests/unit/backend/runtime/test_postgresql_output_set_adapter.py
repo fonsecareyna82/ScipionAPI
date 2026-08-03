@@ -428,6 +428,47 @@ def test_InsertChildAdoptsDirectlyConstructedOutputSet():
     assert runtimeMapper.discarded == []
 
 
+def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
+    class PopulatedOutputSetStub(OutputSetStub):
+        def isEmpty(self):
+            return False
+
+        def getSize(self):
+            return 500
+
+    class DirectConstructorProtocolStub(ProtocolStub):
+        _possibleOutputs = {
+            "outputParticles": PopulatedOutputSetStub,
+        }
+
+    protocol = DirectConstructorProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
+    adapter.install()
+
+    outputSet = PopulatedOutputSetStub()
+    originalIdentity = id(outputSet)
+
+    protocol._insertChild("outputParticles", outputSet)
+
+    assert id(outputSet) == originalIdentity
+
+    assert protocol.inserted == [
+        (
+            "outputParticles",
+            outputSet,
+        ),
+    ]
+
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+
+
 def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     protocol = DeclaredOutputProtocolStub()
     runtimeMapper = RuntimeMapperStub()

@@ -685,16 +685,10 @@ class RuntimePostgresqlOutputSetAdapter:
             )
 
         if not child.isEmpty():
-            raise RuntimeError(
-                "Directly constructed output Set must be "
-                "declared before appending items. "
-                "outputName=%s setClass=%s size=%s"
-                % (
-                    outputName,
-                    setClass.__name__,
-                    child.getSize(),
-                )
-            )
+            logger.debug(
+                "Keeping populated directly constructed output Set on the existing persistence path. projectId=%s protocolId=%s outputName=%s setClass=%s size=%s",
+                self.projectId, self.protocol.getObjId(), outputName, setClass.__name__, child.getSize())
+            return child
 
         legacyPath = None
 
