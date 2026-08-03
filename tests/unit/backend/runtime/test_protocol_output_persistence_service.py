@@ -465,6 +465,100 @@ def test_ProtocolOutputNameReaderDelegatesOutputRows(monkeypatch):
     assert ".db.execute(" not in source
 
 
+def test_ProtocolOutputSnapshotDeleteDelegatesPersistence(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+    deleteCalls = []
+
+    expectedResult = [
+        {
+            "outputName": "outputMask",
+            "setsDeleted": 1,
+            "objectsDeleted": 2,
+        },
+        {
+            "outputName": "outputParticles",
+            "setsDeleted": 0,
+            "objectsDeleted": 3,
+        },
+    ]
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def deleteProtocolOutputSnapshots(self, projectId, protocolDbId, outputNames):
+            deleteCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputNames": outputNames,
+            })
+
+            return expectedResult
+
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+
+    result = service.deletePersistedProtocolOutputSnapshots(
+        mapper=mapper,
+        projectId=7,
+        protocolDbId=31,
+        outputNames=[
+            " outputParticles ",
+            "outputMask",
+            "outputParticles",
+            "",
+            None,
+        ],
+    )
+
+    assert result == expectedResult
+    assert deleteCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+            "outputNames": [
+                "outputMask",
+                "outputParticles",
+            ],
+        },
+    ]
+
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.deletePersistedProtocolOutputSnapshots)
+
+    assert "objectMapper.deleteProtocolOutputSnapshots(" in source
+    assert ".db.transaction(" not in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
+def test_ProtocolOutputSnapshotDeleteSkipsEmptyOutputNames(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            pytest.fail("The mapper must not be created without valid output names.")
+
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+
+    result = service.deletePersistedProtocolOutputSnapshots(
+        mapper=mapper,
+        projectId=7,
+        protocolDbId=31,
+        outputNames=[
+            "",
+            "   ",
+            None,
+        ],
+    )
+
+    assert result == []
+    assert mapper.db.queries == []
+
+
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):

@@ -520,6 +520,54 @@ class ScipionObjectPostgresqlMapper:
         """
         return self.db.fetchAll(query, (int(projectId),)) or []
 
+    def deleteProtocolOutputSnapshots(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputNames: List[str],
+    ) -> List[Dict[str, Any]]:
+        removedOutputs: List[Dict[str, Any]] = []
+
+        with self.db.transaction():
+            for outputName in outputNames:
+                outputName = str(outputName)
+
+                setCursor = self.db.execute(
+                    """
+                    DELETE FROM scipion_sets
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND "outputName" = %s
+                    """,
+                    (int(projectId), int(protocolDbId), outputName),
+                    commit=False,
+                )
+
+                objectCursor = self.db.execute(
+                    """
+                    DELETE FROM scipion_objects
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND (
+                            path = %s
+                            OR LEFT(
+                                path,
+                                CHAR_LENGTH(%s) + 1
+                            ) = %s || '.'
+                       )
+                    """,
+                    (int(projectId), int(protocolDbId), outputName, outputName, outputName),
+                    commit=False,
+                )
+
+                removedOutputs.append({
+                    "outputName": outputName,
+                    "setsDeleted": int(setCursor.rowcount or 0),
+                    "objectsDeleted": int(objectCursor.rowcount or 0),
+                })
+
+        return removedOutputs
+
     def deleteStoredObjectSubtreesByScipionObjId(
             self,
             projectId: int,

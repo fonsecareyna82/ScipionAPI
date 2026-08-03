@@ -2118,61 +2118,12 @@ class RuntimeProtocolOutputPersistenceService:
         if not normalizedOutputNames:
             return []
 
-        removedOutputs: List[
-            Dict[str, Any]
-        ] = []
+        from app.backend.mapper import ScipionObjectPostgresqlMapper
 
-        with mapper.db.transaction():
-            for outputName in normalizedOutputNames:
-                setCursor = mapper.db.execute(
-                    """
-                    DELETE FROM scipion_sets
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-                       AND "outputName" = %s
-                    """,
-                    (
-                        projectId,
-                        protocolDbId,
-                        outputName,
-                    ),
-                    commit=False,
-                )
-
-                objectCursor = mapper.db.execute(
-                    """
-                    DELETE FROM scipion_objects
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-                       AND (
-                            path = %s
-                            OR LEFT(
-                                path,
-                                CHAR_LENGTH(%s) + 1
-                            ) = %s || '.'
-                       )
-                    """,
-                    (
-                        projectId,
-                        protocolDbId,
-                        outputName,
-                        outputName,
-                        outputName,
-                    ),
-                    commit=False,
-                )
-
-                removedOutputs.append({
-                    "outputName": outputName,
-                    "setsDeleted": int(
-                        setCursor.rowcount or 0
-                    ),
-                    "objectsDeleted": int(
-                        objectCursor.rowcount or 0
-                    ),
-                })
-
-        return removedOutputs
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+        return objectMapper.deleteProtocolOutputSnapshots(projectId=projectId,
+                                                          protocolDbId=protocolDbId,
+                                                          outputNames=normalizedOutputNames)
 
     def storeGeneratedSetInPostgresql(
             self,
