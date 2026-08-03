@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import importlib
+import inspect
 
 
 def test_PostgresqlCtftomoReaderExtractsDimsFromFlatStrings(authTestEnv):
@@ -180,3 +181,72 @@ def test_PostgresqlCtftomoReaderStoresSkipReasonWhenSeriesIsMissing(authTestEnv,
 
     assert result is None
     assert reader.lastSkipReason == "ctftomo_series_item_not_found tiltSeriesId=TS_999"
+
+
+def test_PostgresqlCtftomoReaderDelegatesInputRefReads(authTestEnv, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_ctftomo_reader")
+    repositoryCalls = []
+
+    class ForbiddenDb:
+        def fetchAll(self, *args, **kwargs):
+            raise AssertionError("PostgresqlCtftomoReader must not query input refs directly")
+
+    class ProtocolGraphRepositoryStub:
+        def loadInputRefsForProtocol(self, mapper, projectId, protocolDbId):
+            repositoryCalls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return [
+                {
+                    "inputName": "inputTiltSeries",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 400,
+                    "parentProtocolId": "10",
+                    "parentOutputName": "outputTiltSeries",
+                    "objectClassName": "SetOfTiltSeries",
+                    "objectId": "25",
+                },
+            ]
+
+    monkeypatch.setattr(module, "ProtocolGraphRepository", ProtocolGraphRepositoryStub)
+
+    database = ForbiddenDb()
+
+    reader = module.PostgresqlCtftomoReader(
+        db=database,
+        projectId=7,
+        protocolId=500,
+        outputName="outputCTF",
+    )
+
+    result = reader._listProtocolInputRefs(500)
+
+    assert result == [
+        {
+            "inputName": "inputTiltSeries",
+            "itemIndex": 0,
+            "parentProtocolDbId": 400,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputTiltSeries",
+            "objectClassName": "SetOfTiltSeries",
+            "objectId": "25",
+        },
+    ]
+
+    assert repositoryCalls == [
+        {
+            "mapper": reader.setMapper,
+            "projectId": 7,
+            "protocolDbId": 500,
+        },
+    ]
+
+    source = inspect.getsource(module.PostgresqlCtftomoReader._listProtocolInputRefs)
+
+    assert "loadInputRefsForProtocol(" in source
+    assert ".fetchOne(" not in source
+    assert ".fetchAll(" not in source
+    assert ".execute(" not in source

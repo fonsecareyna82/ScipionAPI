@@ -29,6 +29,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
 
 
@@ -221,35 +222,21 @@ class PostgresqlCtftomoReader:
 
         return None
 
-    def _listProtocolInputRefs(self, protocolDbId: Any) -> List[Dict[str, Any]]:
+    def _listProtocolInputRefs(
+            self,
+            protocolDbId: Any,
+    ) -> List[Dict[str, Any]]:
         if protocolDbId is None:
             return []
 
         try:
-            rows = self.db.fetchAll(
-                """
-                SELECT
-                    "projectId",
-                    "protocolDbId",
-                    "protocolId",
-                    "inputName",
-                    "itemIndex",
-                    "parentProtocolDbId",
-                    "parentProtocolId",
-                    "parentOutputName",
-                    "objectClassName",
-                    "objectId"
-                  FROM protocol_input_refs
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
-                 ORDER BY "inputName", "itemIndex"
-                """,
-                (self.projectId, int(protocolDbId)),
+            return ProtocolGraphRepository().loadInputRefsForProtocol(
+                mapper=self.setMapper,
+                projectId=self.projectId,
+                protocolDbId=int(protocolDbId),
             )
         except Exception:
             return []
-
-        return [dict(row) for row in rows or []]
 
     def _getInputRefKind(self, inputRef: Dict[str, Any]) -> Optional[str]:
         text = self._normalizeClassText(inputRef.get("objectClassName"))
