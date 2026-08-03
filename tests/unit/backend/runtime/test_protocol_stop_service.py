@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -182,6 +183,7 @@ class FakeDb:
 class FakeMapper:
     def __init__(self):
         self.db = FakeDb()
+        self.abortRunningProtocolStepsCalls = []
 
     def getProjectProtocolByProtocolId(
             self,
@@ -197,6 +199,22 @@ class FakeMapper:
             "status": "running",
             "params": {},
         }
+
+    def abortRunningProtocolSteps(
+            self,
+            projectId,
+            protocolDbId,
+            statusValue,
+            errorMessage,
+    ):
+        self.abortRunningProtocolStepsCalls.append({
+            "projectId": int(projectId),
+            "protocolDbId": int(protocolDbId),
+            "statusValue": statusValue,
+            "errorMessage": errorMessage,
+        })
+
+        return 2
 
 
 class FakeRuntimeMapper:
@@ -281,6 +299,17 @@ def buildResult(
         "message": message,
         **extra,
     }
+
+
+def test_StopStepAbortDoesNotExecuteDirectPostgresqlQueries():
+    source = inspect.getsource(
+        RuntimeProtocolStopService._abortRunningProtocolSteps
+    )
+
+    assert "mapper.abortRunningProtocolSteps(" in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
 
 
 def test_GetProtocolJobIdsSupportsScipionCsvList():
@@ -440,15 +469,29 @@ def test_PostgresqlStopKillsWorkerAndPersistsAbort(
         == 1
     )
 
+    assert mapper.abortRunningProtocolStepsCalls == [
+        {
+            "projectId": 1,
+            "protocolDbId": 50,
+            "statusValue": STATUS_ABORTED,
+            "errorMessage": RuntimeProtocolStopService.ABORT_MESSAGE,
+        },
+    ]
+
+    assert result["postgresqlRuntimeSteps"] == [
+        {
+            "protocolDbId": 50,
+            "stepsAborted": 2,
+        },
+    ]
+
     executedSql = "\n".join(
         call["query"]
         for call
         in mapper.db.executeCalls
     )
 
-    assert "UPDATE protocol_steps" in (
-        executedSql
-    )
+    assert "UPDATE protocol_steps" not in executedSql
 
     assert "UPDATE scipion_sets" in (
         executedSql

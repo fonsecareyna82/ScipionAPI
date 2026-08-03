@@ -143,3 +143,37 @@ def test_PrepareProtocolStepsForContinueResetsStoredExecutionState():
     )
 
 
+def test_AbortRunningProtocolStepsUpdatesOnlyRunningRows():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+
+    result = mapper.abortRunningProtocolSteps(
+        projectId=7,
+        protocolDbId=101,
+        statusValue="aborted",
+        errorMessage="Protocol stopped by user.",
+    )
+
+    assert result == 3
+    assert len(mapper.db.executeCalls) == 1
+
+    call = mapper.db.executeCalls[0]
+
+    assert "UPDATE protocol_steps" in call["query"]
+    assert "SET status = %s" in call["query"]
+    assert '"endTime" = COALESCE' in call["query"]
+    assert "error = CASE" in call["query"]
+    assert "BTRIM(error) = ''" in call["query"]
+    assert '"updatedAt" = NOW()' in call["query"]
+    assert 'WHERE "projectId" = %s' in call["query"]
+    assert 'AND "protocolDbId" = %s' in call["query"]
+    assert "AND LOWER(status) = 'running'" in call["query"]
+
+    assert call["params"] == (
+        "aborted",
+        "Protocol stopped by user.",
+        7,
+        101,
+    )
+
+
