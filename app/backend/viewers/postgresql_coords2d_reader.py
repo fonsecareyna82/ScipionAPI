@@ -157,13 +157,22 @@ class PostgresqlCoords2dReader:
             storedSetId = self._toOptionalInt(storedSet.get("id"))
 
             if storedSetId is not None:
-                micrographRow = self.setMapper.getStoredSetItemBySourceRelation(projectId=self.projectId, childSetId=storedSetId, scipionItemId=micrographId)
+                micrographRow = self.setMapper.getStoredSetItemBySourceRelation(projectId=self.projectId,
+                                                                                childSetId=storedSetId,
+                                                                                scipionItemId=micrographId)
+
+        if micrographRow is None:
+            micrographRow = self.setMapper.getStoredMicrographItemFromProtocolInputGraph(projectId=self.projectId,
+                                                                                         protocolDbId=self.protocolId,
+                                                                                         scipionItemId=micrographId)
 
         if micrographRow is None:
             if pointerReference is None:
-                self.lastSkipReason = "micrographs_pointer_and_source_relation_not_found micId=%s" % str(micId)
+                self.lastSkipReason = "micrographs_pointer_source_relation_and_input_graph_not_found micId=%s" % str(
+                    micId)
             else:
-                self.lastSkipReason = "linked_micrograph_not_found_from_pointer_or_source_relation micId=%s" % str(micId)
+                self.lastSkipReason = "linked_micrograph_not_found_from_pointer_source_or_input_graph micId=%s" % str(
+                    micId)
 
             return None
 

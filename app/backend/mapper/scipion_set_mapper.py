@@ -1468,6 +1468,90 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return dict(row) if row is not None else None
 
+    def getStoredMicrographItemFromProtocolInputGraph(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            scipionItemId: int,
+    ) -> Optional[Dict[str, Any]]:
+        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
+
+        row = self.db.fetchOne(
+            """
+            WITH RECURSIVE input_graph(
+                "projectId",
+                "protocolDbId",
+                "outputName",
+                depth,
+                protocol_path
+            ) AS (
+                SELECT
+                    input_ref."projectId",
+                    input_ref."parentProtocolDbId",
+                    input_ref."parentOutputName",
+                    1,
+                    ARRAY[
+                        input_ref."protocolDbId",
+                        input_ref."parentProtocolDbId"
+                    ]
+                  FROM protocol_input_refs input_ref
+                 WHERE input_ref."projectId" = %s
+                   AND input_ref."protocolDbId" = %s
+                   AND input_ref."parentProtocolDbId" IS NOT NULL
+                   AND COALESCE(input_ref."parentOutputName", '') <> ''
+
+                UNION ALL
+
+                SELECT
+                    input_ref."projectId",
+                    input_ref."parentProtocolDbId",
+                    input_ref."parentOutputName",
+                    input_graph.depth + 1,
+                    input_graph.protocol_path
+                        || input_ref."parentProtocolDbId"
+                  FROM input_graph
+                  JOIN protocol_input_refs input_ref
+                    ON input_ref."projectId" = input_graph."projectId"
+                   AND input_ref."protocolDbId" = input_graph."protocolDbId"
+                 WHERE input_ref."parentProtocolDbId" IS NOT NULL
+                   AND COALESCE(input_ref."parentOutputName", '') <> ''
+                   AND NOT input_ref."parentProtocolDbId"
+                           = ANY(input_graph.protocol_path)
+            )
+            SELECT
+                item."scipionItemId",
+                item.label,
+                item.comment,
+                item."values",
+                parent_set."outputName",
+                parent_protocol."protocolId"
+              FROM input_graph
+              JOIN scipion_sets parent_set
+                ON parent_set."projectId" = input_graph."projectId"
+               AND parent_set."protocolDbId" = input_graph."protocolDbId"
+               AND parent_set."outputName" = input_graph."outputName"
+              JOIN scipion_set_items item
+                ON item."setId" = parent_set.id
+              JOIN protocols parent_protocol
+                ON parent_protocol."projectId" = parent_set."projectId"
+               AND parent_protocol.id = parent_set."protocolDbId"
+             WHERE item."scipionItemId" = %s
+               AND (
+                     LOWER(COALESCE(parent_set."setClassName", ''))
+                         LIKE '%%micrograph%%'
+                  OR LOWER(COALESCE(parent_set."itemClassName", ''))
+                         LIKE '%%micrograph%%'
+               )
+             ORDER BY
+                input_graph.depth ASC,
+                parent_set.id ASC
+             LIMIT 1
+            """,
+            (int(projectId), int(protocolDbId), int(scipionItemId)),
+        )
+
+        return dict(row) if row is not None else None
+
     def listProtocolStoredSets(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
 

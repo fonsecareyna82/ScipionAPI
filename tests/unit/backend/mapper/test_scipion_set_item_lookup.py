@@ -133,3 +133,40 @@ def test_GetStoredSetItemBySourceRelation():
     assert "JOIN scipion_set_items item" in query
     assert 'item."scipionItemId" = %s' in query
     assert "LIKE '%%micrograph%%'" in query
+
+
+def test_GetStoredMicrographItemFromProtocolInputGraph():
+    expectedRow = {
+        "scipionItemId": 20,
+        "label": "Micrograph 20",
+        "comment": "",
+        "values": {
+            "_location._filename": "Runs/000001_Import/extra/micrograph_20.mrc",
+        },
+        "outputName": "outputMicrographs",
+        "protocolId": "10",
+    }
+
+    database = DatabaseStub(row=expectedRow)
+    mapper = ScipionSetPostgresqlMapper(db=database)
+    mapper._resolveProtocolDbId = lambda projectId, protocolDbId: 500
+
+    result = mapper.getStoredMicrographItemFromProtocolInputGraph(projectId=382, protocolDbId=421, scipionItemId=20)
+
+    assert result == expectedRow
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+    query = call["query"]
+
+    assert call["params"] == (382, 500, 20)
+    assert "WITH RECURSIVE input_graph" in query
+    assert "FROM protocol_input_refs input_ref" in query
+    assert 'input_ref."protocolDbId" = input_graph."protocolDbId"' in query
+    assert 'parent_set."protocolDbId" = input_graph."protocolDbId"' in query
+    assert 'parent_set."outputName" = input_graph."outputName"' in query
+    assert 'item."scipionItemId" = %s' in query
+    assert "LIKE '%%micrograph%%'" in query
+    assert "input_graph.depth ASC" in query
+
+

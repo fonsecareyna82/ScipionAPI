@@ -405,3 +405,84 @@ def test_PostgresqlCoords2dReaderResolvesLegacyMicrographThroughSourceRelation()
     ]
 
 
+def test_PostgresqlCoords2dReaderResolvesMicrographThroughInputGraph():
+    mapperCalls = []
+
+    expectedRow = {
+        "scipionItemId": 20,
+        "label": "Micrograph 20",
+        "comment": "",
+        "values": {
+            "_location._index": 1,
+            "_location._filename": "Runs/000001_Import/extra/micrograph_20.mrc",
+            "_micName": "micrograph_20",
+        },
+        "outputName": "outputMicrographs",
+        "protocolId": "10",
+    }
+
+    class SetMapperStub:
+        def getStoredSetItemByRuntimeObjectId(self, projectId, runtimeObjectId, scipionItemId):
+            mapperCalls.append("pointer-runtime")
+            return None
+
+        def getStoredSetItemByProtocolOutput(self, projectId, protocolId, outputName, scipionItemId):
+            mapperCalls.append("pointer-protocol-output")
+            return None
+
+        def getStoredSetItemBySourceRelation(self, projectId, childSetId, scipionItemId):
+            mapperCalls.append("source-relation")
+            return None
+
+        def getStoredMicrographItemFromProtocolInputGraph(self, projectId, protocolDbId, scipionItemId):
+            mapperCalls.append({
+                "method": "input-graph",
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "scipionItemId": scipionItemId,
+            })
+
+            return expectedRow
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=382, protocolId=500, outputName="outputCoordinates")
+    reader.setMapper = SetMapperStub()
+    reader._storedSet = {
+        "id": 33,
+        "setClassName": "SetOfCoordinates",
+        "itemClassName": "Coordinate",
+        "properties": {
+            "_micrographsPointer": {
+                "version": 1,
+                "kind": "pointer",
+                "targetObjectId": 3000000050,
+                "targetParentObjectId": 10,
+                "targetObjectName": "10.outputMicrographs",
+                "targetClassName": "SetOfMicrographs",
+            },
+        },
+        "setProperties": [],
+        "items": [],
+    }
+
+    result = reader.getMicrographImageInfo("20")
+
+    assert result == {
+        "id": "20",
+        "fileName": "Runs/000001_Import/extra/micrograph_20.mrc",
+        "locationIndex": 1,
+        "label": "micrograph_20",
+    }
+
+    assert mapperCalls == [
+        "pointer-runtime",
+        "pointer-protocol-output",
+        "source-relation",
+        {
+            "method": "input-graph",
+            "projectId": 382,
+            "protocolDbId": 500,
+            "scipionItemId": 20,
+        },
+    ]
+
+
