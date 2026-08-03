@@ -23,7 +23,13 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from pyworkflow.object import Float, Integer, Object
+from contextlib import contextmanager
+from pyworkflow.object import (
+    Float,
+    Integer,
+    Object,
+    Set as ScipionSet,
+)
 
 from app.backend.mapper.scipion_set_mapper import (
     NESTED_LOGICAL_TABLES_VERSION,
@@ -37,6 +43,43 @@ class ExampleAcquisition(Object):
         super().__init__(**kwargs)
         self._voltage = Float()
         self._magnification = Float()
+
+
+class FakeSetLifecycleDb:
+    def __init__(self, storedSets=None):
+        self.storedSets = list(storedSets or [])
+        self.fetchAllCalls = []
+        self.executeCalls = []
+        self.transactionCalls = 0
+
+    @contextmanager
+    def transaction(self):
+        self.transactionCalls += 1
+        yield
+
+    def fetchAll(
+            self,
+            query,
+            params=None,
+    ):
+        self.fetchAllCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        return list(self.storedSets)
+
+    def execute(
+            self,
+            query,
+            params=None,
+            commit=True,
+    ):
+        self.executeCalls.append({
+            "query": query,
+            "params": params,
+            "commit": commit,
+        })
 
 
 class ExampleSet(Object):
@@ -291,4 +334,100 @@ def test_LinkedTomogramSummarySupportsScipionSets():
         tomogram,
     ]
 
+
+def test_CloseProtocolOutputSetsUpdatesJsonAndNormalizedProperties():
+    database = FakeSetLifecycleDb([
+        {
+            "id": 100,
+            "outputName": "outputParticles",
+        },
+        {
+            "id": 101,
+            "outputName": "outputAverages",
+        },
+    ])
+
+    mapper = ScipionSetPostgresqlMapper(
+        db=database
+    )
+
+    result = mapper.closeProtocolOutputSets(
+        projectId=7,
+        protocolDbId=31,
+    )
+
+    closedState = int(
+        ScipionSet.STREAM_CLOSED
+    )
+
+    assert result == {
+        "protocolDbId": 31,
+        "setsClosed": 2,
+        "outputs": [
+            "outputParticles",
+            "outputAverages",
+        ],
+    }
+
+    assert database.transactionCalls == 1
+    assert len(database.fetchAllCalls) == 1
+    assert database.fetchAllCalls[0]["params"] == (
+        7,
+        31,
+    )
+
+    assert len(database.executeCalls) == 3
+
+    setUpdate = database.executeCalls[0]
+
+    assert "UPDATE scipion_sets" in setUpdate["query"]
+    assert "streamState" in setUpdate["query"]
+    assert "_streamState" in setUpdate["query"]
+    assert setUpdate["params"] == (
+        closedState,
+        closedState,
+        7,
+        31,
+    )
+    assert setUpdate["commit"] is False
+
+    assert database.executeCalls[1]["params"] == (
+        "streamState",
+        str(closedState),
+        7,
+        31,
+    )
+
+    assert database.executeCalls[2]["params"] == (
+        "_streamState",
+        str(closedState),
+        7,
+        31,
+    )
+
+    assert all(
+        call["commit"] is False
+        for call in database.executeCalls
+    )
+
+
+def test_CloseProtocolOutputSetsDoesNothingWithoutStoredSets():
+    database = FakeSetLifecycleDb()
+    mapper = ScipionSetPostgresqlMapper(
+        db=database
+    )
+
+    result = mapper.closeProtocolOutputSets(
+        projectId=7,
+        protocolDbId=31,
+    )
+
+    assert result == {
+        "protocolDbId": 31,
+        "setsClosed": 0,
+        "outputs": [],
+    }
+
+    assert database.transactionCalls == 0
+    assert database.executeCalls == []
 

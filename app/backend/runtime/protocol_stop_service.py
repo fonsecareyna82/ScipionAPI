@@ -33,7 +33,6 @@ import time
 from typing import Any, Callable, Dict, List
 
 from fastapi import HTTPException, status
-from pyworkflow.object import Set as ScipionSet
 from pyworkflow.protocol import STATUS_ABORTED
 
 from app.backend.runtime.protocol_status_sync_service import (
@@ -1000,117 +999,14 @@ class RuntimeProtocolStopService:
     def _closePostgresqlOutputSets(
             self,
             *,
-            mapper,
+            setMapper,
             projectId: int,
             protocolDbId: int,
     ) -> Dict[str, Any]:
-        storedSets = mapper.db.fetchAll(
-            """
-            SELECT id,
-                   "outputName"
-              FROM scipion_sets
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-             ORDER BY "outputName"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-            ),
-        ) or []
-
-        if not storedSets:
-            return {
-                "protocolDbId": int(
-                    protocolDbId
-                ),
-                "setsClosed": 0,
-                "outputs": [],
-            }
-
-        closedState = int(
-            ScipionSet.STREAM_CLOSED
+        return setMapper.closeProtocolOutputSets(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
         )
-
-        with mapper.db.transaction():
-            mapper.db.execute(
-                """
-                UPDATE scipion_sets
-                   SET properties = jsonb_set(
-                           jsonb_set(
-                               COALESCE(
-                                   properties,
-                                   '{}'::jsonb
-                               ),
-                               '{streamState}',
-                               TO_JSONB(%s::integer),
-                               TRUE
-                           ),
-                           '{_streamState}',
-                           TO_JSONB(%s::integer),
-                           TRUE
-                       ),
-                       "updatedAt" = NOW()
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
-                """,
-                (
-                    closedState,
-                    closedState,
-                    int(projectId),
-                    int(protocolDbId),
-                ),
-                commit=False,
-            )
-
-            for propertyName in (
-                    "streamState",
-                    "_streamState",
-            ):
-                mapper.db.execute(
-                    """
-                    INSERT INTO scipion_set_properties (
-                        "setId",
-                        key,
-                        value
-                    )
-                    SELECT id,
-                           %s,
-                           %s
-                      FROM scipion_sets
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-                    ON CONFLICT ON CONSTRAINT
-                        ux_scipion_set_properties_set_key
-                    DO UPDATE SET
-                        value = EXCLUDED.value
-                    """,
-                    (
-                        propertyName,
-                        str(closedState),
-                        int(projectId),
-                        int(protocolDbId),
-                    ),
-                    commit=False,
-                )
-
-        return {
-            "protocolDbId": int(
-                protocolDbId
-            ),
-            "setsClosed": len(
-                storedSets
-            ),
-            "outputs": [
-                str(
-                    row.get(
-                        "outputName"
-                    )
-                    or ""
-                )
-                for row in storedSets
-            ],
-        }
 
     @staticmethod
     def _getPostgresqlRuntimeMapper(
@@ -1372,7 +1268,7 @@ class RuntimeProtocolStopService:
 
             outputReport = (
                 self._closePostgresqlOutputSets(
-                    mapper=mapper,
+                    setMapper=runtimeMapper.setMapper,
                     projectId=projectId,
                     protocolDbId=protocolDbId,
                 )
