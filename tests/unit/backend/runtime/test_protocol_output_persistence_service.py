@@ -559,6 +559,70 @@ def test_ProtocolOutputSnapshotDeleteSkipsEmptyOutputNames(monkeypatch):
     assert mapper.db.queries == []
 
 
+def test_ProtocolOutputFileReaderDelegatesRows(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+    readCalls = []
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProtocolOutputFileRows(self, projectId, protocolDbId):
+            readCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return [
+                {
+                    "file_name": " Runs/000010_Test/extra/output.sqlite ",
+                },
+                (
+                    "Runs/000010_Test/extra/output.mrc",
+                ),
+                {
+                    "file_name": "Runs/000010_Test/extra/output.sqlite",
+                },
+                {
+                    "file_name": "",
+                },
+                (
+                    None,
+                ),
+            ]
+
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+
+    result = service.collectPersistedProtocolOutputFiles(
+        mapper=mapper,
+        projectId=7,
+        protocolDbId=31,
+    )
+
+    assert result == [
+        "Runs/000010_Test/extra/output.sqlite",
+        "Runs/000010_Test/extra/output.mrc",
+    ]
+
+    assert readCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.collectPersistedProtocolOutputFiles)
+
+    assert "objectMapper.listProtocolOutputFileRows(" in source
+    assert ".db.transaction(" not in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):

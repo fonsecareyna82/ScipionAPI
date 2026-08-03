@@ -327,6 +327,42 @@ def test_ListProtocolTreeOutputNameRowsExcludesStoredSetRoots():
     assert 'stored_set."objectId" = object_row.id' in call["query"]
 
 
+def test_ListProtocolOutputFileRowsReadsSetAndTreeRoots():
+    expectedRows = [
+        {
+            "file_name": "Runs/000010_Test/extra/output.sqlite",
+        },
+        {
+            "file_name": "Runs/000010_Test/extra/output.mrc",
+        },
+    ]
+
+    database = FakeDatabase(rows=expectedRows)
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    result = mapper.listProtocolOutputFileRows(projectId=7, protocolDbId=31)
+
+    assert result == expectedRows
+    assert len(database.calls) == 1
+    assert database.transactionCalls == 0
+
+    call = database.calls[0]
+    query = " ".join(call["query"].split())
+
+    assert call["values"] == (7, 31, 7, 31)
+    assert "SELECT DISTINCT file_name" in query
+    assert "FROM scipion_sets stored_set" in query
+    assert "LEFT JOIN scipion_objects root_object" in query
+    assert 'root_object.id = stored_set."objectId"' in query
+    assert "root_object.metadata ->> 'fileName'" in query
+    assert "UNION" in query
+    assert "FROM scipion_objects object_row" in query
+    assert "object_row.metadata ->> 'fileName'" in query
+    assert 'object_row."parentObjectId" IS NULL' in query
+    assert "file_name IS NOT NULL" in query
+    assert "file_name <> ''" in query
+
+
 def test_ListProjectTreeOutputRowsExcludesStoredSetRoots():
     expectedRows = [
         {

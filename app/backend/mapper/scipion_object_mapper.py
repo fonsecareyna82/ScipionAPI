@@ -491,6 +491,36 @@ class ScipionObjectPostgresqlMapper:
             (int(projectId), int(protocolDbId)),
         ) or []
 
+    def listProtocolOutputFileRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT DISTINCT file_name
+              FROM (
+                    SELECT root_object.metadata ->> 'fileName' AS file_name
+                      FROM scipion_sets stored_set
+                      LEFT JOIN scipion_objects root_object
+                        ON root_object.id = stored_set."objectId"
+                     WHERE stored_set."projectId" = %s
+                       AND stored_set."protocolDbId" = %s
+
+                    UNION
+
+                    SELECT object_row.metadata ->> 'fileName' AS file_name
+                      FROM scipion_objects object_row
+                     WHERE object_row."projectId" = %s
+                       AND object_row."protocolDbId" = %s
+                       AND object_row."parentObjectId" IS NULL
+              ) stored_files
+             WHERE file_name IS NOT NULL
+               AND file_name <> ''
+            """,
+            (int(projectId), int(protocolDbId), int(projectId), int(protocolDbId)),
+        ) or []
+
     def listProjectTreeOutputRows(self, projectId: int) -> List[Dict[str, Any]]:
         query = """
             SELECT

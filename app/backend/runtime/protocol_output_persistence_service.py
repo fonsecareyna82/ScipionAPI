@@ -2830,35 +2830,10 @@ class RuntimeProtocolOutputPersistenceService:
             projectId: int,
             protocolDbId: int,
     ) -> List[str]:
-        rows = mapper.db.fetchAll(
-            """
-            SELECT DISTINCT file_name
-              FROM (
-                    SELECT root.metadata ->> 'fileName' AS file_name
-                      FROM scipion_sets s
-                      LEFT JOIN scipion_objects root
-                        ON root.id = s."objectId"
-                     WHERE s."projectId" = %s
-                       AND s."protocolDbId" = %s
+        from app.backend.mapper import ScipionObjectPostgresqlMapper
 
-                    UNION
-
-                    SELECT o.metadata ->> 'fileName' AS file_name
-                      FROM scipion_objects o
-                     WHERE o."projectId" = %s
-                       AND o."protocolDbId" = %s
-                       AND o."parentObjectId" IS NULL
-              ) files
-             WHERE file_name IS NOT NULL
-               AND file_name <> ''
-            """,
-            (
-                projectId,
-                protocolDbId,
-                projectId,
-                protocolDbId,
-            ),
-        )
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+        rows = objectMapper.listProtocolOutputFileRows(projectId=projectId, protocolDbId=protocolDbId)
 
         result = []
         seen = set()
