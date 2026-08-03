@@ -511,6 +511,55 @@ def test_ReplaceStoredSetSnapshotClearsDependentRows():
     )
 
 
+def test_MergeStoredObjectMetadataUpdatesSelectedRoot():
+    database = RecordingDb(
+        rowcounts={
+            "UPDATE scipion_objects": 1,
+        }
+    )
+
+    mapper = ScipionObjectPostgresqlMapper(
+        database
+    )
+
+    updated = mapper.mergeStoredObjectMetadata(
+        projectId=7,
+        protocolDbId=31,
+        objectDbId=81,
+        metadata={
+            "artifactMissing": True,
+        },
+    )
+
+    assert updated == 1
+
+    assert database.transactionEvents == [
+        "begin",
+        "commit",
+    ]
+
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+
+    assert "UPDATE scipion_objects" in call["query"]
+    assert "COALESCE( metadata, '{}'::jsonb )" in call["query"]
+    assert "|| %s::jsonb" in call["query"]
+    assert '"updatedAt" = NOW()' in call["query"]
+    assert "WHERE id = %s" in call["query"]
+    assert 'AND "projectId" = %s' in call["query"]
+    assert 'AND "protocolDbId" = %s' in call["query"]
+
+    assert call["params"] == (
+        '{"artifactMissing": true}',
+        81,
+        7,
+        31,
+    )
+
+    assert call["commit"] is False
+
+
 def test_StoreSetRebuildsSnapshotBeforeWritingCurrentItems():
     mapper = SnapshotSetMapper(
         itemIds=[1, 2, 3],

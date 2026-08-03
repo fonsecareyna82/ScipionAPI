@@ -215,6 +215,40 @@ class ScipionObjectPostgresqlMapper:
             (projectId, protocolDbId, rootPath, f"{rootPath}.%"),
         )
 
+    def mergeStoredObjectMetadata(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            objectDbId: int,
+            metadata: Dict[str, Any],
+    ) -> int:
+        with self.db.transaction():
+            cursor = self.db.execute(
+                """
+                UPDATE scipion_objects
+                   SET metadata = (
+                           COALESCE(
+                               metadata,
+                               '{}'::jsonb
+                           )
+                           || %s::jsonb
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    json.dumps(metadata or {}),
+                    int(objectDbId),
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+        return int(cursor.rowcount or 0)
+
     def getStoredObjectSubtreeByScipionObjId(
             self,
             projectId: int,
