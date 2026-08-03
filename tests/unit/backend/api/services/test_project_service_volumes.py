@@ -174,6 +174,90 @@ def test_ResolveOutputForVolumesReturnsExactOutput(service):
     assert resolvedProtocol is protocol
     assert resolvedOutput is volume
 
+def test_GetPostgresqlVolumeReaderIfAvailableUsesResolvedProtocolDbId(
+    service,
+    monkeypatch,
+):
+    createdCoordsVolumeReaders = []
+    createdVolumeReaders = []
+
+    class FakeDb:
+        # fakeDb
+        pass
+
+    class FakeMapper:
+        # fakeMapper
+        def __init__(self):
+            self.db = FakeDb()
+
+    class FakePostgresqlCoords3dTomogramVolumeReader:
+        # fakePostgresqlCoords3dTomogramVolumeReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdCoordsVolumeReaders.append(self)
+
+        def hasOutput(self):
+            return False
+
+    class FakePostgresqlVolumeReader:
+        # fakePostgresqlVolumeReader
+        def __init__(self, db, projectId, protocolId, outputName):
+            self.db = db
+            self.projectId = projectId
+            self.protocolId = protocolId
+            self.outputName = outputName
+            createdVolumeReaders.append(self)
+
+        def hasOutput(self):
+            return True
+
+    coordsVolumeModule = importlib.import_module(
+        "app.backend.viewers.postgresql_coords3d_tomogram_volume_reader"
+    )
+    volumeModule = importlib.import_module(
+        "app.backend.viewers.postgresql_volume_reader"
+    )
+
+    monkeypatch.setattr(
+        coordsVolumeModule,
+        "PostgresqlCoords3dTomogramVolumeReader",
+        FakePostgresqlCoords3dTomogramVolumeReader,
+    )
+    monkeypatch.setattr(
+        volumeModule,
+        "PostgresqlVolumeReader",
+        FakePostgresqlVolumeReader,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda mapper, projectId, protocolId: 741,
+    )
+
+    mapper = FakeMapper()
+
+    reader = service._getPostgresqlVolumeReaderIfAvailable(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+    )
+
+    assert reader is createdVolumeReaders[0]
+
+    assert createdCoordsVolumeReaders[0].db is mapper.db
+    assert createdCoordsVolumeReaders[0].projectId == 1
+    assert createdCoordsVolumeReaders[0].protocolId == 741
+    assert createdCoordsVolumeReaders[0].outputName == "outputVolumes"
+
+    assert createdVolumeReaders[0].db is mapper.db
+    assert createdVolumeReaders[0].projectId == 1
+    assert createdVolumeReaders[0].protocolId == 741
+    assert createdVolumeReaders[0].outputName == "outputVolumes"
+
 
 def test_ResolveOutputForVolumesSupportsAliasFallback(service):
     volume = FakeVolumeOutput("/tmp/volume.mrc")
@@ -185,6 +269,107 @@ def test_ResolveOutputForVolumesSupportsAliasFallback(service):
     assert resolvedProtocol is protocol
     assert resolvedOutput is volume
 
+@pytest.mark.parametrize(
+    "serviceCall, expectedDetail",
+    [
+        (
+            lambda service, mapper: service.listOutputVolumesService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                mapper=mapper,
+            ),
+            "Volume output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.getVolumeInfoService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                volumeId=0,
+                mapper=mapper,
+            ),
+            "Volume output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.getVolumeHistogramService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                volumeId=0,
+                bins=32,
+                mapper=mapper,
+            ),
+            "Volume histogram output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.renderVolumeSliceService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                volumeId=0,
+                sliceIndex=0,
+                axis="z",
+                colormap=None,
+                normalize="minmax",
+                scale=1.0,
+                inline=True,
+                mapper=mapper,
+            ),
+            "Volume slice output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.getVolumeData3dService(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                volumeId=0,
+                maxDim=32,
+                method="binning",
+                mapper=mapper,
+            ),
+            "Volume 3D data output is not available in PostgreSQL metadata",
+        ),
+        (
+            lambda service, mapper: service.getVolumeSurfaceMesh(
+                projectId=1,
+                protocolId=10,
+                outputName="outputVolumes",
+                volumeId=0,
+                level=0.1,
+                maxDim=32,
+                method="binning",
+                maxTriangles=1000,
+                currentUser={"id": 1},
+                mapper=mapper,
+            ),
+            "Volume surface mesh output is not available in PostgreSQL metadata",
+        ),
+    ],
+)
+def test_VolumeServicesRequirePostgresqlWhenMapperIsPresent(
+    service,
+    monkeypatch,
+    serviceCall,
+    expectedDetail,
+):
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlVolumeReaderIfAvailable",
+        lambda **kwargs: None,
+    )
+
+    def failRuntimeFallback(**kwargs):
+        raise AssertionError("Legacy volume fallback should not be used")
+
+    monkeypatch.setattr(service, "_resolveOutputForVolumes", failRuntimeFallback)
+
+    with pytest.raises(HTTPException) as exc:
+        serviceCall(service, object())
+
+    assert exc.value.status_code == 404
+    assert expectedDetail in exc.value.detail
+    assert "reader_not_available" in exc.value.detail
 
 def test_ResolveOutputForVolumesReturns404WhenProtocolMissing(service):
     service.currentProject = FakeCurrentProject(protocolError=RuntimeError("missing"))
@@ -193,7 +378,7 @@ def test_ResolveOutputForVolumesReturns404WhenProtocolMissing(service):
         service._resolveOutputForVolumes(10, "outputVolumes")
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found"
+    assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime: 10")
 
 
 def test_ListOutputVolumesServiceDelegatesToOutputsPreview(projectServiceModule, service, monkeypatch):

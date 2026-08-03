@@ -34,11 +34,21 @@ from fastapi import HTTPException
 
 class FakeCreatedProject:
     # fakeCreatedProject
-    def __init__(self):
+    def __init__(self, projectPath):
+        self.projectPath = Path(projectPath)
         self.comment = None
+        self.mapperClosed = False
 
     def setComment(self, value):
         self.comment = value
+
+    def getDbPath(self):
+        return str(
+            self.projectPath / "project.sqlite"
+        )
+
+    def closeMapper(self):
+        self.mapperClosed = True
 
 
 class FakeManager:
@@ -53,8 +63,30 @@ class FakeManager:
         return str(Path(self.PROJECTS) / name)
 
     def createProject(self, name):
+        projectPath = Path(
+            self.getProjectPath(name)
+        )
+
+        projectPath.mkdir(
+            parents=True,
+            exist_ok=False,
+        )
+
+        (
+                projectPath
+                / "project.sqlite"
+        ).touch()
+
+        (
+                projectPath
+                / "settings.sqlite"
+        ).touch()
+
         self.createdProjects.append(name)
-        return FakeCreatedProject()
+
+        return FakeCreatedProject(
+            projectPath
+        )
 
     def renameProject(self, currentPath, newName):
         newPath = Path(self.getProjectPath(newName))
@@ -93,6 +125,8 @@ class FakeMapper:
     def __init__(self):
         self.projectsById = {}
         self.projectsListResult = []
+        self.projectProtocolCounts = {}
+        self.lastCountProjectProtocolsCall = None
         self.insertProjectResult = 101
         self.updateProjectResult = {
             "id": 1,
@@ -137,14 +171,43 @@ class FakeMapper:
         self.lastListProjectsCall = {"ownerId": ownerId}
         return self.projectsListResult
 
-    def insertProject(self, ownerId, name, description, status):
+    def countProjectProtocols(self, projectId):
+        self.lastCountProjectProtocolsCall = {"projectId": projectId}
+        return self.projectProtocolCounts.get(projectId, 0)
+
+    def insertProject(
+            self,
+            ownerId,
+            name,
+            description,
+            status,
+    ):
         self.lastInsertProjectCall = {
             "ownerId": ownerId,
             "name": name,
             "description": description,
             "status": status,
         }
-        return self.insertProjectResult
+
+        projectId = self.insertProjectResult
+
+        self.projectsById[
+            (
+                projectId,
+                ownerId,
+            )
+        ] = {
+            "id": projectId,
+            "name": name,
+            "description": description,
+            "status": status,
+            "ownerId": ownerId,
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+        }
+
+        return projectId
 
     def getProject(self, projectId, userId):
         self.lastGetProjectCall = {"projectId": projectId, "userId": userId}
@@ -259,9 +322,26 @@ def test_CreateProjectSanitizesNameAndInsertsProject(service, mapper, currentUse
     assert result["description"] == "demo project"
     assert result["status"] == "active"
     assert result["isOwner"] is True
-    assert result["permission"] == "full"
+    assert result["permission"] == "owner"
     assert result["projectOwnerId"] == 1
     assert result["thumbnailUrl"] == "/projects/101/thumbnail"
+
+    createdProjectPath = (
+            Path(
+                service.manager.PROJECTS
+            )
+            / "my_project_v1"
+    )
+
+    assert not (
+            createdProjectPath
+            / "project.sqlite"
+    ).exists()
+
+    assert not (
+            createdProjectPath
+            / "settings.sqlite"
+    ).exists()
 
 
 def test_CreateProjectRejectsDuplicateSanitizedName(service, mapper, currentUser):
@@ -488,7 +568,8 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
     ]
 
     monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
-    monkeypatch.setattr(service, "countProtocols", lambda path: 7)
+    mapper.projectProtocolCounts[1] = 7
+    monkeypatch.setattr(service, "countProtocols", lambda path: 999)
     monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
 
     result = service.listProjects(mapper, currentUser)
@@ -500,7 +581,7 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "description": "demo description",
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
-            "protocolsCount": "7",
+            "protocolsCount": 7,
             "diskUsage": "3.00 GB",
             "isOwner": True,
             "isShared": False,
@@ -510,19 +591,46 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "thumbnailUrl": "/projects/1/thumbnail",
             "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
             "thumbnailItemsUrl": "/projects/1/thumbnail-items",
-            "thumbnailVersion": "thumb-v1",
+            "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
+        }
+    ]
+    assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
+
+
+def test_ListProjectsRaisesWhenPostgresqlProtocolCountFails(
+    service,
+    mapper,
+    currentUser,
+):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
         }
     ]
 
+    def failCountProjectProtocols(projectId):
+        raise RuntimeError("postgresql count failed")
 
-def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser, monkeypatch):
-    storedPath = Path(service.manager.PROJECTS) / "shared-project"
-    storedPath.mkdir(parents=True, exist_ok=True)
+    mapper.countProjectProtocols = failCountProjectProtocols
 
+    with pytest.raises(HTTPException) as exc:
+        service.listProjects(mapper, currentUser)
+
+    assert exc.value.status_code == 500
+    assert "Failed to count project protocols from PostgreSQL" in exc.value.detail
+
+
+def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser):
     mapper.projectsListResult = [
         {
             "id": 2,
-            "name": str(storedPath),
+            "name": "/some/scipion/projects/shared-project",
             "description": "shared description",
             "createdAt": "2026-04-15T10:00:00",
             "updatedAt": "2026-04-15T11:00:00",
@@ -534,16 +642,17 @@ def test_ListProjectsKeepsSharedFlagsFromMapper(service, mapper, currentUser, mo
         }
     ]
 
-    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
-    monkeypatch.setattr(service, "countProtocols", lambda path: 0)
-    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v2")
+    mapper.projectProtocolCounts[2] = 4
 
     result = service.listProjects(mapper, currentUser)
 
+    assert result[0]["name"] == "shared-project"
+    assert result[0]["protocolsCount"] == 4
     assert result[0]["isOwner"] is False
     assert result[0]["isShared"] is True
     assert result[0]["permission"] == "read"
     assert result[0]["projectOwnerId"] == 99
+    assert result[0]["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
 
 
 def test_ShareProjectWithUserReturns404WhenProjectMissing(service, mapper, currentUser):
@@ -700,3 +809,700 @@ def test_RevokeProjectShareForUserReturnsSuccess(service, mapper, currentUser):
         "projectId": 1,
         "userId": 2,
     }
+
+
+def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+        }
+    ]
+
+    mapper.projectProtocolCounts[1] = 7
+
+    def failFilesystemCall(*args, **kwargs):
+        raise AssertionError("listProjects should not touch filesystem helpers")
+
+    monkeypatch.setattr(service, "getProjectSize", failFilesystemCall)
+    monkeypatch.setattr(service, "countProtocols", failFilesystemCall)
+    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", failFilesystemCall)
+
+    result = service.listProjects(mapper, currentUser)
+
+    assert result == [
+        {
+            "id": 1,
+            "name": "demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "status": "active",
+            "protocolsCount": 7,
+            "diskUsage": "0.00 GB",
+            "isOwner": True,
+            "isShared": False,
+            "permission": "owner",
+            "projectOwnerId": 1,
+            "updatedAt": "2026-04-15T11:00:00",
+            "thumbnailUrl": "/projects/1/thumbnail",
+            "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
+            "thumbnailItemsUrl": "/projects/1/thumbnail-items",
+            "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
+        }
+    ]
+
+    assert mapper.lastListProjectsCall == {"ownerId": 1}
+    assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
+
+
+def test_ListProjectsReturnsZeroDiskUsageWhenFilesystemSizeFails(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "demo description",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+        }
+    ]
+
+    mapper.projectProtocolCounts[1] = 7
+
+    def failGetProjectSize(path):
+        raise RuntimeError("du failed")
+
+    monkeypatch.setattr(service, "getProjectSize", failGetProjectSize)
+
+    result = service.listProjects(mapper, currentUser)
+
+    assert result[0]["diskUsage"] == "0.00 GB"
+    assert result[0]["protocolsCount"] == 7
+
+
+def test_GetProjectSummaryFromPostgresqlBuildsProjectOutWithoutLoadingRuntime(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": "/some/scipion/projects/demo-project",
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    mapper.projectProtocolCounts[1] = 7
+
+    monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
+
+    def failRuntimeLoad(*args, **kwargs):
+        raise AssertionError(
+            "getProjectSummaryFromPostgresql should not load runtime project"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeLoad,
+    )
+
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+        includeDiskUsage=True,
+    )
+
+    assert mapper.lastGetProjectCall == {
+        "projectId": 1,
+        "userId": 1,
+    }
+
+    assert result == {
+        "id": 1,
+        "name": "demo-project",
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "status": "active",
+        "protocolsCount": 7,
+        "diskUsage": "3.00 GB",
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+        "projectOwnerId": 1,
+        "updatedAt": "2026-04-15T11:00:00",
+        "thumbnailUrl": "/projects/1/thumbnail",
+        "thumbnailRebuildUrl": "/projects/1/thumbnail/rebuild",
+        "thumbnailItemsUrl": "/projects/1/thumbnail-items",
+        "thumbnailVersion": "1:2026-04-15T11:00:00:7:postgresql",
+    }
+
+    assert service.currentProject is None
+
+
+def test_GetProjectSummaryFromPostgresqlReturnsNoneWhenProjectIsNotAccessible(
+    service,
+    mapper,
+    currentUser,
+):
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=999,
+        currentUser=currentUser,
+    )
+
+    assert result is None
+    assert mapper.lastGetProjectCall == {
+        "projectId": 999,
+        "userId": 1,
+    }
+
+
+def test_GetProjectSummaryFromPostgresqlKeepsSharedProjectFlags(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+):
+    mapper.projectsById[(2, 1)] = {
+        "id": 2,
+        "name": "/some/scipion/projects/shared-project",
+        "description": "shared description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 99,
+        "isOwner": False,
+        "isShared": True,
+        "permission": "read",
+    }
+
+    mapper.projectProtocolCounts[2] = 4
+    monkeypatch.setattr(service, "getProjectSize", lambda path: 0)
+
+    result = service.getProjectSummaryFromPostgresql(
+        mapper=mapper,
+        projectId=2,
+        currentUser=currentUser,
+    )
+
+    assert result["name"] == "shared-project"
+    assert result["protocolsCount"] == 4
+    assert result["isOwner"] is False
+    assert result["isShared"] is True
+    assert result["permission"] == "read"
+    assert result["projectOwnerId"] == 99
+    assert result["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
+
+
+def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
+    def failRuntimeLookup(protocolId):
+        raise AssertionError("buildProtocolsGraph should not use runtime fallback")
+
+    service._tryGetScipionProtocolByRuntimeId = failRuntimeLookup
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+        ],
+        tags={
+            "10": ["import"],
+        },
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "10": {
+                "outputMovies": {
+                    "mapperKind": "flat_set",
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["protocolId"] == "10"
+    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["status"] == "finished"
+    assert graph["10"]["tags"] == ["import"]
+
+    assert graph["10"]["outputs"] == [
+        {
+            "name": "outputMovies",
+            "paramClass": "PointerParam",
+            "pointerClass": "SetOfMovies",
+            "info": "",
+            "value": "10.outputMovies",
+            "parentId": "10",
+            "persisted": True,
+            "persistence": {
+                "mapperKind": "flat_set",
+                "className": "SetOfMovies",
+                "itemsCount": 25,
+            },
+        },
+    ]
+
+
+def test_BuildProtocolsGraphUsesPostgresqlDependenciesWithoutRuntime(service):
+    service._tryGetScipionProtocolByRuntimeId = lambda protocolId: (_ for _ in ()).throw(
+        AssertionError("buildProtocolsGraph should not use runtime fallback")
+    )
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+            {
+                "protocolId": "20",
+                "protocolClassName": "ProtMotionCorr",
+                "status": "running",
+            },
+        ],
+        tags={},
+        dependencyMap={
+            "10": {
+                "parents": [],
+                "children": ["20"],
+            },
+            "20": {
+                "parents": ["10"],
+                "children": [],
+            },
+        },
+        runMap={},
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["children"] == ["20"]
+    assert graph["10"]["parents"] == []
+
+    assert graph["20"]["children"] == []
+    assert graph["20"]["parents"] == ["10"]
+
+
+def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
+    service,
+    mapper,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    dbProj = {
+        "id": 1,
+        "name": str(projectPath),
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+    }
+
+    pgGraphData = {
+        "tags": {
+            "10": ["import"],
+        },
+        "dependencyMap": {
+            "10": {
+                "parents": [],
+                "children": ["20"],
+            },
+            "20": {
+                "parents": ["10"],
+                "children": [],
+            },
+        },
+        "protocolRows": [
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+            {
+                "protocolId": "20",
+                "protocolClassName": "ProtMotionCorr",
+                "status": "running",
+            },
+        ],
+        "persistedOutputsByProtocolId": {
+            "10": {
+                "outputMovies": {
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_loadProjectGraphDataFromPostgresql",
+        lambda mapper, projectId: pgGraphData,
+    )
+
+    def failRuntime(*args, **kwargs):
+        raise AssertionError("loadProjectFromPostgresql should not touch Scipion runtime")
+
+    import app.backend.api.services.project_service as project_service_module
+    monkeypatch.setattr(project_service_module, "ScipionProject", failRuntime)
+
+    result = service.loadProjectFromPostgresql(
+        dbProj=dbProj,
+        mapper=mapper,
+    )
+
+    assert result["id"] == 1
+    assert result["name"] == str(projectPath)
+    assert result["shortName"] == "demo-project"
+    assert result["createdAt"] == "2026-04-15T10:00:00"
+    assert result["status"] == "active"
+    assert result["path"] == projectPath
+    assert result["thumbnailUrl"] == "/projects/1/thumbnail"
+    assert result["thumbnailRebuildUrl"] == "/projects/1/thumbnail/rebuild"
+    assert result["thumbnailItemsUrl"] == "/projects/1/thumbnail-items"
+
+    graph = result["protocols"]
+
+    assert graph["PROJECT"]["children"] == ["10"]
+
+    assert graph["10"]["protocolId"] == "10"
+    assert graph["10"]["children"] == ["20"]
+    assert graph["10"]["parents"] == []
+    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["status"] == "finished"
+    assert graph["10"]["tags"] == ["import"]
+    assert graph["10"]["outputs"][0]["name"] == "outputMovies"
+    assert graph["10"]["outputs"][0]["persisted"] is True
+
+    assert graph["20"]["protocolId"] == "20"
+    assert graph["20"]["children"] == []
+    assert graph["20"]["parents"] == ["10"]
+    assert graph["20"]["label"] == "ProtMotionCorr"
+    assert graph["20"]["status"] == "running"
+
+
+def test_GetProjectByIdLoadsWorkflowFromPostgresql(
+    service,
+    mapper,
+    currentUser,
+    monkeypatch,
+    tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": str(projectPath),
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    def failRuntimeLoad(*args, **kwargs):
+        raise AssertionError(
+            "getProjectById should not create a runtime project"
+        )
+
+    capturedPgLoad = {}
+
+    def fakeLoadProjectFromPostgresql(dbProj, mapper):
+        capturedPgLoad["dbProj"] = dbProj
+        capturedPgLoad["mapper"] = mapper
+        return {
+            "id": dbProj["id"],
+            "name": dbProj["name"],
+            "shortName": "demo-project",
+            "createdAt": str(dbProj["createdAt"]),
+            "status": str(dbProj["status"]),
+            "path": projectPath,
+            "protocols": {
+                "PROJECT": {
+                    "protocolId": "PROJECT",
+                    "children": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeLoad,
+    )
+    monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
+
+    result = service.getProjectById(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=False,
+    )
+
+    assert result["id"] == 1
+    assert result["protocols"]["PROJECT"]["protocolId"] == "PROJECT"
+    assert capturedPgLoad["dbProj"]["id"] == 1
+    assert capturedPgLoad["mapper"] is mapper
+
+
+def test_GetProjectByIdUsesPostgresqlWorkflowWhenConsistencyIsRequested(
+        service,
+        mapper,
+        currentUser,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = tmp_path / "demo-project"
+    projectPath.mkdir(parents=True, exist_ok=True)
+
+    mapper.projectsById[(1, 1)] = {
+        "id": 1,
+        "name": str(projectPath),
+        "description": "demo description",
+        "createdAt": "2026-04-15T10:00:00",
+        "updatedAt": "2026-04-15T11:00:00",
+        "status": "active",
+        "ownerId": 1,
+        "isOwner": True,
+        "isShared": False,
+        "permission": "owner",
+    }
+
+    consistencyModule = importlib.import_module(
+        "app.backend.api.services.project_consistency_service"
+    )
+
+    def failRuntimeProjectLoad(*args, **kwargs):
+        raise AssertionError(
+            "getProjectById must not create a runtime project"
+        )
+
+    capturedPgLoad = {}
+
+    def fakeLoadProjectFromPostgresql(dbProj, mapper):
+        capturedPgLoad["dbProj"] = dbProj
+        capturedPgLoad["mapper"] = mapper
+
+        return {
+            "id": dbProj["id"],
+            "name": dbProj["name"],
+            "protocols": {},
+        }
+
+    consistencyCalls = []
+
+    def fakeValidateConsistency(
+            consistencyService,
+            mapper,
+            projectId,
+            currentUser,
+            refresh=True,
+            checkPid=True,
+    ):
+        consistencyCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "refresh": refresh,
+            "checkPid": checkPid,
+        })
+
+        return {
+            "ok": True,
+            "issues": {},
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        failRuntimeProjectLoad,
+    )
+    monkeypatch.setattr(service, "loadProjectFromPostgresql", fakeLoadProjectFromPostgresql)
+    monkeypatch.setattr(
+        consistencyModule.ProjectConsistencyService,
+        "validateProjectPostgresqlConsistency",
+        fakeValidateConsistency,
+    )
+
+    result = service.getProjectById(
+        mapper=mapper,
+        projectId=1,
+        currentUser=currentUser,
+        refresh=True,
+        checkPid=True,
+        validateConsistency=True,
+        failOnConsistencyError=True,
+    )
+
+    assert result == {
+        "id": 1,
+        "name": str(projectPath),
+        "protocols": {},
+        "postgresqlConsistency": {
+            "ok": True,
+            "issues": {},
+        },
+    }
+
+    assert capturedPgLoad == {
+        "dbProj": mapper.projectsById[(1, 1)],
+        "mapper": mapper,
+    }
+
+    assert consistencyCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "currentUser": currentUser,
+            "refresh": True,
+            "checkPid": True,
+        },
+    ]
+
+
+def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
+    service,
+    mapper,
+    monkeypatch,
+):
+    mapper.getProjectProtocolTagIdsByProtocolId = lambda projectId: {}
+    mapper.getProjectProtocolAdjacencyMap = lambda projectId: {}
+    mapper.getProtocols = lambda projectId: []
+
+    called = {}
+
+    def fakeLoadPersistedOutputs(mapperArg, projectIdArg):
+        called["mapper"] = mapperArg
+        called["projectId"] = projectIdArg
+        return {
+            "10": {
+                "outputMovies": {
+                    "className": "SetOfMovies",
+                    "itemsCount": 25,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_loadPersistedOutputsByProtocolId",
+        fakeLoadPersistedOutputs,
+    )
+
+    result = service._loadProjectGraphDataFromPostgresql(
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert called == {
+        "mapper": mapper,
+        "projectId": 1,
+    }
+
+    assert result["persistedOutputsByProtocolId"] == {
+        "10": {
+            "outputMovies": {
+                "className": "SetOfMovies",
+                "itemsCount": 25,
+            },
+        },
+    }
+
+
+def test_BuildProtocolsGraphUsesPersistedOutputInfoWithoutRuntime(service):
+    def failRuntimeLookup(protocolId):
+        raise AssertionError("buildProtocolsGraph should not use runtime fallback")
+
+    service._tryGetScipionProtocolByRuntimeId = failRuntimeLookup
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "2",
+                "protocolClassName": "ProtRelionExtractParticles",
+                "status": "finished",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "2": {
+                "outputParticles": {
+                    "mapperKind": "flat_set",
+                    "className": "SetOfParticles",
+                    "itemsCount": 372,
+                    "info": "Particles (372 items, 140x140, 4.00 A/px)",
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["2"]["outputs"] == [
+        {
+            "name": "outputParticles",
+            "paramClass": "PointerParam",
+            "pointerClass": "SetOfParticles",
+            "info": "Particles (372 items, 140x140, 4.00 A/px)",
+            "value": "2.outputParticles",
+            "parentId": "2",
+            "persisted": True,
+            "persistence": {
+                "mapperKind": "flat_set",
+                "className": "SetOfParticles",
+                "itemsCount": 372,
+                "info": "Particles (372 items, 140x140, 4.00 A/px)",
+            },
+        },
+    ]

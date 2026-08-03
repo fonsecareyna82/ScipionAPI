@@ -1,0 +1,167 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import threading
+
+from app.backend.mapper import postgresql as postgresqlModule
+from app.backend.mapper.postgresql import PostgresqlDb
+
+
+class FakeCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.closed = False
+        self._row = None
+
+    def execute(self, query, params=None):
+        if self.closed:
+            raise RuntimeError("Cursor is closed")
+
+        self._row = {
+            "query": query,
+            "connectionId": id(self.connection),
+            "cursorId": id(self),
+        }
+
+        if str(query).startswith("thread-"):
+            self.connection.barrier.wait(timeout=5)
+
+    def fetchone(self):
+        return dict(self._row)
+
+    def fetchall(self):
+        return [dict(self._row)]
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnection:
+    def __init__(self, barrier):
+        self.barrier = barrier
+        self.closed = False
+        self.cursors = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self, cursor_factory=None):
+        cursor = FakeCursor(self)
+        self.cursors.append(cursor)
+
+        return cursor
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnectionFactory:
+    def __init__(self, barrier):
+        self.barrier = barrier
+        self.connections = []
+        self.lock = threading.Lock()
+
+    def __call__(self, **kwargs):
+        connection = FakeConnection(self.barrier)
+
+        with self.lock:
+            self.connections.append(connection)
+
+        return connection
+
+
+def test_PostgresqlDbUsesIndependentResourcesPerThread(monkeypatch):
+    barrier = threading.Barrier(2)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    results = {}
+    errors = []
+
+    def fetchRow(query):
+        try:
+            results[query] = db.fetchOne(query)
+
+        except Exception as error:
+            errors.append(error)
+
+    firstThread = threading.Thread(
+        target=fetchRow,
+        args=("thread-first",),
+    )
+
+    secondThread = threading.Thread(
+        target=fetchRow,
+        args=("thread-second",),
+    )
+
+    firstThread.start()
+    secondThread.start()
+
+    firstThread.join(timeout=10)
+    secondThread.join(timeout=10)
+
+    assert not firstThread.is_alive()
+    assert not secondThread.is_alive()
+    assert errors == []
+
+    assert results["thread-first"]["query"] == "thread-first"
+    assert results["thread-second"]["query"] == "thread-second"
+
+    assert (
+        results["thread-first"]["connectionId"]
+        != results["thread-second"]["connectionId"]
+    )
+
+    assert (
+        results["thread-first"]["cursorId"]
+        != results["thread-second"]["cursorId"]
+    )
+
+    # Main thread plus the two worker threads.
+    assert len(connectionFactory.connections) == 3
+
+    db.close()
+
+    assert all(
+        connection.closed
+        for connection in connectionFactory.connections
+    )
