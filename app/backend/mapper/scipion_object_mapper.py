@@ -598,6 +598,141 @@ class ScipionObjectPostgresqlMapper:
 
         return removedOutputs
 
+    def deleteProtocolOutputMetadata(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Dict[str, int]:
+        projectId = int(projectId)
+        protocolDbId = int(protocolDbId)
+        setsDeleted = 0
+        objectsDeleted = 0
+
+        with self.db.transaction():
+            setRows = self.db.fetchAll(
+                """
+                SELECT id
+                  FROM scipion_sets
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (projectId, protocolDbId),
+            ) or []
+
+            setIds = [
+                int(row.get("id") if isinstance(row, dict) else row[0])
+                for row in setRows
+                if (row.get("id") if isinstance(row, dict) else row[0]) is not None
+            ]
+
+            if setIds:
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_items
+                     WHERE "tableId" IN (
+                           SELECT id
+                             FROM scipion_set_tables
+                            WHERE "setId" = ANY(%s)
+                     )
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_table_columns
+                     WHERE "tableId" IN (
+                           SELECT id
+                             FROM scipion_set_tables
+                            WHERE "setId" = ANY(%s)
+                     )
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_tables
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_items
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_columns
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                self.db.execute(
+                    """
+                    DELETE FROM scipion_set_properties
+                     WHERE "setId" = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                setCursor = self.db.execute(
+                    """
+                    DELETE FROM scipion_sets
+                     WHERE id = ANY(%s)
+                    """,
+                    (setIds,),
+                    commit=False,
+                )
+
+                setsDeleted = int(setCursor.rowcount or 0)
+
+            objectCursor = self.db.execute(
+                """
+                WITH RECURSIVE object_tree AS (
+                    SELECT object_row.id
+                      FROM scipion_objects object_row
+                     WHERE object_row."projectId" = %s
+                       AND object_row."protocolDbId" = %s
+
+                    UNION
+
+                    SELECT child.id
+                      FROM scipion_objects child
+                      JOIN object_tree parent
+                        ON child."parentObjectId" = parent.id
+                     WHERE child."projectId" = %s
+                       AND child."protocolDbId" = %s
+                )
+                DELETE FROM scipion_objects
+                 WHERE id IN (
+                       SELECT id
+                         FROM object_tree
+                 )
+                """,
+                (projectId, protocolDbId, projectId, protocolDbId),
+                commit=False,
+            )
+
+            objectsDeleted = int(objectCursor.rowcount or 0)
+
+        return {
+            "setsDeleted": setsDeleted,
+            "objectsDeleted": objectsDeleted,
+        }
+
     def deleteStoredObjectSubtreesByScipionObjId(
             self,
             projectId: int,

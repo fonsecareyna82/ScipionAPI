@@ -471,6 +471,102 @@ def test_DeleteProtocolOutputSnapshotsUsesSingleTransaction():
     assert secondObjectDelete["values"] == (7, 31, "outputParticles", "outputParticles", "outputParticles")
 
 
+def test_DeleteProtocolOutputMetadataUsesSingleScopedTransaction():
+    class CleanupCursor:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+
+    class CleanupDatabase:
+        def __init__(self):
+            self.calls = []
+            self.transactionCalls = 0
+            self.rowcounts = iter([0, 0, 0, 0, 0, 0, 2, 5])
+
+        @contextmanager
+        def transaction(self):
+            self.transactionCalls += 1
+            yield self
+
+        def fetchAll(self, query, values):
+            self.calls.append({
+                "operation": "fetchAll",
+                "query": query,
+                "values": values,
+            })
+
+            return [
+                {
+                    "id": 71,
+                },
+                (
+                    72,
+                ),
+            ]
+
+        def execute(self, query, values, commit=True):
+            self.calls.append({
+                "operation": "execute",
+                "query": query,
+                "values": values,
+                "commit": commit,
+            })
+
+            return CleanupCursor(next(self.rowcounts))
+
+    database = CleanupDatabase()
+    mapper = ScipionObjectPostgresqlMapper(database)
+
+    result = mapper.deleteProtocolOutputMetadata(projectId=7, protocolDbId=31)
+
+    assert result == {
+        "setsDeleted": 2,
+        "objectsDeleted": 5,
+    }
+
+    assert database.transactionCalls == 1
+    assert len(database.calls) == 9
+
+    setRead = database.calls[0]
+
+    assert setRead["operation"] == "fetchAll"
+    assert setRead["values"] == (7, 31)
+    assert "SELECT id" in setRead["query"]
+    assert "FROM scipion_sets" in setRead["query"]
+    assert '"projectId" = %s' in setRead["query"]
+    assert '"protocolDbId" = %s' in setRead["query"]
+
+    executeCalls = database.calls[1:]
+
+    assert all(call["operation"] == "execute" for call in executeCalls)
+    assert all(call["commit"] is False for call in executeCalls)
+
+    expectedSetTables = [
+        "scipion_set_table_items",
+        "scipion_set_table_columns",
+        "scipion_set_tables",
+        "scipion_set_items",
+        "scipion_set_columns",
+        "scipion_set_properties",
+        "scipion_sets",
+    ]
+
+    for call, tableName in zip(executeCalls[:7], expectedSetTables):
+        assert f"DELETE FROM {tableName}" in call["query"]
+        assert call["values"] == ([71, 72],)
+
+    objectDelete = executeCalls[7]
+
+    assert objectDelete["values"] == (7, 31, 7, 31)
+    assert "WITH RECURSIVE object_tree" in objectDelete["query"]
+    assert "FROM scipion_objects object_row" in objectDelete["query"]
+    assert 'object_row."projectId" = %s' in objectDelete["query"]
+    assert 'object_row."protocolDbId" = %s' in objectDelete["query"]
+    assert 'child."parentObjectId" = parent.id' in objectDelete["query"]
+    assert 'child."projectId" = %s' in objectDelete["query"]
+    assert 'child."protocolDbId" = %s' in objectDelete["query"]
+    assert "DELETE FROM protocols" not in objectDelete["query"]
+
+
 def test_DeleteStoredObjectSubtreesUsesRecursiveSafeDelete():
     database = FakeDatabase(
         row={
