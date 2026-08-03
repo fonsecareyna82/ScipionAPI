@@ -482,3 +482,44 @@ def test_ListProtocolSetOutputRowsExcludesReservedRuntimeSets():
 
     assert database.transactionCalls == 0
     assert database.executeCalls == []
+
+
+def test_ListProjectSetOutputRowsIncludesConsistencySignatures():
+    storedRows = [
+        {
+            "protocolId": "10",
+            "outputName": "outputParticles",
+            "setClassName": "SetOfParticles",
+        },
+    ]
+
+    database = FakeSetLifecycleDb(storedSets=storedRows)
+    mapper = ScipionSetPostgresqlMapper(db=database)
+
+    result = mapper.listProjectSetOutputRows(projectId=7)
+
+    assert result == storedRows
+    assert len(database.fetchAllCalls) == 1
+
+    call = database.fetchAllCalls[0]
+    query = " ".join(call["query"].split())
+
+    assert 'p.id AS "protocolDbId"' in query
+    assert 'p."protocolId"' in query
+    assert "FROM scipion_sets s JOIN protocols p" in query
+    assert 'LEFT JOIN scipion_objects root_object ON root_object.id = s."objectId"' in query
+    assert "FROM scipion_set_items" in query
+    assert "FROM scipion_set_columns" in query
+    assert "FROM scipion_set_tables t" in query
+    assert "FROM scipion_set_properties" in query
+    assert '"itemsIdSignature"' in query
+    assert '"itemsValueSignature"' in query
+    assert '"setColumnsSignature"' in query
+    assert '"rootTableItemsIdSignature"' in query
+    assert '"rootTableColumnsSignature"' in query
+    assert '"propertiesPayloadSignature"' in query
+    assert '"setPropertiesSignature"' in query
+    assert "COALESCE( s.properties ->> 'runtimeReserved', 'false' ) <> 'true'" in query
+    assert call["params"] == (7,)
+    assert database.transactionCalls == 0
+    assert database.executeCalls == []

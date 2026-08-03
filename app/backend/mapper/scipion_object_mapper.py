@@ -467,6 +467,35 @@ class ScipionObjectPostgresqlMapper:
             ),
         ) or []
 
+    def listProjectTreeOutputRows(self, projectId: int) -> List[Dict[str, Any]]:
+        query = """
+            SELECT
+                protocol_row."protocolId",
+                object_row.id,
+                object_row."scipionObjId",
+                object_row.name,
+                object_row.path,
+                object_row."className",
+                object_row.value,
+                object_row.label,
+                object_row.comment,
+                object_row.metadata,
+                object_row."createdAt",
+                object_row."updatedAt"
+              FROM scipion_objects object_row
+              JOIN protocols protocol_row
+                ON protocol_row.id = object_row."protocolDbId"
+             WHERE object_row."projectId" = %s
+               AND object_row."parentObjectId" IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM scipion_sets stored_set
+                     WHERE stored_set."objectId" = object_row.id
+               )
+             ORDER BY protocol_row."protocolId", object_row.path
+        """
+        return self.db.fetchAll(query, (int(projectId),)) or []
+
     def deleteStoredObjectSubtreesByScipionObjId(
             self,
             projectId: int,
