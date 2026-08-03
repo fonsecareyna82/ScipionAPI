@@ -47,25 +47,28 @@ class ProtocolIdentityResolver:
         self.projectId = self.toOptionalInt(projectId)
         self.db = db if db is not None else getattr(mapper, "db", None)
 
-    def _getIdentityMapper(self):
+    def _getIdentityMapper(self, readerName: str):
         mapper = self.mapper
+        flatMapper = getattr(mapper, "flatMapper", None)
 
-        if mapper is None and self.db is not None:
+        for candidate in (flatMapper, mapper):
+            reader = getattr(candidate, readerName, None)
+
+            if callable(reader):
+                return candidate
+
+        if self.db is None:
+            return None
+
+        identityMapper = getattr(self, "_identityMapper", None)
+
+        if identityMapper is None:
             from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
-            mapper = PostgresqlFlatMapper(self.db)
-            self.mapper = mapper
+            identityMapper = PostgresqlFlatMapper(self.db)
+            self._identityMapper = identityMapper
 
-        flatMapper = getattr(
-            mapper,
-            "flatMapper",
-            None,
-        )
-
-        if flatMapper is not None:
-            return flatMapper
-
-        return mapper
+        return identityMapper
 
     def resolveScipionProtocolId(self, protocolId: Any) -> Optional[int]:
         """
@@ -124,7 +127,7 @@ class ProtocolIdentityResolver:
         if protocolDbId is None:
             return None
 
-        identityMapper = self._getIdentityMapper()
+        identityMapper = self._getIdentityMapper("getProjectProtocolByDbId")
 
         reader = getattr(
             identityMapper,
@@ -153,7 +156,7 @@ class ProtocolIdentityResolver:
         if not protocolIdText:
             return None
 
-        identityMapper = self._getIdentityMapper()
+        identityMapper = self._getIdentityMapper("getProjectProtocolByProtocolId")
 
         reader = getattr(
             identityMapper,

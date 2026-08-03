@@ -258,3 +258,46 @@ def test_ProtocolIdentityResolverKeepsDbOnlyCompatibility():
         7,
         31,
     )
+
+
+def test_ProtocolIdentityResolverSupportsPartialMapperWithDatabaseOnly():
+    database = FetchDatabaseStub(
+        row={
+            "id": 500,
+            "protocolId": "10",
+        }
+    )
+
+    class PartialMapper:
+        def __init__(self, db):
+            self.db = db
+
+    resolver = ProtocolIdentityResolver(
+        mapper=PartialMapper(database),
+        projectId=7,
+    )
+
+    assert resolver.resolveScipionProtocolId(500) == 10
+    assert resolver.resolvePostgresqlProtocolDbId(10) == 500
+
+    assert len(database.calls) == 2
+
+    dbIdCall = database.calls[0]
+
+    assert dbIdCall["params"] == (
+        7,
+        500,
+    )
+
+    assert "FROM protocols" in dbIdCall["query"]
+    assert "AND id = %s" in dbIdCall["query"]
+
+    protocolIdCall = database.calls[1]
+
+    assert protocolIdCall["params"] == (
+        7,
+        "10",
+    )
+
+    assert "FROM protocols" in protocolIdCall["query"]
+    assert 'AND "protocolId" = %s' in protocolIdCall["query"]
