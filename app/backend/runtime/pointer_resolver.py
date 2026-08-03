@@ -348,6 +348,7 @@ class RuntimePointerResolver:
         )
 
         protocolDbId = None
+
         if protocolId is not None:
             protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
                 protocolId,
@@ -369,50 +370,43 @@ class RuntimePointerResolver:
         if not missingParentOutputNames:
             return completeValues
 
-        db = getattr(mapper, "db", None)
-
-        if protocolDbId in (None, "") or db is None:
+        if protocolDbId in (None, "") or getattr(mapper, "db", None) is None:
             return completeValues + missingParentOutputNames
 
-        rows = db.fetchAll(
-            """
-            SELECT
-                "itemIndex",
-                "parentProtocolId",
-                "parentOutputName"
-              FROM protocol_input_refs
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-               AND "inputName" = %s
-             ORDER BY "itemIndex"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-                str(inputName),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        storedPointerValues = protocolGraphRepository.loadInputRefPointerValues(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            inputName=inputName,
         )
 
         refsByOutputName = {}
 
-        for row in rows or []:
-            parentProtocolId = row.get("parentProtocolId")
-            parentOutputName = str(row.get("parentOutputName") or "").strip()
+        for storedPointerValue in storedPointerValues or []:
+            parentProtocolId, parentOutputName = self.splitPointerValue(
+                storedPointerValue
+            )
 
-            if parentProtocolId in (None, "") or not parentOutputName:
+            if not parentProtocolId or not parentOutputName:
                 continue
 
-            refsByOutputName.setdefault(parentOutputName, []).append(row)
+            normalizedPointerValue = "%s.%s" % (
+                parentProtocolId,
+                parentOutputName,
+            )
+
+            refsByOutputName.setdefault(
+                parentOutputName,
+                [],
+            ).append(normalizedPointerValue)
 
         for outputName in missingParentOutputNames:
             candidates = refsByOutputName.get(outputName) or []
 
             if len(candidates) == 1:
-                parentProtocolId = candidates[0].get("parentProtocolId")
-                completedValue = "%s.%s" % (
-                    str(parentProtocolId).strip(),
-                    str(outputName).strip(),
-                )
+                completedValue = candidates[0]
 
                 if completedValue not in completeValues:
                     completeValues.append(completedValue)
@@ -427,10 +421,8 @@ class RuntimePointerResolver:
                     completedValue,
                 )
 
-            else:
-                # Keep original value. The caller will produce a validation error.
-                if outputName not in completeValues:
-                    completeValues.append(outputName)
+            elif outputName not in completeValues:
+                completeValues.append(outputName)
 
         return completeValues
 
@@ -446,33 +438,15 @@ class RuntimePointerResolver:
         This is used when restoring Pointer/PointerList attributes before
         Scipion copyProtocol(), where Scipion expects real Pointer objects.
         """
-        db = getattr(mapper, "db", None)
-
-        if db is None or protocolDbId in (None, ""):
+        if getattr(mapper, "db", None) is None or protocolDbId in (None, ""):
             return {}
 
-        rows = db.fetchAll(
-            """
-            SELECT
-                r."inputName",
-                r."itemIndex",
-                COALESCE(
-                    parent."protocolId",
-                    r."parentProtocolId"
-                ) AS "parentProtocolId",
-                r."parentOutputName"
-              FROM protocol_input_refs r
-         LEFT JOIN protocols parent
-                ON parent."projectId" = r."projectId"
-               AND parent.id = r."parentProtocolDbId"
-             WHERE r."projectId" = %s
-               AND r."protocolDbId" = %s
-             ORDER BY r."inputName", r."itemIndex"
-            """,
-            (
-                int(projectId),
-                int(protocolDbId),
-            ),
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        rows = protocolGraphRepository.loadInputRefsForProtocolCopy(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
         )
 
         refsByInputName: Dict[str, List[Dict[str, Any]]] = {}
