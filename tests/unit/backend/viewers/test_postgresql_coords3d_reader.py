@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import inspect
 
 
 def test_PostgresqlCoords3dReaderReadsBottomLeftCoordinateValues(authTestEnv):
@@ -127,3 +128,66 @@ def test_PostgresqlCoords3dReaderKeepsFlatMatrixStringIgnored(authTestEnv):
     })
 
     assert matrix is None
+
+
+def test_PostgresqlCoords3dReaderDelegatesProjectTomogramReads(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_coords3d_reader")
+    mapperCalls = []
+
+    class ForbiddenDb:
+        def fetchAll(self, *args, **kwargs):
+            raise AssertionError("PostgresqlCoords3dReader must not query project tomograms directly")
+
+    class SetMapperStub:
+        def listProjectTomogramCandidateItemRows(self, projectId):
+            mapperCalls.append({
+                "projectId": projectId,
+            })
+
+            return [
+                {
+                    "setId": 11,
+                    "projectId": 7,
+                    "protocolDbId": 500,
+                    "outputName": "outputTomograms",
+                    "setClassName": "SetOfTomograms",
+                    "itemClassName": "Tomogram",
+                    "scipionItemId": 1,
+                },
+            ]
+
+    reader = module.PostgresqlCoords3dReader(
+        db=ForbiddenDb(),
+        projectId=7,
+        protocolId=600,
+        outputName="outputCoordinates",
+    )
+
+    reader.setMapper = SetMapperStub()
+
+    result = reader._getProjectTomogramRows()
+
+    assert result == [
+        {
+            "setId": 11,
+            "projectId": 7,
+            "protocolDbId": 500,
+            "outputName": "outputTomograms",
+            "setClassName": "SetOfTomograms",
+            "itemClassName": "Tomogram",
+            "scipionItemId": 1,
+        },
+    ]
+
+    assert mapperCalls == [
+        {
+            "projectId": 7,
+        },
+    ]
+
+    source = inspect.getsource(module.PostgresqlCoords3dReader._getProjectTomogramRows)
+
+    assert "listProjectTomogramCandidateItemRows(" in source
+    assert ".fetchOne(" not in source
+    assert ".fetchAll(" not in source
+    assert ".execute(" not in source

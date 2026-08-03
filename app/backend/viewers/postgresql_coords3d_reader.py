@@ -215,47 +215,7 @@ class PostgresqlCoords3dReader:
 
     def _getProjectTomogramRows(self) -> List[Dict[str, Any]]:
         try:
-            return self.db.fetchAll(
-                """
-                SELECT
-                    s.id AS "setId",
-                    s."projectId",
-                    s."protocolDbId",
-                    s."outputName",
-                    s."setClassName",
-                    s."itemClassName",
-                    s.properties AS "setProperties",
-                    i.id AS "itemRowId",
-                    i."scipionItemId",
-                    i.enabled,
-                    i.label,
-                    i.comment,
-                    i.creation,
-                    i."values",
-                    i."createdAt",
-                    i."updatedAt"
-                FROM scipion_sets s
-                JOIN scipion_set_items i
-                  ON i."setId" = s.id
-                WHERE s."projectId" = %s
-                  AND (
-                        LOWER(COALESCE(s."setClassName", '')) LIKE '%%tomogram%%'
-                     OR LOWER(COALESCE(s."itemClassName", '')) LIKE '%%tomogram%%'
-                     OR LOWER(COALESCE(s."setClassName", '')) LIKE '%%volume%%'
-                     OR LOWER(COALESCE(s."itemClassName", '')) LIKE '%%volume%%'
-                  )
-                ORDER BY
-                    CASE
-                        WHEN LOWER(COALESCE(s."itemClassName", '')) LIKE '%%tomogram%%' THEN 0
-                        WHEN LOWER(COALESCE(s."setClassName", '')) LIKE '%%tomogram%%' THEN 1
-                        ELSE 2
-                    END,
-                    s."protocolDbId" ASC,
-                    s."outputName" ASC,
-                    i."scipionItemId" ASC
-                """,
-                (self.projectId,),
-            )
+            return self.setMapper.listProjectTomogramCandidateItemRows(projectId=self.projectId)
         except Exception:
             return []
 
