@@ -1424,6 +1424,50 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return dict(row) if row is not None else None
 
+    def getStoredSetItemBySourceRelation(self, projectId: int, childSetId: int, scipionItemId: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne(
+            """
+            SELECT
+                item."scipionItemId",
+                item.label,
+                item.comment,
+                item."values",
+                parent_set."outputName",
+                parent_protocol."protocolId"
+              FROM scipion_sets child_set
+              JOIN scipion_objects child_object
+                ON child_object."projectId" = child_set."projectId"
+               AND child_object.id = child_set."objectId"
+              JOIN scipion_relations source_relation
+                ON source_relation."projectId" = child_set."projectId"
+               AND source_relation.name = 'source'
+               AND source_relation."childObjId" = child_object."scipionObjId"
+              JOIN scipion_objects parent_object
+                ON parent_object."projectId" = source_relation."projectId"
+               AND parent_object."scipionObjId" = source_relation."parentObjId"
+              JOIN scipion_sets parent_set
+                ON parent_set."projectId" = parent_object."projectId"
+               AND parent_set."objectId" = parent_object.id
+              JOIN scipion_set_items item
+                ON item."setId" = parent_set.id
+              JOIN protocols parent_protocol
+                ON parent_protocol."projectId" = parent_set."projectId"
+               AND parent_protocol.id = parent_set."protocolDbId"
+             WHERE child_set."projectId" = %s
+               AND child_set.id = %s
+               AND item."scipionItemId" = %s
+               AND (
+                     LOWER(COALESCE(parent_set."setClassName", '')) LIKE '%%micrograph%%'
+                  OR LOWER(COALESCE(parent_set."itemClassName", '')) LIKE '%%micrograph%%'
+               )
+             ORDER BY source_relation.id ASC
+             LIMIT 1
+            """,
+            (int(projectId), int(childSetId), int(scipionItemId)),
+        )
+
+        return dict(row) if row is not None else None
+
     def listProtocolStoredSets(self, projectId: int, protocolDbId: int) -> List[Dict[str, Any]]:
         protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
 

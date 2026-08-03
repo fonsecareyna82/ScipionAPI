@@ -99,3 +99,37 @@ def test_GetStoredSetItemByProtocolOutput():
     assert 'protocol."protocolId"::text = %s' in query
     assert 'stored_set."outputName" = %s' in query
     assert 'item."scipionItemId" = %s' in query
+
+
+def test_GetStoredSetItemBySourceRelation():
+    expectedRow = {
+        "scipionItemId": 10,
+        "label": "Micrograph 10",
+        "comment": "",
+        "values": {
+            "_location._filename": "micrograph_10.mrc",
+        },
+        "outputName": "outputMicrographs",
+        "protocolId": "1",
+    }
+
+    database = DatabaseStub(row=expectedRow)
+    mapper = ScipionSetPostgresqlMapper(db=database)
+
+    result = mapper.getStoredSetItemBySourceRelation(projectId=7, childSetId=33, scipionItemId=10)
+
+    assert result == expectedRow
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+    query = call["query"]
+
+    assert call["params"] == (7, 33, 10)
+    assert "FROM scipion_sets child_set" in query
+    assert "JOIN scipion_relations source_relation" in query
+    assert "source_relation.name = 'source'" in query
+    assert 'source_relation."childObjId" = child_object."scipionObjId"' in query
+    assert 'parent_object."scipionObjId" = source_relation."parentObjId"' in query
+    assert "JOIN scipion_set_items item" in query
+    assert 'item."scipionItemId" = %s' in query
+    assert "LIKE '%%micrograph%%'" in query

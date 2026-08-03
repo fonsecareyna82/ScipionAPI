@@ -142,22 +142,29 @@ class PostgresqlCoords2dReader:
             return None
 
         pointerReference = self._findMicrographsPointerReference(storedSet)
-        if pointerReference is None:
-            self.lastSkipReason = "micrographs_pointer_not_found"
-            return None
 
         micrographId = self._toOptionalInt(micId)
         if micrographId is None:
             self.lastSkipReason = "invalid_micrograph_id micId=%s" % str(micId)
             return None
 
-        micrographRow = self._findLinkedMicrographRow(
-            pointerReference=pointerReference,
-            micrographId=micrographId,
-        )
+        micrographRow = None
+
+        if pointerReference is not None:
+            micrographRow = self._findLinkedMicrographRow(pointerReference=pointerReference, micrographId=micrographId)
 
         if micrographRow is None:
-            self.lastSkipReason = "linked_micrograph_not_found micId=%s" % str(micId)
+            storedSetId = self._toOptionalInt(storedSet.get("id"))
+
+            if storedSetId is not None:
+                micrographRow = self.setMapper.getStoredSetItemBySourceRelation(projectId=self.projectId, childSetId=storedSetId, scipionItemId=micrographId)
+
+        if micrographRow is None:
+            if pointerReference is None:
+                self.lastSkipReason = "micrographs_pointer_and_source_relation_not_found micId=%s" % str(micId)
+            else:
+                self.lastSkipReason = "linked_micrograph_not_found_from_pointer_or_source_relation micId=%s" % str(micId)
+
             return None
 
         values = self._normalizeJsonObject(micrographRow.get("values"))

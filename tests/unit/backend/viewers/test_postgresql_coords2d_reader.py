@@ -350,3 +350,58 @@ def test_PostgresqlCoords2dReaderFallsBackToProtocolOutputMicrographLookup():
     ]
 
 
+def test_PostgresqlCoords2dReaderResolvesLegacyMicrographThroughSourceRelation():
+    mapperCalls = []
+
+    expectedRow = {
+        "scipionItemId": 10,
+        "label": "Micrograph 10",
+        "comment": "",
+        "values": {
+            "_location._index": 1,
+            "_location._filename": "Runs/000001_Import/extra/micrograph_10.mrc",
+            "_micName": "micrograph_10",
+        },
+        "outputName": "outputMicrographs",
+        "protocolId": "1",
+    }
+
+    class SetMapperStub:
+        def getStoredSetItemBySourceRelation(self, projectId, childSetId, scipionItemId):
+            mapperCalls.append({
+                "projectId": projectId,
+                "childSetId": childSetId,
+                "scipionItemId": scipionItemId,
+            })
+
+            return expectedRow
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="outputCoordinates")
+    reader.setMapper = SetMapperStub()
+    reader._storedSet = {
+        "id": 33,
+        "setClassName": "SetOfCoordinates",
+        "itemClassName": "Coordinate",
+        "properties": {},
+        "setProperties": [],
+        "items": [],
+    }
+
+    result = reader.getMicrographImageInfo("10")
+
+    assert result == {
+        "id": "10",
+        "fileName": "Runs/000001_Import/extra/micrograph_10.mrc",
+        "locationIndex": 1,
+        "label": "micrograph_10",
+    }
+
+    assert mapperCalls == [
+        {
+            "projectId": 7,
+            "childSetId": 33,
+            "scipionItemId": 10,
+        },
+    ]
+
+
