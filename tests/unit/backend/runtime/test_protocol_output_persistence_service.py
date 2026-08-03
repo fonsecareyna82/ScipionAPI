@@ -623,6 +623,115 @@ def test_ProtocolOutputFileReaderDelegatesRows(monkeypatch):
     assert ".db.execute(" not in source
 
 
+def test_ProtocolOutputCleanupDelegatesMetadataDeletion(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+    metadataCalls = []
+    fileReadCalls = []
+    fileDeleteCalls = []
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def deleteProtocolOutputMetadata(self, projectId, protocolDbId):
+            metadataCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "setsDeleted": 2,
+                "objectsDeleted": 5,
+            }
+
+    def collectOutputFiles(**kwargs):
+        fileReadCalls.append(kwargs)
+
+        return [
+            "Runs/000010_Test/extra/output.sqlite",
+        ]
+
+    def deleteOutputFiles(**kwargs):
+        fileDeleteCalls.append(kwargs)
+
+        return {
+            "filesDeleted": 3,
+            "filesSkipped": [
+                {
+                    "fileName": "outside.sqlite",
+                    "reason": "outside_allowed_root",
+                },
+            ],
+            "fileErrors": [],
+        }
+
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+    monkeypatch.setattr(outputPersistenceModule.ProtocolIdentityResolver, "resolvePostgresqlProtocolDbId", lambda self, protocolId: 31)
+    monkeypatch.setattr(service, "collectPersistedProtocolOutputFiles", collectOutputFiles)
+    monkeypatch.setattr(service, "deletePersistedProtocolOutputFilesFromFilesystem", deleteOutputFiles)
+
+    protocol = object()
+
+    result = service.deletePersistedProtocolOutputs(
+        mapper=mapper,
+        projectId=7,
+        protocolId=19,
+        protocol=protocol,
+        getCurrentProjectPathCallback=None,
+    )
+
+    assert result == {
+        "protocolDbId": 31,
+        "setsDeleted": 2,
+        "objectsDeleted": 5,
+        "filesDeleted": 3,
+        "filesSkipped": [
+            {
+                "fileName": "outside.sqlite",
+                "reason": "outside_allowed_root",
+            },
+        ],
+        "fileErrors": [],
+        "skipped": False,
+    }
+
+    assert fileReadCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+    assert fileDeleteCalls == [
+        {
+            "protocol": protocol,
+            "rawFileNames": [
+                "Runs/000010_Test/extra/output.sqlite",
+            ],
+            "getCurrentProjectPathCallback": None,
+        },
+    ]
+
+    assert metadataCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.deletePersistedProtocolOutputs)
+
+    assert "objectMapper.deleteProtocolOutputMetadata(" in source
+    assert ".db.transaction(" not in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):

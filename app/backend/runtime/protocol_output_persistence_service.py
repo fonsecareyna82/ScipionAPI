@@ -2616,11 +2616,7 @@ class RuntimeProtocolOutputPersistenceService:
             protocol: Any = None,
             getCurrentProjectPathCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        )
-
+        protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
         protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
 
         if protocolDbId is None:
@@ -2635,11 +2631,7 @@ class RuntimeProtocolOutputPersistenceService:
                 "reason": "protocol_not_found",
             }
 
-        outputFiles = self.collectPersistedProtocolOutputFiles(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-        )
+        outputFiles = self.collectPersistedProtocolOutputFiles(mapper=mapper, projectId=projectId, protocolDbId=protocolDbId)
 
         fileCleanup = self.deletePersistedProtocolOutputFilesFromFilesystem(
             protocol=protocol,
@@ -2647,126 +2639,15 @@ class RuntimeProtocolOutputPersistenceService:
             getCurrentProjectPathCallback=getCurrentProjectPathCallback,
         )
 
-        setRows = mapper.db.fetchAll(
-            """
-            SELECT id
-              FROM scipion_sets
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-            """,
-            (projectId, protocolDbId),
-        )
+        from app.backend.mapper import ScipionObjectPostgresqlMapper
 
-        setIds = [
-            int(row.get("id") if isinstance(row, dict) else row[0])
-            for row in (setRows or [])
-            if (row.get("id") if isinstance(row, dict) else row[0]) is not None
-        ]
-
-        setsDeleted = 0
-        objectsDeleted = 0
-
-        with mapper.db.transaction():
-            if setIds:
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_table_items
-                     WHERE "tableId" IN (
-                           SELECT id
-                             FROM scipion_set_tables
-                            WHERE "setId" = ANY(%s)
-                     )
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_table_columns
-                     WHERE "tableId" IN (
-                           SELECT id
-                             FROM scipion_set_tables
-                            WHERE "setId" = ANY(%s)
-                     )
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_tables
-                     WHERE "setId" = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_items
-                     WHERE "setId" = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_columns
-                     WHERE "setId" = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                mapper.db.execute(
-                    """
-                    DELETE FROM scipion_set_properties
-                     WHERE "setId" = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                cur = mapper.db.execute(
-                    """
-                    DELETE FROM scipion_sets
-                     WHERE id = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-                setsDeleted = int(cur.rowcount or 0)
-
-            cur = mapper.db.execute(
-                """
-                WITH RECURSIVE object_tree AS (
-                    SELECT id
-                      FROM scipion_objects
-                     WHERE "projectId" = %s
-                       AND "protocolDbId" = %s
-
-                    UNION ALL
-
-                    SELECT child.id
-                      FROM scipion_objects child
-                      JOIN object_tree parent
-                        ON child."parentObjectId" = parent.id
-                )
-                DELETE FROM scipion_objects
-                 WHERE id IN (SELECT id FROM object_tree)
-                """,
-                (projectId, protocolDbId),
-                commit=False,
-            )
-            objectsDeleted = int(cur.rowcount or 0)
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+        metadataCleanup = objectMapper.deleteProtocolOutputMetadata(projectId=projectId, protocolDbId=protocolDbId)
 
         return {
             "protocolDbId": protocolDbId,
-            "setsDeleted": setsDeleted,
-            "objectsDeleted": objectsDeleted,
+            "setsDeleted": int(metadataCleanup.get("setsDeleted") or 0),
+            "objectsDeleted": int(metadataCleanup.get("objectsDeleted") or 0),
             "filesDeleted": fileCleanup.get("filesDeleted", 0),
             "filesSkipped": fileCleanup.get("filesSkipped", []),
             "fileErrors": fileCleanup.get("fileErrors", []),
