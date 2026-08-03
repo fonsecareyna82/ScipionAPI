@@ -34,6 +34,7 @@ dist-ssr
 .run/
 *.pid
 logs/
+/scipion_home/
 
 # python
 __pycache__/
