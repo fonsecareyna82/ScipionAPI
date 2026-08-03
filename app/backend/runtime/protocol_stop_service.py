@@ -985,45 +985,16 @@ class RuntimeProtocolStopService:
             projectId: int,
             protocolDbId: int,
     ) -> Dict[str, Any]:
-        cursor = mapper.db.execute(
-            """
-            UPDATE protocol_steps
-               SET status = %s,
-                   "endTime" = COALESCE(
-                       "endTime",
-                       NOW()
-                   ),
-                   error = CASE
-                       WHEN error IS NULL
-                            OR BTRIM(error) = ''
-                       THEN %s
-                       ELSE error
-                   END,
-                   "updatedAt" = NOW()
-             WHERE "projectId" = %s
-               AND "protocolDbId" = %s
-               AND LOWER(status) = 'running'
-            """,
-            (
-                str(STATUS_ABORTED),
-                self.ABORT_MESSAGE,
-                int(projectId),
-                int(protocolDbId),
-            ),
+        stepsAborted = mapper.abortRunningProtocolSteps(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            statusValue=STATUS_ABORTED,
+            errorMessage=self.ABORT_MESSAGE,
         )
 
         return {
-            "protocolDbId": int(
-                protocolDbId
-            ),
-            "stepsAborted": int(
-                getattr(
-                    cursor,
-                    "rowcount",
-                    0,
-                )
-                or 0
-            ),
+            "protocolDbId": int(protocolDbId),
+            "stepsAborted": stepsAborted,
         }
 
     def _closePostgresqlOutputSets(

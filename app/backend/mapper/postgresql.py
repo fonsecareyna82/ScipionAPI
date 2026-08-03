@@ -2268,6 +2268,42 @@ class PostgresqlFlatMapper(Mapper):
 
         return int(cursor.rowcount or 0)
 
+    def abortRunningProtocolSteps(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            statusValue,
+            errorMessage: str,
+    ) -> int:
+        cursor = self.db.execute(
+            """
+            UPDATE protocol_steps
+               SET status = %s,
+                   "endTime" = COALESCE(
+                       "endTime",
+                       NOW()
+                   ),
+                   error = CASE
+                       WHEN error IS NULL
+                            OR BTRIM(error) = ''
+                       THEN %s
+                       ELSE error
+                   END,
+                   "updatedAt" = NOW()
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND LOWER(status) = 'running'
+            """,
+            (
+                str(statusValue),
+                str(errorMessage),
+                int(projectId),
+                int(protocolDbId),
+            ),
+        )
+
+        return int(cursor.rowcount or 0)
+
     def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int,
                              steps: List[Dict[str, Any]]) -> None:
         steps = list(steps or [])
