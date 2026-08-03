@@ -25,12 +25,14 @@
 # ******************************************************************************
 from pathlib import Path
 from typing import Any, Optional
+from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 
 
 class PostgresqlProjectPathResolver:
     def __init__(self, db, projectId: int):
         self.db = db
         self.projectId = int(projectId)
+        self.projectRuntimeRepository = ProjectRuntimeRepository()
         self._projectPath: Optional[Path] = None
         self._projectPathLoaded = False
 
@@ -41,24 +43,11 @@ class PostgresqlProjectPathResolver:
         self._projectPathLoaded = True
 
         try:
-            row = self.db.fetchOne(
-                """
-                SELECT name
-                  FROM projects
-                 WHERE id = %s
-                 LIMIT 1
-                """,
-                (self.projectId,),
-            )
+            rawPath = self.projectRuntimeRepository.getProjectNameByDatabase(db=self.db, projectId=self.projectId)
         except Exception:
             self._projectPath = None
             return None
 
-        if not row:
-            self._projectPath = None
-            return None
-
-        rawPath = row.get("name") if isinstance(row, dict) else row[0]
         if not rawPath:
             self._projectPath = None
             return None

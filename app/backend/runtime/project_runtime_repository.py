@@ -34,7 +34,14 @@ class ProjectRuntimeRepository:
             mapper,
             projectId: int,
     ) -> Optional[str]:
-        row = mapper.db.fetchOne(
+        return self.getProjectNameByDatabase(db=mapper.db, projectId=projectId)
+
+    def getProjectNameByDatabase(
+            self,
+            db,
+            projectId: int,
+    ) -> Optional[str]:
+        row = db.fetchOne(
             """
             SELECT name
               FROM projects

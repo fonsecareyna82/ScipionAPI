@@ -95,3 +95,36 @@ def test_GetProjectRuntimeResourceCounts():
     assert 'stored_set.id = set_item."setId"' in query
     assert "FROM scipion_relations" in query
 
+
+def test_GetProjectNameByDatabase():
+    class ProjectDatabaseStub:
+        def __init__(self):
+            self.calls = []
+
+        def fetchOne(self, query, params=None):
+            queryText = " ".join(str(query).split())
+
+            self.calls.append({
+                "query": queryText,
+                "params": params,
+            })
+
+            return {
+                "name": "/tmp/ScipionUserData/projects/TestProject",
+            }
+
+    database = ProjectDatabaseStub()
+    repository = ProjectRuntimeRepository()
+
+    result = repository.getProjectNameByDatabase(db=database, projectId=7)
+
+    assert result == "/tmp/ScipionUserData/projects/TestProject"
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+
+    assert call["params"] == (7,)
+    assert "SELECT name" in call["query"]
+    assert "FROM projects" in call["query"]
+    assert "WHERE id = %s" in call["query"]
+

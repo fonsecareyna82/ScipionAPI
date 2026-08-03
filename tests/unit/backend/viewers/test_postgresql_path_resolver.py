@@ -24,6 +24,9 @@
 # *
 # ******************************************************************************
 from pathlib import Path
+import inspect
+
+import app.backend.viewers.postgresql_path_resolver as pathResolverModule
 
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
@@ -62,3 +65,48 @@ def test_PostgresqlProjectPathResolverKeepsAbsolutePath(tmp_path):
     )
 
     assert resolver.resolveExistingPath(str(filePath)) == str(filePath.resolve())
+
+
+def test_PostgresqlProjectPathResolverDelegatesProjectLookup(monkeypatch, tmp_path):
+    projectPath = tmp_path / "project"
+    filePath = projectPath / "Runs" / "000001_Test" / "extra" / "volume.mrc"
+
+    filePath.parent.mkdir(parents=True)
+    filePath.write_bytes(b"fake")
+
+    repositoryCalls = []
+
+    class ForbiddenDb:
+        def fetchOne(self, *args, **kwargs):
+            raise AssertionError("PostgresqlProjectPathResolver must not call db.fetchOne() directly")
+
+    class ProjectRuntimeRepositoryStub:
+        def getProjectNameByDatabase(self, db, projectId):
+            repositoryCalls.append({
+                "db": db,
+                "projectId": projectId,
+            })
+
+            return str(projectPath)
+
+    monkeypatch.setattr(pathResolverModule, "ProjectRuntimeRepository", ProjectRuntimeRepositoryStub)
+
+    database = ForbiddenDb()
+
+    resolver = PostgresqlProjectPathResolver(db=database, projectId=7)
+
+    result = resolver.resolveExistingPath("Runs/000001_Test/extra/volume.mrc")
+
+    assert result == str(filePath.resolve())
+
+    assert repositoryCalls == [
+        {
+            "db": database,
+            "projectId": 7,
+        },
+    ]
+
+    source = inspect.getsource(PostgresqlProjectPathResolver.getProjectPath)
+
+    assert "getProjectNameByDatabase(" in source
+    assert ".fetchOne(" not in source
