@@ -217,10 +217,34 @@ class FakeMapper:
         return 2
 
 
+class FakeSetMapper:
+    def __init__(self):
+        self.closeProtocolOutputSetsCalls = []
+
+    def closeProtocolOutputSets(
+            self,
+            projectId,
+            protocolDbId,
+    ):
+        self.closeProtocolOutputSetsCalls.append({
+            "projectId": int(projectId),
+            "protocolDbId": int(protocolDbId),
+        })
+
+        return {
+            "protocolDbId": int(protocolDbId),
+            "setsClosed": 1,
+            "outputs": [
+                "outputParticles",
+            ],
+        }
+
+
 class FakeRuntimeMapper:
     def __init__(self):
         self.stored = []
         self.commits = 0
+        self.setMapper = FakeSetMapper()
 
     def store(self, protocol):
         self.stored.append(
@@ -301,12 +325,13 @@ def buildResult(
     }
 
 
-def test_StopStepAbortDoesNotExecuteDirectPostgresqlQueries():
+def test_StopServiceDoesNotExecuteDirectPostgresqlQueries():
     source = inspect.getsource(
-        RuntimeProtocolStopService._abortRunningProtocolSteps
+        RuntimeProtocolStopService
     )
 
     assert "mapper.abortRunningProtocolSteps(" in source
+    assert "setMapper.closeProtocolOutputSets(" in source
     assert ".db.fetchOne(" not in source
     assert ".db.fetchAll(" not in source
     assert ".db.execute(" not in source
@@ -485,19 +510,31 @@ def test_PostgresqlStopKillsWorkerAndPersistsAbort(
         },
     ]
 
-    executedSql = "\n".join(
-        call["query"]
-        for call
-        in mapper.db.executeCalls
+    assert (
+        currentProject
+        .runtimeMapper
+        .setMapper
+        .closeProtocolOutputSetsCalls
+        == [
+            {
+                "projectId": 1,
+                "protocolDbId": 50,
+            },
+        ]
     )
 
-    assert "UPDATE protocol_steps" not in executedSql
+    assert result["postgresqlRuntimeOutputs"] == [
+        {
+            "protocolDbId": 50,
+            "setsClosed": 1,
+            "outputs": [
+                "outputParticles",
+            ],
+        },
+    ]
 
-    assert "UPDATE scipion_sets" in (
-        executedSql
-    )
-
-    assert "streamState" in executedSql
+    assert mapper.db.fetchAllCalls == []
+    assert mapper.db.executeCalls == []
 
 
 def test_PostgresqlStopCancelsQueueAndKillsCoordinator(
