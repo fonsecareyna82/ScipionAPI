@@ -1965,30 +1965,12 @@ class RuntimeProtocolOutputPersistenceService:
 
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-        setRows = mapper.db.fetchAll(
-            """
-            SELECT
-                p."protocolId",
-                s.id,
-                s."objectId",
-                s."outputName",
-                s."setClassName",
-                s."itemClassName",
-                s.properties,
-                s."createdAt",
-                s."updatedAt"
-              FROM scipion_sets s
-              JOIN protocols p
-                ON p.id = s."protocolDbId"
-             WHERE s."projectId" = %s
-              AND COALESCE(
-                      s.properties ->> 'runtimeReserved',
-                      'false'
-                  ) <> 'true'
-            ORDER BY p."protocolId", s."outputName"
-            """,
-            (projectId,),
-        )
+        from app.backend.mapper import ScipionObjectPostgresqlMapper, ScipionSetPostgresqlMapper
+
+        setMapper = ScipionSetPostgresqlMapper(mapper.db)
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+
+        setRows = setMapper.listProjectSetOutputSummaryRows(projectId=projectId)
 
         for row in setRows:
             protocolId = str(row.get("protocolId"))
@@ -2014,35 +1996,7 @@ class RuntimeProtocolOutputPersistenceService:
                 "updatedAt": row.get("updatedAt"),
             }
 
-        treeRows = mapper.db.fetchAll(
-            """
-            SELECT
-                p."protocolId",
-                o.id,
-                o."scipionObjId",
-                o.name,
-                o.path,
-                o."className",
-                o.value,
-                o.label,
-                o.comment,
-                o.metadata,
-                o."createdAt",
-                o."updatedAt"
-              FROM scipion_objects o
-              JOIN protocols p
-                ON p.id = o."protocolDbId"
-             WHERE o."projectId" = %s
-               AND o."parentObjectId" IS NULL
-               AND NOT EXISTS (
-                    SELECT 1
-                      FROM scipion_sets s
-                     WHERE s."objectId" = o.id
-               )
-             ORDER BY p."protocolId", o.path
-            """,
-            (projectId,),
-        )
+        treeRows = objectMapper.listProjectTreeOutputRows(projectId=projectId)
 
         for row in treeRows:
             protocolId = str(row.get("protocolId"))

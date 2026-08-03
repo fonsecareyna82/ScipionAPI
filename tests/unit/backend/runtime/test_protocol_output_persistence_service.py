@@ -345,6 +345,46 @@ def test_ProjectOutputReaderDelegatesOutputRows(monkeypatch):
     assert ".db.execute(" not in source
 
 
+def test_ProjectOutputSummaryReaderDelegatesOutputRows(monkeypatch):
+    mapper = FakeMapper()
+    service = RuntimeProtocolOutputPersistenceService()
+    setReadCalls = []
+    treeReadCalls = []
+
+    class SetMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProjectSetOutputSummaryRows(self, projectId):
+            setReadCalls.append({"projectId": projectId})
+            return []
+
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProjectTreeOutputRows(self, projectId):
+            treeReadCalls.append({"projectId": projectId})
+            return []
+
+    monkeypatch.setattr(backendMapperModule, "ScipionSetPostgresqlMapper", SetMapperStub)
+    monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
+
+    assert service.loadPersistedOutputSummariesByProtocolId(mapper=mapper, projectId=7) == {}
+
+    assert setReadCalls == [{"projectId": 7}]
+    assert treeReadCalls == [{"projectId": 7}]
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.loadPersistedOutputSummariesByProtocolId)
+
+    assert "setMapper.listProjectSetOutputSummaryRows(" in source
+    assert "objectMapper.listProjectTreeOutputRows(" in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
         monkeypatch,
 ):
