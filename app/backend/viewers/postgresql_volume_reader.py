@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 
 from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
@@ -452,36 +453,25 @@ class PostgresqlVolumeReader:
         if self._protocolDbId is not None:
             return self._protocolDbId
 
-        row = self.db.fetchOne(
-            """
-            SELECT id
-              FROM protocols
-             WHERE id = %s
-               AND "projectId" = %s
-            """,
-            (self.protocolId, self.projectId),
-        )
+        identityResolver = ProtocolIdentityResolver(projectId=self.projectId, db=self.db)
 
-        if row is not None:
-            self._protocolDbId = int(row["id"])
-            return self._protocolDbId
+        protocolRow = identityResolver.getProtocolRowByDbId(self.protocolId)
 
-        row = self.db.fetchOne(
-            """
-            SELECT id
-              FROM protocols
-             WHERE "projectId" = %s
-               AND "protocolId" = %s
-            """,
-            (self.projectId, str(self.protocolId)),
-        )
+        if protocolRow is None:
+            protocolRow = identityResolver.getProtocolRowByScipionProtocolId(self.protocolId)
 
-        if row is not None:
-            self._protocolDbId = int(row["id"])
-            return self._protocolDbId
+        if protocolRow is None:
+            self.lastSkipReason = "protocol_not_found"
+            return None
 
-        self.lastSkipReason = "protocol_not_found"
-        return None
+        protocolDbId = protocolRow.get("id")
+
+        if protocolDbId is None:
+            self.lastSkipReason = "protocol_not_found"
+            return None
+
+        self._protocolDbId = int(protocolDbId)
+        return self._protocolDbId
 
     def _extractVolumeFile(self, values: Dict[str, Any]) -> Tuple[Optional[str], Optional[int]]:
         raw = self._firstValueBySuffix(

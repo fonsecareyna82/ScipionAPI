@@ -24,6 +24,8 @@
 # *
 # ******************************************************************************
 import importlib
+import inspect
+
 
 def test_PostgresqlVolumeReaderExtractsDimsFromCommaSeparatedString(authTestEnv):
     module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
@@ -111,3 +113,116 @@ def test_PostgresqlVolumeReaderResolvesProjectRelativeVolumePath(
     assert reader._resolveExistingPath(
         "Runs/000134_ProtVolume/extra/volume.mrc"
     ) == str(volumePath.resolve())
+
+
+def test_PostgresqlVolumeReaderDelegatesProtocolDbIdResolution(authTestEnv, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+    resolverCalls = []
+
+    class ForbiddenDb:
+        def fetchOne(self, *args, **kwargs):
+            raise AssertionError("PostgresqlVolumeReader must not query protocol identity directly")
+
+    class ProtocolIdentityResolverStub:
+        def __init__(self, mapper=None, projectId=None, db=None):
+            resolverCalls.append({
+                "method": "__init__",
+                "projectId": projectId,
+                "db": db,
+            })
+
+        def getProtocolRowByDbId(self, protocolId):
+            resolverCalls.append({
+                "method": "getProtocolRowByDbId",
+                "protocolId": protocolId,
+            })
+
+            return {
+                "id": 500,
+                "protocolId": "10",
+            }
+
+        def getProtocolRowByScipionProtocolId(self, protocolId):
+            raise AssertionError("Database id lookup must have precedence")
+
+    monkeypatch.setattr(module, "ProtocolIdentityResolver", ProtocolIdentityResolverStub)
+
+    database = ForbiddenDb()
+
+    reader = module.PostgresqlVolumeReader(
+        db=database,
+        projectId=7,
+        protocolId=500,
+        outputName="outputVolume",
+    )
+
+    assert reader._resolveProtocolDbId() == 500
+    assert reader._resolveProtocolDbId() == 500
+
+    assert resolverCalls == [
+        {
+            "method": "__init__",
+            "projectId": 7,
+            "db": database,
+        },
+        {
+            "method": "getProtocolRowByDbId",
+            "protocolId": 500,
+        },
+    ]
+
+    source = inspect.getsource(module.PostgresqlVolumeReader._resolveProtocolDbId)
+
+    assert "ProtocolIdentityResolver(" in source
+    assert ".fetchOne(" not in source
+    assert ".fetchAll(" not in source
+
+
+def test_PostgresqlVolumeReaderFallsBackToScipionProtocolId(authTestEnv, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+    resolverCalls = []
+
+    class ProtocolIdentityResolverStub:
+        def __init__(self, mapper=None, projectId=None, db=None):
+            pass
+
+        def getProtocolRowByDbId(self, protocolId):
+            resolverCalls.append({
+                "method": "getProtocolRowByDbId",
+                "protocolId": protocolId,
+            })
+
+            return None
+
+        def getProtocolRowByScipionProtocolId(self, protocolId):
+            resolverCalls.append({
+                "method": "getProtocolRowByScipionProtocolId",
+                "protocolId": protocolId,
+            })
+
+            return {
+                "id": 500,
+                "protocolId": "10",
+            }
+
+    monkeypatch.setattr(module, "ProtocolIdentityResolver", ProtocolIdentityResolverStub)
+
+    reader = module.PostgresqlVolumeReader(
+        db=object(),
+        projectId=7,
+        protocolId=10,
+        outputName="outputVolume",
+    )
+
+    assert reader._resolveProtocolDbId() == 500
+
+    assert resolverCalls == [
+        {
+            "method": "getProtocolRowByDbId",
+            "protocolId": 10,
+        },
+        {
+            "method": "getProtocolRowByScipionProtocolId",
+            "protocolId": 10,
+        },
+    ]
