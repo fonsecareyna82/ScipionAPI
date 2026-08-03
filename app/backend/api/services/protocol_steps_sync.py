@@ -29,6 +29,9 @@ import os
 from typing import Any, Dict, List, Optional
 
 from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
+from app.backend.runtime.protocol_step_persistence_service import (
+    RuntimeProtocolStepPersistenceService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,27 +72,72 @@ def _projectPath(protocol) -> Optional[str]:
     return None
 
 
-def _serializeStep(step, event: str) -> Dict[str, Any]:
-    elapsed = None
-    try:
-        elapsed = step.getElapsedTime().total_seconds()
-    except Exception:
-        pass
+def _tryRegisterProtocolOutputs(
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        protocolDbId: int,
+        protocolId: int,
+        protocol,
+) -> None:
+    """
+    Opportunistically register protocol outputs while the runtime process updates
+    steps.
 
-    return {
-        "index": int(step.getIndex() or 0),
-        "name": _value(getattr(step, "funcName", None), step.getClassName()),
-        "status": step.getStatus(),
-        "prerequisites": [int(p) for p in step.getPrerequisites()],
-        "args": _jsonValue(_value(getattr(step, "argsStr", None))),
-        "initTime": _value(getattr(step, "initTime", None)),
-        "endTime": _value(getattr(step, "endTime", None)),
-        "elapsedSeconds": elapsed,
-        "error": step.getErrorMessage(),
-        "interactive": step.isInteractive(),
-        "needsGpu": step.needsGPU(),
-        "event": event,
-    }
+    This is important for streaming protocols: outputs can exist while the
+    protocol is still running.
+    """
+    try:
+        from app.backend.api.services.project_service import ProjectService
+
+        service = ProjectService()
+
+        if not service._shouldRegisterProtocolOutputs(protocol):
+            return
+
+        report = service.registerOutput(
+            projectId=projectId,
+            protocol=protocol,
+            mapper=mapper,
+            returnReport=True,
+        )
+
+        logger.info(
+            "Registered PostgreSQL runtime outputs from steps event. "
+            "projectId=%s protocolDbId=%s protocolId=%s outputs=%s declared=%s errors=%s",
+            projectId,
+            protocolDbId,
+            protocolId,
+            len(report.get("persisted") or []),
+            len(report.get("declared") or []),
+            report.get("errors") or [],
+        )
+
+    except Exception:
+        logger.exception(
+            "Could not register PostgreSQL runtime outputs from steps event. "
+            "projectId=%s protocolDbId=%s protocolId=%s",
+            projectId,
+            protocolDbId,
+            protocolId,
+        )
+
+
+_stepPersistenceService = (
+    RuntimeProtocolStepPersistenceService()
+)
+
+
+def _serializeStep(
+        step,
+        event: str,
+) -> Dict[str, Any]:
+    return (
+        _stepPersistenceService
+        .buildProtocolStepForPostgresql(
+            step,
+            event=event,
+        )
+    )
 
 
 def _buildMapper() -> PostgresqlFlatMapper:
@@ -128,5 +176,264 @@ def syncProtocolStepsEvent(protocol, event: str, steps: List[Any], step: Any = N
                 protocolId,
                 _serializeStep(step, event),
             )
+        _tryRegisterProtocolOutputs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            protocolId=protocolId,
+            protocol=protocol,
+        )
     finally:
         mapper.db.close()
+
+
+def _setStepScalar(
+        step,
+        attrName: str,
+        value,
+) -> None:
+    attr = getattr(
+        step,
+        attrName,
+        None,
+    )
+
+    setter = getattr(
+        attr,
+        "set",
+        None,
+    )
+
+    if not callable(setter):
+        return
+
+    if value is None:
+        setter(None)
+        return
+
+    if hasattr(
+            value,
+            "strftime",
+    ):
+        value = value.strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+
+    setter(
+        value
+    )
+
+
+def _restorePreviousStep(
+        templateStep,
+        row: Dict[str, Any],
+):
+    previousStep = (
+        templateStep.clone()
+    )
+
+    stepIndex = int(
+        row["index"]
+    )
+
+    previousStep.setIndex(
+        stepIndex
+    )
+
+    previousStep.setPrerequisites(
+        *[
+            int(value)
+            for value in (
+                row.get(
+                    "prerequisites"
+                )
+                or []
+            )
+        ]
+    )
+
+    previousStep.setStatus(
+        row.get(
+            "status"
+        )
+        or ""
+    )
+
+    _setStepScalar(
+        previousStep,
+        "funcName",
+        row.get(
+            "name"
+        )
+        or "",
+    )
+
+    argsText = row.get(
+        "argsText"
+    )
+
+    if argsText is None:
+        argsText = json.dumps(
+            row.get("args"),
+            default=lambda value: None,
+        )
+
+    _setStepScalar(
+        previousStep,
+        "argsStr",
+        argsText,
+    )
+
+    resultFiles = row.get(
+        "resultFiles"
+    )
+
+    _setStepScalar(
+        previousStep,
+        "_resultFiles",
+        (
+            json.dumps(
+                resultFiles
+            )
+            if resultFiles is not None
+            else None
+        ),
+    )
+
+    _setStepScalar(
+        previousStep,
+        "initTime",
+        row.get(
+            "initTime"
+        ),
+    )
+
+    _setStepScalar(
+        previousStep,
+        "endTime",
+        row.get(
+            "endTime"
+        ),
+    )
+
+    _setStepScalar(
+        previousStep,
+        "_error",
+        row.get(
+            "error"
+        ),
+    )
+
+    _setStepScalar(
+        previousStep,
+        "interactive",
+        bool(
+            row.get(
+                "interactive"
+            )
+        ),
+    )
+
+    _setStepScalar(
+        previousStep,
+        "_needsGPU",
+        bool(
+            row.get(
+                "needsGpu",
+                True,
+            )
+        ),
+    )
+
+    return previousStep
+
+
+def loadProtocolSteps(
+        protocol,
+        currentSteps=None,
+) -> List[Any]:
+    """
+    Reconstruct the previous execution steps from PostgreSQL.
+
+    Current step definitions are cloned so bound functions and
+    plugin-specific step classes come from the running protocol,
+    while execution state comes from PostgreSQL.
+    """
+    mapper = _buildMapper()
+
+    try:
+        target = mapper.resolveProtocolStepTarget(
+            _projectPath(protocol),
+            protocol.getObjId(),
+        )
+
+        if not target:
+            return []
+
+        rows = mapper.listProtocolSteps(
+            projectId=int(
+                target["projectId"]
+            ),
+            protocolId=int(
+                protocol.getObjId()
+            ),
+        ) or []
+
+        currentSteps = list(
+            currentSteps
+            if currentSteps is not None
+            else (
+                getattr(
+                    protocol,
+                    "_steps",
+                    None,
+                )
+                or []
+            )
+        )
+
+        if not currentSteps:
+            return []
+
+        rowsByIndex = {
+            int(row["index"]): row
+            for row in rows
+            if row.get("index") is not None
+        }
+
+        previousSteps = []
+
+        for stepIndex, templateStep in enumerate(
+                currentSteps,
+                start=1,
+        ):
+            row = rowsByIndex.get(
+                stepIndex
+            )
+
+            # Never shift subsequent steps if one row is missing.
+            if row is None:
+                break
+
+            # Snapshots written before the complete schema must not
+            # be used to skip execution.
+            if int(
+                    row.get(
+                        "schemaVersion"
+                    )
+                    or 1
+            ) < 2:
+                return []
+
+            previousSteps.append(
+                _restorePreviousStep(
+                    templateStep,
+                    row,
+                )
+            )
+
+        return previousSteps
+
+    finally:
+        mapper.db.close()
+

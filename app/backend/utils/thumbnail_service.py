@@ -30,6 +30,7 @@ import io
 import logging
 import os
 import re
+import json
 import hashlib
 from urllib.parse import quote
 from pathlib import Path
@@ -81,6 +82,11 @@ from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO
 from pwem.viewers.mdviewer.star_dao import StarFile
 from pwem.viewers.viewers_data import RegistryViewerConfig
 
+from pyworkflow.object import (
+    Object as ScipionObject,
+    Set as ScipionSet,
+)
+
 logger = logging.getLogger(__name__)
 _thumbnailBuildLocksGuard = threading.Lock()
 _thumbnailBuildLocks: Dict[str, threading.Lock] = {}
@@ -93,9 +99,255 @@ class ThumbnailService:
     def __init__(self, currentProject):
         self.currentProject = currentProject
 
+        # Detached PostgreSQL outputs indexed by:
+        # protocolId -> outputName -> runtime object.
+        self._postgresqlOutputsByProtocolId = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def _getPostgresqlRuntimeMapper(
+            self,
+    ):
+        mapper = getattr(
+            self.currentProject,
+            "mapper",
+            None,
+        )
+
+        if mapper is None:
+            return None
+
+        marker = getattr(
+            mapper,
+            "isPostgresqlRuntimeMapper",
+            False,
+        )
+
+        if callable(marker):
+            try:
+                marker = marker()
+            except Exception:
+                return None
+
+        if not marker:
+            return None
+
+        return mapper
+
+    @staticmethod
+    def _getRuntimeOutputParentId(
+            output,
+    ) -> Optional[int]:
+        parentId = None
+
+        getter = getattr(
+            output,
+            "getObjParentId",
+            None,
+        )
+
+        if callable(getter):
+            try:
+                parentId = getter()
+            except Exception:
+                parentId = None
+
+        if parentId is None:
+            parentId = getattr(
+                output,
+                "_objParentId",
+                None,
+            )
+
+        try:
+            return int(parentId)
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return None
+
+    @staticmethod
+    def _getRuntimeOutputName(
+            output,
+            parentProtocolId: int,
+    ) -> str:
+        outputName = None
+
+        getter = getattr(
+            output,
+            "getObjName",
+            None,
+        )
+
+        if callable(getter):
+            try:
+                outputName = getter()
+            except Exception:
+                outputName = None
+
+        if not outputName:
+            outputName = getattr(
+                output,
+                "_objName",
+                None,
+            )
+
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        protocolPrefix = (
+            "%s."
+            % int(parentProtocolId)
+        )
+
+        if outputName.startswith(
+                protocolPrefix
+        ):
+            outputName = outputName[
+                len(protocolPrefix):
+            ]
+
+        return outputName
+
+    def _loadPostgresqlOutputsByProtocolId(
+            self,
+    ) -> Dict[str, Dict[str, Any]]:
+        if (
+                self._postgresqlOutputsByProtocolId
+                is not None
+        ):
+            return (
+                self
+                ._postgresqlOutputsByProtocolId
+            )
+
+        result: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+
+        # Set the cache before loading objects. Pointer resolution can
+        # recursively reconstruct other PostgreSQL runtime objects.
+        self._postgresqlOutputsByProtocolId = (
+            result
+        )
+
+        runtimeMapper = (
+            self._getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            return result
+
+        for objectClass in (
+                ScipionSet,
+                ScipionObject,
+        ):
+            try:
+                runtimeObjects = (
+                    runtimeMapper.selectByClass(
+                        objectClass,
+                        includeSubclasses=True,
+                        iterate=False,
+                    )
+                    or []
+                )
+
+            except Exception:
+                logger.debug(
+                    "Could not load PostgreSQL "
+                    "thumbnail output objects. "
+                    "className=%s",
+                    objectClass.__name__,
+                    exc_info=True,
+                )
+
+                continue
+
+            for runtimeObject in (
+                    runtimeObjects
+            ):
+                parentProtocolId = (
+                    self
+                    ._getRuntimeOutputParentId(
+                        runtimeObject
+                    )
+                )
+
+                if parentProtocolId is None:
+                    continue
+
+                outputName = (
+                    self
+                    ._getRuntimeOutputName(
+                        output=runtimeObject,
+                        parentProtocolId=(
+                            parentProtocolId
+                        ),
+                    )
+                )
+
+                if not outputName:
+                    continue
+
+                result.setdefault(
+                    str(parentProtocolId),
+                    {},
+                ).setdefault(
+                    outputName,
+                    runtimeObject,
+                )
+
+        return result
+
+    def _iterPostgresqlOutputAttributes(
+            self,
+            protocol,
+    ) -> Iterable[Tuple[str, Any]]:
+        try:
+            protocolId = int(
+                protocol.getObjId()
+            )
+        except Exception:
+            return
+
+        outputsByName = (
+            self
+            ._loadPostgresqlOutputsByProtocolId()
+            .get(
+                str(protocolId),
+                {},
+            )
+        )
+
+        for outputName, output in (
+                outputsByName.items()
+        ):
+            if output is not None:
+                yield outputName, output
+
+    def _findProtocolOutput(
+            self,
+            protocol,
+            outputName: str,
+    ):
+        expectedName = str(
+            outputName or ""
+        )
+
+        for candidateName, output in (
+                self._iterOutputAttributes(
+                    protocol
+                )
+        ):
+            if str(candidateName) == expectedName:
+                return output
+
+        return None
+
     def _getThumbnailBuildLock(self, cachePath: Path):
         key = str(cachePath)
         with _thumbnailBuildLocksGuard:
@@ -461,6 +713,39 @@ class ThumbnailService:
             f"protocol_{int(protocolId)}_{token}_{int(size)}_{self.CACHE_VERSION}.png"
         )
 
+    def _getProtocolOutputNegativeCachePath(self, protocolId: int, outputName: str, size: int) -> Path:
+        return self._getProtocolOutputCachePath(protocolId=protocolId, outputName=outputName, size=size).with_suffix(".missing.json")
+
+    def _readNegativeThumbnailCache(self, cachePath: Path) -> Optional[dict]:
+        if not cachePath.is_file():
+            return None
+
+        try:
+            payload = json.loads(cachePath.read_text(encoding="utf-8"))
+        except Exception:
+            cachePath.unlink(missing_ok=True)
+            return None
+
+        if not isinstance(payload, dict):
+            cachePath.unlink(missing_ok=True)
+            return None
+
+        return payload
+
+    def _writeNegativeThumbnailCache(self, cachePath: Path, outputClassName: Optional[str] = None, error: Optional[str] = None) -> None:
+        try:
+            cachePath.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"outputClassName": outputClassName, "error": str(error) if error else None}
+            cachePath.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            logger.debug("Could not write negative thumbnail cache. cachePath=%s", cachePath, exc_info=True)
+
+    def _clearNegativeThumbnailCache(self, cachePath: Path) -> None:
+        try:
+            cachePath.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("Could not clear negative thumbnail cache. cachePath=%s", cachePath, exc_info=True)
+
     def buildProtocolOutputThumbnail(
             self,
             protocolId: int,
@@ -485,24 +770,56 @@ class ThumbnailService:
                 "exists": False,
             }
 
-        if not hasattr(protocol, outputName):
+        cachePath = self._getProtocolOutputCachePath(protocolId=int(protocolId), outputName=outputName, size=int(size))
+        negativeCachePath = self._getProtocolOutputNegativeCachePath(protocolId=int(protocolId), outputName=outputName,
+                                                                     size=int(size))
+
+        if not force and self._isValidCachedImage(cachePath):
+            self._clearNegativeThumbnailCache(negativeCachePath)
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
                 "status": self._getProtocolStatus(protocol),
                 "outputName": outputName,
                 "outputClassName": None,
-                "absolutePath": None,
-                "cached": False,
-                "exists": False,
+                "absolutePath": str(cachePath),
+                "cached": True,
+                "exists": True,
             }
 
-        output = getattr(protocol, outputName, None)
+        if not force:
+            negativeCache = self._readNegativeThumbnailCache(negativeCachePath)
+            if negativeCache is not None:
+                return {
+                    "protocolId": int(protocolId),
+                    "protocolLabel": self._getProtocolLabel(protocol),
+                    "status": self._getProtocolStatus(protocol),
+                    "outputName": outputName,
+                    "outputClassName": negativeCache.get("outputClassName"),
+                    "absolutePath": None,
+                    "cached": True,
+                    "exists": False,
+                    "error": negativeCache.get("error"),
+                }
+
+        output = self._findProtocolOutput(protocol=protocol, outputName=outputName)
+
         if output is None:
+            self._writeNegativeThumbnailCache(negativeCachePath, outputClassName=None, error="Output not found")
             return {
-                "protocolId": int(protocolId),
-                "protocolLabel": self._getProtocolLabel(protocol),
-                "status": self._getProtocolStatus(protocol),
+                "protocolId": int(
+                    protocolId
+                ),
+                "protocolLabel": (
+                    self._getProtocolLabel(
+                        protocol
+                    )
+                ),
+                "status": (
+                    self._getProtocolStatus(
+                        protocol
+                    )
+                ),
                 "outputName": outputName,
                 "outputClassName": None,
                 "absolutePath": None,
@@ -514,6 +831,8 @@ class ThumbnailService:
         score = self._scoreOutput(outputName, output)
 
         if score <= 0 and not self._looksRenderableOutput(output):
+            self._writeNegativeThumbnailCache(negativeCachePath, outputClassName=outputClassName,
+                                              error="Output is not renderable")
             return {
                 "protocolId": int(protocolId),
                 "protocolLabel": self._getProtocolLabel(protocol),
@@ -534,6 +853,7 @@ class ThumbnailService:
         buildLock = self._getThumbnailBuildLock(cachePath)
         with buildLock:
             if not force and self._isValidCachedImage(cachePath):
+                self._clearNegativeThumbnailCache(negativeCachePath)
                 return {
                     "protocolId": int(protocolId),
                     "protocolLabel": self._getProtocolLabel(protocol),
@@ -576,6 +896,8 @@ class ThumbnailService:
                     )
 
             if previewImage is None:
+                self._writeNegativeThumbnailCache(negativeCachePath, outputClassName=outputClassName,
+                                                  error="Thumbnail not available")
                 return {
                     "protocolId": int(protocolId),
                     "protocolLabel": self._getProtocolLabel(protocol),
@@ -593,6 +915,7 @@ class ThumbnailService:
                 protocolId=int(protocolId),
             )
             self._saveImage(thumbnail, cachePath)
+            self._clearNegativeThumbnailCache(negativeCachePath)
 
             return {
                 "protocolId": int(protocolId),
@@ -699,14 +1022,63 @@ class ThumbnailService:
         )
         return candidates
 
-    def _iterOutputAttributes(self, protocol) -> Iterable[Tuple[str, Any]]:
+    def _iterOutputAttributes(
+            self,
+            protocol,
+    ) -> Iterable[Tuple[str, Any]]:
+        seenOutputNames = set()
+
         try:
-            for outputName, output in protocol.iterOutputAttributes():
+            for outputName, output in (
+                    protocol
+                            .iterOutputAttributes()
+            ):
                 if output is None:
                     continue
+
+                outputName = str(
+                    outputName
+                )
+
+                seenOutputNames.add(
+                    outputName
+                )
+
                 yield outputName, output
+
         except Exception:
-            return
+            logger.debug(
+                "Could not iterate native protocol "
+                "outputs while building thumbnail. "
+                "protocolId=%s",
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )(),
+                exc_info=True,
+            )
+
+        for outputName, output in (
+                self
+                        ._iterPostgresqlOutputAttributes(
+                    protocol
+                )
+        ):
+            outputName = str(
+                outputName
+            )
+
+            if outputName in (
+                    seenOutputNames
+            ):
+                continue
+
+            seenOutputNames.add(
+                outputName
+            )
+
+            yield outputName, output
 
     def _scoreProtocolStatus(self, protocol) -> int:
         status = self._getProtocolStatus(protocol).lower()
@@ -924,7 +1296,7 @@ class ThumbnailService:
                         "outputClassName": outputClassName,
                         "exists": True,
                         "thumbnailUrl": (
-                            f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName))}/thumbnail"
+                            f"/projects/{int(projectId)}/protocols/{protocolId}/outputs/{quote(str(outputName), safe='')}/thumbnail"
                         ),
                         "thumbnailDataUrl": thumbnailDataUrl,
                         "thumbnailRebuildUrl": None,

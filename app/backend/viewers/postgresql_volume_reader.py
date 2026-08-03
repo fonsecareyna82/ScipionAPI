@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 
 from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
 class PostgresqlVolumeReader:
@@ -21,6 +22,7 @@ class PostgresqlVolumeReader:
         self._storedSet = None
         self._storedObjectTree = None
         self._volumes = None
+        self._pathResolver = PostgresqlProjectPathResolver(db, projectId)
 
     def hasOutput(self) -> bool:
         if self._getStoredSet() is not None:
@@ -69,9 +71,19 @@ class PostgresqlVolumeReader:
         return info
 
     def getVolumeFile(self, volumeId: Union[int, str]) -> Optional[Dict[str, Any]]:
-        info = self.getVolumeInfo(volumeId)
-        if info is None:
+        self.lastSkipReason = None
+
+        volumes = self.listVolumes()
+        if not volumes:
+            self.lastSkipReason = self.lastSkipReason or "volume_list_empty"
             return None
+
+        volume = self._findVolume(volumeId, volumes)
+        if volume is None:
+            self.lastSkipReason = "volume_not_found volumeId=%s" % str(volumeId)
+            return None
+
+        info = dict(volume)
 
         fileName = info.get("fileName") or info.get("path")
         if not fileName:
@@ -610,28 +622,7 @@ class PostgresqlVolumeReader:
         volume["voxelSize"] = [samplingRate, samplingRate, samplingRate]
 
     def _resolveExistingPath(self, fileName: Any) -> Optional[str]:
-        text = self._toText(fileName)
-        if not text:
-            return None
-
-        path = Path(text).expanduser()
-        candidates = []
-
-        if path.is_absolute():
-            candidates.append(path)
-        else:
-            candidates.append(path)
-            candidates.append(Path.cwd() / path)
-
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-                if resolved.exists():
-                    return str(resolved)
-            except Exception:
-                continue
-
-        return None
+        return self._pathResolver.resolveExistingPath(fileName)
 
     def _normalizeVolumeDisplayName(
             self,

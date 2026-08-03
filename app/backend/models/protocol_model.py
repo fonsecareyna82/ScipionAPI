@@ -25,7 +25,16 @@
 # ******************************************************************************
 # models/protocol_model.py
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, ARRAY
+from sqlalchemy import (
+    ARRAY,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
@@ -47,6 +56,12 @@ class Protocol(Base):
     status = Column(String, default="pending")
     parentIds = Column(ARRAY(Integer), default=[])
     childIds = Column(ARRAY(Integer), default=[])
+    relationsSynchronized = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     createdAt = Column(DateTime(timezone=True), server_default=func.now())
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now())
 

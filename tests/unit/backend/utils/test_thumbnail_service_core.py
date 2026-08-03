@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -79,10 +80,17 @@ class FakeGraph:
 
 class FakeCurrentProject:
     # fakeCurrentProject
-    def __init__(self, projectPath, protocols=None, graph=None):
+    def __init__(
+            self,
+            projectPath,
+            protocols=None,
+            graph=None,
+            mapper=None,
+    ):
         self._projectPath = projectPath
         self._protocols = protocols or {}
         self._graph = graph
+        self.mapper = mapper
 
     def getPath(self):
         return self._projectPath
@@ -92,6 +100,84 @@ class FakeCurrentProject:
 
     def getRunsGraph(self, refresh=False, checkPids=False):
         return self._graph
+
+class FakePersistedOutput(FakeOutput):
+    def __init__(
+            self,
+            className,
+            size,
+            parentId,
+            objectName,
+    ):
+        super().__init__(
+            className=className,
+            size=size,
+        )
+
+        self._parentId = parentId
+        self._objectName = objectName
+
+    def getObjParentId(self):
+        return self._parentId
+
+    def getObjName(self):
+        return self._objectName
+
+
+class FakePostgresqlRuntimeMapper:
+    isPostgresqlRuntimeMapper = True
+
+    def __init__(
+            self,
+            sets=None,
+            objects=None,
+    ):
+        self.sets = list(
+            sets or []
+        )
+
+        self.objects = list(
+            objects or []
+        )
+
+    def selectByClass(
+            self,
+            objectClass,
+            includeSubclasses=True,
+            iterate=False,
+            objectFilter=None,
+    ):
+        className = getattr(
+            objectClass,
+            "__name__",
+            "",
+        )
+
+        if className == "Set":
+            result = list(
+                self.sets
+            )
+
+        elif className == "Object":
+            result = list(
+                self.objects
+            )
+
+        else:
+            result = []
+
+        if callable(objectFilter):
+            result = [
+                item
+                for item in result
+                if objectFilter(item)
+            ]
+
+        return (
+            iter(result)
+            if iterate
+            else result
+        )
 
 
 @pytest.fixture
@@ -276,6 +362,35 @@ def test_BuildProtocolThumbnailReturnsCachedEntry(service, monkeypatch, tmp_path
     }
 
 
+def test_BuildProtocolOutputThumbnailChecksCacheBeforeResolvingOutput(service, monkeypatch, tmp_path):
+    protocol = FakeProtocol(10, label="Prot 10", status="finished")
+    service.currentProject._protocols = {10: protocol}
+
+    cachePath = tmp_path / "protocol_10_outputVol_128_v1.png"
+    cachePath.write_bytes(b"cached")
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: cachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: True)
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("Cached thumbnails must not resolve PostgreSQL outputs")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    result = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputVol", force=False, size=128)
+
+    assert result == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputVol",
+        "outputClassName": None,
+        "absolutePath": str(cachePath),
+        "cached": True,
+        "exists": True,
+    }
+
+
 def test_BuildProtocolThumbnailReturnsMissingWhenRequestedOutputDoesNotExist(service, monkeypatch):
     protocol = FakeProtocol(10, label="Prot 10", status="finished")
     service.currentProject._protocols = {10: protocol}
@@ -381,3 +496,257 @@ def test_ListProtocolThumbnailItemsBuildsGroups(service, monkeypatch):
             ],
         }
     ]
+
+
+def test_CollectSortedOutputCandidatesUsesDetachedPostgresqlOutputs(
+        thumbnailServiceModule,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        label="Protocol 10",
+        status="finished",
+        outputs=[],
+    )
+
+    persistedOutput = (
+        FakePersistedOutput(
+            className="SetOfParticles",
+            size=8,
+            parentId=10,
+            objectName=(
+                "10.outputParticles"
+            ),
+        )
+    )
+
+    runtimeMapper = (
+        FakePostgresqlRuntimeMapper(
+            sets=[
+                persistedOutput,
+            ]
+        )
+    )
+
+    graph = FakeGraph({
+        "PROJECT": FakeNode(
+            run=None
+        ),
+        "10": FakeNode(
+            run=protocol
+        ),
+    })
+
+    currentProject = (
+        FakeCurrentProject(
+            projectPath=str(
+                projectPath
+            ),
+            protocols={
+                10: protocol,
+            },
+            graph=graph,
+            mapper=runtimeMapper,
+        )
+    )
+
+    service = (
+        thumbnailServiceModule
+        .ThumbnailService(
+            currentProject
+        )
+    )
+
+    candidates = (
+        service
+        ._collectSortedOutputCandidates(
+            protocol
+        )
+    )
+
+    assert len(candidates) == 1
+
+    assert (
+        candidates[0][
+            "outputName"
+        ]
+        == "outputParticles"
+    )
+
+    assert (
+        candidates[0][
+            "output"
+        ]
+        is persistedOutput
+    )
+
+    assert (
+        candidates[0][
+            "itemsCount"
+        ]
+        == 8
+    )
+
+
+def test_NativeProtocolOutputWinsOverPostgresqlFallback(
+        thumbnailServiceModule,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    nativeOutput = FakeOutput(
+        className="SetOfParticles",
+        size=4,
+    )
+
+    persistedOutput = (
+        FakePersistedOutput(
+            className="SetOfParticles",
+            size=8,
+            parentId=10,
+            objectName=(
+                "10.outputParticles"
+            ),
+        )
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        outputs=[
+            (
+                "outputParticles",
+                nativeOutput,
+            ),
+        ],
+    )
+
+    currentProject = (
+        FakeCurrentProject(
+            projectPath=str(
+                projectPath
+            ),
+            mapper=(
+                FakePostgresqlRuntimeMapper(
+                    sets=[
+                        persistedOutput,
+                    ]
+                )
+            ),
+        )
+    )
+
+    service = (
+        thumbnailServiceModule
+        .ThumbnailService(
+            currentProject
+        )
+    )
+
+    outputs = list(
+        service
+        ._iterOutputAttributes(
+            protocol
+        )
+    )
+
+    assert outputs == [
+        (
+            "outputParticles",
+            nativeOutput,
+        ),
+    ]
+
+
+def test_BuildProtocolOutputThumbnailReturnsNegativeCacheWithoutResolvingOutput(service, monkeypatch, tmp_path):
+    protocol = FakeProtocol(10, label="Prot 10", status="finished")
+    service.currentProject._protocols = {10: protocol}
+
+    pngCachePath = tmp_path / "protocol_10_outputVol_128_v1.png"
+    negativeCachePath = tmp_path / "protocol_10_outputVol_128_v1.missing.json"
+    negativeCachePath.write_text(json.dumps({"outputClassName": "SetOfParticles", "error": "Thumbnail not available"}), encoding="utf-8")
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: pngCachePath)
+    monkeypatch.setattr(service, "_getProtocolOutputNegativeCachePath", lambda protocolId, outputName, size: negativeCachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: False)
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("Negative cache must avoid output hydration")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    result = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputVol", force=False, size=128)
+
+    assert result == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputVol",
+        "outputClassName": "SetOfParticles",
+        "absolutePath": None,
+        "cached": True,
+        "exists": False,
+        "error": "Thumbnail not available",
+    }
+
+
+def test_BuildProtocolOutputThumbnailCachesMissingRenderedPreview(service, monkeypatch, tmp_path):
+    output = FakeOutput(className="SetOfParticles", size=5)
+    protocol = FakeProtocol(10, label="Prot 10", status="finished", outputs=[("outputParticles", output)])
+    service.currentProject._protocols = {10: protocol}
+
+    pngCachePath = tmp_path / "protocol_10_outputParticles_128_v1.png"
+    negativeCachePath = tmp_path / "protocol_10_outputParticles_128_v1.missing.json"
+
+    monkeypatch.setattr(service, "_getProtocolOutputCachePath", lambda protocolId, outputName, size: pngCachePath)
+    monkeypatch.setattr(service, "_getProtocolOutputNegativeCachePath", lambda protocolId, outputName, size: negativeCachePath)
+    monkeypatch.setattr(service, "_isValidCachedImage", lambda path: False)
+    monkeypatch.setattr(service, "_renderProtocolPreviewImage", lambda *args, **kwargs: None)
+
+    firstResult = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputParticles", force=False, size=128)
+
+    assert firstResult["exists"] is False
+    assert json.loads(negativeCachePath.read_text(encoding="utf-8")) == {
+        "outputClassName": "SetOfParticles",
+        "error": "Thumbnail not available",
+    }
+
+    def failFindProtocolOutput(**kwargs):
+        raise AssertionError("The second request must use the negative cache")
+
+    monkeypatch.setattr(service, "_findProtocolOutput", failFindProtocolOutput)
+
+    secondResult = service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputParticles", force=False, size=128)
+
+    assert secondResult == {
+        "protocolId": 10,
+        "protocolLabel": "Prot 10",
+        "status": "finished",
+        "outputName": "outputParticles",
+        "outputClassName": "SetOfParticles",
+        "absolutePath": None,
+        "cached": True,
+        "exists": False,
+        "error": "Thumbnail not available",
+    }
+
+
+
+

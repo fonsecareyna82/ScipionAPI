@@ -43,31 +43,61 @@ def patchRenameProtocolFake(fakeProjectService):
     fakeProjectService.renameProtocol = renameProtocol
 
 
-def test_LoadProtocolReturns404WhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+def test_LoadProtocolReturns404WhenPostgresqlRuntimeProjectMissing(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
-    response = projectClient.get("/projects/1/protocols/10")
+    response = projectClient.get(
+        "/projects/1/protocols/10"
+    )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Project not found"
 
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastGetProtocolParamsCall is None
 
-def test_LoadProtocolReturnsParams(projectClient, fakeProjectService):
-    response = projectClient.get("/projects/1/protocols/10")
+
+def test_LoadProtocolUsesPostgresqlRuntimeContextAndReturnsParams(
+        projectClient,
+        fakeProjectService,
+        fakeProjectMapper,
+):
+    response = projectClient.get(
+        "/projects/1/protocols/10"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "protocolId": "10",
         "protocolClassName": "ProtClass",
         "params": {"a": 1},
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+        }
+    )
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
     assert fakeProjectService.lastGetProtocolParamsCall == {
+        "mapper": fakeProjectMapper,
         "projectId": 1,
         "protocolId": 10,
-        "mapper": fakeProjectService.lastGetProtocolParamsCall["mapper"],
     }
-
 
 def test_LoadProtocolsReturns404WhenProjectMissing(
     projectClient,
@@ -127,19 +157,58 @@ def test_LoadProtocolsUsesProjectDbRow(
     }
 
 
-def test_LoadNewProtocolReturnsParams(projectClient, fakeProjectService):
-    response = projectClient.get("/projects/1/protclass/MyProtClass")
+def test_LoadNewProtocolUsesPostgresqlRuntimeMutationContext(
+        projectClient,
+        fakeProjectService,
+        fakeProjectMapper,
+):
+    response = projectClient.get(
+        "/projects/1/protclass/MyProtClass"
+    )
 
     assert response.status_code == 200
+
     assert response.json() == {
         "protocolClassName": "ProtClass",
         "params": {"x": 2},
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+        }
+    )
+
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
     assert fakeProjectService.lastGetNewProtocolParamsCall == {
         "projectId": 1,
         "protClassName": "MyProtClass",
     }
+
+
+def test_LoadNewProtocolReturns404WhenPostgresqlRuntimeProjectMissing(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.get(
+        "/projects/1/protclass/MyProtClass"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    assert fakeProjectService.lastGetNewProtocolParamsCall is None
 
 
 @pytest.mark.parametrize(
@@ -185,6 +254,7 @@ def test_ProtocolOperationsReturn404EnvelopeWhenProjectMissing(
     payload,
 ):
     fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     request = getattr(projectClient, method)
     kwargs = {}
@@ -202,7 +272,7 @@ def test_ProtocolOperationsReturn404EnvelopeWhenProjectMissing(
 
 
 def test_LaunchProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.post(
         "/projects/1/launch",
@@ -406,7 +476,7 @@ def test_SaveProtocolReturns404EnvelopeWhenProjectMissing(
     projectClient,
     fakeProjectService,
 ):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.post(
         "/projects/1/save",
@@ -505,7 +575,7 @@ def test_SaveProtocolWrapsUnexpectedException(
 
 
 def test_SuggestionProtocolReturns404EnvelopeWhenProjectMissing(projectClient, fakeProjectService):
-    fakeProjectService.projectByIdResult = None
+    fakeProjectService.postgresqlRuntimeMutationResult = None
 
     response = projectClient.get("/projects/1/protocols/10/suggestions/next")
 
@@ -611,14 +681,37 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "newName": "Renamed protocol",
         "newComment": "Updated comment",
     }
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
+    assert (
+            fakeProjectService
+            .lastLoadPostgresqlRuntimeProjectForMutationCall
+            == {
+                "mapper": (
+                    fakeProjectService
+                    .lastRenameProtocolCall[
+                        "mapper"
+                    ]
+                ),
+                "projectId": 1,
+                "currentUser": {
+                    "id": 1,
+                    "email": (
+                        "user@example.com"
+                    ),
+                    "role": "user",
+                },
+            }
+    )
 
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "rename protocol",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastGetProjectByIdCall
+            is None
+    )
 
 
 def test_RenameProtocolWrapsUnexpectedException(
@@ -928,7 +1021,6 @@ def test_RestartProtocolAllWrapsUnexpectedException(
 
 
 def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
-    fakeProjectService.restartProtocolAllResult = []
 
     response = projectClient.post("/projects/1/protocols/10/restart-all")
 
@@ -941,18 +1033,35 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
         "dependenciesCount": 0,
     }
 
+    assert (
+        fakeProjectService
+        .lastLoadPostgresqlRuntimeProjectForMutationCall
+        == {
+            "mapper": (
+                fakeProjectService
+                .lastRestartProtocolAllCall[
+                    "mapper"
+                ]
+            ),
+            "projectId": 1,
+            "currentUser": {
+                "id": 1,
+                "email": "user@example.com",
+                "role": "user",
+            },
+        }
+    )
+
     assert fakeProjectService.lastRestartProtocolAllCall == {
         "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
         "projectId": 1,
         "protocolId": 10,
     }
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "restart protocol subtree",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
 
 
 def test_ContinueProtocolAllWrapsHttpException(projectClient, fakeProjectService):
@@ -1007,14 +1116,30 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
         "dependenciesCount": 0,
     }
 
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "continue protocol subtree",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastLoadPostgresqlRuntimeProjectForMutationCall
+            == {
+                "mapper": (
+                    fakeProjectService
+                    .lastContinueProtocolAllCall[
+                        "mapper"
+                    ]
+                ),
+                "projectId": 1,
+                "currentUser": {
+                    "id": 1,
+                    "email": "user@example.com",
+                    "role": "user",
+                },
+            }
+    )
 
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
     assert fakeProjectService.lastContinueProtocolAllCall == {
         "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
         "projectId": 1,
@@ -1084,57 +1209,31 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolId": 10,
     }
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "reset protocol from node",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
 
 
-def test_RenameProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
-    patchRenameProtocolFake(fakeProjectService)
+def test_RestartProtocolAllIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="rename protocol succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
-    response = projectClient.put(
-        "/projects/1/protocols/10/rename",
-        json={"runName": "Renamed protocol", "comment": "Updated comment"},
+    response = projectClient.post(
+        "/projects/1/protocols/10/restart-all"
+        "?usePostgresqlRuntimeProject=false"
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["rename protocol succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
-    }
-
-    assert fakeProjectService.lastRenameProtocolCall == {
-        "mapper": fakeProjectService.lastRenameProtocolCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-        "newName": "Renamed protocol",
-        "newComment": "Updated comment",
-    }
-
-
-def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
-    fakeProjectService.restartProtocolAllResult = []
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="restart protocol subtree succeeded but graph sync to PostgreSQL failed",
-    )
-
-    response = projectClient.post("/projects/1/protocols/10/restart-all")
-
-    assert response.status_code == 500
-    assert response.json() == {
-        "status": 1,
-        "errors": ["restart protocol subtree succeeded but graph sync to PostgreSQL failed"],
-        "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastRestartProtocolAllCall == {
@@ -1143,47 +1242,27 @@ def test_RestartProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakePro
         "protocolId": 10,
     }
 
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
-def test_ContinueProtocolAllReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+
+def test_ResetProtocolFromIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="continue protocol subtree succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
-    response = projectClient.post("/projects/1/protocols/10/continue-all")
-
-    assert response.status_code == 500
-    assert response.json() == {
-        "status": 1,
-        "errors": ["continue protocol subtree succeeded but graph sync to PostgreSQL failed"],
-        "workflow": [],
-    }
-
-    assert fakeProjectService.lastContinueProtocolAllCall == {
-        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-        "currentUser": {
-            "id": 1,
-            "email": "user@example.com",
-            "role": "user",
-        },
-    }
-
-
-def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="reset protocol from node succeeded but graph sync to PostgreSQL failed",
+    response = projectClient.post(
+        "/projects/1/protocols/10/reset-from"
+        "?usePostgresqlRuntimeProject=false"
     )
 
-    response = projectClient.post("/projects/1/protocols/10/reset-from")
-
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["reset protocol from node succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastResetProtocolFromCall == {
@@ -1191,6 +1270,8 @@ def test_ResetProtocolFromReturnsErrorWhenGraphSyncFails(projectClient, fakeProj
         "projectId": 1,
         "protocolId": 10,
     }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolWrapsHttpException(projectClient, fakeProjectService):
@@ -1239,22 +1320,30 @@ def test_StopProtocolWrapsUnexpectedException(
     }
 
 
-def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectService):
+def test_StopProtocolIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
     fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
         status_code=500,
-        detail="stop protocol succeeded but graph sync to PostgreSQL failed",
+        detail="Legacy graph sync must not run",
     )
 
     response = projectClient.post(
-        "/projects/1/protocols/stop",
-        json={"protocolIds": ["10", "11"]},
+        "/projects/1/protocols/stop"
+        "?usePostgresqlRuntimeProject=false",
+        json={
+            "protocolIds": [
+                "10",
+                "11",
+            ],
+        },
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 200
     assert response.json() == {
-        "status": 1,
-        "errors": ["stop protocol succeeded but graph sync to PostgreSQL failed"],
+        "status": 0,
+        "errors": [],
         "workflow": [],
+        "protocolsCount": 1,
+        "dependenciesCount": 0,
     }
 
     assert fakeProjectService.lastStopProtocolCall == {
@@ -1262,6 +1351,8 @@ def test_StopProtocolReturnsErrorWhenGraphSyncFails(projectClient, fakeProjectSe
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
+
+    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolRejectsMissingProtocolIds(projectClient):
@@ -1299,13 +1390,11 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "protocolIds": ["10", "11"],
     }
 
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall == {
-        "mapper": fakeProjectService.lastSyncProjectGraphAfterMutationCall["mapper"],
-        "projectId": 1,
-        "actionLabel": "stop protocol",
-        "refresh": True,
-        "checkPid": True,
-    }
+    assert (
+            fakeProjectService
+            .lastSyncProjectGraphAfterMutationCall
+            is None
+    )
 
 
 def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(

@@ -565,9 +565,10 @@ class PostgresqlCtftomoReader:
         if psdFile:
             frame["psdFile"] = str(psdFile)
 
-        enabled = self._firstValueBySuffix(values, ["enabled", "isenabled"])
-        enabledBool = self._toOptionalBool(enabled)
-        frame["excluded"] = False if enabledBool is None else not enabledBool
+        frame["excluded"] = self._getFrameExcluded(
+            item=item,
+            values=values,
+        )
 
         return frame
 
@@ -602,6 +603,50 @@ class PostgresqlCtftomoReader:
                     return value
 
         return None
+
+    def _getFrameExcluded(
+            self,
+            item: Dict[str, Any],
+            values: Dict[str, Any],
+    ) -> bool:
+        excludedValue = self._firstValueBySuffix(
+            values,
+            [
+                "excluded",
+                "skip",
+            ],
+        )
+
+        if excludedValue is not None:
+            excluded = self._toOptionalBool(
+                excludedValue
+            )
+
+            return bool(
+                excluded
+            ) if excluded is not None else False
+
+        enabledValue = item.get(
+            "enabled"
+        )
+
+        if enabledValue is None:
+            enabledValue = self._firstValueBySuffix(
+                values,
+                [
+                    "enabled",
+                    "isenabled",
+                ],
+            )
+
+        enabled = self._toOptionalBool(
+            enabledValue
+        )
+
+        if enabled is None:
+            return False
+
+        return not enabled
 
     def _extractDims(self, values: Dict[str, Any]) -> Optional[List[int]]:
         raw = self._firstValueBySuffix(

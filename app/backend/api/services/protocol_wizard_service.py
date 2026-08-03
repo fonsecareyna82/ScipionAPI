@@ -36,6 +36,7 @@ from fastapi import HTTPException, status
 from pyworkflow.protocol.params import MultiPointerParam, PointerParam, RelationParam
 
 from app.backend.api.services.wizard_handlers import executeWizardHandler
+from app.utils.protocol_param import castProtocolParamValue
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,7 @@ class ProtocolWizardService:
                 continue
 
             try:
-                castedValue = self.projectService.castParamValue(param, value)
+                castedValue = castProtocolParamValue(param, value)
                 errors = param.validate(castedValue) if hasattr(param, "validate") else []
                 if errors:
                     errorList += ["**" + param.label.get() + "** " + error for error in errors]
@@ -491,18 +492,30 @@ class ProtocolWizardService:
         if self.projectService is None:
             raise RuntimeError("projectService is required to execute protocol wizards")
 
-        project = self.projectService.getProjectById(
-            mapper,
-            projectId,
-            currentUser,
-            refresh=False,
-            checkPid=False,
+        projectRow = (
+            self.projectService
+            .loadPostgresqlRuntimeProjectForMutation(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+            )
         )
-        if not project:
+
+        if not projectRow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
+
+        project = self.projectService.currentProject
+
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL runtime project was not loaded",
+            )
+
+        self.currentProject = project
 
         protocol = self._buildWizardReadyProtocol(
             protocolId=getattr(payload, "protocolId", None),

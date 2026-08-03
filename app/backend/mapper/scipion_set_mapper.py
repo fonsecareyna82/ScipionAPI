@@ -31,7 +31,19 @@ import logging
 
 import psycopg2.extras
 
-from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapper
+from pyworkflow.object import (
+    Pointer,
+    PointerList,
+    Set as ScipionSet,
+)
+
+from app.backend.mapper.scipion_object_mapper import (
+    ScipionObjectPostgresqlMapper,
+)
+from app.backend.runtime.postgresql_runtime_event_service import (
+    PostgresqlRuntimeEventPublisher,
+)
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -41,11 +53,440 @@ except Exception:
 
 
 SELF_LABEL = "self"
-NESTED_LOGICAL_TABLES_VERSION = 14
+NESTED_LOGICAL_TABLES_VERSION = 18
+SET_PROPERTIES_VERSION = 3
+
+POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS = (
+    "fileName",
+    "_mapperPath",
+    "materializedFileName",
+)
 
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
+
+    def _getObjectDisplayText(
+            self,
+            scipionObj: Any,
+    ) -> Optional[str]:
+        if isinstance(
+                scipionObj,
+                ScipionSet,
+        ):
+            return None
+
+        return super()._getObjectDisplayText(
+            scipionObj
+        )
+
+    def _getObjectValueText(
+            self,
+            scipionObj: Any,
+    ) -> Optional[str]:
+        if isinstance(
+                scipionObj,
+                ScipionSet,
+        ):
+            return None
+
+        return super()._getObjectValueText(
+            scipionObj
+        )
+
+    def closeProtocolOutputSets(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> Dict[str, Any]:
+        storedSets = self.db.fetchAll(
+            """
+            SELECT id,
+                   "outputName"
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+             ORDER BY "outputName"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        ) or []
+
+        if not storedSets:
+            return {
+                "protocolDbId": int(protocolDbId),
+                "setsClosed": 0,
+                "outputs": [],
+            }
+
+        closedState = int(ScipionSet.STREAM_CLOSED)
+
+        with self.db.transaction():
+            self.db.execute(
+                """
+                UPDATE scipion_sets
+                   SET properties = jsonb_set(
+                           jsonb_set(
+                               COALESCE(
+                                   properties,
+                                   '{}'::jsonb
+                               ),
+                               '{streamState}',
+                               TO_JSONB(%s::integer),
+                               TRUE
+                           ),
+                           '{_streamState}',
+                           TO_JSONB(%s::integer),
+                           TRUE
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    closedState,
+                    closedState,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            for propertyName in (
+                    "streamState",
+                    "_streamState",
+            ):
+                self.db.execute(
+                    """
+                    INSERT INTO scipion_set_properties (
+                        "setId",
+                        key,
+                        value
+                    )
+                    SELECT id,
+                           %s,
+                           %s
+                      FROM scipion_sets
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                    ON CONFLICT ON CONSTRAINT
+                        ux_scipion_set_properties_set_key
+                    DO UPDATE SET
+                        value = EXCLUDED.value
+                    """,
+                    (
+                        propertyName,
+                        str(closedState),
+                        int(projectId),
+                        int(protocolDbId),
+                    ),
+                    commit=False,
+                )
+
+        return {
+            "protocolDbId": int(protocolDbId),
+            "setsClosed": len(storedSets),
+            "outputs": [
+                str(row.get("outputName") or "")
+                for row in storedSets
+            ],
+        }
+
+    def serializeRuntimeItem(
+            self,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Serialize one native Scipion Set item using the
+        same representation used by PostgreSQL snapshots.
+        """
+        itemId = self._getSourceObjId(
+            item
+        )
+
+        if itemId is None:
+            raise ValueError(
+                "Runtime Set item must have "
+                "a Scipion object id."
+            )
+
+        itemSchema = self._getItemSchema(
+            item
+        )
+
+        return {
+            "scipionItemId": int(
+                itemId
+            ),
+            "enabled": self._getItemEnabled(
+                item
+            ),
+            "label": self._getObjectLabel(
+                item
+            ),
+            "comment": self._getObjectComment(
+                item
+            ),
+            "creation": self._getObjectCreation(
+                item
+            ),
+            "values": self._getItemValues(
+                item,
+                scipionSet=scipionSet,
+            ),
+
+            # Runtime-only metadata. It is consumed by
+            # PostgresqlSetRuntimeMapper and is never persisted
+            # inside the item JSONB values.
+            "_schema": itemSchema,
+        }
+
+    def synchronizeRuntimeItemSchema(
+            self,
+            setId: int,
+            rootTableId: int,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persist the item schema discovered by the first
+        incremental PostgreSQL append.
+
+        The caller must already own the PostgreSQL transaction.
+        """
+        if item is None:
+            raise ValueError(
+                "item is required to synchronize "
+                "a PostgreSQL Set schema."
+            )
+
+        setId = int(
+            setId
+        )
+
+        rootTableId = int(
+            rootTableId
+        )
+
+        itemSchema = self._getItemSchema(
+            item
+        )
+
+        itemClassName = self._getItemClassName(
+            item=item,
+            itemSchema=itemSchema,
+            scipionSet=scipionSet,
+        )
+
+        columns = self._getSetColumns(
+            itemSchema
+        )
+
+        self._upsertSetColumns(
+            setId=setId,
+            columns=columns,
+        )
+
+        self._upsertSetTableColumns(
+            tableId=rootTableId,
+            columns=columns,
+        )
+
+        # Read the complete stored representation because
+        # columns may already exist from a previous execution.
+        storedColumns = self.getStoredSetColumns(
+            setId
+        )
+
+        columnsCount = len(
+            storedColumns
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_sets
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'itemClassName',
+                           %s,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                str(itemClassName),
+                setId,
+            ),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "setId" = %s
+               AND "tableKind" = 'root'
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                rootTableId,
+                setId,
+            ),
+            commit=False,
+        )
+
+        self._upsertSetProperties(
+            setId=setId,
+            properties={
+                "columnsCount": (
+                    columnsCount
+                ),
+            },
+        )
+
+        return {
+            "setId": setId,
+            "rootTableId": rootTableId,
+            "itemClassName": (
+                str(itemClassName)
+            ),
+            "columns": [
+                dict(column)
+                for column
+                in storedColumns
+            ],
+            "columnsCount": (
+                columnsCount
+            ),
+        }
+
+    def synchronizeRuntimeLogicalItemSchema(
+            self,
+            tableId: int,
+            item: Any,
+            parentSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persist the schema discovered by the first append to a
+        writable PostgreSQL logical-table Set.
+
+        The caller already owns the PostgreSQL transaction.
+        """
+        if item is None:
+            raise ValueError(
+                "item is required to synchronize a "
+                "PostgreSQL logical-table schema."
+            )
+
+        tableId = int(
+            tableId
+        )
+
+        itemSchema = self._getItemSchema(
+            item
+        )
+
+        itemClassName = (
+            self._getItemClassName(
+                item=item,
+                itemSchema=itemSchema,
+                scipionSet=parentSet,
+            )
+        )
+
+        columns = self._getSetColumns(
+            itemSchema
+        )
+
+        self._upsertSetTableColumns(
+            tableId=tableId,
+            columns=columns,
+        )
+
+        storedColumns = (
+            self.getStoredSetTableColumns(
+                tableId
+            )
+        )
+
+        columnsCount = len(
+            storedColumns
+        )
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET "itemClassName" = %s,
+                   properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || jsonb_build_object(
+                           'columnsCount',
+                           %s,
+                           'itemClassName',
+                           %s,
+                           'runtimeWritable',
+                           TRUE,
+                           'incremental',
+                           TRUE
+                       )
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "tableKind" = 'child'
+            """,
+            (
+                str(itemClassName),
+                columnsCount,
+                str(itemClassName),
+                tableId,
+            ),
+            commit=False,
+        )
+
+        return {
+            "tableId": tableId,
+            "itemClassName": str(
+                itemClassName
+            ),
+            "columns": [
+                dict(column)
+                for column in storedColumns
+            ],
+            "columnsCount": columnsCount,
+        }
 
     def storeSet(
         self,
@@ -65,16 +506,64 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if batchSize <= 0:
             raise ValueError("batchSize must be greater than zero")
 
-        protocolDbId = self._resolveProtocolDbId(projectId, protocolDbId)
-        syncTimestamp = datetime.now(timezone.utc).isoformat()
-        itemsCountHint = self._getSetItemsCountHint(scipionSet)
-        maxItemIdHint = self._getSetMaxItemIdHint(scipionSet)
-        sourceMTime = self._getSetSourceMTime(scipionSet)
-        existingSet = self._getExistingSet(projectId, protocolDbId, outputName)
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        existingSet = self._getExistingSet(
+            projectId,
+            protocolDbId,
+            outputName,
+        )
+
+        existingProperties = (
+            self._normalizeProperties(
+                existingSet.get(
+                    "properties"
+                )
+            )
+            if existingSet is not None
+            else {}
+        )
+
+        if (
+                existingSet is not None
+                and self._hasPostgresqlNativeOutputFlag(
+            existingProperties
+        )
+        ):
+            return self.finalizeRuntimeSetOutput(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=scipionSet,
+            )
+
+        syncTimestamp = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        itemsCountHint = (
+            self._getSetItemsCountHint(
+                scipionSet
+            )
+        )
+
+        maxItemIdHint = (
+            self._getSetMaxItemIdHint(
+                scipionSet
+            )
+        )
+
+        sourceMTime = (
+            self._getSetSourceMTime(
+                scipionSet
+            )
+        )
 
         if existingSet is not None:
             existingSetId = int(existingSet["id"])
-            existingProperties = self._normalizeProperties(existingSet.get("properties"))
             if (
                     self.hasStoredSetTables(existingSetId)
                     and self._shouldSkipSetSync(existingProperties, itemsCountHint, maxItemIdHint, sourceMTime)
@@ -85,6 +574,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 skippedProperties["skippedLastSync"] = True
                 skippedProperties["incremental"] = True
                 skippedProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
+                skippedProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
                 if sourceMTime is not None:
                     skippedProperties["sourceMTime"] = sourceMTime
 
@@ -119,10 +609,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         itemIterator = iter(self._iterSetItems(scipionSet))
         firstItem = self._nextOrNone(itemIterator)
         itemSchema = self._getItemSchema(firstItem) if firstItem is not None else {}
-        itemClassName = self._getItemClassName(firstItem, itemSchema)
+        itemClassName = self._getItemClassName(firstItem, itemSchema, scipionSet=scipionSet,)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
         initialProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
+        initialProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
 
         storedPaths: List[str] = []
         with self.db.transaction():
@@ -143,11 +634,31 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 protocolDbId=protocolDbId,
                 objectId=rootObjectId,
                 outputName=outputName,
-                setClassName=self._getClassName(scipionSet) or scipionSet.__class__.__name__,
+                setClassName=(
+                        self._getClassName(scipionSet)
+                        or scipionSet.__class__.__name__
+                ),
                 itemClassName=itemClassName,
                 properties=initialProperties,
             )
-            self._upsertSetColumns(setId, columns)
+
+            staleObjectsDeleted = (
+                self._deleteStaleObjectTreePaths(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    outputName=outputName,
+                    storedPaths=storedPaths,
+                )
+            )
+
+            self._replaceStoredSetSnapshot(
+                setId=setId,
+            )
+
+            self._upsertSetColumns(
+                setId,
+                columns,
+            )
 
             rootTableId = self._upsertSetTable(
                 setId=setId,
@@ -191,6 +702,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self._updateSetProperties(setId, finalProperties)
             self._upsertSetProperties(setId, finalProperties)
 
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=rootObjectId,
+            itemsCount=itemsCount,
+            maxItemId=maxItemId,
+        )
+
         return {
             "setId": setId,
             "rootObjectId": rootObjectId,
@@ -205,7 +728,605 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "lastSyncAt": syncTimestamp,
             "lastCheckedAt": syncTimestamp,
             "skipped": False,
+            "snapshotReplaced": existingSet is not None,
+            "staleObjectsDeleted": staleObjectsDeleted,
         }
+
+    def reserveRuntimeSet(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            scipionSet: Any,
+            reservationToken: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Reserve an empty PostgreSQL Set before a protocol starts
+        appending items.
+
+        No SQLite file is created and no Set iteration is attempted.
+        """
+        if not projectId:
+            raise ValueError("projectId is required")
+
+        if not protocolDbId:
+            raise ValueError("protocolDbId is required")
+
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        if not outputName:
+            raise ValueError("outputName is required")
+
+        runtimeObjectId = self._getSourceObjId(
+            scipionSet
+        )
+
+        if runtimeObjectId is None:
+            raise ValueError(
+                "Cannot reserve a PostgreSQL runtime Set "
+                "without a Scipion object id."
+            )
+
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        setClassName = (
+                self._getClassName(
+                    scipionSet
+                )
+                or scipionSet.__class__.__name__
+        )
+
+        itemClassName = self._getItemClassName(
+            item=None,
+            itemSchema={},
+            scipionSet=scipionSet,
+        )
+
+        if (
+                not itemClassName
+                or str(itemClassName).lower()
+                == "unknown"
+        ):
+            raise ValueError(
+                "Cannot reserve PostgreSQL Set %s "
+                "without a declared ITEM_TYPE."
+                % setClassName
+            )
+
+        self.registerObjectTypeFromObject(
+            scipionSet,
+            mapperKind="flat_set",
+            includeProperties=False,
+            classSchema={
+                "storage": "flat_set",
+                "runtimeWritable": True,
+            },
+        )
+
+        timestamp = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+        properties = self._getSetProperties(
+            scipionSet
+        )
+
+        self._removePostgresqlRuntimeStorageProperties(
+            properties
+        )
+
+        properties.update({
+            "columnsCount": 0,
+            "itemsCount": 0,
+            "maxItemId": None,
+            "incremental": True,
+            "runtimeReserved": True,
+            "runtimeWritable": True,
+            "postgresqlNativeOutput": True,
+            "provisionalOutputName": outputName,
+            "reservationToken": reservationToken,
+            "lastSyncAt": timestamp,
+            "lastCheckedAt": timestamp,
+            "nestedTablesVersion": (
+                NESTED_LOGICAL_TABLES_VERSION
+            ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
+            ),
+        })
+
+        storedPaths: List[str] = []
+
+        with self.db.transaction():
+            rootObjectId = self._storeObjectNode(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                scipionObj=scipionSet,
+                name=outputName,
+                path=outputName,
+                parentObjectId=None,
+                storedPaths=storedPaths,
+                includeNestedProperties=False,
+                visited=set(),
+            )
+
+            setId = self._upsertSet(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                objectId=rootObjectId,
+                outputName=outputName,
+                setClassName=setClassName,
+                itemClassName=str(
+                    itemClassName
+                ),
+                properties=properties,
+            )
+
+            self._replaceStoredSetSnapshot(
+                setId=setId
+            )
+
+            rootTableId = self._upsertSetTable(
+                setId=setId,
+                name="objects",
+                alias=setClassName,
+                tableKind="root",
+                parentTableId=None,
+                parentItemId=None,
+                itemClassName=str(
+                    itemClassName
+                ),
+                properties={
+                    "source": "postgresql",
+                    "legacySetTable": True,
+                    "runtimeWritable": True,
+                    "itemsCount": 0,
+                    "maxItemId": None,
+                    "incremental": True,
+                },
+            )
+
+            self._updateSetProperties(
+                setId=setId,
+                properties=properties,
+            )
+
+            self._upsertSetProperties(
+                setId=setId,
+                properties=properties,
+            )
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=runtimeObjectId,
+            itemsCount=0,
+            maxItemId=None,
+        )
+
+        return {
+            "setId": int(setId),
+            "rootTableId": int(
+                rootTableId
+            ),
+            # Database id of the scipion_objects row.
+            "objectId": int(
+                rootObjectId
+            ),
+            # Canonical Scipion runtime id.
+            "runtimeObjectId": int(
+                runtimeObjectId
+            ),
+            "projectId": int(
+                projectId
+            ),
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "outputName": outputName,
+            "className": setClassName,
+            "setClassName": setClassName,
+            "itemClassName": str(
+                itemClassName
+            ),
+            "properties": properties,
+            "reserved": True,
+        }
+
+    def finalizeRuntimeSetOutput(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            scipionSet: Any,
+    ) -> Dict[str, Any]:
+        """
+        Rename and finalize a previously reserved PostgreSQL runtime Set.
+
+        This method never iterates the Set and never rebuilds its items.
+        """
+        outputName = str(
+            outputName or ""
+        ).strip()
+
+        if not outputName:
+            raise ValueError("outputName is required")
+
+        runtimeObjectId = self._getSourceObjId(
+            scipionSet
+        )
+
+        if runtimeObjectId is None:
+            raise ValueError(
+                "Cannot finalize a PostgreSQL Set "
+                "without its runtime object id."
+            )
+
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        storedSet = self.db.fetchOne(
+            """
+            SELECT
+                stored_set.id,
+                stored_set."objectId",
+                stored_set."outputName",
+                stored_set."setClassName",
+                stored_set."itemClassName",
+                stored_set.properties
+              FROM scipion_sets stored_set
+              JOIN scipion_objects object_row
+                ON object_row.id =
+                   stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND object_row."scipionObjId" = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        if storedSet is None:
+            raise RuntimeError(
+                "PostgreSQL runtime Set %s was not reserved."
+                % runtimeObjectId
+            )
+
+        setId = int(
+            storedSet["id"]
+        )
+
+        objectId = int(
+            storedSet["objectId"]
+        )
+
+        conflictingSet = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+               AND "outputName" = %s
+               AND id <> %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                outputName,
+                setId,
+            ),
+        )
+
+        if conflictingSet is not None:
+            raise RuntimeError(
+                "Protocol output '%s' is already owned "
+                "by PostgreSQL Set %s."
+                % (
+                    outputName,
+                    conflictingSet["id"],
+                )
+            )
+
+        existingProperties = self._normalizeProperties(
+            storedSet.get(
+                "properties"
+            )
+        )
+
+        self._removePostgresqlRuntimeStorageProperties(
+            existingProperties
+        )
+
+        currentProperties = self._getSetProperties(
+            scipionSet
+        )
+
+        self._removePostgresqlRuntimeStorageProperties(
+            currentProperties
+        )
+
+        finalProperties = dict(
+            existingProperties
+        )
+
+        finalProperties.update(
+            currentProperties
+        )
+
+        self._removePostgresqlRuntimeStorageProperties(
+            finalProperties
+        )
+
+        finalProperties.update({
+            "runtimeReserved": False,
+            "runtimeWritable": True,
+            "postgresqlNativeOutput": True,
+            "outputName": outputName,
+            "finalOutputName": outputName,
+            "incremental": True,
+            "lastCheckedAt": (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            ),
+            "nestedTablesVersion": (
+                NESTED_LOGICAL_TABLES_VERSION
+            ),
+            "setPropertiesVersion": (
+                SET_PROPERTIES_VERSION
+            ),
+        })
+
+        setClassName = (
+                self._getClassName(
+                    scipionSet
+                )
+                or storedSet[
+                    "setClassName"
+                ]
+        )
+
+        with self.db.transaction():
+            self.db.execute(
+                """
+                UPDATE scipion_objects
+                   SET name = %s,
+                       path = %s,
+                       "scipionObjId" = %s,
+                       "className" = %s,
+                       label = %s,
+                       comment = %s,
+                       creation = %s,
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    outputName,
+                    outputName,
+                    int(runtimeObjectId),
+                    str(setClassName),
+                    self._getObjectLabel(
+                        scipionSet
+                    ),
+                    self._getObjectComment(
+                        scipionSet
+                    ),
+                    self._getObjectCreation(
+                        scipionSet
+                    ),
+                    objectId,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            self.db.execute(
+                """
+                UPDATE scipion_sets
+                   SET "outputName" = %s,
+                       "setClassName" = %s,
+                       properties = %s::jsonb,
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "protocolDbId" = %s
+                """,
+                (
+                    outputName,
+                    str(setClassName),
+                    self._jsonParam(
+                        finalProperties
+                    ),
+                    setId,
+                    int(projectId),
+                    int(protocolDbId),
+                ),
+                commit=False,
+            )
+
+            self._upsertSetProperties(
+                setId=setId,
+                properties=finalProperties,
+            )
+
+        itemsCount = self._toOptionalInt(
+            finalProperties.get(
+                "itemsCount"
+            )
+        )
+
+        maxItemId = self._toOptionalInt(
+            finalProperties.get(
+                "maxItemId"
+            )
+        )
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=self.db,
+            projectId=projectId,
+            eventType="set_updated",
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            setId=setId,
+            runtimeObjectId=runtimeObjectId,
+            itemsCount=itemsCount or 0,
+            maxItemId=maxItemId,
+        )
+
+        return {
+            "setId": setId,
+            "rootTableId": self._resolveRootTableId(
+                setId
+            ),
+            "objectId": objectId,
+            "runtimeObjectId": int(
+                runtimeObjectId
+            ),
+            "projectId": int(
+                projectId
+            ),
+            "protocolDbId": int(
+                protocolDbId
+            ),
+            "outputName": outputName,
+            "className": str(
+                setClassName
+            ),
+            "setClassName": str(
+                setClassName
+            ),
+            "itemClassName": storedSet[
+                "itemClassName"
+            ],
+            "properties": finalProperties,
+            "reserved": False,
+        }
+
+    def discardReservedRuntimeSet(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            runtimeObjectId: int,
+    ) -> bool:
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        storedSet = self.db.fetchOne(
+            """
+            SELECT
+                stored_set.id,
+                stored_set."objectId",
+                stored_set.properties
+              FROM scipion_sets stored_set
+              JOIN scipion_objects object_row
+                ON object_row.id =
+                   stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND object_row."scipionObjId" = %s
+             LIMIT 1
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                int(runtimeObjectId),
+            ),
+        )
+
+        if storedSet is None:
+            return False
+
+        properties = self._normalizeProperties(
+            storedSet.get(
+                "properties"
+            )
+        )
+
+        if not properties.get(
+                "runtimeReserved"
+        ):
+            return False
+
+        self.deleteStoredSetOutput(
+            projectId=int(projectId),
+            setId=int(
+                storedSet["id"]
+            ),
+            objectId=int(
+                storedSet["objectId"]
+            ),
+            runtimeObjectId=int(
+                runtimeObjectId
+            ),
+        )
+
+        return True
+
+    def _resolveRootTableId(
+            self,
+            setId: int,
+    ) -> Optional[int]:
+        row = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_set_tables
+             WHERE "setId" = %s
+               AND "tableKind" = 'root'
+             LIMIT 1
+            """,
+            (
+                int(setId),
+            ),
+        )
+
+        return (
+            int(row["id"])
+            if row is not None
+            else None
+        )
+
+    def _isPostgresqlRuntimeSet(
+            self,
+            scipionSet: Any,
+    ) -> bool:
+        checker = getattr(
+            scipionSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        try:
+            return bool(
+                checker()
+            )
+        except Exception:
+            return False
 
     def getStoredSet(
         self,
@@ -250,6 +1371,411 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             """,
             (projectId, protocolDbId),
         )
+
+    def listProtocolSetOutputRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT
+                stored_set."outputName",
+                stored_set."setClassName",
+                stored_set."itemClassName",
+                stored_set.properties,
+                stored_set.id AS "setId",
+                stored_set."objectId",
+                root_object."scipionObjId"
+              FROM scipion_sets stored_set
+              LEFT JOIN scipion_objects root_object
+                ON root_object.id = stored_set."objectId"
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND COALESCE(
+                       stored_set.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
+             ORDER BY stored_set."outputName"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+            ),
+        ) or []
+
+    def listProtocolSetOutputNameRows(
+            self,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT "outputName"
+              FROM scipion_sets
+             WHERE "projectId" = %s
+               AND "protocolDbId" = %s
+            """,
+            (int(projectId), int(protocolDbId)),
+        ) or []
+
+    def listProjectSetOutputRows(self, projectId: int) -> List[Dict[str, Any]]:
+        query = """
+            SELECT
+                p.id AS "protocolDbId",
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                root_object.id AS "rootObjectDbId",
+                root_object."projectId" AS "rootObjectProjectId",
+                root_object."protocolDbId" AS "rootObjectProtocolDbId",
+                root_object."parentObjectId" AS "rootObjectParentObjectId",
+                root_object.name AS "rootObjectName",
+                root_object.path AS "rootObjectPath",
+                root_object."className" AS "rootObjectClassName",
+                COALESCE(items_stats."itemsTableCount", 0) AS "itemsTableCount",
+                items_stats."maxItemIdFromItems" AS "maxItemIdFromItems",
+                items_stats."itemsIdSignature" AS "itemsIdSignature",
+                items_stats."itemsValueSignature" AS "itemsValueSignature",
+                COALESCE(columns_stats."setColumnsCount", 0) AS "setColumnsCount",
+                columns_stats."setColumnsSignature" AS "setColumnsSignature",
+                COALESCE(root_table_stats."rootTablesCount", 0) AS "rootTablesCount",
+                root_table_stats."rootTableId" AS "rootTableId",
+                COALESCE(root_table_stats."rootTableItemsCount", 0) AS "rootTableItemsCount",
+                root_table_stats."rootTableMaxItemId" AS "rootTableMaxItemId",
+                root_table_stats."rootTableItemsIdSignature" AS "rootTableItemsIdSignature",
+                root_table_stats."rootTableItemsValueSignature" AS "rootTableItemsValueSignature",
+                COALESCE(root_table_columns_stats."rootTableColumnsCount", 0) AS "rootTableColumnsCount",
+                root_table_columns_stats."rootTableColumnsSignature" AS "rootTableColumnsSignature",
+                COALESCE(properties_payload_stats."propertiesPayloadCount", 0) AS "propertiesPayloadCount",
+                properties_payload_stats."propertiesPayloadSignature" AS "propertiesPayloadSignature",
+                COALESCE(set_properties_stats."setPropertiesCount", 0) AS "setPropertiesCount",
+                set_properties_stats."setPropertiesSignature" AS "setPropertiesSignature",
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+              LEFT JOIN scipion_objects root_object
+                ON root_object.id = s."objectId"
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "itemsTableCount",
+                      MAX("scipionItemId")::int AS "maxItemIdFromItems",
+                      md5(
+                          string_agg(
+                              "scipionItemId"::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', "scipionItemId",
+                                  'enabled', enabled,
+                                  'label', label,
+                                  'comment', comment,
+                                  'creation', creation,
+                                  'values', "values"
+                              )::text,
+                              ','
+                              ORDER BY "scipionItemId"
+                          )
+                      ) AS "itemsValueSignature"
+                    FROM scipion_set_items
+                   GROUP BY "setId"
+              ) items_stats
+                ON items_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', "labelProperty",
+                              'columnName', "columnName",
+                              'className', "className",
+                              'valueType', "valueType",
+                              'position', position,
+                              'indexed', indexed
+                          )
+                          ORDER BY position ASC, "labelProperty" ASC
+                      ) AS "setColumnsSignature"
+                    FROM scipion_set_columns
+                   GROUP BY "setId"
+              ) columns_stats
+                ON columns_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(DISTINCT t.id)::int AS "rootTablesCount",
+                      MIN(t.id)::int AS "rootTableId",
+                      COUNT(ti.id)::int AS "rootTableItemsCount",
+                      MAX(ti."scipionItemId")::int AS "rootTableMaxItemId",
+                      md5(
+                          string_agg(
+                              ti."scipionItemId"::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsIdSignature",
+                      md5(
+                          string_agg(
+                              jsonb_build_object(
+                                  'scipionItemId', ti."scipionItemId",
+                                  'enabled', ti.enabled,
+                                  'label', ti.label,
+                                  'comment', ti.comment,
+                                  'creation', ti.creation,
+                                  'values', ti."values"
+                              )::text,
+                              ','
+                              ORDER BY ti."scipionItemId"
+                          ) FILTER (WHERE ti.id IS NOT NULL)
+                      ) AS "rootTableItemsValueSignature"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_items ti
+                      ON ti."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_stats
+                ON root_table_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      t."setId",
+                      COUNT(tc.id)::int AS "rootTableColumnsCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'labelProperty', tc."labelProperty",
+                              'columnName', tc."columnName",
+                              'className', tc."className",
+                              'valueType', tc."valueType",
+                              'position', tc.position,
+                              'indexed', tc.indexed
+                          )
+                          ORDER BY tc.position ASC, tc."labelProperty" ASC
+                      ) FILTER (WHERE tc.id IS NOT NULL) AS "rootTableColumnsSignature"
+                    FROM scipion_set_tables t
+                    LEFT JOIN scipion_set_table_columns tc
+                      ON tc."tableId" = t.id
+                   WHERE t."tableKind" = 'root'
+                   GROUP BY t."setId"
+              ) root_table_columns_stats
+                ON root_table_columns_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      s2.id AS "setId",
+                      COUNT(*)::int AS "propertiesPayloadCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', stable_keys.key,
+                              'value', s2.properties ->> stable_keys.key
+                          )
+                          ORDER BY stable_keys.key ASC
+                      ) AS "propertiesPayloadSignature"
+                    FROM scipion_sets s2
+                    CROSS JOIN (
+                        VALUES
+                            ('columnsCount'),
+                            ('itemsCount'),
+                            ('nestedTablesVersion')
+                    ) AS stable_keys(key)
+                   WHERE s2.properties ? stable_keys.key
+                   GROUP BY s2.id
+              ) properties_payload_stats
+                ON properties_payload_stats."setId" = s.id
+              LEFT JOIN (
+                  SELECT
+                      "setId",
+                      COUNT(*)::int AS "setPropertiesCount",
+                      jsonb_agg(
+                          jsonb_build_object(
+                              'key', key,
+                              'value', value
+                          )
+                          ORDER BY key ASC
+                      ) AS "setPropertiesSignature"
+                    FROM scipion_set_properties
+                   WHERE key IN (
+                       'columnsCount',
+                       'itemsCount',
+                       'nestedTablesVersion'
+                   )
+                   GROUP BY "setId"
+              ) set_properties_stats
+                ON set_properties_stats."setId" = s.id
+             WHERE s."projectId" = %s
+               AND COALESCE(
+                       s.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
+             ORDER BY p."protocolId", s."outputName"
+        """
+        return self.db.fetchAll(query, (int(projectId),)) or []
+
+    def listProjectSetOutputSummaryRows(self, projectId: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT
+                p."protocolId",
+                s.id,
+                s."objectId",
+                s."outputName",
+                s."setClassName",
+                s."itemClassName",
+                s.properties,
+                s."createdAt",
+                s."updatedAt"
+              FROM scipion_sets s
+              JOIN protocols p
+                ON p.id = s."protocolDbId"
+             WHERE s."projectId" = %s
+               AND COALESCE(
+                       s.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
+             ORDER BY p."protocolId", s."outputName"
+            """,
+            (int(projectId),),
+        ) or []
+
+    def deleteStoredSetOutput(
+            self,
+            projectId: int,
+            setId: int,
+            objectId: int,
+            runtimeObjectId: int,
+    ) -> Dict[str, int]:
+        """
+        Delete one complete PostgreSQL Set representation.
+
+        The scipion_sets row is deleted first so all dependent Set tables
+        disappear through their foreign-key cascades. The compatibility
+        runtime relations and canonical scipion_objects root are then removed
+        in the same transaction.
+        """
+        projectId = int(projectId)
+        setId = int(setId)
+        objectId = int(objectId)
+        runtimeObjectId = int(runtimeObjectId)
+
+        result = {
+            "deletedSetsCount": 0,
+            "deletedObjectsCount": 0,
+            "deletedRelationsCount": 0,
+        }
+
+        with self.db.transaction():
+            deletedSet = self.db.fetchOne(
+                """
+                DELETE FROM scipion_sets
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "objectId" = %s
+                RETURNING id, "objectId"
+                """,
+                (
+                    setId,
+                    projectId,
+                    objectId,
+                ),
+            )
+
+            if deletedSet is None:
+                raise RuntimeError(
+                    "Could not delete PostgreSQL Set %s "
+                    "with canonical object %s."
+                    % (
+                        setId,
+                        objectId,
+                    )
+                )
+
+            result["deletedSetsCount"] = 1
+
+            sharedSet = self.db.fetchOne(
+                """
+                SELECT id
+                  FROM scipion_sets
+                 WHERE "objectId" = %s
+                 LIMIT 1
+                """,
+                (
+                    objectId,
+                ),
+            )
+
+            if sharedSet is not None:
+                raise RuntimeError(
+                    "Cannot delete PostgreSQL Set %s because "
+                    "canonical object %s is still referenced "
+                    "by Set %s."
+                    % (
+                        setId,
+                        objectId,
+                        sharedSet.get("id"),
+                    )
+                )
+
+            relationsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_relations
+                 WHERE "projectId" = %s
+                   AND (
+                        "creatorObjId" = %s
+                        OR "parentObjId" = %s
+                        OR "childObjId" = %s
+                   )
+                """,
+                (
+                    projectId,
+                    runtimeObjectId,
+                    runtimeObjectId,
+                    runtimeObjectId,
+                ),
+                commit=False,
+            )
+
+            result["deletedRelationsCount"] = int(
+                relationsCursor.rowcount or 0
+            )
+
+            objectsCursor = self.db.execute(
+                """
+                DELETE FROM scipion_objects
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   AND "scipionObjId" = %s
+                """,
+                (
+                    objectId,
+                    projectId,
+                    runtimeObjectId,
+                ),
+                commit=False,
+            )
+
+            result["deletedObjectsCount"] = int(
+                objectsCursor.rowcount or 0
+            )
+
+            if result["deletedObjectsCount"] != 1:
+                raise RuntimeError(
+                    "Could not delete canonical PostgreSQL object %s "
+                    "for runtime Set %s."
+                    % (
+                        objectId,
+                        runtimeObjectId,
+                    )
+                )
+
+        return result
 
     def getStoredSetColumns(self, setId: int) -> List[Dict[str, Any]]:
         return self.db.fetchAll(
@@ -299,6 +1825,41 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (setId, limit, offset),
         )
 
+    def _getDeclaredItemClassName(
+            self,
+            scipionSet: Any,
+    ) -> Optional[str]:
+        if scipionSet is None:
+            return None
+
+        itemType = getattr(
+            scipionSet,
+            "ITEM_TYPE",
+            None,
+        )
+
+        if itemType is None:
+            itemType = getattr(
+                scipionSet.__class__,
+                "ITEM_TYPE",
+                None,
+            )
+
+        if isinstance(itemType, str):
+            itemType = itemType.strip()
+            return itemType or None
+
+        className = getattr(
+            itemType,
+            "__name__",
+            None,
+        )
+
+        if className:
+            return str(className)
+
+        return None
+
     def _resolveProtocolDbId(self, projectId: int, protocolDbId: int) -> int:
         byDatabaseId = self.db.fetchOne(
             """
@@ -329,6 +1890,61 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             % (protocolDbId, projectId)
         )
 
+    @staticmethod
+    def _hasPostgresqlNativeOutputFlag(
+            properties: Dict[str, Any],
+    ) -> bool:
+        value = (
+            properties or {}
+        ).get(
+            "postgresqlNativeOutput"
+        )
+
+        if isinstance(value, bool):
+            return value
+
+        return str(
+            value or ""
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def isPostgresqlNativeSetOutput(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> bool:
+        protocolDbId = self._resolveProtocolDbId(
+            projectId,
+            protocolDbId,
+        )
+
+        existingSet = self._getExistingSet(
+            projectId,
+            protocolDbId,
+            outputName,
+        )
+
+        if existingSet is None:
+            return False
+
+        properties = self._normalizeProperties(
+            existingSet.get(
+                "properties"
+            )
+        )
+
+        return (
+            self
+            ._hasPostgresqlNativeOutputFlag(
+                properties
+            )
+        )
+
     def _getExistingSet(self, projectId: int, protocolDbId: int, outputName: str) -> Optional[Dict[str, Any]]:
         return self.db.fetchOne(
             """
@@ -339,6 +1955,53 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                AND "outputName" = %s
             """,
             (projectId, protocolDbId, outputName),
+        )
+
+    def _replaceStoredSetSnapshot(
+            self,
+            setId: int,
+    ) -> None:
+        """
+        Clear the dependent rows of an existing set before writing the current
+        snapshot.
+
+        The scipion_sets row and its id are preserved, while columns, items,
+        properties and logical tables are rebuilt from the current Scipion set.
+        """
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_tables
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_items
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_columns
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
+        )
+
+        self.db.execute(
+            """
+            DELETE FROM scipion_set_properties
+             WHERE "setId" = %s
+            """,
+            (setId,),
+            commit=False,
         )
 
     def _upsertSet(
@@ -470,13 +2133,37 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     )
                 )
 
-                self._upsertNestedLogicalTablesForItem(
-                    setId=setId,
-                    parentTableId=tableId,
-                    parentItem=item,
-                    parentItemId=itemId,
-                    batchSize=batchSize,
+                nestedTableId = (
+                    self
+                    ._upsertNestedLogicalTablesForItem(
+                        setId=setId,
+                        parentTableId=tableId,
+                        parentItem=item,
+                        parentItemId=itemId,
+                        batchSize=batchSize,
+                    )
                 )
+
+                if (
+                        self
+                                ._hasNestedLogicalItems(
+                            item
+                        )
+                        and nestedTableId is None
+                ):
+                    raise RuntimeError(
+                        "Nested PostgreSQL Set table "
+                        "was not persisted. "
+                        "setId=%s parentItemId=%s "
+                        "parentClass=%s"
+                        % (
+                            setId,
+                            itemId,
+                            self._getClassName(
+                                item
+                            ),
+                        )
+                    )
 
             itemsCount += 1
 
@@ -496,6 +2183,213 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return itemsCount, maxItemId
 
+    def ensureRuntimeNestedSetTable(
+            self,
+            setId: int,
+            rootTableId: int,
+            parentSet: Any,
+            parentItemId: int,
+            batchSize: int = 1000,
+    ) -> Dict[str, Any]:
+        """
+        Create or refresh the PostgreSQL logical table owned by
+        one nested runtime Set item.
+
+        The caller must already own the PostgreSQL transaction.
+        No commit or nested transaction is performed here.
+        """
+        if not isinstance(
+                parentSet,
+                ScipionSet,
+        ):
+            raise TypeError(
+                "Runtime nested item must be a "
+                "Scipion Set. className=%s"
+                % parentSet.__class__.__name__
+            )
+
+        setId = int(
+            setId
+        )
+
+        rootTableId = int(
+            rootTableId
+        )
+
+        parentItemId = int(
+            parentItemId
+        )
+
+        if batchSize <= 0:
+            raise ValueError(
+                "batchSize must be greater than zero"
+            )
+
+        tableId = (
+            self
+            ._upsertNestedLogicalTablesForItem(
+                setId=setId,
+                parentTableId=rootTableId,
+                parentItem=parentSet,
+                parentItemId=parentItemId,
+                batchSize=batchSize,
+                runtimeWritable=True,
+            )
+        )
+
+        if tableId is None:
+            raise RuntimeError(
+                "Could not create PostgreSQL logical "
+                "table for nested runtime Set. "
+                "setId=%s parentItemId=%s className=%s"
+                % (
+                    setId,
+                    parentItemId,
+                    self._getClassName(
+                        parentSet
+                    ),
+                )
+            )
+
+        tableId = int(
+            tableId
+        )
+
+        counters = self.db.fetchOne(
+            """
+            SELECT
+                COUNT(*) AS "itemsCount",
+                MAX(
+                    "scipionItemId"
+                ) AS "maxItemId"
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+            """,
+            (
+                tableId,
+            ),
+        ) or {}
+
+        itemsCount = int(
+            counters.get(
+                "itemsCount"
+            )
+            or 0
+        )
+
+        maxItemId = counters.get(
+            "maxItemId"
+        )
+
+        maxItemId = (
+            int(maxItemId)
+            if maxItemId is not None
+            else None
+        )
+
+        storedColumns = (
+            self.getStoredSetTableColumns(
+                tableId
+            )
+        )
+
+        properties = {
+            "source": "postgresql",
+            "parentItemId": parentItemId,
+            "parentClassName": (
+                self._getClassName(
+                    parentSet
+                )
+            ),
+            "runtimeWritable": True,
+            "incremental": True,
+            "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+            "columnsCount": len(
+                storedColumns
+            ),
+        }
+
+        self.db.execute(
+            """
+            UPDATE scipion_set_tables
+               SET properties = (
+                       COALESCE(
+                           properties,
+                           '{}'::jsonb
+                       )
+                       || %s::jsonb
+                   ),
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND "setId" = %s
+               AND "parentTableId" = %s
+               AND "parentItemId" = %s
+               AND "tableKind" = 'child'
+            """,
+            (
+                self._jsonParam(
+                    properties
+                ),
+                tableId,
+                setId,
+                rootTableId,
+                parentItemId,
+            ),
+            commit=False,
+        )
+
+        tableRow = self.db.fetchOne(
+            """
+            SELECT
+                id,
+                "setId",
+                name,
+                alias,
+                "tableKind",
+                "parentTableId",
+                "parentItemId",
+                "itemClassName",
+                properties
+              FROM scipion_set_tables
+             WHERE id = %s
+            """,
+            (
+                tableId,
+            ),
+        )
+
+        if tableRow is None:
+            raise RuntimeError(
+                "PostgreSQL logical table %s "
+                "disappeared after creation."
+                % tableId
+            )
+
+        return {
+            "setId": setId,
+            "rootTableId": rootTableId,
+            "tableId": tableId,
+            "parentItemId": parentItemId,
+            "itemClassName": (
+                tableRow.get(
+                    "itemClassName"
+                )
+            ),
+            "columns": [
+                dict(column)
+                for column in storedColumns
+            ],
+            "columnsCount": len(
+                storedColumns
+            ),
+            "itemsCount": itemsCount,
+            "maxItemId": maxItemId,
+            "properties": properties,
+            "table": dict(
+                tableRow
+            ),
+        }
 
     def _upsertNestedLogicalTablesForItem(
             self,
@@ -504,29 +2398,103 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             parentItem: Any,
             parentItemId: int,
             batchSize: int,
-    ) -> None:
+            runtimeWritable: bool = False,
+    ) -> Optional[int]:
         """
-        Persist child logical tables for complex Scipion set items.
+        Persist the logical table owned by one nested Set item.
 
-        Supported examples:
-        - Class2D/Class3D items expose class members.
-        - TiltSeries items expose tilt images.
-        - Any item exposing iterItems() can expose a child logical table.
+        Every nested Scipion Set must produce a PostgreSQL logical
+        table, including empty sets.
         """
-        if not self._hasNestedLogicalItems(parentItem):
-            return
+        if not self._hasNestedLogicalItems(
+                parentItem
+        ):
+            return None
 
-        childIterator = iter(self._iterNestedItems(parentItem))
-        firstChild = self._nextOrNone(childIterator)
+        sourceMapper = getattr(
+            parentItem,
+            "_mapper",
+            None,
+        )
+
+        if (
+                runtimeWritable
+                and sourceMapper is None
+        ):
+            # A newly-created TiltSeries/Class item has not
+            # received its PostgreSQL logical mapper yet.
+            #
+            # It is empty at this point and its declared
+            # ITEM_TYPE is enough to create the child table.
+            childIterator = iter(())
+
+        else:
+            childIterator = iter(
+                self._iterNestedItems(
+                    parentItem
+                )
+            )
+
+        firstChild = self._nextOrNone(
+            childIterator
+        )
+
         if firstChild is None:
-            return
+            childSchema = {}
+            childColumns = []
 
-        childSchema = self._getItemSchema(firstChild)
-        childColumns = self._getSetColumns(childSchema)
-        childItemClassName = self._getItemClassName(firstChild, childSchema)
+            childItemClassName = (
+                self
+                ._getDeclaredItemClassName(
+                    parentItem
+                )
+            )
 
-        tableName = self._getNestedLogicalTableName(parentItem, parentItemId)
-        tableAlias = self._getNestedLogicalTableAlias(tableName, childItemClassName)
+            if not childItemClassName:
+                raise RuntimeError(
+                    "Cannot persist empty nested "
+                    "PostgreSQL Set without ITEM_TYPE. "
+                    "setId=%s parentItemId=%s "
+                    "parentClass=%s"
+                    % (
+                        setId,
+                        parentItemId,
+                        self._getClassName(
+                            parentItem
+                        ),
+                    )
+                )
+
+        else:
+            childSchema = self._getItemSchema(
+                firstChild
+            )
+
+            childColumns = self._getSetColumns(
+                childSchema
+            )
+
+            childItemClassName = (
+                self._getItemClassName(
+                    firstChild,
+                    childSchema,
+                    scipionSet=parentItem,
+                )
+            )
+
+        tableName = (
+            self._getNestedLogicalTableName(
+                parentItem,
+                parentItemId,
+            )
+        )
+
+        tableAlias = (
+            self._getNestedLogicalTableAlias(
+                tableName,
+                childItemClassName,
+            )
+        )
 
         childTableId = self._upsertSetTable(
             setId=setId,
@@ -538,27 +2506,68 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             itemClassName=childItemClassName,
             properties={
                 "source": "postgresql",
-                "parentItemId": parentItemId,
-                "parentClassName": self._getClassName(parentItem),
+                "parentItemId": (
+                    int(parentItemId)
+                ),
+                "parentClassName": (
+                    self._getClassName(
+                        parentItem
+                    )
+                ),
+                "runtimeWritable": bool(
+                    runtimeWritable
+                ),
+                "incremental": bool(
+                    runtimeWritable
+                ),
+                "itemsCount": 0,
+                "maxItemId": None,
+                "columnsCount": len(
+                    childColumns
+                ),
             },
         )
 
-        self._upsertSetTableColumns(childTableId, childColumns)
-
-        self._upsertLogicalTableItems(
-            tableId=childTableId,
-            parentItemId=parentItemId,
-            firstItem=firstChild,
-            remainingItems=childIterator,
-            batchSize=batchSize,
+        self._upsertSetTableColumns(
+            childTableId,
+            childColumns,
         )
 
-    def _hasNestedLogicalItems(self, item: Any) -> bool:
+        if firstChild is not None:
+            self._upsertLogicalTableItems(
+                tableId=childTableId,
+                parentItemId=parentItemId,
+                firstItem=firstChild,
+                remainingItems=childIterator,
+                batchSize=batchSize,
+            )
+
+        return int(
+            childTableId
+        )
+
+    def _hasNestedLogicalItems(
+            self,
+            item: Any,
+    ) -> bool:
         if item is None:
             return False
 
-        iterItems = getattr(item, "iterItems", None)
-        return callable(iterItems)
+        if isinstance(
+                item,
+                ScipionSet,
+        ):
+            return True
+
+        iterItems = getattr(
+            item,
+            "iterItems",
+            None,
+        )
+
+        return callable(
+            iterItems
+        )
 
     def _iterNestedItems(self, item: Any) -> Iterable[Any]:
         iterItems = getattr(item, "iterItems", None)
@@ -570,18 +2579,67 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return iter(())
 
-    def _getNestedLogicalTableName(self, parentItem: Any, parentItemId: int) -> str:
-        className = self._getClassName(parentItem) or parentItem.__class__.__name__
-
-        if str(className).startswith("Class"):
-            return self._getNestedClassTableName(parentItemId)
-
-        stableName = self._getNestedItemStableName(
-            parentItem=parentItem,
-            parentItemId=parentItemId,
-            className=className,
+    def _getNestedLogicalTableName(
+            self,
+            parentItem: Any,
+            parentItemId: int,
+    ) -> str:
+        className = (
+                self._getClassName(
+                    parentItem
+                )
+                or parentItem.__class__.__name__
         )
-        return "%s_Objects" % self._sanitizeLogicalTableNamePart(stableName)
+
+        if str(className).startswith(
+                "Class"
+        ):
+            return (
+                self
+                ._getNestedClassTableName(
+                    parentItemId
+                )
+            )
+
+        stableName = (
+            self._getNestedItemStableName(
+                parentItem=parentItem,
+                parentItemId=parentItemId,
+                className=className,
+            )
+        )
+
+        cleanName = (
+            self
+            ._sanitizeLogicalTableNamePart(
+                stableName
+            )
+        )
+
+        try:
+            itemIdText = str(
+                int(parentItemId)
+            )
+        except Exception:
+            itemIdText = (
+                self
+                ._sanitizeLogicalTableNamePart(
+                    parentItemId
+                )
+            )
+
+        if (
+                cleanName != itemIdText
+                and not cleanName.endswith(
+            "_" + itemIdText
+        )
+        ):
+            cleanName = "%s_%s" % (
+                cleanName,
+                itemIdText,
+            )
+
+        return "%s_Objects" % cleanName
 
     def _getNestedItemStableName(
             self,
@@ -890,6 +2948,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if storedNestedTablesVersion != NESTED_LOGICAL_TABLES_VERSION:
             return False
 
+        storedSetPropertiesVersion = self._toOptionalInt(
+            existingProperties.get("setPropertiesVersion")
+        )
+
+        if storedSetPropertiesVersion != SET_PROPERTIES_VERSION:
+            return False
+
         if itemsCountHint is None:
             return False
 
@@ -904,12 +2969,30 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if storedMaxItemId != maxItemIdHint:
                 return False
 
-        storedSourceMTime = self._toOptionalFloat(existingProperties.get("sourceMTime"))
-        if sourceMTime is not None:
-            if storedSourceMTime is None:
-                return False
-            if abs(storedSourceMTime - sourceMTime) > 0.000001:
-                return False
+        # itemsCount + maxItemId are only hints. They cannot detect changes
+        # to item values, enabled flags, transforms, coordinates or metadata.
+        #
+        # Only skip when the set also provides a stable source-file mtime.
+        if sourceMTime is None:
+            return False
+
+        storedSourceMTime = self._toOptionalFloat(
+            existingProperties.get(
+                "sourceMTime"
+            )
+        )
+
+        if storedSourceMTime is None:
+            return False
+
+        if (
+                abs(
+                    storedSourceMTime
+                    - sourceMTime
+                )
+                > 0.000001
+        ):
+            return False
 
         return True
 
@@ -954,6 +3037,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return None
 
     def _getSetSourceMTime(self, scipionSet: Any) -> Optional[float]:
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            return None
+
         fileName = self._callOptionalGetter(scipionSet, "getFileName")
         if not fileName:
             return None
@@ -993,21 +3081,90 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         except Exception:
             return None
 
-    def _iterSetItems(self, scipionSet: Any) -> Iterable[Any]:
-        iterItems = getattr(scipionSet, "iterItems", None)
+    def _iterSetItems(
+            self,
+            scipionSet: Any,
+    ) -> Iterable[Any]:
+        iterItems = getattr(
+            scipionSet,
+            "iterItems",
+            None,
+        )
+
         if callable(iterItems):
-            return iterItems()
+            try:
+                return iterItems(
+                    iterate=False
+                )
+            except TypeError:
+                return iterItems()
 
         try:
-            return iter(scipionSet)
+            return iter(
+                scipionSet
+            )
         except TypeError:
-            raise ValueError("scipionSet must provide iterItems() or be iterable")
+            raise ValueError(
+                "scipionSet must provide "
+                "iterItems() or be iterable"
+            )
 
-    def _getItemSchema(self, item: Any) -> Dict[str, Any]:
-        return self._getObjDict(item, includeClass=True)
+    def _getItemSchema(
+            self,
+            item: Any,
+    ) -> Dict[str, Any]:
+        schema = self._getObjDict(
+            item,
+            includeClass=True,
+        )
 
-    def _getItemValues(self, item: Any, scipionSet: Optional[Any] = None) -> Dict[str, Any]:
-        rawValues = self._getObjDict(item, includeClass=False)
+        self._removeLegacyPointerListEntries(
+            schema
+        )
+
+        for path, pointerAttribute in (
+                self._iterPointerAttributes(
+                    item
+                )
+        ):
+            schema[str(path)] = (
+                self._getClassName(
+                    pointerAttribute
+                ),
+                None,
+            )
+
+        return schema
+
+    def _getItemValues(
+            self,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        rawValues = self._getObjDict(
+            item,
+            includeClass=False,
+        )
+
+        self._removeLegacyPointerListEntries(
+            rawValues
+        )
+
+        rawValues.update(
+            self._getItemPointerValues(
+                item
+            )
+        )
+
+        # A nested Set may temporarily point to a compatibility
+        # SQLite snapshot under /tmp. PostgreSQL runtime storage
+        # must never persist those transient paths.
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            self._removePostgresqlRuntimeStorageProperties(
+                rawValues
+            )
 
         values = {
             str(label): self._toJsonValue(value)
@@ -1020,8 +3177,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             values=values,
         )
 
-        classSize = self._getClassItemSize(item)
-        if classSize is not None and "_size" not in values:
+        classSize = self._getClassItemSize(
+            item
+        )
+
+        if (
+                classSize is not None
+                and "_size" not in values
+        ):
             values["_size"] = classSize
 
         self._addCoordinate3dBottomLeftCoordinates(
@@ -1031,6 +3194,234 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         return values
+
+    def _iterPointerAttributes(
+            self,
+            scipionObj: Any,
+            prefix: str = "",
+            visited: Optional[set] = None,
+    ):
+        if scipionObj is None:
+            return
+
+        if visited is None:
+            visited = set()
+
+        objectIdentity = id(
+            scipionObj
+        )
+
+        if objectIdentity in visited:
+            return
+
+        visited.add(
+            objectIdentity
+        )
+
+        for attrName, attrValue in (
+                self._getAttributesToStore(
+                    scipionObj
+                )
+        ):
+            path = (
+                "%s.%s"
+                % (
+                    prefix,
+                    attrName,
+                )
+                if prefix
+                else str(attrName)
+            )
+
+            if isinstance(
+                    attrValue,
+                    Pointer,
+            ):
+                yield path, attrValue
+                continue
+
+            if isinstance(
+                    attrValue,
+                    PointerList,
+            ):
+                yield path, attrValue
+                continue
+
+            childAttributes = (
+                self._getAttributesToStore(
+                    attrValue
+                )
+            )
+
+            if not childAttributes:
+                continue
+
+            yield from self._iterPointerAttributes(
+                scipionObj=attrValue,
+                prefix=path,
+                visited=visited,
+            )
+
+    def _getItemPointerValues(
+            self,
+            item: Any,
+    ) -> Dict[str, Any]:
+        result = {}
+
+        for path, pointerAttribute in (
+                self._iterPointerAttributes(
+                    item
+                )
+        ):
+            if isinstance(
+                    pointerAttribute,
+                    PointerList,
+            ):
+                result[str(path)] = [
+                    self._serializePointerReference(
+                        pointer
+                    )
+                    for pointer in pointerAttribute
+                    if isinstance(
+                        pointer,
+                        Pointer,
+                    )
+                ]
+
+                continue
+
+            result[str(path)] = (
+                self._serializePointerReference(
+                    pointerAttribute
+                )
+            )
+
+        return result
+
+    def _serializePointerReference(
+            self,
+            pointer: Pointer,
+    ) -> Dict[str, Any]:
+        targetObject = None
+
+        try:
+            if pointer.hasValue():
+                targetObject = (
+                    pointer.getObjValue()
+                )
+        except Exception:
+            targetObject = None
+
+        targetParent = self._callOptionalGetter(
+            targetObject,
+            "getObjParent",
+        )
+
+        if targetParent is None:
+            targetParent = getattr(
+                targetObject,
+                "_objParent",
+                None,
+            )
+
+        targetObjectId = self._getSourceObjId(
+            targetObject
+        )
+
+        targetParentObjectId = (
+            self._getSourceObjId(
+                targetParent
+            )
+        )
+
+        if targetParentObjectId is None:
+            targetParentObjectId = (
+                self._toOptionalInt(
+                    self._callOptionalGetter(
+                        targetObject,
+                        "getObjParentId",
+                    )
+                )
+            )
+
+        extended = self._callOptionalGetter(
+            pointer,
+            "getExtended",
+        )
+
+        uniqueId = None
+
+        try:
+            if targetObject is not None:
+                uniqueId = pointer.getUniqueId()
+        except Exception:
+            uniqueId = None
+
+        targetObjectName = (
+            self._callOptionalGetter(
+                targetObject,
+                "getObjName",
+            )
+        )
+
+        return {
+            "version": 1,
+            "kind": "pointer",
+            "targetObjectId": (
+                targetObjectId
+            ),
+            "targetClassName": (
+                self._getClassName(
+                    targetObject
+                )
+                if targetObject is not None
+                else None
+            ),
+            "targetObjectName": (
+                str(targetObjectName)
+                if targetObjectName
+                else None
+            ),
+            "targetParentObjectId": (
+                targetParentObjectId
+            ),
+            "targetParentClassName": (
+                self._getClassName(
+                    targetParent
+                )
+                if targetParent is not None
+                else None
+            ),
+            "extended": str(
+                extended or ""
+            ),
+            "uniqueId": (
+                str(uniqueId)
+                if uniqueId
+                else None
+            ),
+        }
+
+    def _removeLegacyPointerListEntries(
+            self,
+            values: Dict[str, Any],
+    ) -> None:
+        if not isinstance(
+                values,
+                dict,
+        ):
+            return
+
+        for path in list(
+                values.keys()
+        ):
+            if str(path).startswith(
+                    "__item__"
+            ):
+                values.pop(
+                    path,
+                    None,
+                )
 
     def _addRelationIdentityValues(
             self,
@@ -1375,12 +3766,35 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return columns
 
-    def _getItemClassName(self, item: Any, itemSchema: Dict[str, Any]) -> str:
-        selfSchema = itemSchema.get(SELF_LABEL)
-        schemaClassName = self._getSchemaClassName(selfSchema)
+    def _getItemClassName(
+            self,
+            item: Any,
+            itemSchema: Dict[str, Any],
+            scipionSet: Optional[Any] = None,
+    ) -> str:
+        selfSchema = itemSchema.get(
+            SELF_LABEL
+        )
+
+        schemaClassName = self._getSchemaClassName(
+            selfSchema
+        )
+
         if schemaClassName:
             return schemaClassName
-        return self._getClassName(item) or item.__class__.__name__ if item is not None else "Unknown"
+
+        if item is not None:
+            return (
+                    self._getClassName(item)
+                    or item.__class__.__name__
+            )
+
+        return (
+                self._getDeclaredItemClassName(
+                    scipionSet
+                )
+                or "Unknown"
+        )
 
     def _schemaIsClassItem(self, itemSchema: Dict[str, Any]) -> bool:
         selfSchema = itemSchema.get(SELF_LABEL)
@@ -1400,9 +3814,97 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return "integer"
         if className in ("Float", "Decimal"):
             return "float"
-        if className in ("String", "CsvList", "Pointer", "PointerList"):
+        if className in (
+                "String",
+                "CsvList",
+        ):
             return "text"
+
+        if className == "Pointer":
+            return "pointer"
+
+        if className == "PointerList":
+            return "pointer_list"
         return className
+
+    def _callOptionalBoolGetter(self, scipionObj: Any, getterName: str) -> Optional[bool]:
+        getter = getattr(scipionObj, getterName, None)
+        if not callable(getter):
+            return None
+
+        try:
+            return bool(getter())
+        except Exception:
+            return None
+
+    def _getTomoSetDisplayFlags(self, scipionSet: Any) -> Dict[str, Any]:
+        """
+        Store tomography display flags needed to reproduce Scipion output labels.
+
+        Examples:
+            SetOfTiltSeries (2 items, 41x400x356, +het, +ali, 10.00 Å/px)
+            TiltSeries (..., +ali, ! interp, +ctf, +oe)
+        """
+        className = str(self._getClassName(scipionSet) or scipionSet.__class__.__name__ or "")
+        normalizedClassName = className.replace("_", "").replace("-", "").lower()
+
+        isTomoLike = (
+                "tiltseries" in normalizedClassName
+                or "tomogram" in normalizedClassName
+                or "ctftomo" in normalizedClassName
+        )
+
+        if not isTomoLike:
+            return {}
+
+        flags: Dict[str, Any] = {}
+
+        heterogeneous = self._callOptionalBoolGetter(scipionSet, "isHeterogeneousSet")
+        if heterogeneous is not None:
+            flags["isHeterogeneousSet"] = heterogeneous
+
+        hasAlignment = self._callOptionalBoolGetter(scipionSet, "hasAlignment")
+        if hasAlignment is not None:
+            flags["hasAlignment"] = hasAlignment
+
+        interpolated = self._callOptionalBoolGetter(scipionSet, "interpolated")
+        if interpolated is not None:
+            flags["interpolated"] = interpolated
+
+        ctfCorrected = self._callOptionalBoolGetter(scipionSet, "ctfCorrected")
+        if ctfCorrected is not None:
+            flags["ctfCorrected"] = ctfCorrected
+
+        hasOddEven = self._callOptionalBoolGetter(scipionSet, "hasOddEven")
+        if hasOddEven is not None:
+            flags["hasOddEven"] = hasOddEven
+
+        if flags:
+            flags["tomoDisplayFlagsVersion"] = 1
+
+        return flags
+
+    def _removePostgresqlRuntimeStorageProperties(
+            self,
+            properties: Dict[str, Any],
+    ) -> None:
+        """
+        Remove SQLite-specific storage metadata from a
+        PostgreSQL-native runtime Set.
+        """
+        if not isinstance(
+                properties,
+                dict,
+        ):
+            return
+
+        for propertyName in (
+                POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS
+        ):
+            properties.pop(
+                propertyName,
+                None,
+            )
 
     def _getSetProperties(self, scipionSet: Any) -> Dict[str, Any]:
         properties: Dict[str, Any] = {
@@ -1412,25 +3914,87 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "scipionObjId": self._getSourceObjId(scipionSet),
         }
 
-        fileName = self._callOptionalGetter(scipionSet, "getFileName")
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            # Never call getFileName() here. For PostgreSQL
+            # runtime Sets that method is the explicit SQLite
+            # compatibility boundary.
+            fileName = self._callOptionalGetter(
+                scipionSet,
+                "getLegacyFileName",
+            )
+        else:
+            fileName = self._callOptionalGetter(
+                scipionSet,
+                "getFileName",
+            )
+
         if fileName is not None:
-            properties["fileName"] = self._toJsonValue(fileName)
+            properties["fileName"] = (
+                self._toJsonValue(
+                    fileName
+                )
+            )
 
-        streamState = self._callOptionalGetter(scipionSet, "getStreamState")
+        streamState = self._callOptionalGetter(
+            scipionSet,
+            "getStreamState",
+        )
         if streamState is not None:
-            properties["streamState"] = self._toJsonValue(streamState)
+            properties["streamState"] = self._toJsonValue(
+                streamState
+            )
 
-        linkedTomograms = self._getLinkedTomogramsSummary(scipionSet)
+        linkedTomograms = self._getLinkedTomogramsSummary(
+            scipionSet
+        )
         if linkedTomograms:
             properties["linkedTomograms"] = linkedTomograms
 
+        tomoDisplayFlags = self._getTomoSetDisplayFlags(
+            scipionSet
+        )
+        if tomoDisplayFlags:
+            properties.update(tomoDisplayFlags)
 
-        for attrName, attrValue in self._getAttributesToStore(scipionSet):
-            if self._getAttributesToStore(attrValue):
+        setValues = self._getObjDict(
+            scipionSet,
+            includeClass=False,
+        )
+
+        self._removeLegacyPointerListEntries(
+            setValues
+        )
+
+        setValues.update(
+            self._getItemPointerValues(
+                scipionSet
+            )
+        )
+
+        for attrPath, value in setValues.items():
+            attrPath = str(attrPath)
+
+            if attrPath == SELF_LABEL:
                 continue
-            properties[str(attrName)] = self._toJsonValue(self._getObjectValueText(attrValue))
 
-        return {key: value for key, value in properties.items() if value is not None}
+            properties[attrPath] = self._toJsonValue(
+                value
+            )
+
+        if self._isPostgresqlRuntimeSet(
+                scipionSet
+        ):
+            self._removePostgresqlRuntimeStorageProperties(
+                properties
+            )
+
+        return {
+            key: value
+            for key, value in properties.items()
+            if value is not None
+        }
 
     def _getLinkedTomogramsSummary(self, scipionSet: Any) -> List[Dict[str, Any]]:
         tomograms = []
@@ -1442,32 +4006,133 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return tomograms
 
-    def _iterLinkedTomograms(self, scipionSet: Any) -> Iterable[Any]:
-        for methodName in ("iterTomograms", "iterVolumes"):
-            iteratorGetter = getattr(scipionSet, methodName, None)
-            if not callable(iteratorGetter):
+    def _iterLinkedTomograms(
+            self,
+            scipionSet: Any,
+    ) -> Iterable[Any]:
+        """
+        Return an iterator over tomograms linked to a Set.
+
+        Some Sets, such as SetOfCoordinates3D, expose
+        iterVolumes() before their precedents pointer has been
+        assigned. In that state the method legally returns None.
+        """
+        for methodName in (
+                "iterTomograms",
+                "iterVolumes",
+        ):
+            iteratorGetter = getattr(
+                scipionSet,
+                methodName,
+                None,
+            )
+
+            if not callable(
+                    iteratorGetter
+            ):
                 continue
 
             try:
-                return iteratorGetter()
+                linkedObjects = (
+                    iteratorGetter()
+                )
+
             except Exception:
                 continue
 
-        getTomograms = getattr(scipionSet, "getTomograms", None)
-        if callable(getTomograms):
+            iterator = (
+                self
+                ._coerceLinkedTomogramIterator(
+                    linkedObjects
+                )
+            )
+
+            if iterator is not None:
+                return iterator
+
+        getTomograms = getattr(
+            scipionSet,
+            "getTomograms",
+            None,
+        )
+
+        if callable(
+                getTomograms
+        ):
             try:
-                tomograms = getTomograms()
-                iterItems = getattr(tomograms, "iterItems", None)
-                if callable(iterItems):
-                    try:
-                        return iterItems(iterate=False)
-                    except TypeError:
-                        return iterItems()
-                return iter(tomograms)
+                linkedObjects = (
+                    getTomograms()
+                )
+
             except Exception:
-                pass
+                linkedObjects = None
+
+            iterator = (
+                self
+                ._coerceLinkedTomogramIterator(
+                    linkedObjects
+                )
+            )
+
+            if iterator is not None:
+                return iterator
 
         return iter(())
+
+    @staticmethod
+    def _coerceLinkedTomogramIterator(
+            linkedObjects,
+    ):
+        """
+        Normalize a linked Set, sequence or iterator.
+
+        None means that the link has not been assigned yet.
+        """
+        if linkedObjects is None:
+            return None
+
+        iterItems = getattr(
+            linkedObjects,
+            "iterItems",
+            None,
+        )
+
+        if callable(
+                iterItems
+        ):
+            try:
+                items = iterItems(
+                    iterate=False
+                )
+
+            except TypeError:
+                try:
+                    items = iterItems()
+
+                except Exception:
+                    return None
+
+            except Exception:
+                return None
+
+            if items is None:
+                return None
+
+            try:
+                return iter(
+                    items
+                )
+
+            except TypeError:
+                return None
+
+        try:
+            return iter(
+                linkedObjects
+            )
+
+        except TypeError:
+            return None
 
     def _buildLinkedTomogramSummary(self, tomogram: Any, index: int) -> Optional[Dict[str, Any]]:
         objectId = self._callOptionalGetter(tomogram, "getObjId")

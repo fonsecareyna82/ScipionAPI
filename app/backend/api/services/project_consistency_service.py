@@ -26,15 +26,22 @@
 
 from __future__ import annotations
 from datetime import datetime
+from pathlib import Path
 
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import HTTPException, status
+from pyworkflow.config import Config
+from pyworkflow.project import Project as ScipionProject
 from pyworkflow.object import PointerList
 from pyworkflow.protocol.params import PointerParam, MultiPointerParam, RelationParam
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
+from app.backend.runtime.protocol_step_persistence_service import (
+    RuntimeProtocolStepPersistenceService,
+)
 
 if TYPE_CHECKING:
     from app.backend.api.services.project_service import ProjectService
@@ -56,6 +63,38 @@ class ProjectConsistencyService:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.projectService, name)
+
+    def _loadLegacyProjectForConsistency(
+            self,
+            dbProj: Dict[str, Any],
+    ):
+        """
+        Load project.sqlite exclusively for the temporary migration
+        consistency audit.
+
+        Normal runtime, mutation and thumbnail paths must never call
+        this method.
+        """
+        projectPath = Path(str(dbProj["name"]))
+
+        legacyProject = ScipionProject(Config.getDomain(),
+                                       str(projectPath),)
+
+        legacyDbPath = Path(legacyProject.getDbPath())
+
+        if not legacyDbPath.is_file():
+            raise RuntimeError(
+                "Cannot validate PostgreSQL consistency: "
+                "legacy project.sqlite is missing. "
+                "projectPath=%s"
+                % projectPath
+            )
+
+        legacyProject.load(dbPath=str(legacyDbPath))
+
+        self.currentProject = legacyProject
+
+        return legacyProject
 
     def normalizeStatus(self, value: Any) -> str:
         return str(value or "").strip().lower()
@@ -456,6 +495,7 @@ class ProjectConsistencyService:
         runtimeStepsByProtocolId: Dict[str, Dict[int, Dict[str, Any]]] = {}
         runtimeInputRefsByKey: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
         runtimeParamsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
 
         try:
             runs = self.currentProject.getRunsGraph(refresh=refresh, checkPids=checkPid)
@@ -521,7 +561,7 @@ class ProjectConsistencyService:
                 runtimeStepsByProtocolId.setdefault(protocolId, {})
 
                 try:
-                    for stepPayload in self._buildProtocolStepsForPostgresql(protocol):
+                    for stepPayload in runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(protocol):
                         stepIndex = self.toOptionalInt(stepPayload.get("index"))
                         if stepIndex is None:
                             continue
@@ -650,9 +690,10 @@ class ProjectConsistencyService:
                 postgresqlDependencies.add((parentProtocolId, childProtocolId))
 
         try:
-            persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
-                mapper,
-                projectId,
+            runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+            persistedOutputsByProtocolId = runtimeProtocolOutputPersistenceService.loadPersistedOutputsByProtocolId(
+                mapper=mapper,
+                projectId=projectId,
             )
         except Exception as e:
             logger.exception(
@@ -1930,7 +1971,7 @@ class ProjectConsistencyService:
                 detail="Project not found",
             )
 
-        self.loadProjectForThumbnails(dbProj)
+        self._loadLegacyProjectForConsistency(dbProj)
 
         runtimeSnapshot = self.collectRuntimeSnapshot(
             projectId=projectId,

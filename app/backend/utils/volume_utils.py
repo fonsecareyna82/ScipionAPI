@@ -32,7 +32,7 @@ import numpy as np
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 
 
-MRC_LIKE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".rec", ".ali"}
+MRC_LIKE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".rec", ".ali", ".st"}
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,70 @@ def buildVolumeSignature(p: Path) -> VolumeSignature:
     return VolumeSignature(str(p), st.st_mtime_ns, st.st_size)
 
 
-def _normalizeVolumeArray(data: Any) -> np.ndarray:
+def readVolumeSlice2d(
+        volumePath: str,
+        sliceIndex: int,
+        axis: str = "z",
+        maxSide: Optional[int] = None,
+) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, Any]]:
+    vol3d, props = readVolumeArray3d(volumePath)
+
+    if vol3d.ndim != 3:
+        raise ValueError(f"Unsupported volume shape {vol3d.shape}, expected 3D")
+
+    zdim, ydim, xdim = (
+        int(vol3d.shape[0]),
+        int(vol3d.shape[1]),
+        int(vol3d.shape[2]),
+    )
+
+    axis = (axis or "z").lower()
+    if axis not in ("z", "y", "x"):
+        axis = "z"
+
+    if axis == "z":
+        dim = zdim
+        outH, outW = ydim, xdim
+    elif axis == "y":
+        dim = ydim
+        outH, outW = zdim, xdim
+    else:
+        dim = xdim
+        outH, outW = zdim, ydim
+
+    if dim <= 0:
+        raise ValueError("Empty volume")
+
+    k = max(0, min(int(sliceIndex), dim - 1))
+
+    step = 1
+    if maxSide is not None and int(maxSide) > 0:
+        step = max(1, int(np.ceil(max(outH, outW) / float(maxSide))))
+
+    if axis == "z":
+        slice2d = vol3d[k, ::step, ::step]
+    elif axis == "y":
+        slice2d = vol3d[::step, k, ::step]
+    else:
+        slice2d = vol3d[::step, ::step, k]
+
+    meta = {
+        "axis": axis,
+        "index": k,
+        "dims": (zdim, ydim, xdim),
+        "step": step,
+    }
+
+    return np.asarray(slice2d), props, meta
+
+
+def _normalizeVolumeArray(
+        data: Any,
+        *,
+        castFloat32: bool = True,
+) -> np.ndarray:
     arr = np.asarray(data)
+
     if arr.ndim not in (2, 3):
         arr = np.squeeze(arr)
         if arr.ndim not in (2, 3):
@@ -59,7 +121,10 @@ def _normalizeVolumeArray(data: Any) -> np.ndarray:
     elif arr.ndim != 3:
         raise ValueError(f"Unsupported volume shape {arr.shape}")
 
-    return arr.astype(np.float32, copy=False)
+    if castFloat32:
+        return arr.astype(np.float32, copy=False)
+
+    return arr
 
 
 def _extractMrcVoxelSize(mrc: Any) -> Dict[str, Any]:
@@ -92,7 +157,7 @@ def _openMrcMemmap(path: str) -> Optional[Tuple[np.ndarray, Dict[str, Any], Any]
 
     try:
         mrc = mrcfile.mmap(path, mode="r", permissive=True)
-        arr = _normalizeVolumeArray(mrc.data)
+        arr = _normalizeVolumeArray(mrc.data, castFloat32=False)
         props = _extractMrcVoxelSize(mrc)
         return arr, props, mrc
     except Exception:

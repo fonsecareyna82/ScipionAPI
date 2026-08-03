@@ -357,6 +357,21 @@ def test_GetMetadataTableSchemaDelegatesMapperToService(projectClient, fakeProje
     assert fakeProjectService.lastGetProjectByIdCall is None
 
 
+def test_RunMetadataTableActionReturns404WhenPostgresqlRuntimeProjectIsMissing(projectClient, fakeProjectService):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
+        json={"action": "create subset", "ids": [1, 2]},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastRunMetadataTableActionCall is None
+
+
 def test_RunMetadataTableActionRejectsMissingIds(projectClient):
     response = projectClient.post(
         "/projects/1/protocols/2/outputs/out/metadata/tables/table/actions",
@@ -387,6 +402,17 @@ def test_RunMetadataTableActionUsesDefaultSubsetNameAndNormalizesServiceResult(
         "success": True,
         "message": "Subset created",
     }
+
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+    assert fakeProjectService.lastGetProjectByIdCall is None
 
     assert fakeProjectService.lastRunMetadataTableActionCall == {
         "projectId": 1,
@@ -609,6 +635,71 @@ def test_GetTiltSeriesFramesUsesProjectDbRow(projectClient, fakeProjectService):
     }
 
 
+def test_CreateNewSetOfTiltSeriesUsesPostgresqlRuntimeProject(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/TiltSeries/tiltseries/new-set",
+        json={
+            "exclusions": {
+                "TS_001": {
+                    "excluded": False,
+                    "tiltimages": [2],
+                }
+            },
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.newTiltSeriesSetResult
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+    assert fakeProjectService.lastCreateNewSetOfTiltSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "TiltSeries",
+        "exclusions": {
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [2],
+            }
+        },
+        "restack": False,
+        "mapper": fakeProjectService.lastCreateNewSetOfTiltSeriesCall["mapper"],
+    }
+
+
+def test_CreateNewSetOfTiltSeriesReturns404WhenRuntimeProjectIsMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/TiltSeries/tiltseries/new-set",
+        json={
+            "exclusions": {},
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastCreateNewSetOfTiltSeriesCall is None
+
+
 def test_ListCtftomoSeriesUsesProjectDbRow(projectClient, fakeProjectService):
     response = projectClient.get(
         "/projects/1/protocols/2/outputs/out/ctftomo"
@@ -643,6 +734,70 @@ def test_GetCtftomoSeriesViewsUsesProjectDbRow(projectClient, fakeProjectService
         "mapper": fakeProjectService.lastGetCtftomoSeriesViewsCall["mapper"],
     }
 
+
+def test_CreateNewSetOfCtftomoSeriesUsesPostgresqlRuntimeProject(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/CTFTomoSeries/ctftomo/new-set",
+        json={
+            "exclusions": {
+                "TS_001": {
+                    "excluded": False,
+                    "tiltimages": [2],
+                }
+            },
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.newCtftomoSeriesSetResult
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall == {
+        "mapper": fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+    }
+    assert fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "CTFTomoSeries",
+        "exclusions": {
+            "TS_001": {
+                "excluded": False,
+                "tiltimages": [2],
+            }
+        },
+        "restack": False,
+        "mapper": fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall["mapper"],
+    }
+
+
+def test_CreateNewSetOfCtftomoSeriesReturns404WhenRuntimeProjectIsMissing(
+    projectClient,
+    fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/CTFTomoSeries/ctftomo/new-set",
+        json={
+            "exclusions": {},
+            "restack": False,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+    assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastCreateNewSetOfCtftomoSeriesCall is None
 
 @pytest.mark.parametrize(
     "url",
@@ -1446,4 +1601,27 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
         "id": 1,
         "email": "user@example.com",
         "role": "user",
+    }
+
+
+def test_GetProjectWithValidateConsistencyPassesAuditFlag(
+    projectClient,
+    fakeProjectService,
+):
+    response = projectClient.get("/projects/1?validateConsistency=true")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 1
+    assert fakeProjectService.lastGetProjectByIdCall == {
+        "mapper": fakeProjectService.lastGetProjectByIdCall["mapper"],
+        "projectId": 1,
+        "currentUser": {
+            "id": 1,
+            "email": "user@example.com",
+            "role": "user",
+        },
+        "refresh": True,
+        "checkPid": True,
+        "validateConsistency": True,
+        "failOnConsistencyError": False,
     }

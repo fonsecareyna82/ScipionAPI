@@ -50,7 +50,9 @@ class FakeProtocol:
 
 class FakeDb:
     def __init__(self, runtimeProtocolIdByDbId=None):
-        self.runtimeProtocolIdByDbId = runtimeProtocolIdByDbId or {}
+        self.runtimeProtocolIdByDbId = (
+            runtimeProtocolIdByDbId or {}
+        )
         self.fetchCalls = []
 
     def fetchOne(self, query, params):
@@ -59,22 +61,52 @@ class FakeDb:
             "params": params,
         })
 
-        if len(params) < 3:
+        if len(params) != 2:
             return None
 
-        protocolDbId = params[1]
-        runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolDbId))
-        if runtimeProtocolId is None:
+        projectId, protocolIdCandidate = params
+        queryText = " ".join(str(query).split())
+
+        if "FROM protocols" not in queryText:
             return None
 
-        return {
-            "protocolId": runtimeProtocolId,
-        }
+        if "AND id = %s" in queryText:
+            try:
+                protocolDbId = int(protocolIdCandidate)
+            except (TypeError, ValueError):
+                return None
+
+            runtimeProtocolId = self.runtimeProtocolIdByDbId.get(
+                protocolDbId
+            )
+
+            if runtimeProtocolId is None:
+                return None
+
+            return {
+                "id": protocolDbId,
+                "protocolId": str(runtimeProtocolId),
+            }
+
+        if 'AND "protocolId" = %s' in queryText:
+            runtimeProtocolIdText = str(protocolIdCandidate)
+
+            for protocolDbId, runtimeProtocolId in (
+                    self.runtimeProtocolIdByDbId.items()
+            ):
+                if str(runtimeProtocolId) == runtimeProtocolIdText:
+                    return {
+                        "id": int(protocolDbId),
+                        "protocolId": runtimeProtocolIdText,
+                    }
+
+        return None
 
 
 class FakeMapper:
     def __init__(self, runtimeProtocolIdByDbId=None):
         self.db = FakeDb(runtimeProtocolIdByDbId=runtimeProtocolIdByDbId)
+
 
 class FakeCurrentProject:
     # fakeCurrentProject
@@ -279,7 +311,7 @@ def test_OutputPreviewResolvesPostgresqlProtocolId(
         "outputPath": str(outputFile),
         "objMgr": {"manager": "fresh"},
     }
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_BuildProtocolThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -333,7 +365,7 @@ def test_BuildProtocolThumbnailResolvesPostgresqlProtocolId(
             "outputName": "outputA",
         }
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
 
 
 def test_BuildProjectThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -404,7 +436,7 @@ def test_BuildProtocolOutputThumbnailResolvesPostgresqlProtocolId(
             "size": 256,
         }
     ]
-    assert mapper.db.fetchCalls[0]["params"] == (1, 501, "501")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 501)
 
 
 def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -433,18 +465,45 @@ def test_ListProjectThumbnailItemsDelegatesToThumbnailService(projectServiceModu
     ]
 
 
-def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutputs(
-    projectServiceModule,
-    service,
-    monkeypatch,
-):
-    class FakeThumbnailServiceWithItems:
-        # fakeThumbnailServiceWithItems
-        instances = []
+def test_ThumbnailServiceIsReusedWhileProjectContextIsLoaded(projectServiceModule, service, monkeypatch):
+    FakeThumbnailService.instances = []
+    monkeypatch.setattr(projectServiceModule, "ThumbnailService", FakeThumbnailService)
 
-        def __init__(self, currentProject):
-            self.currentProject = currentProject
-            FakeThumbnailServiceWithItems.instances.append(self)
+    service.buildProjectThumbnail(force=False, size=640, maxProtocols=6)
+    service.buildProtocolThumbnail(protocolId=10, force=False, size=320)
+    service.buildProtocolOutputThumbnail(protocolId=10, outputName="outputA", force=False, size=128)
+    service.listProjectThumbnailItems(projectId=1, size=128, maxProtocols=4, maxOutputsPerProtocol=2)
+
+    assert len(FakeThumbnailService.instances) == 1
+
+
+def test_ListProjectThumbnailItemsKeepsDetachedPostgresqlOutputs(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    expectedItems = [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+            "outputs": [
+                {
+                    "outputName": (
+                        "outputTiltSeries"
+                    ),
+                },
+            ],
+        },
+    ]
+
+    class FakeThumbnailServiceWithItems:
+        def __init__(
+                self,
+                currentProject,
+        ):
+            self.currentProject = (
+                currentProject
+            )
 
         def listProtocolThumbnailItems(
                 self,
@@ -455,29 +514,7 @@ def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutp
                 maxOutputsPerProtocol=4,
                 inlineImages=False,
         ):
-            return [
-                {
-                    "projectId": projectId,
-                    "protocolId": 500,
-                    "outputs": [
-                        {"outputName": "outputVol"},
-                        {"outputName": "missingOutput"},
-                    ],
-                },
-                {
-                    "projectId": projectId,
-                    "protocolId": 999,
-                    "outputs": [
-                        {"outputName": "outputVol"},
-                    ],
-                },
-            ]
-
-    output = FakeOutput("volume.mrc")
-    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
-    service.currentProject = FakeCurrentProject(protocols={10: protocol})
-
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
+            return expectedItems
 
     monkeypatch.setattr(
         projectServiceModule,
@@ -485,28 +522,20 @@ def test_ListProjectThumbnailItemsResolvesPostgresqlProtocolIdsWhenFilteringOutp
         FakeThumbnailServiceWithItems,
     )
 
-    result = service.listProjectThumbnailItems(
-        projectId=1,
-        force=False,
-        size=320,
-        maxProtocols=12,
-        maxOutputsPerProtocol=4,
-        inlineImages=False,
-        mapper=mapper,
+    result = (
+        service
+        .listProjectThumbnailItems(
+            projectId=1,
+            force=False,
+            size=128,
+            maxProtocols=4,
+            maxOutputsPerProtocol=2,
+            inlineImages=True,
+            mapper=object(),
+        )
     )
 
-    assert result == [
-        {
-            "projectId": 1,
-            "protocolId": 500,
-            "outputs": [
-                {"outputName": "outputVol"},
-            ],
-        }
-    ]
-
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
-    assert mapper.db.fetchCalls[1]["params"] == (1, 999, "999")
+    assert result == expectedItems
 
 
 def test_NormalizeExportJsonContentAcceptsJsonString(service):
@@ -649,7 +678,7 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     }
 
 
-def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
+def test_GetProtocolOutputThumbnailsBatchDelegatesPostgresqlProtocolId(
     service,
     monkeypatch,
     tmp_path,
@@ -676,7 +705,9 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
     monkeypatch.setattr(
         service,
         "loadProjectForThumbnails",
-        lambda dbProj: service.currentProject,
+        lambda dbProj, mapper=None: (
+            service.currentProject
+        ),
     )
 
     buildCalls = []
@@ -701,6 +732,7 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
             "absolutePath": str(thumbnailFile),
             "exists": True,
             "cached": False,
+            "outputClassName": "FakeOutput",
         }
 
     monkeypatch.setattr(
@@ -755,7 +787,6 @@ def test_GetProtocolOutputThumbnailsBatchResolvesPostgresqlProtocolId(
         }
     ]
 
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
 
 
 def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
@@ -840,8 +871,8 @@ def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
         "protocolIds": ["500", "501"],
     }
 
-    assert mapper.db.fetchCalls[0]["params"] == (1, 500, "500")
-    assert mapper.db.fetchCalls[1]["params"] == (1, 501, "501")
+    assert mapper.db.fetchCalls[0]["params"] == (1, 500)
+    assert mapper.db.fetchCalls[1]["params"] == (1, 501)
 
 
 def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
@@ -871,3 +902,97 @@ def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
         "mapper": "mapper",
         "projectId": 1,
     }
+
+
+def test_LoadProjectForThumbnailsAlwaysUsesPostgresql(
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir()
+
+    # A stale legacy database must never alter
+    # the thumbnail runtime path.
+    (
+        projectPath
+        / "project.sqlite"
+    ).write_bytes(
+        b"legacy sqlite must be ignored"
+    )
+
+    mapper = object()
+    postgresqlProject = object()
+    loadCalls = []
+
+    def loadPostgresqlRuntimeProject(
+            **kwargs,
+    ):
+        loadCalls.append(
+            dict(kwargs)
+        )
+
+        return postgresqlProject
+
+    monkeypatch.setattr(
+        service,
+        "_loadPostgresqlRuntimeProject",
+        loadPostgresqlRuntimeProject,
+    )
+
+    result = (
+        service
+        .loadProjectForThumbnails(
+            dbProj={
+                "id": 342,
+                "name": str(
+                    projectPath
+                ),
+            },
+            mapper=mapper,
+        )
+    )
+
+    assert result is postgresqlProject
+
+    assert loadCalls == [{
+        "mapper": mapper,
+        "projectId": 342,
+        "projectPath": str(
+            projectPath
+        ),
+    }]
+
+
+def test_LoadProjectForThumbnailsRequiresPostgresqlMapper(
+        service,
+        tmp_path,
+):
+    projectPath = (
+        tmp_path
+        / "PostgresqlProject"
+    )
+
+    projectPath.mkdir()
+
+    with pytest.raises(
+            RuntimeError,
+            match=(
+                "PostgreSQL mapper is required"
+            ),
+    ):
+        service.loadProjectForThumbnails(
+            dbProj={
+                "id": 342,
+                "name": str(
+                    projectPath
+                ),
+            },
+            mapper=None,
+        )
+
+

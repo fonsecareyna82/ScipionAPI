@@ -190,7 +190,7 @@ def test_UpdateProtocolStepStatusReturns404WhenProjectMissing(
     protocolStepsClient,
     fakeProtocolStepsProjectService,
 ):
-    fakeProtocolStepsProjectService.projectByIdResult = None
+    fakeProtocolStepsProjectService.projectDbRowResult = None
 
     response = protocolStepsClient.patch(
         "/projects/1/protocols/10/steps/2/status",
@@ -229,6 +229,23 @@ def test_UpdateProtocolStepStatusDelegatesToService(
         "stepIndex": 2,
         "stepStatus": "finished",
     }
+    assert (
+               fakeProtocolStepsProjectService
+               .lastGetProjectDbRowCall
+           ) == {
+               "mapper": fakeProjectMapper,
+               "projectId": 1,
+               "currentUser": {
+                   "id": 1,
+                   "email": "user@example.com",
+                   "role": "user",
+               },
+           }
+
+    assert (
+               fakeProtocolStepsProjectService
+               .lastGetProjectByIdCall
+           ) is None
 
 
 def test_UpdateProtocolStepStatusPropagatesHttpException(

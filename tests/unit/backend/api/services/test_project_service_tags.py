@@ -48,7 +48,7 @@ class FakeDb:
             "params": params,
         })
 
-        if params is None:
+        if params is None or len(params) != 2:
             return None
 
         queryText = " ".join(str(query).split())
@@ -56,37 +56,42 @@ class FakeDb:
         if "FROM protocols" not in queryText:
             return None
 
-        # ProjectService._resolvePostgresqlProtocolDbId:
-        # SELECT id FROM protocols WHERE "projectId" = %s
-        # AND (id = %s OR "protocolId" = %s)
-        if len(params) == 3:
-            projectId, protocolDbIdCandidate, rawProtocolId = params
-            projectId = int(projectId)
-            rawProtocolId = str(rawProtocolId)
+        projectId, protocolIdCandidate = params
+        projectId = int(projectId)
+
+        if "AND id = %s" in queryText:
+            try:
+                protocolDbId = int(protocolIdCandidate)
+            except (TypeError, ValueError):
+                return None
 
             for row in self.protocolRows:
-                if row["projectId"] != projectId:
-                    continue
-
-                if row["id"] == int(protocolDbIdCandidate):
-                    return {"id": row["id"]}
-
-                if row["protocolId"] == rawProtocolId:
-                    return {"id": row["id"]}
+                if (
+                        row["projectId"] == projectId
+                        and row["id"] == protocolDbId
+                ):
+                    return {
+                        "id": row["id"],
+                        "protocolId": row["protocolId"],
+                    }
 
             return None
 
-        # ProjectService._resolvePostgresqlProtocolDbId for non-integer values:
-        # SELECT id FROM protocols WHERE "projectId" = %s
-        # AND "protocolId" = %s
-        if len(params) == 2 and '"projectId" = %s' in queryText and '"protocolId" = %s' in queryText:
-            projectId, rawProtocolId = params
-            projectId = int(projectId)
-            rawProtocolId = str(rawProtocolId)
+        if 'AND "protocolId" = %s' in queryText:
+            runtimeProtocolIdText = str(
+                protocolIdCandidate
+            )
 
             for row in self.protocolRows:
-                if row["projectId"] == projectId and row["protocolId"] == rawProtocolId:
-                    return {"id": row["id"]}
+                if (
+                        row["projectId"] == projectId
+                        and row["protocolId"]
+                        == runtimeProtocolIdText
+                ):
+                    return {
+                        "id": row["id"],
+                        "protocolId": row["protocolId"],
+                    }
 
         return None
 
@@ -267,7 +272,19 @@ def test_ListProtocolTagsResolvesPostgresqlProtocolDbId(
         }
     ]
 
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert [
+               call["params"]
+               for call in mapper.db.fetchOneCalls
+           ] == [
+               (
+                   1,
+                   "500",
+               ),
+               (
+                   1,
+                   500,
+               ),
+           ]
 
 
 def test_ListProtocolTagsAlsoAcceptsRuntimeProtocolId(
@@ -298,7 +315,7 @@ def test_ListProtocolTagsAlsoAcceptsRuntimeProtocolId(
         }
     ]
 
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 10, "10")
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, "10")
 
 
 def test_ListProtocolTagsRaises404WhenProtocolCannotBeResolved(
@@ -377,7 +394,19 @@ def test_SetProtocolTagsResolvesPostgresqlProtocolDbId(
 
     assert mapper.setProtocolTagIdsCalls == []
     assert mapper.protocolTagIdsByProtocolDbId[500] == ["good", "selected"]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500, "500")
+    assert [
+               call["params"]
+               for call in mapper.db.fetchOneCalls
+           ] == [
+               (
+                   1,
+                   "500",
+               ),
+               (
+                   1,
+                   500,
+               ),
+           ]
 
 
 def test_SetProtocolTagsAlsoAcceptsRuntimeProtocolId(
@@ -410,7 +439,7 @@ def test_SetProtocolTagsAlsoAcceptsRuntimeProtocolId(
     ]
 
     assert mapper.setProtocolTagIdsCalls == []
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 10, "10")
+    assert mapper.db.fetchOneCalls[0]["params"] == (1, "10")
 
 
 def test_SetProtocolTagsRaises404WhenProtocolCannotBeResolved(

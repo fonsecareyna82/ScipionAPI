@@ -161,3 +161,63 @@ def test_PostgresqlCoords2dReaderRejectsCoords3dStoredSet():
     )
 
     assert reader.hasOutput() is False
+
+
+class FakeMicrographDb:
+    def fetchOne(self, query, params=None):
+        normalizedQuery = " ".join(str(query).split())
+
+        if "FROM scipion_sets stored_set" not in normalizedQuery:
+            return None
+
+        if int(params[-1]) != 10:
+            return None
+
+        return {
+            "scipionItemId": 10,
+            "label": "Micrograph 10",
+            "comment": "",
+            "values": {
+                "_location._index": 1,
+                "_location._filename": "Runs/000001_Import/extra/micrograph_10.mrc",
+                "_micName": "micrograph_10",
+            },
+            "outputName": "outputMicrographs",
+            "protocolId": "1",
+        }
+
+
+def test_PostgresqlCoords2dReaderResolvesLinkedMicrographImage():
+    reader = PostgresqlCoords2dReader(
+        db=FakeMicrographDb(),
+        projectId=1,
+        protocolId=2,
+        outputName="coordinates",
+    )
+
+    reader._storedSet = {
+        "setClassName": "SetOfCoordinates",
+        "itemClassName": "Coordinate",
+        "properties": {
+            "_micrographsPointer": {
+                "version": 1,
+                "kind": "pointer",
+                "targetObjectId": 3000000050,
+                "targetParentObjectId": 1,
+                "targetObjectName": "1.outputMicrographs",
+                "targetClassName": "SetOfMicrographs",
+                "extended": "",
+            },
+        },
+        "items": [],
+    }
+
+    result = reader.getMicrographImageInfo("10")
+
+    assert result == {
+        "id": "10",
+        "fileName": "Runs/000001_Import/extra/micrograph_10.mrc",
+        "locationIndex": 1,
+        "label": "micrograph_10",
+    }
+

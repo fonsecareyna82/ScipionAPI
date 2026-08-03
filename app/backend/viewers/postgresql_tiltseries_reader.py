@@ -95,35 +95,156 @@ class PostgresqlTiltSeriesReader:
 
         return payload
 
-    def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
-        self.lastSkipReason = None
+    def _canUsePostgresqlBackend(self) -> bool:
+        return (
+                callable(getattr(self.db, "fetchOne", None))
+                and callable(getattr(self.db, "fetchAll", None))
+        )
 
-        payload = self.getTiltSeriesFrames(tiltSeriesId)
-        if not payload:
+    def _getTiltImageFrameFromFramesPayload(
+            self,
+            tiltSeriesId: Any,
+            index: Any,
+    ) -> Optional[Dict[str, Any]]:
+        targetIndex = self._toOptionalInt(index)
+        if targetIndex is None:
+            self.lastSkipReason = (
+                    "tilt_image_frame_invalid_index tiltSeriesId=%s index=%s"
+                    % (str(tiltSeriesId), str(index))
+            )
+            return None
+
+        try:
+            framesPayload = self.getTiltSeriesFrames(tiltSeriesId)
+        except Exception as exc:
+            self.lastSkipReason = (
+                    "tiltseries_frames_payload_error tiltSeriesId=%s index=%s error=%s"
+                    % (str(tiltSeriesId), str(index), str(exc))
+            )
+            return None
+
+        if not framesPayload:
             if not self.lastSkipReason:
                 self.lastSkipReason = (
-                        "tiltseries_frames_not_available tiltSeriesId=%s"
+                        "tiltseries_frames_payload_not_found tiltSeriesId=%s"
                         % str(tiltSeriesId)
                 )
             return None
 
-        frames = payload.get("frames") or []
-        targetIndex = self._toOptionalInt(index)
+        frames = framesPayload.get("frames") or []
 
-        if targetIndex is not None:
-            for frame in frames:
-                frameIndex = self._toOptionalInt(frame.get("index"))
-                if frameIndex == targetIndex:
-                    return frame
+        for fallbackIndex, frame in enumerate(frames):
+            frameIndex = self._toOptionalInt(frame.get("index"))
 
-            if 0 <= targetIndex < len(frames):
-                return frames[targetIndex]
+            if frameIndex == targetIndex:
+                return frame
+
+            if frameIndex is None and fallbackIndex == targetIndex:
+                return frame
 
         self.lastSkipReason = (
                 "tilt_image_frame_not_found tiltSeriesId=%s index=%s"
                 % (str(tiltSeriesId), str(index))
         )
         return None
+
+    def getTiltImageFrame(self, tiltSeriesId: Any, index: Any) -> Optional[Dict[str, Any]]:
+        self.lastSkipReason = None
+
+        if not self._canUsePostgresqlBackend():
+            return self._getTiltImageFrameFromFramesPayload(
+                tiltSeriesId=tiltSeriesId,
+                index=index,
+            )
+
+        storedSet = self._getStoredSet()
+        if storedSet is None or not self._isTiltSeriesStoredSet(storedSet):
+            self.lastSkipReason = "tiltseries_stored_set_not_found"
+            return None
+
+        seriesItem = self._findTiltSeriesItem(tiltSeriesId)
+        if seriesItem is None:
+            self.lastSkipReason = (
+                    "tiltseries_item_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
+
+        childTable = self._findChildTableForParentItem(seriesItem.get("scipionItemId"))
+        if childTable is None:
+            self.lastSkipReason = (
+                    "tiltseries_child_table_not_found tiltSeriesId=%s"
+                    % str(tiltSeriesId)
+            )
+            return None
+
+        targetIndex = self._toOptionalInt(index)
+        if targetIndex is None:
+            self.lastSkipReason = (
+                    "tilt_image_frame_invalid_index tiltSeriesId=%s index=%s"
+                    % (str(tiltSeriesId), str(index))
+            )
+            return None
+
+        tableId = int(childTable["id"])
+
+        candidatePositions = [targetIndex]
+        if targetIndex > 0:
+            candidatePositions.append(targetIndex - 1)
+
+        seenPositions = set()
+        fallbackFrame = None
+
+        for candidatePosition in candidatePositions:
+            if candidatePosition in seenPositions:
+                continue
+
+            seenPositions.add(candidatePosition)
+
+            item = self._getChildTableItemAtPosition(
+                tableId=tableId,
+                position=candidatePosition,
+            )
+
+            if item is None:
+                continue
+
+            frame = self._buildTiltImageFrame(item, candidatePosition)
+            frameIndex = self._toOptionalInt(frame.get("index"))
+
+            if frameIndex == targetIndex:
+                return frame
+
+            if candidatePosition == targetIndex:
+                fallbackFrame = frame
+
+        if fallbackFrame is not None:
+            return fallbackFrame
+
+        self.lastSkipReason = (
+                "tilt_image_frame_not_found tiltSeriesId=%s index=%s"
+                % (str(tiltSeriesId), str(index))
+        )
+        return None
+
+    def _getChildTableItemAtPosition(
+            self,
+            tableId: int,
+            position: int,
+    ) -> Optional[Dict[str, Any]]:
+        if position < 0:
+            return None
+
+        items = self.setMapper.getStoredSetTableItems(
+            int(tableId),
+            limit=1,
+            offset=int(position),
+        )
+
+        if not items:
+            return None
+
+        return items[0]
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:
@@ -244,8 +365,9 @@ class PostgresqlTiltSeriesReader:
 
         childTable = self._findChildTableForParentItem(itemId)
         if childTable is not None:
-            childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
-            summary["nViews"] = len(childItems)
+            nViews = self._countChildTableItems(int(childTable["id"]))
+            if nViews is not None:
+                summary["nViews"] = nViews
 
         dims = self._extractDims(values)
         if dims is not None:
@@ -266,6 +388,21 @@ class PostgresqlTiltSeriesReader:
             summary["tiltAxisAngle"] = self._toOptionalFloat(tiltAxisAngle)
 
         return summary
+
+    def _countChildTableItems(self, tableId: int) -> Optional[int]:
+        row = self.db.fetchOne(
+            """
+            SELECT COUNT(*) AS count
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+            """,
+            (int(tableId),),
+        )
+
+        if not row:
+            return None
+
+        return self._toOptionalInt(row.get("count"))
 
     def _findTiltSeriesItem(self, tiltSeriesId: Any) -> Optional[Dict[str, Any]]:
         storedSet = self._getStoredSet()

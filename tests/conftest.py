@@ -127,6 +127,9 @@ class FakeProjectService:
         self.projectByIdResult = makeProjectOut()
         self.lastGetProjectByIdCall = None
 
+        self.postgresqlRuntimeMutationResult = makeProjectOut()
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall = None
+
         self.projectDbRowResult = makeProjectOut()
         self.lastGetProjectDbRowCall = None
         self.lastGetProtocolsCall = None
@@ -291,16 +294,39 @@ class FakeProjectService:
         self.lastDeleteProtocolCall = None
 
         self.restartProtocolAllError = None
-        self.restartProtocolAllResult = []
+        self.restartProtocolAllResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastRestartProtocolAllCall = None
 
         self.continueProtocolAllError = None
+        self.continueProtocolAllResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastContinueProtocolAllCall = None
 
         self.resetProtocolFromError = None
+        self.resetProtocolFromResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastResetProtocolFromCall = None
 
         self.stopProtocolError = None
+        self.stopProtocolResult = {
+            "status": 0,
+            "errors": [],
+            "protocolsCount": 1,
+            "dependenciesCount": 0,
+        }
         self.lastStopProtocolCall = None
         self.volumeItemsResult = [
             {
@@ -343,6 +369,17 @@ class FakeProjectService:
         }
         self.lastGetTiltSeriesFramesCall = None
 
+        self.newTiltSeriesSetResult = {
+            "status": 0,
+            "outputName": "TiltSeries_2",
+            "createdTiltSeries": 1,
+            "hasOddEven": False,
+            "restack": False,
+            "postgresqlSync": {"stored": True},
+            "postgresqlError": None,
+        }
+        self.lastCreateNewSetOfTiltSeriesCall = None
+
         self.ctftomoSeriesResult = [
             {
                 "tiltSeriesId": "TS_001",
@@ -361,6 +398,15 @@ class FakeProjectService:
             ],
         }
         self.lastGetCtftomoSeriesViewsCall = None
+        self.newCtftomoSeriesSetResult = {
+            "status": 0,
+            "outputName": "CTFTomoSeries2",
+            "createdSeries": 1,
+            "restack": False,
+            "postgresqlSync": {"stored": True},
+            "postgresqlError": None,
+        }
+        self.lastCreateNewSetOfCtftomoSeriesCall = None
 
         self.coords3dTomogramsResult = [
             {
@@ -557,7 +603,22 @@ class FakeProjectService:
             "validateConsistency": validateConsistency,
             "failOnConsistencyError": failOnConsistencyError,
         }
+
         return self.projectByIdResult
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.lastLoadPostgresqlRuntimeProjectForMutationCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+
+        return self.postgresqlRuntimeMutationResult
 
     def getProjectDbRow(self, mapper, projectId, currentUser):
         self.lastGetProjectDbRowCall = {
@@ -966,33 +1027,58 @@ class FakeProjectService:
             raise self.restartProtocolAllError
         return self.restartProtocolAllResult
 
-    def continueProtocolAll(self, mapper, projectId, protocolId, currentUser):
+    def continueProtocolAll(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            currentUser,
+    ):
         self.lastContinueProtocolAllCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
             "currentUser": currentUser,
         }
+
         if self.continueProtocolAllError is not None:
             raise self.continueProtocolAllError
 
-    def resetProtocolFrom(self, mapper, projectId, protocolId):
+        return self.continueProtocolAllResult
+
+    def resetProtocolFrom(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+    ):
         self.lastResetProtocolFromCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
         }
+
         if self.resetProtocolFromError is not None:
             raise self.resetProtocolFromError
 
-    def stopProtocol(self, mapper, projectId, protocolIds):
+        return self.resetProtocolFromResult
+
+    def stopProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolIds,
+    ):
         self.lastStopProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolIds": protocolIds,
         }
+
         if self.stopProtocolError is not None:
             raise self.stopProtocolError
+
+        return self.stopProtocolResult
 
     def listOutputVolumesService(
             self,
@@ -1077,6 +1163,25 @@ class FakeProjectService:
         }
         return self.tiltSeriesFramesResult
 
+    def createNewSetOfTiltSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            exclusions,
+            restack,
+            mapper=None,
+    ):
+        self.lastCreateNewSetOfTiltSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "exclusions": exclusions,
+            "restack": restack,
+            "mapper": mapper,
+        }
+        return self.newTiltSeriesSetResult
+
     def listOutputCtftomoSeriesService(
             self,
             projectId,
@@ -1108,6 +1213,25 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.ctftomoSeriesViewsResult
+
+    def createNewSetOfCtftomoSeriesService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            exclusions,
+            restack,
+            mapper=None,
+    ):
+        self.lastCreateNewSetOfCtftomoSeriesCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "exclusions": exclusions,
+            "restack": restack,
+            "mapper": mapper,
+        }
+        return self.newCtftomoSeriesSetResult
 
     def listCoordinates3dTomogramsService(
             self,
