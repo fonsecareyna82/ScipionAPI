@@ -1654,9 +1654,13 @@ class RuntimeProtocolOutputPersistenceService:
             Dict[str, Any],
         ] = {}
 
-        from app.backend.mapper import ScipionSetPostgresqlMapper
+        from app.backend.mapper import (
+            ScipionObjectPostgresqlMapper,
+            ScipionSetPostgresqlMapper,
+        )
 
         setMapper = ScipionSetPostgresqlMapper(mapper.db)
+        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
 
         setRows = setMapper.listProtocolSetOutputRows(
             projectId=projectId,
@@ -1743,36 +1747,10 @@ class RuntimeProtocolOutputPersistenceService:
                 ),
             }
 
-        treeRows = mapper.db.fetchAll(
-            """
-            SELECT
-                COALESCE(
-                    NULLIF(o.path, ''),
-                    o.name
-                ) AS "outputName",
-                o.id AS "rootObjectId",
-                o."scipionObjId",
-                o."className",
-                o.value,
-                o.label,
-                o.comment,
-                o.metadata
-              FROM scipion_objects o
-             WHERE o."projectId" = %s
-               AND o."protocolDbId" = %s
-               AND o."parentObjectId" IS NULL
-               AND NOT EXISTS (
-                    SELECT 1
-                      FROM scipion_sets s
-                     WHERE s."objectId" = o.id
-               )
-             ORDER BY "outputName"
-            """,
-            (
-                projectId,
-                int(protocolDbId),
-            ),
-        ) or []
+        treeRows = objectMapper.listProtocolTreeOutputRows(
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+        )
 
         for row in treeRows:
             outputName = str(

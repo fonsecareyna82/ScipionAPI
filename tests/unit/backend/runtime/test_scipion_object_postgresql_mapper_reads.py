@@ -227,6 +227,77 @@ def test_ListCanonicalStoredObjectRowsCanReturnAllClasses():
     )
 
 
+def test_ListProtocolTreeOutputRowsExcludesStoredSetRoots():
+    expectedRows = [
+        {
+            "outputName": "outputVolume",
+            "rootObjectId": 81,
+            "scipionObjId": 91,
+            "className": "Volume",
+            "value": None,
+            "label": "",
+            "comment": "",
+            "metadata": {
+                "mapperKind": "tree",
+            },
+        },
+    ]
+
+    database = FakeDatabase(
+        rows=expectedRows
+    )
+
+    mapper = ScipionObjectPostgresqlMapper(
+        database
+    )
+
+    result = mapper.listProtocolTreeOutputRows(
+        projectId=7,
+        protocolDbId=31,
+    )
+
+    assert result == expectedRows
+    assert len(database.calls) == 1
+    assert database.transactionCalls == 0
+
+    call = database.calls[0]
+
+    assert call["values"] == (
+        7,
+        31,
+    )
+
+    assert (
+        "FROM scipion_objects object_row"
+        in call["query"]
+    )
+
+    assert (
+        'object_row."parentObjectId" IS NULL'
+        in call["query"]
+    )
+
+    assert (
+        "NOT EXISTS"
+        in call["query"]
+    )
+
+    assert (
+        "FROM scipion_sets stored_set"
+        in call["query"]
+    )
+
+    assert (
+        'stored_set."objectId" = object_row.id'
+        in call["query"]
+    )
+
+    assert (
+        'ORDER BY "outputName"'
+        in call["query"]
+    )
+
+
 def test_DeleteStoredObjectSubtreesUsesRecursiveSafeDelete():
     database = FakeDatabase(
         row={
