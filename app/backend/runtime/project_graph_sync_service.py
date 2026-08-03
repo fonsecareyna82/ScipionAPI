@@ -73,6 +73,7 @@ class RuntimeProjectGraphSyncService:
         protocolDbIdByScipionId: Dict[str, int] = {}
         currentProtocolIds: TypingSet[str] = set()
         protocolsByScipionId: Dict[str, Any] = {}
+        relationProtocolsByScipionId: Dict[str, Any] = {}
 
         outputSyncResults: List[Dict[str, Any]] = []
         outputSyncErrors: List[Dict[str, Any]] = []
@@ -282,6 +283,7 @@ class RuntimeProjectGraphSyncService:
             currentProtocolIds.add(nodeIdText)
             protocolDbIdByScipionId[nodeIdText] = int(protocolDbId)
             protocolsByScipionId[nodeIdText] = protocol
+            relationProtocolsByScipionId[nodeIdText] = outputProtocol
 
         # 2) Do not purge PostgreSQL protocol rows while PostgreSQL runtime mapper
         # is active/migrating.
@@ -381,7 +383,7 @@ class RuntimeProjectGraphSyncService:
             relationsByScipionId = {}
 
             for protocolIdText, protocol in (
-                    protocolsByScipionId.items()
+                    relationProtocolsByScipionId.items()
             ):
                 relationSnapshot = (
                     runtimeProjectRelationSyncService
@@ -407,7 +409,7 @@ class RuntimeProjectGraphSyncService:
                     mapper=mapper,
                     projectId=projectId,
                     protocolsByScipionId=(
-                        protocolsByScipionId
+                        relationProtocolsByScipionId
                     ),
                     protocolDbIdByScipionId=(
                         protocolDbIdByScipionId
