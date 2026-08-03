@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import importlib
+import inspect
 from datetime import date, datetime
 
 
@@ -1136,3 +1137,83 @@ def test_PostgresqlIntegratedContextReaderMergeRelationsForTomogramCandidateUses
     assert relation["tiltSeriesId"] == "TS_001"
     assert relation["tsId"] == "TS_001"
     assert relation["ctfSeriesId"] == "TS_001"
+
+
+def test_PostgresqlIntegratedContextReaderDelegatesInputRefReads(authTestEnv, monkeypatch):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+
+    repositoryCalls = []
+
+    class ForbiddenDb:
+        def fetchAll(self, *args, **kwargs):
+            raise AssertionError(
+                "PostgresqlIntegratedContextReader must not query input refs directly"
+            )
+
+    class ProtocolGraphRepositoryStub:
+        def loadInputRefsForProtocol(self, mapper, projectId, protocolDbId):
+            repositoryCalls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return [
+                {
+                    "inputName": "inputTiltSeries",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 400,
+                    "parentProtocolId": "10",
+                    "parentOutputName": "outputTiltSeries",
+                    "objectClassName": "SetOfTiltSeries",
+                    "objectId": "25",
+                },
+            ]
+
+    monkeypatch.setattr(
+        module,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    database = ForbiddenDb()
+
+    reader = module.PostgresqlIntegratedContextReader(
+        db=database,
+        projectId=7,
+        protocolId=500,
+        outputName="outputTomograms",
+    )
+
+    result = reader._listProtocolInputRefs(500)
+
+    assert result == [
+        {
+            "inputName": "inputTiltSeries",
+            "itemIndex": 0,
+            "parentProtocolDbId": 400,
+            "parentProtocolId": "10",
+            "parentOutputName": "outputTiltSeries",
+            "objectClassName": "SetOfTiltSeries",
+            "objectId": "25",
+        },
+    ]
+
+    assert repositoryCalls == [
+        {
+            "mapper": reader.setMapper,
+            "projectId": 7,
+            "protocolDbId": 500,
+        },
+    ]
+
+    source = inspect.getsource(
+        module.PostgresqlIntegratedContextReader._listProtocolInputRefs
+    )
+
+    assert "loadInputRefsForProtocol(" in source
+    assert ".fetchOne(" not in source
+    assert ".fetchAll(" not in source
+    assert ".execute(" not in source
