@@ -214,12 +214,13 @@ def test_StoreDetachedSetOutputDelegatesMetadataPersistence():
     }
 
 
-def test_ProtocolFormOutputReaderDelegatesSetRows(
+def test_ProtocolFormOutputReaderDelegatesOutputRows(
         monkeypatch,
 ):
     mapper = FakeMapper()
     service = RuntimeProtocolOutputPersistenceService()
     setReadCalls = []
+    treeReadCalls = []
 
     class SetMapperStub:
         def __init__(self, database):
@@ -237,10 +238,32 @@ def test_ProtocolFormOutputReaderDelegatesSetRows(
 
             return []
 
+    class ObjectMapperStub:
+        def __init__(self, database):
+            assert database is mapper.db
+
+        def listProtocolTreeOutputRows(
+                self,
+                projectId,
+                protocolDbId,
+        ):
+            treeReadCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return []
+
     monkeypatch.setattr(
         backendMapperModule,
         "ScipionSetPostgresqlMapper",
         SetMapperStub,
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionObjectPostgresqlMapper",
+        ObjectMapperStub,
     )
 
     monkeypatch.setattr(
@@ -262,16 +285,24 @@ def test_ProtocolFormOutputReaderDelegatesSetRows(
         },
     ]
 
-    assert len(mapper.db.queries) == 1
-    assert (
-        "FROM scipion_objects o"
-        in mapper.db.queries[0]["query"]
+    assert treeReadCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 17,
+        },
+    ]
+
+    assert mapper.db.queries == []
+
+    source = inspect.getsource(
+        RuntimeProtocolOutputPersistenceService.loadPersistedProtocolOutputs
     )
 
-    assert (
-        "LEFT JOIN scipion_objects root"
-        not in mapper.db.queries[0]["query"]
-    )
+    assert "setMapper.listProtocolSetOutputRows(" in source
+    assert "objectMapper.listProtocolTreeOutputRows(" in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
 
 
 def test_RegisterOutputRecognizesRunDbProjectionOfNativePostgresqlSet(
