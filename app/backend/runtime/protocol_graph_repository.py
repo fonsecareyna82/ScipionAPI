@@ -465,6 +465,138 @@ class ProtocolGraphRepository:
 
         return result
 
+    def loadProtocolRuntimeArtifactRows(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            raise ValueError("mapper is required")
+
+        db = getattr(mapper, "db", None)
+
+        if db is None:
+            raise ValueError("mapper.db is required")
+
+        if projectId in (None, ""):
+            raise ValueError("projectId is required")
+
+        protocolIdText = (
+            str(protocolId).strip()
+            if protocolId is not None
+            else ""
+        )
+
+        if not protocolIdText:
+            return {
+                "sets": [],
+                "objects": [],
+                "setCountsById": {},
+            }
+
+        setRows = self._rowsToDicts(
+            db.fetchAll(
+                """
+                SELECT
+                    stored_set.id,
+                    stored_set."projectId",
+                    stored_set."protocolDbId",
+                    stored_set."objectId",
+                    stored_set."outputName",
+                    stored_set."setClassName",
+                    stored_set."itemClassName",
+                    stored_set.properties,
+                    (
+                        SELECT COUNT(*)
+                          FROM scipion_set_items root_item
+                         WHERE root_item."setId" = stored_set.id
+                    ) AS "rootItemsCount",
+                    (
+                        SELECT COUNT(*)
+                          FROM scipion_set_tables set_table
+                         WHERE set_table."setId" = stored_set.id
+                    ) AS "tablesCount",
+                    (
+                        SELECT COUNT(table_item.id)
+                          FROM scipion_set_tables set_table
+                          JOIN scipion_set_table_items table_item
+                            ON table_item."tableId" = set_table.id
+                         WHERE set_table."setId" = stored_set.id
+                    ) AS "tableItemsCount"
+                  FROM scipion_sets stored_set
+                  JOIN protocols protocol_row
+                    ON protocol_row."projectId" = stored_set."projectId"
+                   AND protocol_row.id = stored_set."protocolDbId"
+                 WHERE stored_set."projectId" = %s
+                   AND protocol_row."protocolId" = %s
+                 ORDER BY stored_set."outputName"
+                """,
+                (
+                    int(projectId),
+                    protocolIdText,
+                ),
+            )
+        )
+
+        setCountsById = {}
+
+        for setRow in setRows:
+            setId = setRow.get("id")
+            setCounts = {}
+
+            for countName in (
+                    "rootItemsCount",
+                    "tablesCount",
+                    "tableItemsCount",
+            ):
+                countValue = setRow.pop(
+                    countName,
+                    None,
+                )
+
+                try:
+                    setCounts[countName] = (
+                        int(countValue)
+                        if countValue is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    setCounts[countName] = None
+
+            if setId not in (None, ""):
+                setCountsById[int(setId)] = setCounts
+
+        objectRows = self._rowsToDicts(
+            db.fetchAll(
+                """
+                SELECT
+                    object_row.name,
+                    object_row.path,
+                    object_row."className",
+                    object_row."scipionObjId"
+                  FROM scipion_objects object_row
+                  JOIN protocols protocol_row
+                    ON protocol_row."projectId" = object_row."projectId"
+                   AND protocol_row.id = object_row."protocolDbId"
+                 WHERE object_row."projectId" = %s
+                   AND protocol_row."protocolId" = %s
+                   AND object_row."parentObjectId" IS NULL
+                 ORDER BY object_row.path, object_row.name
+                """,
+                (
+                    int(projectId),
+                    protocolIdText,
+                ),
+            )
+        )
+
+        return {
+            "sets": setRows,
+            "objects": objectRows,
+            "setCountsById": setCountsById,
+        }
+
     def replaceRuntimeOutputRelation(
             self,
             mapper,
