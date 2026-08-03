@@ -651,7 +651,6 @@ class RuntimeProtocolOutputPersistenceService:
             )
 
         absoluteFileName = None
-        resolvedProjectPath = None
         attemptedPaths = []
 
         for candidateProjectPath in (
@@ -675,10 +674,6 @@ class RuntimeProtocolOutputPersistenceService:
             ):
                 absoluteFileName = (
                     candidateFileName
-                )
-
-                resolvedProjectPath = (
-                    candidateProjectPath
                 )
 
                 break
