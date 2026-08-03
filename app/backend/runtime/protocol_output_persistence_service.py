@@ -818,7 +818,6 @@ class RuntimeProtocolOutputPersistenceService:
     def _storeDetachedSetOutput(
             self,
             *,
-            mapper,
             objectMapper,
             projectId: int,
             protocolDbId: int,
@@ -892,36 +891,13 @@ class RuntimeProtocolOutputPersistenceService:
             ),
         }
 
-        if rootObjectId not in (
-                None,
-                "",
-        ):
-            with mapper.db.transaction():
-                mapper.db.execute(
-                    """
-                    UPDATE scipion_objects
-                       SET metadata = (
-                               COALESCE(
-                                   metadata,
-                                   '{}'::jsonb
-                               )
-                               || %s::jsonb
-                           ),
-                           "updatedAt" = NOW()
-                     WHERE id = %s
-                       AND "projectId" = %s
-                       AND "protocolDbId" = %s
-                    """,
-                    (
-                        json.dumps(
-                            detachedMetadata
-                        ),
-                        int(rootObjectId),
-                        int(projectId),
-                        int(protocolDbId),
-                    ),
-                    commit=False,
-                )
+        if rootObjectId not in (None, ""):
+            objectMapper.mergeStoredObjectMetadata(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                objectDbId=rootObjectId,
+                metadata=detachedMetadata,
+            )
 
         return {
             **syncInfo,
@@ -2853,7 +2829,6 @@ class RuntimeProtocolOutputPersistenceService:
 
                         syncInfo = (
                             self._storeDetachedSetOutput(
-                                mapper=mapper,
                                 objectMapper=objectMapper,
                                 projectId=projectId,
                                 protocolDbId=int(

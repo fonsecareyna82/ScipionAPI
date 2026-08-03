@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import inspect
+
 import pytest
 import app.backend.mapper as backendMapperModule
 from app.backend.mapper.scipion_set_mapper import (
@@ -91,6 +93,125 @@ def test_PersistedOutputReadersExcludeReservedRuntimeSets():
             "s.properties ->> 'runtimeReserved', "
             "'false' ) <> 'true'"
         ) in query
+
+
+def test_DetachedSetMetadataPersistenceDoesNotExecuteDirectQueries():
+    source = inspect.getsource(
+        RuntimeProtocolOutputPersistenceService._storeDetachedSetOutput
+    )
+
+    assert "objectMapper.mergeStoredObjectMetadata(" in source
+    assert ".db.fetchOne(" not in source
+    assert ".db.fetchAll(" not in source
+    assert ".db.execute(" not in source
+
+
+def test_StoreDetachedSetOutputDelegatesMetadataPersistence():
+    class DetachedSetStub:
+        def getFileName(self):
+            return "Runs/000010_Test/extra/output.sqlite"
+
+        def getSize(self):
+            return 24
+
+    class ObjectMapperStub:
+        def __init__(self):
+            self.registerCalls = []
+            self.storeCalls = []
+            self.metadataCalls = []
+
+        def registerObjectTypeFromObject(
+                self,
+                outputObj,
+                **kwargs,
+        ):
+            self.registerCalls.append({
+                "outputObj": outputObj,
+                **kwargs,
+            })
+
+        def storeObjectTree(
+                self,
+                **kwargs,
+        ):
+            self.storeCalls.append(
+                kwargs
+            )
+
+            return {
+                "rootObjectId": 81,
+                "storedObjectsCount": 1,
+            }
+
+        def mergeStoredObjectMetadata(
+                self,
+                **kwargs,
+        ):
+            self.metadataCalls.append(
+                kwargs
+            )
+
+            return 1
+
+    outputSet = DetachedSetStub()
+    objectMapper = ObjectMapperStub()
+    artifactError = FileNotFoundError(
+        "missing output.sqlite"
+    )
+
+    result = (
+        RuntimeProtocolOutputPersistenceService()
+        ._storeDetachedSetOutput(
+            objectMapper=objectMapper,
+            projectId=7,
+            protocolDbId=31,
+            outputName="outputParticles",
+            outputObj=outputSet,
+            projectPaths=[
+                "/tmp/project",
+            ],
+            artifactError=artifactError,
+        )
+    )
+
+    assert len(objectMapper.registerCalls) == 1
+    assert len(objectMapper.storeCalls) == 1
+
+    assert objectMapper.metadataCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+            "objectDbId": 81,
+            "metadata": {
+                "mapperKind": "detached_set",
+                "storage": "object_tree",
+                "artifactMissing": True,
+                "artifactFileName": (
+                    "Runs/000010_Test/extra/output.sqlite"
+                ),
+                "artifactError": (
+                    "missing output.sqlite"
+                ),
+                "projectPathsChecked": [
+                    "/tmp/project",
+                ],
+                "itemsCount": 24,
+            },
+        },
+    ]
+
+    assert result == {
+        "rootObjectId": 81,
+        "storedObjectsCount": 1,
+        "artifactMissing": True,
+        "artifactFileName": (
+            "Runs/000010_Test/extra/output.sqlite"
+        ),
+        "itemsCount": 24,
+        "projectPathsChecked": [
+            "/tmp/project",
+        ],
+    }
 
 
 def test_ProtocolFormOutputReaderExcludesReservedRuntimeSets(
