@@ -299,6 +299,10 @@ class EmptyRuntimeOutputSet(PopulatedRuntimeOutputSet):
     def isEmpty(self):
         return True
 
+    def load(self):
+        self.events.append("load-native-set")
+        return self
+
 
 class NativeMapperStub:
     def __init__(self, events):
@@ -439,13 +443,17 @@ def test_CreatePostgresqlOutputSetCopiesPopulatedNativeSetBeforePromotion():
 
 def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenReservationFails():
     events = []
-    restoreCalls = []
 
     mapper = buildMapper()
     protocol = OutputProtocolStub()
+    nativeParent = object()
 
     outputSet = EmptyRuntimeOutputSet(events)
     outputSet.setObjId(91)
+    outputSet.setName("workingSet")
+    outputSet.setObjLabel("Working Set")
+    outputSet._objParentId = 71
+    outputSet._objParent = nativeParent
     outputSet._mapper = NativeMapperStub(events)
 
     mapper.setMapper = FailingReservationSetMapperStub()
@@ -457,14 +465,6 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenReservationFails():
     }
 
     mapper._resolveProtocolDbIdFromObject = lambda currentProtocol: 23
-
-    def restoreNativeSetAfterFailedAdoption(runtimeSet, originalClass):
-        restoreCalls.append({
-            "runtimeSet": runtimeSet,
-            "originalClass": originalClass,
-        })
-
-    mapper._restoreNativeSetAfterFailedAdoption = restoreNativeSetAfterFailedAdoption
 
     with pytest.raises(
             RuntimeError,
@@ -482,23 +482,30 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenReservationFails():
     assert events == [
         "close-native-mapper",
         "promote-runtime-set",
+        "load-native-set",
     ]
 
-    assert restoreCalls == [{
-        "runtimeSet": outputSet,
-        "originalClass": EmptyRuntimeOutputSet,
-    }]
+    assert outputSet.__class__ is EmptyRuntimeOutputSet
+    assert outputSet.getObjName() == "workingSet"
+    assert outputSet.getObjLabel() == "Working Set"
+    assert outputSet.getObjParentId() == 71
+    assert outputSet._objParent is nativeParent
+    assert "_postgresqlRuntimeParentRef" not in outputSet.__dict__
 
 
 def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenDiscardFails():
     events = []
-    restoreCalls = []
 
     mapper = buildMapper()
     protocol = OutputProtocolStub()
+    nativeParent = object()
 
     outputSet = EmptyRuntimeOutputSet(events)
     outputSet.setObjId(91)
+    outputSet.setName("workingSet")
+    outputSet.setObjLabel("Working Set")
+    outputSet._objParentId = 71
+    outputSet._objParent = nativeParent
     outputSet._mapper = NativeMapperStub(events)
 
     mapper.setMapper = FailingDiscardSetMapperStub()
@@ -510,14 +517,6 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenDiscardFails():
     }
 
     mapper._resolveProtocolDbIdFromObject = lambda currentProtocol: 23
-
-    def restoreNativeSetAfterFailedAdoption(runtimeSet, originalClass):
-        restoreCalls.append({
-            "runtimeSet": runtimeSet,
-            "originalClass": originalClass,
-        })
-
-    mapper._restoreNativeSetAfterFailedAdoption = restoreNativeSetAfterFailedAdoption
 
     with pytest.raises(
             RuntimeError,
@@ -532,7 +531,15 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenDiscardFails():
             runtimeSet=outputSet,
         )
 
-    assert restoreCalls == [{
-        "runtimeSet": outputSet,
-        "originalClass": EmptyRuntimeOutputSet,
-    }]
+    assert events == [
+        "close-native-mapper",
+        "promote-runtime-set",
+        "load-native-set",
+    ]
+
+    assert outputSet.__class__ is EmptyRuntimeOutputSet
+    assert outputSet.getObjName() == "workingSet"
+    assert outputSet.getObjLabel() == "Working Set"
+    assert outputSet.getObjParentId() == 71
+    assert outputSet._objParent is nativeParent
+    assert "_postgresqlRuntimeParentRef" not in outputSet.__dict__

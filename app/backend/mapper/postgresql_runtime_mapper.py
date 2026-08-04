@@ -3986,7 +3986,23 @@ class PostgresqlRuntimeMapper(Mapper):
 
         runtimeSet._mapper = None
 
-    def _restoreNativeSetAfterFailedAdoption(self, runtimeSet, originalClass) -> None:
+    @staticmethod
+    def _captureNativeSetAdoptionState(runtimeSet) -> Dict[str, Any]:
+        return {
+            "name": runtimeSet.getObjName(),
+            "label": runtimeSet.getObjLabel(),
+            "parentId": runtimeSet.getObjParentId(),
+            "objParent": getattr(runtimeSet, "_objParent", None),
+            "hasRuntimeParentRef": "_postgresqlRuntimeParentRef" in runtimeSet.__dict__,
+            "runtimeParentRef": getattr(runtimeSet, "_postgresqlRuntimeParentRef", None),
+        }
+
+    def _restoreNativeSetAfterFailedAdoption(
+            self,
+            runtimeSet,
+            originalClass,
+            originalState=None,
+    ) -> None:
         try:
             self._closeSetMapper(runtimeSet)
         except Exception:
@@ -4020,8 +4036,18 @@ class PostgresqlRuntimeMapper(Mapper):
                 "_postgresqlSupportsNativeWrite",
                 "_postgresqlWritable",
                 "_postgresqlMapperFactory",
+                "_postgresqlRuntimeParentRef",
         ):
             runtimeSet.__dict__.pop(attributeName, None)
+
+        if originalState is not None:
+            runtimeSet.setName(originalState["name"])
+            runtimeSet.setObjLabel(originalState["label"])
+            runtimeSet._objParentId = originalState["parentId"]
+            runtimeSet._objParent = originalState["objParent"]
+
+            if originalState["hasRuntimeParentRef"]:
+                runtimeSet._postgresqlRuntimeParentRef = originalState["runtimeParentRef"]
 
         loadSet = getattr(runtimeSet, "load", None)
 
@@ -4047,6 +4073,7 @@ class PostgresqlRuntimeMapper(Mapper):
     ):
         runtimeObjectId = self._ensureObjId(runtimeSet)
         originalClass = runtimeSet.__class__
+        originalState = self._captureNativeSetAdoptionState(runtimeSet)
         snapshotReport = None
 
         try:
@@ -4105,6 +4132,7 @@ class PostgresqlRuntimeMapper(Mapper):
             self._restoreNativeSetAfterFailedAdoption(
                 runtimeSet=runtimeSet,
                 originalClass=originalClass,
+                originalState=originalState,
             )
 
             if snapshotReport is not None:
@@ -4187,6 +4215,8 @@ class PostgresqlRuntimeMapper(Mapper):
                 )
 
         originalRuntimeSetClass = None
+        originalRuntimeSetState = None
+
         if runtimeSet is None:
             runtimeSetClass = (
                 self.runtimeSetFactory
@@ -4201,9 +4231,9 @@ class PostgresqlRuntimeMapper(Mapper):
                     or {}
                 )
             )
-
         else:
             originalRuntimeSetClass = runtimeSet.__class__
+            originalRuntimeSetState = self._captureNativeSetAdoptionState(runtimeSet)
             self._closeSetMapper(runtimeSet)
             self.runtimeSetFactory._promoteRuntimeSetInstance(
                 runtimeSet=runtimeSet,
@@ -4304,7 +4334,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 self._restoreNativeSetAfterFailedAdoption(
                     runtimeSet=runtimeSet,
                     originalClass=originalRuntimeSetClass,
-
+                    originalState=originalRuntimeSetState,
                 )
 
             raise
