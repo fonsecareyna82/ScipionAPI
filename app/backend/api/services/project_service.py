@@ -2917,10 +2917,6 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             currentUser: dict,
-            refresh: bool = True,
-            checkPid: bool = True,
-            validateConsistency: bool = False,
-            failOnConsistencyError: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2936,51 +2932,6 @@ class ProjectService:
             dbProj=dbProj,
             mapper=mapper,
         )
-
-        if validateConsistency:
-            try:
-                from app.backend.api.services.project_consistency_service import (
-                    ProjectConsistencyService,
-                )
-
-                consistencyService = ProjectConsistencyService(self)
-                project["postgresqlConsistency"] = (
-                    consistencyService.validateProjectPostgresqlConsistency(
-                        mapper=mapper,
-                        projectId=projectId,
-                        currentUser=currentUser,
-                        refresh=refresh,
-                        checkPid=checkPid,
-                    )
-                )
-
-            except HTTPException:
-                if failOnConsistencyError:
-                    raise
-
-                logger.exception(
-                    "PostgreSQL consistency validation failed. projectId=%s",
-                    projectId,
-                )
-
-                project["postgresqlConsistency"] = {
-                    "ok": False,
-                    "error": "PostgreSQL consistency validation failed",
-                }
-
-            except Exception as e:
-                if failOnConsistencyError:
-                    raise
-
-                logger.exception(
-                    "PostgreSQL consistency validation failed. projectId=%s",
-                    projectId,
-                )
-
-                project["postgresqlConsistency"] = {
-                    "ok": False,
-                    "error": str(e),
-                }
 
         return project
 
@@ -3814,24 +3765,6 @@ class ProjectService:
             "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProj['id']),
             "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
         }
-
-    def validateProjectPostgresqlConsistency(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            currentUser: dict,
-            refresh: bool = True,
-            checkPid: bool = True,
-    ) -> Dict[str, Any]:
-        from app.backend.api.services.project_consistency_service import ProjectConsistencyService
-
-        return ProjectConsistencyService(self).validateProjectPostgresqlConsistency(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            refresh=refresh,
-            checkPid=checkPid,
-        )
 
     def listProjectWorkflows(self, raw: bool = False):
         """
@@ -5388,7 +5321,6 @@ class ProjectService:
             parentProtocolDbId=parentProtocolDbId,
             outputName=outputName,
         )
-
 
     def _resolvePostgresqlRuntimeInputObject(
             self,

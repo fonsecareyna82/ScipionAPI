@@ -158,26 +158,6 @@ class FakeProjectService:
         )
         self.lastExportMetadataTableCall = None
 
-        self.consistencyResult = {
-            "ok": True,
-            "projectId": 1,
-            "summary": {
-                "runtimeProtocols": 2,
-                "postgresqlProtocols": 2,
-                "runtimeDependencies": 1,
-                "postgresqlDependencies": 1,
-                "issues": 0,
-            },
-            "issues": {
-                "missingProtocols": [],
-                "extraProtocols": [],
-                "statusMismatches": [],
-                "missingDependencies": [],
-                "extraDependencies": [],
-            },
-        }
-        self.lastValidateProjectPostgresqlConsistencyCall = None
-
         self.metadataTablesResult = [
             {
                 "name": "objects",
@@ -589,19 +569,11 @@ class FakeProjectService:
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
-            validateConsistency=False,
-            failOnConsistencyError=False,
     ):
         self.lastGetProjectByIdCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
-            "refresh": refresh,
-            "checkPid": checkPid,
-            "validateConsistency": validateConsistency,
-            "failOnConsistencyError": failOnConsistencyError,
         }
 
         return self.projectByIdResult
@@ -627,23 +599,6 @@ class FakeProjectService:
             "currentUser": currentUser,
         }
         return self.projectDbRowResult
-
-    def validateProjectPostgresqlConsistency(
-            self,
-            mapper,
-            projectId,
-            currentUser,
-            refresh=True,
-            checkPid=True,
-    ):
-        self.lastValidateProjectPostgresqlConsistencyCall = {
-            "mapper": mapper,
-            "projectId": projectId,
-            "currentUser": currentUser,
-            "refresh": refresh,
-            "checkPid": checkPid,
-        }
-        return self.consistencyResult
 
     def listProjectLogChannelsService(self, projectId, protocolId):
         return self.logChannelsResult

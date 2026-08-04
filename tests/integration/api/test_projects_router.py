@@ -124,7 +124,7 @@ def test_GetProjectReturns404WhenProjectDoesNotExist(projectClient, fakeProjectS
     assert response.json()["detail"] == "Project not found"
 
 
-def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProjectService):
+def test_GetProjectCallsService(projectClient, fakeProjectService):
     response = projectClient.get("/projects/1")
 
     assert response.status_code == 200
@@ -141,26 +141,6 @@ def test_GetProjectCallsServiceWithRefreshAndCheckPid(projectClient, fakeProject
         "checkPid": True,
         "validateConsistency": False,
         "failOnConsistencyError": False,
-    }
-
-
-def test_CheckProjectPostgresqlConsistencyCallsService(projectClient, fakeProjectService):
-    response = projectClient.post(
-        "/projects/1/consistency/check?refresh=false&checkPid=false"
-    )
-
-    assert response.status_code == 200
-    assert response.json() == fakeProjectService.consistencyResult
-    assert fakeProjectService.lastValidateProjectPostgresqlConsistencyCall == {
-        "mapper": fakeProjectService.lastValidateProjectPostgresqlConsistencyCall["mapper"],
-        "projectId": 1,
-        "currentUser": {
-            "id": 1,
-            "email": "user@example.com",
-            "role": "user",
-        },
-        "refresh": False,
-        "checkPid": False,
     }
 
 
@@ -1620,8 +1600,4 @@ def test_GetProjectWithValidateConsistencyPassesAuditFlag(
             "email": "user@example.com",
             "role": "user",
         },
-        "refresh": True,
-        "checkPid": True,
-        "validateConsistency": True,
-        "failOnConsistencyError": False,
     }

@@ -67,10 +67,6 @@ ALLOWED_PROJECT_DB_LOADS = {
         "app/backend/api/services/project_service.py",
         "_loadLegacyProjectForImport",
     ),
-    (
-        "app/backend/api/services/project_consistency_service.py",
-        "_loadLegacyProjectForConsistency",
-    ),
 }
 
 
@@ -322,19 +318,6 @@ def _loadLegacyProjectForImport(project):
     assert _findUnsafeProjectLoads(
         source=projectServiceSource,
         relativePath="app/backend/api/services/project_service.py",
-    ) == []
-
-    consistencyServiceSource = """
-def _loadLegacyProjectForConsistency(project, legacyDbPath):
-    project.load(dbPath=str(legacyDbPath))
-"""
-
-    assert _findUnsafeProjectLoads(
-        source=consistencyServiceSource,
-        relativePath=(
-            "app/backend/api/services/"
-            "project_consistency_service.py"
-        ),
     ) == []
 
 
