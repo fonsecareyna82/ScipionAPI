@@ -102,6 +102,11 @@ class DirectCreateOutputSetStub(
     nativeCreateCalls = []
 
 
+class DirectCreateUnsupportedOutputSetStub(DirectCreateBaseSet):
+    ITEM_TYPE = None
+    nativeCreateCalls = []
+
+
 class NestedItemStub(Set):
     ITEM_TYPE = ItemStub
 
@@ -177,6 +182,11 @@ class DirectCreateProtocolStub(
     }
 
 
+class DirectCreateUnsupportedProtocolStub(ProtocolStub):
+    _possibleOutputs = {
+        "outputUnsupported": DirectCreateUnsupportedOutputSetStub,
+    }
+
 
 class TomoProtocolStub:
     def __init__(self):
@@ -225,7 +235,7 @@ class RuntimeMapperStub:
             self,
             setClass,
     ):
-        if setClass is UnsupportedOutputSetStub:
+        if setClass in {UnsupportedOutputSetStub, DirectCreateUnsupportedOutputSetStub}:
             return {
                 "supported": False,
                 "reason": (
@@ -320,6 +330,15 @@ class RuntimeMapperStub:
         )
 
         return True
+
+
+class SqliteCompatibilityReporterStub:
+    def __init__(self):
+        self.events = []
+
+    def report(self, **event):
+        self.events.append(dict(event))
+        return event
 
 
 def test_SpaCreatorReturnsPostgresqlSetAndFinalizesOnInsertChild():
@@ -443,8 +462,10 @@ def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
 
     protocol = DirectConstructorProtocolStub()
     runtimeMapper = RuntimeMapperStub()
+    sqliteCompatibilityReporter = SqliteCompatibilityReporterStub()
 
-    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
+    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol,
+                                                sqliteCompatibilityReporter=sqliteCompatibilityReporter)
     adapter.install()
 
     outputSet = PopulatedOutputSetStub()
@@ -463,6 +484,17 @@ def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
 
     assert runtimeMapper.created == []
     assert runtimeMapper.finalized == []
+    assert sqliteCompatibilityReporter.events == [{
+        "pathKind": "populated_direct_output_set",
+        "projectId": 4,
+        "protocolId": 17,
+        "protocolClass": "DirectConstructorProtocolStub",
+        "outputName": "outputParticles",
+        "setClass": "PopulatedOutputSetStub",
+        "creatorKind": "direct-constructor",
+        "reason": "set_already_populated",
+        "legacyPath": None,
+    }]
 
     adapter.uninstall()
 
@@ -472,11 +504,13 @@ def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
 def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     protocol = DeclaredOutputProtocolStub()
     runtimeMapper = RuntimeMapperStub()
+    sqliteCompatibilityReporter = SqliteCompatibilityReporterStub()
 
     adapter = RuntimePostgresqlOutputSetAdapter(
         runtimeMapper=runtimeMapper,
         projectId=4,
         protocol=protocol,
+        sqliteCompatibilityReporter=sqliteCompatibilityReporter,
     )
 
     adapter.install()
@@ -505,6 +539,17 @@ def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     )
 
     assert runtimeMapper.created == []
+    assert sqliteCompatibilityReporter.events == [{
+        "pathKind": "native_sqlite_working_set",
+        "projectId": 4,
+        "protocolId": 17,
+        "protocolClass": "DeclaredOutputProtocolStub",
+        "outputName": None,
+        "setClass": "OutputSetStub",
+        "creatorKind": "spa",
+        "reason": "undeclared_output_set_class",
+        "legacyPath": None,
+    }]
 
     outputSet = (
         protocol
@@ -543,6 +588,7 @@ def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     adapter.uninstall()
 
     assert runtimeMapper.discarded == []
+    assert len(sqliteCompatibilityReporter.events) == 1
 
 
 def test_NestedSetUsesPostgresqlCreator():
@@ -914,9 +960,45 @@ def test_DeclaredOutputClassCreateUsesPostgresqlAndRemovesLegacyFile(
     ) == 1
 
 
+def test_UnsupportedDeclaredOutputClassCreateUsesNativeCreatorAndReportsCompatibility(tmp_path):
+    DirectCreateUnsupportedOutputSetStub.nativeCreateCalls.clear()
+
+    protocol = DirectCreateUnsupportedProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+    sqliteCompatibilityReporter = SqliteCompatibilityReporterStub()
+    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol, sqliteCompatibilityReporter=sqliteCompatibilityReporter)
+
+    adapter.install()
+
+    assert "create" in DirectCreateUnsupportedOutputSetStub.__dict__
+
+    outputSet = DirectCreateUnsupportedOutputSetStub.create(str(tmp_path), prefix="unsupported")
+
+    assert isinstance(outputSet, DirectCreateUnsupportedOutputSetStub)
+    assert len(DirectCreateUnsupportedOutputSetStub.nativeCreateCalls) == 1
+    assert runtimeMapper.created == []
+
+    assert sqliteCompatibilityReporter.events == [{
+        "pathKind": "native_sqlite_output_compatibility",
+        "projectId": 4,
+        "protocolId": 17,
+        "protocolClass": "DirectCreateUnsupportedProtocolStub",
+        "outputName": "outputUnsupported",
+        "setClass": "DirectCreateUnsupportedOutputSetStub",
+        "creatorKind": "class-create",
+        "reason": "unresolved_item_class",
+        "legacyPath": None,
+    }]
+
+    adapter.uninstall()
+
+    assert "create" not in DirectCreateUnsupportedOutputSetStub.__dict__
+
+
 def test_UnsupportedSetUsesNativeCreator():
     protocol = ProtocolStub()
     runtimeMapper = RuntimeMapperStub()
+    sqliteCompatibilityReporter = SqliteCompatibilityReporterStub()
 
     adapter = (
         RuntimePostgresqlOutputSetAdapter(
@@ -947,6 +1029,17 @@ def test_UnsupportedSetUsesNativeCreator():
     ) == 1
 
     assert runtimeMapper.created == []
+    assert sqliteCompatibilityReporter.events == [{
+        "pathKind": "native_sqlite_output_compatibility",
+        "projectId": 4,
+        "protocolId": 17,
+        "protocolClass": "ProtocolStub",
+        "outputName": None,
+        "setClass": "UnsupportedOutputSetStub",
+        "creatorKind": "spa",
+        "reason": "unresolved_item_class",
+        "legacyPath": None,
+    }]
 
     adapter.uninstall()
 
