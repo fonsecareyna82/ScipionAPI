@@ -4184,28 +4184,20 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "scipionObjId": self._getSourceObjId(scipionSet),
         }
 
-        if self._isPostgresqlRuntimeSet(
-                scipionSet
-        ):
-            # Never call getFileName() here. For PostgreSQL
-            # runtime Sets that method is the explicit SQLite
-            # compatibility boundary.
-            fileName = self._callOptionalGetter(
-                scipionSet,
-                "getLegacyFileName",
-            )
-        else:
+        isPostgresqlRuntimeSet = self._isPostgresqlRuntimeSet(
+            scipionSet
+        )
+
+        if not isPostgresqlRuntimeSet:
             fileName = self._callOptionalGetter(
                 scipionSet,
                 "getFileName",
             )
 
-        if fileName is not None:
-            properties["fileName"] = (
-                self._toJsonValue(
+            if fileName is not None:
+                properties["fileName"] = self._toJsonValue(
                     fileName
                 )
-            )
 
         streamState = self._callOptionalGetter(
             scipionSet,
@@ -4253,9 +4245,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 value
             )
 
-        if self._isPostgresqlRuntimeSet(
-                scipionSet
-        ):
+        if isPostgresqlRuntimeSet:
             self._removePostgresqlRuntimeStorageProperties(
                 properties
             )

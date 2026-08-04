@@ -99,6 +99,24 @@ class ExampleSet(Object):
         return self._streamState.get()
 
 
+class ExamplePostgresqlRuntimeSet(ExampleSet):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.legacyFileNameCalls = 0
+
+    def isPostgresqlRuntimeOutput(self):
+        return True
+
+    def getLegacyFileName(self):
+        self.legacyFileNameCalls += 1
+        return "/tmp/legacy.sqlite"
+
+    def getFileName(self):
+        raise AssertionError(
+            "PostgreSQL runtime Sets must not be materialized while collecting properties"
+        )
+
+
 class ExampleTomogram(Object):
     def __init__(
             self,
@@ -177,6 +195,24 @@ def test_GetSetPropertiesIncludesNestedAttributes():
     # Complex parent objects normally have value None and should not be
     # persisted as a scalar property.
     assert "_acquisition" not in properties
+
+
+def test_GetSetPropertiesSkipsPostgresqlRuntimeStorageAccessors():
+    scipionSet = ExamplePostgresqlRuntimeSet()
+    scipionSet.setObjId(41)
+
+    mapper = ScipionSetPostgresqlMapper(
+        db=None,
+    )
+
+    properties = mapper._getSetProperties(
+        scipionSet
+    )
+
+    assert scipionSet.legacyFileNameCalls == 0
+    assert "fileName" not in properties
+    assert "_mapperPath" not in properties
+    assert "materializedFileName" not in properties
 
 
 def test_OldSetPropertiesVersionForcesSynchronization():
