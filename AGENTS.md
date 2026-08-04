@@ -41,3 +41,7 @@ Unlike the 3 core repos (which consolidated test deps into `pyproject.toml`'s `[
 - **Two runtime artifacts are tracked in git and shouldn't be**: `dump.rdb` (a Redis dump) and `.backend_reload_marker`. Don't be surprised by unrelated diffs in these files, and don't add new runtime-generated files without checking `.gitignore` first.
 - `pydantic==1.10.x` pin (see Stack above) — a real, easy-to-violate-by-accident constraint.
 - `scipion_home/` is gitignored and holds a local `.env` — not a leak, just local config; don't assume secrets belong there or that it's meant to be committed.
+
+## Keeping this document current
+
+This file describes the repo as of the last time someone updated it — it will drift out of date as the code changes. If your change touches anything described above (stack, architecture map, testing setup, dependencies, gotchas), update the relevant section in this file as part of the same change, not as a separate follow-up. Don't wait to be asked.
