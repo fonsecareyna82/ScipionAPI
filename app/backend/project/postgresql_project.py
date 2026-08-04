@@ -108,13 +108,6 @@ class PostgresqlProject(ScipionProject):
         Reading or refreshing a project must therefore remain read-only with
         respect to protocol execution state.
         """
-        if not self.usingPostgresqlRuntimeMapper():
-            return super()._updateProtocol(
-                protocol,
-                tries=tries,
-                checkPid=checkPid,
-            )
-
         if protocol is None:
             return pw.NOT_UPDATED_UNNECESSARY
 
@@ -203,12 +196,6 @@ class PostgresqlProject(ScipionProject):
         protocol.setObjLabel(label)
 
     def newProtocol(self, protocolClass, **kwargs):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().newProtocol(
-                protocolClass,
-                **kwargs,
-            )
-
         protocol = protocolClass(
             project=self,
             **kwargs,
@@ -234,11 +221,6 @@ class PostgresqlProject(ScipionProject):
         blocks relaunch unless it is saved, scheduled, or included in the
         same mutation group.
         """
-        if not self.usingPostgresqlRuntimeMapper():
-            return super()._getProtocolsDependencies(
-                protocols
-            )
-
         selectedProtocolIds = {
             str(protocolId)
             for protocolId in (
@@ -474,14 +456,6 @@ class PostgresqlProject(ScipionProject):
             scheduled=False,
             force=False,
     ):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().launchProtocol(
-                protocol,
-                wait=wait,
-                scheduled=scheduled,
-                force=force,
-            )
-
         if (
                 protocol.getPrerequisites()
                 and not scheduled
@@ -576,17 +550,6 @@ class PostgresqlProject(ScipionProject):
             prerequisites=None,
             initialSleepTime=0,
     ):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().scheduleProtocol(
-                protocol,
-                prerequisites=(
-                        prerequisites or []
-                ),
-                initialSleepTime=(
-                    initialSleepTime
-                ),
-            )
-
         prerequisites = (
                 prerequisites or []
         )

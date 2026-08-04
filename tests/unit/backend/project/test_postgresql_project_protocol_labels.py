@@ -81,10 +81,6 @@ def buildProject(labels=None):
         labels
     )
 
-    project.usingPostgresqlRuntimeMapper = (
-        lambda: True
-    )
-
     return project
 
 

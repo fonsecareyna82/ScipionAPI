@@ -69,6 +69,27 @@ def test_ConstructorDoesNotExposeReadFallback():
     assert "enableReadFallback" not in parameters
 
 
+def test_RuntimeOperationsDoNotDelegateToLegacyProject():
+    methodNames = (
+        "_updateProtocol",
+        "newProtocol",
+        "_getProtocolsDependencies",
+        "launchProtocol",
+        "scheduleProtocol",
+    )
+
+    for methodName in methodNames:
+        source = inspect.getsource(
+            getattr(
+                PostgresqlProject,
+                methodName,
+            )
+        )
+
+        assert "usingPostgresqlRuntimeMapper" not in source
+        assert "super()." not in source
+
+
 def test_CreateMapperAlwaysUsesPostgresqlRuntime(
         monkeypatch,
         tmp_path,
