@@ -253,16 +253,6 @@ class PostgresqlRuntimeSetMixin:
             else {}
         )
 
-    def getLegacyFileName(self):
-        return self.getPostgresqlRuntimeProperties().get(
-            "fileName"
-        )
-
-    def getLegacyMapperPath(self):
-        return self.getPostgresqlRuntimeProperties().get(
-            "_mapperPath"
-        )
-
     def getPostgresqlRuntimeInfo(self):
         info = getattr(
             self,

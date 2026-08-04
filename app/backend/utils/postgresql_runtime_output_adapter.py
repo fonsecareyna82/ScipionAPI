@@ -331,12 +331,6 @@ class PostgresqlRuntimeOutputProxy:
         """
         return None
 
-    def getLegacyFileName(self):
-        return self._properties.get("fileName")
-
-    def getLegacyMapperPath(self):
-        return self._properties.get("_mapperPath")
-
     def getSamplingRate(self):
         value = (
             self._properties.get("samplingRate")
