@@ -109,7 +109,6 @@ from app.backend.runtime import (
     RuntimeOutputProxyService,
     RuntimeOutputRelationRepairService,
     RuntimeOutputMapperRepairService,
-    RuntimeArtifactReportService,
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
@@ -1927,25 +1926,6 @@ class ProjectService:
             syncResult["protocolContext"] = protocolContext
 
         return syncResult
-
-    def _buildPostgresqlRuntimeArtifactReport(
-            self,
-            mapper,
-            projectId: int,
-            protocolId,
-            protocol=None,
-    ) -> Dict[str, Any]:
-        runtimeArtifactReportService = RuntimeArtifactReportService()
-
-        return runtimeArtifactReportService.buildPostgresqlRuntimeArtifactReport(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            protocol=protocol,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
-            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
-            getCurrentProjectPathCallback=self._getCurrentProjectPath,
-        )
 
     def _getCurrentProjectPath(self) -> Optional[str]:
         project = getattr(self, "currentProject", None)
