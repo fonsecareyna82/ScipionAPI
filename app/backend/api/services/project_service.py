@@ -1850,31 +1850,6 @@ class ProjectService:
                     "complete": False,
                 }
 
-        artifactReport = None
-
-        if logger.isEnabledFor(logging.DEBUG):
-            try:
-                artifactReport = self._buildPostgresqlRuntimeArtifactReport(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=scipionProtocolId,
-                    protocol=protocol,
-                )
-
-                logger.debug(
-                    "PostgreSQL runtime artifact report. projectId=%s protocolId=%s report=%s",
-                    projectId,
-                    scipionProtocolId,
-                    artifactReport,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not build PostgreSQL runtime artifact report. projectId=%s protocolId=%s",
-                    projectId,
-                    scipionProtocolId,
-                    exc_info=True,
-                )
-
         syncResult = {
             "protocols": 1,
             "dependencies": 0,
