@@ -4281,21 +4281,13 @@ class PostgresqlRuntimeMapper(Mapper):
 
             return runtimeSet
 
-
         except Exception:
-
             if reservation is not None:
-
                 try:
-
                     self.setMapper.discardReservedRuntimeSet(
-
                         projectId=self.projectId,
-
                         protocolDbId=protocolDbId,
-
                         runtimeObjectId=runtimeObjectId,
-
                     )
 
                 except Exception:

@@ -562,6 +562,64 @@ def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     assert runtimeMapper.discarded == []
 
 
+def test_InsertChildAdoptsUndeclaredWorkingSetWhenRegisteredAsOutput():
+    protocol = DeclaredOutputProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    workingSet = protocol._EMProtocol__createSet(
+        OutputSetStub,
+        "particles%s.sqlite",
+        "",
+    )
+
+    originalIdentity = id(workingSet)
+
+    assert len(protocol.nativeCreated) == 1
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+
+    protocol._insertChild(
+        "outputParticles",
+        workingSet,
+    )
+
+    assert id(workingSet) == originalIdentity
+
+    assert protocol.inserted == [
+        (
+            "outputParticles",
+            workingSet,
+        ),
+    ]
+
+    assert len(runtimeMapper.created) == 1
+
+    createdSet = runtimeMapper.created[0]
+
+    assert createdSet["setClass"] is OutputSetStub
+    assert createdSet["providedRuntimeSet"] is workingSet
+    assert createdSet["runtimeSet"] is workingSet
+
+    assert len(runtimeMapper.finalized) == 1
+
+    finalizedSet = runtimeMapper.finalized[0]
+
+    assert finalizedSet["outputName"] == "outputParticles"
+    assert finalizedSet["runtimeSet"] is workingSet
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+
+
 def test_NestedSetUsesPostgresqlCreator():
     protocol = ProtocolStub()
     runtimeMapper = RuntimeMapperStub()

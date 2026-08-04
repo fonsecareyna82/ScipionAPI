@@ -635,9 +635,6 @@ class RuntimePostgresqlOutputSetAdapter:
 
         setClass = child.__class__
 
-        if not self._shouldRedirectSetClass(setClass):
-            return child
-
         capability = (
             self.runtimeMapper
             .getPostgresqlOutputSetCapability(
