@@ -1698,9 +1698,9 @@ class FakeMapper:
         self.updatedUserFields.append((userId, fields))
 
 @pytest.fixture
-def mainModule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def mainModule(monkeypatch: pytest.MonkeyPatch, authTestEnv: Path):
     # mainModule
-    scipionHome = tmp_path / "scipion_home"
+    scipionHome = authTestEnv
     webDistPath = scipionHome / "web" / "dist"
     webDistPath.mkdir(parents=True, exist_ok=True)
 
@@ -1727,7 +1727,7 @@ def client(mainModule) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def loadMainModule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def loadMainModule(monkeypatch: pytest.MonkeyPatch, authTestEnv: Path):
     # loadMainModuleWithCustomEnv
     def _load(
         *,
@@ -1735,7 +1735,7 @@ def loadMainModule(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         apiMountPath: str = "/api",
         createIndexHtml: bool = False,
     ):
-        scipionHome = tmp_path / "scipion_home"
+        scipionHome = authTestEnv
         webDistPath = scipionHome / "web" / "dist"
         webDistPath.mkdir(parents=True, exist_ok=True)
 
