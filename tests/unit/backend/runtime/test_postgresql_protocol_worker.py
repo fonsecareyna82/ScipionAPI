@@ -845,6 +845,11 @@ class ResumeSetStub(Set):
         return self
 
 
+class ForbiddenSqliteMaterializer:
+    def __getattr__(self, attributeName):
+        raise AssertionError("SQLite materializer must not be used. attributeName=%s" % attributeName)
+
+
 class ResumeObjectMapperStub:
     def listProtocolStoredObjects(
             self,
@@ -903,20 +908,8 @@ def test_ResumeUsesNativePostgresqlWritableSet():
     outputSet = ResumeSetStub()
     outputSet.setObjId(44)
 
-    # The test must fail if the SQLite compatibility
-    # path is accidentally invoked.
-    outputSet._postgresqlSqliteMaterializer = (
-        SimpleNamespace(
-            openWritable=lambda runtimeSet: (
-                _ for _ in ()
-            ).throw(
-                AssertionError(
-                    "SQLite materializer must "
-                    "not be used"
-                )
-            )
-        )
-    )
+    # The test must fail if the SQLite compatibility materializer is accessed.
+    outputSet._postgresqlSqliteMaterializer = ForbiddenSqliteMaterializer()
 
     worker.protocol = (
         ResumeProtocolStub()
