@@ -38,7 +38,6 @@ from pyworkflow.object import (
 logger = logging.getLogger(
     __name__
 )
-from app.backend.runtime.runtime_sqlite_compatibility_reporter import RuntimeSqliteCompatibilityReporter
 
 
 class RuntimePostgresqlOutputSetAdapter:
@@ -66,7 +65,12 @@ class RuntimePostgresqlOutputSetAdapter:
         "_insertChild"
     )
 
-    def __init__(self, runtimeMapper, projectId: int, protocol, sqliteCompatibilityReporter=None):
+    def __init__(
+            self,
+            runtimeMapper,
+            projectId: int,
+            protocol,
+    ):
         self.runtimeMapper = (
             runtimeMapper
         )
@@ -76,7 +80,6 @@ class RuntimePostgresqlOutputSetAdapter:
         )
 
         self.protocol = protocol
-        self.sqliteCompatibilityReporter = sqliteCompatibilityReporter or RuntimeSqliteCompatibilityReporter()
 
         self._installed = False
         self._patches: Dict[
@@ -149,52 +152,6 @@ class RuntimePostgresqlOutputSetAdapter:
                 continue
 
         return False
-
-    def _resolveDeclaredOutputName(self, setClass):
-        possibleOutputs = getattr(self.protocol, "_possibleOutputs", None)
-
-        if not isinstance(possibleOutputs, dict):
-            return None
-
-        outputNames = []
-
-        for outputName, declaredSetClass in possibleOutputs.items():
-            if not isinstance(declaredSetClass, type):
-                continue
-
-            try:
-                matchesDeclaredClass = issubclass(setClass, declaredSetClass)
-            except TypeError:
-                matchesDeclaredClass = False
-
-            if matchesDeclaredClass:
-                outputNames.append(str(outputName))
-
-        return outputNames[0] if len(outputNames) == 1 else None
-
-    @staticmethod
-    def _getSetFileName(scipionSet):
-        getFileName = getattr(scipionSet, "getFileName", None)
-
-        if not callable(getFileName):
-            return None
-
-        try:
-            fileName = getFileName()
-        except Exception:
-            return None
-
-        return str(fileName) if fileName else None
-
-    def _reportSqliteCompatibilityPath(self, pathKind, setClass, creatorKind, reason, outputName=None, legacyPath=None):
-        setClassName = getattr(setClass, "__name__", str(setClass))
-        self.sqliteCompatibilityReporter.report(pathKind=pathKind,
-                                                projectId=self.projectId,
-                                                protocolId=self.protocol.getObjId(),
-                                                protocolClass=self.protocol.__class__.__name__,
-                                                outputName=outputName, setClass=setClassName,
-                                                creatorKind=creatorKind, reason=reason,
-                                                legacyPath=legacyPath)
 
     def install(self) -> None:
         if self._installed:
@@ -342,7 +299,9 @@ class RuntimePostgresqlOutputSetAdapter:
             self.protocol.__class__.__name__,
         )
 
-    def _patchDeclaredOutputClassCreators(self) -> None:
+    def _patchDeclaredOutputClassCreators(
+            self,
+    ) -> None:
         possibleOutputs = getattr(
             self.protocol,
             "_possibleOutputs",
@@ -388,6 +347,33 @@ class RuntimePostgresqlOutputSetAdapter:
         for setClass, outputNames in (
                 outputNamesByClass.items()
         ):
+            capability = (
+                self.runtimeMapper
+                .getPostgresqlOutputSetCapability(
+                    setClass
+                )
+            )
+
+            if not capability.get(
+                    "supported"
+            ):
+                logger.debug(
+                    "Not patching declared output "
+                    "Set class creator. "
+                    "projectId=%s protocolId=%s "
+                    "setClass=%s outputNames=%s "
+                    "reason=%s",
+                    self.projectId,
+                    self.protocol.getObjId(),
+                    setClass.__name__,
+                    outputNames,
+                    capability.get(
+                        "reason"
+                    ),
+                )
+
+                continue
+
             originalCreator = getattr(
                 setClass,
                 "create",
@@ -485,7 +471,8 @@ class RuntimePostgresqlOutputSetAdapter:
             )
 
             logger.info(
-                "Installed declared output Set class creator adapter. "
+                "Installed PostgreSQL declared "
+                "output Set class creator. "
                 "projectId=%s protocolId=%s "
                 "setClass=%s outputNames=%s",
                 self.projectId,
@@ -698,10 +685,6 @@ class RuntimePostgresqlOutputSetAdapter:
             )
 
         if not child.isEmpty():
-            legacyPath = self._getSetFileName(child)
-            self._reportSqliteCompatibilityPath(pathKind="populated_direct_output_set", setClass=setClass,
-                                                creatorKind="direct-constructor", reason="set_already_populated",
-                                                outputName=outputName, legacyPath=legacyPath)
             logger.debug(
                 "Keeping populated directly constructed output Set on the existing persistence path. projectId=%s protocolId=%s outputName=%s setClass=%s size=%s",
                 self.projectId, self.protocol.getObjId(), outputName, setClass.__name__, child.getSize())
@@ -769,14 +752,19 @@ class RuntimePostgresqlOutputSetAdapter:
             )
         )
 
-        if not capability.get("supported"):
-            nativeSet = originalCreator(outputPath, prefix=prefix, suffix=suffix, ext=ext,
-                                        **dict(constructorKwargs or {}))
-            self._reportSqliteCompatibilityPath(pathKind="native_sqlite_output_compatibility", setClass=setClass,
-                                                creatorKind="class-create", reason=capability.get("reason"),
-                                                outputName=self._resolveDeclaredOutputName(setClass),
-                                                legacyPath=self._getSetFileName(nativeSet))
-            return nativeSet
+        if not capability.get(
+                "supported"
+        ):
+            return originalCreator(
+                outputPath,
+                prefix=prefix,
+                suffix=suffix,
+                ext=ext,
+                **dict(
+                    constructorKwargs
+                    or {}
+                ),
+            )
 
         legacyPath = (
             self._buildLegacyClassCreatePath(
@@ -888,11 +876,15 @@ class RuntimePostgresqlOutputSetAdapter:
                 creatorKind,
             )
 
-            nativeSet = originalCreator(setClass, template, suffix, **dict(constructorKwargs or {}))
-            self._reportSqliteCompatibilityPath(pathKind="native_sqlite_working_set", setClass=setClass,
-                                                creatorKind=creatorKind, reason="undeclared_output_set_class",
-                                                legacyPath=self._getSetFileName(nativeSet))
-            return nativeSet
+            return originalCreator(
+                setClass,
+                template,
+                suffix,
+                **dict(
+                    constructorKwargs
+                    or {}
+                ),
+            )
 
         capability = (
             self.runtimeMapper
@@ -922,12 +914,15 @@ class RuntimePostgresqlOutputSetAdapter:
                 ),
             )
 
-            nativeSet = originalCreator(setClass, template, suffix, **dict(constructorKwargs or {}))
-            self._reportSqliteCompatibilityPath(pathKind="native_sqlite_output_compatibility", setClass=setClass,
-                                                creatorKind=creatorKind, reason=capability.get("reason"),
-                                                outputName=self._resolveDeclaredOutputName(setClass),
-                                                legacyPath=self._getSetFileName(nativeSet))
-            return nativeSet
+            return originalCreator(
+                setClass,
+                template,
+                suffix,
+                **dict(
+                    constructorKwargs
+                    or {}
+                ),
+            )
 
         return (
             self
