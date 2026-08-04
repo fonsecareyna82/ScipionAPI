@@ -34,7 +34,6 @@ from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyS
 from app.backend.runtime.protocol_launch_prepare_service import RuntimeProtocolLaunchPrepareService
 from app.backend.runtime.output_relation_repair_service import RuntimeOutputRelationRepairService
 from app.backend.runtime.output_mapper_repair_service import RuntimeOutputMapperRepairService
-from app.backend.runtime.runtime_artifact_report_service import RuntimeArtifactReportService
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
 from app.backend.runtime.protocol_step_persistence_service import RuntimeProtocolStepPersistenceService
 from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
@@ -69,7 +68,6 @@ __all__ = [
     "RuntimeProtocolLaunchPrepareService",
     "RuntimeOutputRelationRepairService",
     "RuntimeOutputMapperRepairService",
-    "RuntimeArtifactReportService",
     "RuntimeProtocolOutputPersistenceService",
     "RuntimeProtocolStepPersistenceService",
     "RuntimeProtocolStatusSyncService",
