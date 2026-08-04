@@ -77,86 +77,6 @@ class RuntimeProtocolDuplicateService:
     def createDuplicateState(self) -> RuntimeProtocolDuplicateState:
         return RuntimeProtocolDuplicateState()
 
-    def detachProtocolOutputsForCopy(self, protocol) -> List[Dict[str, Any]]:
-        """
-        Temporarily detach output attributes before calling Scipion copyProtocol().
-
-        A duplicated protocol must copy only configuration/inputs, not produced outputs.
-        If outputs remain attached, Scipion may try to persist/copy sets such as
-        295.Tomograms and fail with errors like:
-
-            Object 295.Tomograms has no sampling rate!!!
-        """
-        detached = []
-
-        try:
-            outputAttrs = list(protocol.iterOutputAttributes())
-        except Exception:
-            outputAttrs = []
-
-        for outputName, outputObj in outputAttrs:
-            if not outputName:
-                continue
-
-            hadAttribute = hasattr(protocol, outputName)
-
-            detached.append({
-                "name": outputName,
-                "object": outputObj,
-                "hadAttribute": hadAttribute,
-            })
-
-            if hadAttribute:
-                try:
-                    delattr(protocol, outputName)
-                except Exception:
-                    try:
-                        setattr(protocol, outputName, None)
-                    except Exception:
-                        logger.debug(
-                            "Could not detach protocol output before copy. "
-                            "protocol=%s output=%s",
-                            getattr(protocol, "getObjId", lambda: None)(),
-                            outputName,
-                            exc_info=True,
-                        )
-
-        logger.info(
-            "Detached protocol outputs before duplicate. protocolId=%s outputs=%s",
-            getattr(protocol, "getObjId", lambda: None)(),
-            [item["name"] for item in detached],
-        )
-
-        return detached
-
-    def restoreProtocolOutputsAfterCopy(
-            self,
-            protocol,
-            detachedOutputs: List[Dict[str, Any]],
-    ) -> None:
-        """
-        Restore outputs detached by detachProtocolOutputsForCopy.
-
-        This only restores the in-memory source protocol object.
-        """
-        for item in detachedOutputs or []:
-            outputName = item.get("name")
-            outputObj = item.get("object")
-
-            if not outputName:
-                continue
-
-            try:
-                setattr(protocol, outputName, outputObj)
-            except Exception:
-                logger.debug(
-                    "Could not restore protocol output after copy. "
-                    "protocol=%s output=%s",
-                    getattr(protocol, "getObjId", lambda: None)(),
-                    outputName,
-                    exc_info=True,
-                )
-
     def duplicatePostgresqlRuntimeProtocols(
             self,
             *,
@@ -366,110 +286,6 @@ class RuntimeProtocolDuplicateService:
             **resultPayload,
         )
 
-    def duplicateLegacyProtocols(
-            self,
-            *,
-            mapper,
-            projectId: int,
-            protocols,
-            getScipionProtocolForRuntimeCallback: Callable,
-            copyProtocolsCallback: Callable,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
-            buildProtocolMutationResultCallback: Callable,
-    ):
-        protocolList = []
-        sourceIds = []
-        duplicated = []
-        errors = []
-
-        for item in protocols or []:
-            protocolId = getattr(item, "id", None)
-
-            if protocolId is None:
-                continue
-
-            sourceIds.append(protocolId)
-
-            protocol = getScipionProtocolForRuntimeCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            protocolList.append(protocol)
-
-        if not protocolList:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="No valid protocols to duplicate",
-            )
-
-        try:
-            protListResult = copyProtocolsCallback(protocolList)
-
-        except Exception as e:
-            protocolIds = [
-                getattr(protocol, "getObjId", lambda: None)()
-                for protocol in protocolList
-            ]
-
-            logger.exception(
-                "Failed to duplicate protocols. projectId=%s protocolIds=%s",
-                projectId,
-                protocolIds,
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to duplicate protocols: {e}",
-            )
-
-        for index, protocol in enumerate(protListResult):
-            protocolId = str(protocol.getObjId())
-
-            duplicated.append({
-                "sourceId": sourceIds[index],
-                "newId": protocolId,
-            })
-
-        try:
-            syncResult = syncProjectProtocolsAndDependenciesCallback(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
-            )
-
-        except HTTPException:
-            raise
-
-        except Exception as e:
-            errors.append(
-                "Failed to sync protocol graph after duplication. projectId=%s"
-                % projectId
-            )
-
-            logger.exception(
-                "Failed to sync protocol graph after duplication. projectId=%s",
-                projectId,
-            )
-
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                        "Protocols were duplicated in Scipion but graph sync "
-                        "to PostgreSQL failed: %s" % e
-                ),
-            )
-
-        return buildProtocolMutationResultCallback(
-            "Protocol was duplicated successfully",
-            protocolsCount=int(syncResult.get("protocols", 0)),
-            dependenciesCount=int(syncResult.get("dependencies", 0)),
-            duplicated=duplicated,
-            errors=errors,
-        )
-
     @staticmethod
     def _getScipionObjectId(obj) -> Optional[int]:
         for getterName in ("getObjId", "getId"):
@@ -498,14 +314,12 @@ class RuntimeProtocolDuplicateService:
             protocol,
     ) -> Dict[str, Any]:
         """
-        Clear textual Pointer targets before persisting a protocol through
-        Scipion's SQLite mapper.
-
-        PostgreSQL may temporarily represent pointer values as strings such as:
-
+        Clear textual Pointer placeholders before rebuilding persisted inputs.
+        PostgreSQL snapshots may temporarily expose pointer values as strings
+        such as:
             8.outputTiltSeries
-
-        SQLite expects Pointer.getObjValue() to return a Scipion object.
+        These placeholders must be cleared before restoring the real Scipion
+        object targets from protocol_input_refs.
         """
         cleared = []
         errors = []

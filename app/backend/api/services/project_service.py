@@ -5742,7 +5742,7 @@ class ProjectService:
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
-    def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
+    def duplicateProtocol(self, mapper, projectId, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         return runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
@@ -5756,30 +5756,6 @@ class ProjectService:
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
             getParentProtocolForPointerCallback=self._getParentProtocolForPointer,
             storeProtocolCallback=self.currentProject._storeProtocol,
-            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-        )
-
-    def duplicateProtocol(self, mapper, projectId, protocols):
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
-
-        if usingPostgresqlRuntime:
-            return self._duplicatePostgresqlRuntimeProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=protocols,
-            )
-
-        return runtimeProtocolDuplicateService.duplicateLegacyProtocols(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=protocols,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            copyProtocolsCallback=self.currentProject.copyProtocol,
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
-            ),
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 

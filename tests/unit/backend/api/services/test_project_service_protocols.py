@@ -255,8 +255,6 @@ class FakeCurrentProject:
         self.launchedProtocols = []
         self.scheduledProtocols = []
         self.stoppedProtocols = []
-        self.copiedProtocolInputs = []
-        self.copiedProtocolOutputs = []
         self.deleteProtocolCalls = []
         self.restartWorkflowInjectedErrors = []
         self.resetWorkflowResult = []
@@ -293,10 +291,6 @@ class FakeCurrentProject:
 
     def stopProtocol(self, protocol):
         self.stoppedProtocols.append(protocol)
-
-    def copyProtocol(self, protocols):
-        self.copiedProtocolInputs.append(list(protocols))
-        return list(self.copiedProtocolOutputs)
 
     def deleteProtocol(self, *protocols):
         if self.failDeleteProtocol is not None:
@@ -1636,57 +1630,69 @@ def test_RenameProtocolStoresAnnotation(service):
     assert service.currentProject.storedProtocols == [protocol]
 
 
-def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    copiedA = FakeProtocol(objId=110)
-    copiedB = FakeProtocol(objId=111)
+def test_DuplicateProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    duplicateItems = [
+        object(),
+        object(),
+    ]
 
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-    service.currentProject.copiedProtocolOutputs = [copiedA, copiedB]
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "duplicated": [],
+    }
+
+    duplicateCalls = []
+
+    class FakeDuplicateService:
+        def duplicatePostgresqlRuntimeProtocols(
+                self,
+                **kwargs,
+        ):
+            duplicateCalls.append(
+                kwargs
+            )
+            return expectedResult
 
     monkeypatch.setattr(
-        service,
-        "_buildProtocolContext",
-        lambda projectId, protocol, mapper=None: {
-            "projectId": projectId,
-            "protocolId": protocol.getObjId(),
-        },
+        projectServiceModule,
+        "RuntimeProtocolDuplicateService",
+        FakeDuplicateService,
     )
-
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.copiedProtocolOutputs:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {
-            "protocols": len(service.currentProject.copiedProtocolOutputs),
-            "dependencies": 0,
-        }
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
-    )
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
 
     result = service.duplicateProtocol(
         mapper=mapper,
         projectId=1,
-        protocols=[DuplicateItem("10"), DuplicateItem("11")],
+        protocols=duplicateItems,
     )
 
-    assertSuccessEnvelope(result)
-    assert result["protocolsCount"] == 2
-    assert result["dependenciesCount"] == 0
-    assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
-    assert mapper.savedProtocolContexts == [
-        {"projectId": 1, "protocolId": 110},
-        {"projectId": 1, "protocolId": 111},
-    ]
+    assert result is expectedResult
+    assert len(duplicateCalls) == 1
+
+    duplicateCall = duplicateCalls[0]
+
+    assert duplicateCall["mapper"] is mapper
+    assert duplicateCall["projectId"] == 1
+    assert duplicateCall["protocols"] is duplicateItems
+
+    assert set(duplicateCall) == {
+        "mapper",
+        "projectId",
+        "protocols",
+        "getScipionProtocolForRuntimeCallback",
+        "getScipionObjectIdCallback",
+        "resolvePostgresqlProtocolDbIdCallback",
+        "saveProtocolCallback",
+        "syncPostgresqlRuntimeProtocolCallback",
+        "getParentProtocolForPointerCallback",
+        "storeProtocolCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_DeleteProtocolDelegatesToCurrentProjectAndMapper(service, mapper):
@@ -1812,46 +1818,6 @@ def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     assert protocol._objComment == "Updated comment"
     assert service.currentProject.storedProtocols == [protocol]
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
-
-
-def test_DuplicateProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    copiedA = FakeProtocol(objId=110)
-    copiedB = FakeProtocol(objId=111)
-
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-    service.currentProject.copiedProtocolOutputs = [copiedA, copiedB]
-
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        lambda mapper, projectId, refresh=False, checkPid=False: {
-            "protocols": 2,
-            "dependencies": 0,
-        },
-    )
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
-
-    result = service.duplicateProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=[DuplicateItem("500"), DuplicateItem("501")],
-    )
-
-    assertSuccessEnvelope(result)
-    assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
-    assert result["duplicated"] == [
-        {"sourceId": "500", "newId": "110"},
-        {"sourceId": "501", "newId": "111"},
-    ]
 
 
 def test_DeleteProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
@@ -2920,30 +2886,6 @@ def test_GetNewProtocolParamsCacheIsScopedByProject(
     assert first["info"]["projectId"] == 1
     assert second["info"]["projectId"] == 2
     assert buildCalls == [1, 2]
-
-def test_DuplicateProtocolWrapsCopyErrorAsHttpException(service, mapper):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-
-    def fakeCopyProtocol(protocols):
-        raise RuntimeError("copy failed")
-
-    service.currentProject.copyProtocol = fakeCopyProtocol
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
-
-    with pytest.raises(HTTPException) as exc:
-        service.duplicateProtocol(
-            mapper=mapper,
-            projectId=1,
-            protocols=[DuplicateItem("10")],
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "Failed to duplicate protocols: copy failed"
-
 
 def test_PreserveStoredProtocolParamsInRuntimeContext(
         service,

@@ -52,3 +52,22 @@ def test_BuildDuplicatedProtocolParamsDropsObjectMetadata():
         "runName": "Union sets copy",
         "ignoreDuplicates": True,
     }
+
+
+def test_LegacyProtocolDuplicationCompatibilityIsRemoved():
+    service = RuntimeProtocolDuplicateService()
+
+    assert not hasattr(
+        service,
+        "duplicateLegacyProtocols",
+    )
+    assert not hasattr(
+        service,
+        "detachProtocolOutputsForCopy",
+    )
+    assert not hasattr(
+        service,
+        "restoreProtocolOutputsAfterCopy",
+    )
+
+
