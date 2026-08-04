@@ -132,7 +132,7 @@ def test_GetProjectCallsService(projectClient, fakeProjectService):
     assert fakeProjectService.lastGetProjectByIdCall == {
         "mapper": fakeProjectService.lastGetProjectByIdCall["mapper"],
         "projectId": 1,
-                "currentUser": {
+        "currentUser": {
             "id": 1,
             "email": "user@example.com",
             "role": "user",
@@ -1578,5 +1578,6 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
         "email": "user@example.com",
         "role": "user",
     }
+
 
 

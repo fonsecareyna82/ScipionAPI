@@ -609,8 +609,6 @@ async def saveProtocol(
                 mapper,
                 projectId,
                 currentUser,
-                refresh=False,
-                checkPid=False,
             )
 
             if refreshedProject:
@@ -878,8 +876,6 @@ def duplicateProtocol(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
@@ -948,8 +944,6 @@ def deleteProtocol(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
@@ -1023,8 +1017,6 @@ def restartProtocolAll(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
@@ -1085,8 +1077,6 @@ def continueProtocolAll(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
@@ -1144,8 +1134,6 @@ def resetProtocolFrom(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
@@ -1214,8 +1202,6 @@ def stopProtocol(
             mapper,
             projectId,
             currentUser,
-            refresh=False,
-            checkPid=False,
         )
 
         if refreshedProject:
