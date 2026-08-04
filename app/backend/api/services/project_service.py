@@ -107,7 +107,6 @@ from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplic
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime import (
     RuntimeOutputProxyService,
-    RuntimeOutputRelationRepairService,
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
@@ -5390,34 +5389,6 @@ class ProjectService:
             outputName=outputName,
         )
 
-
-    def _repairPostgresqlRuntimeOutputRelations(
-            self,
-            mapper,
-            projectId: int,
-            parentProtocol,
-            parentProtocolDbId: int,
-            parentScipionProtocolId,
-            outputName: str,
-            outputObj,
-            inputRefRows: List[Dict[str, Any]],
-            currentInputName: str,
-    ) -> Dict[str, Any]:
-        runtimeOutputRelationRepairService = RuntimeOutputRelationRepairService()
-
-        return runtimeOutputRelationRepairService.repairMissingOutputRelations(
-            mapper=mapper,
-            projectId=projectId,
-            parentProtocol=parentProtocol,
-            parentProtocolDbId=parentProtocolDbId,
-            parentScipionProtocolId=parentScipionProtocolId,
-            outputName=outputName,
-            outputObj=outputObj,
-            inputRefRows=inputRefRows,
-            currentInputName=currentInputName,
-            getParentProtocolCallback=self._getParentProtocolForPointer,
-            storeProtocolCallback=None,
-        )
 
     def _resolvePostgresqlRuntimeInputObject(
             self,
