@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pyworkflow as pw
-from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
 from pyworkflow.project.project import REGEX_NUMBER_ENDING
 from pyworkflow.protocol.constants import (
@@ -73,26 +72,11 @@ class PostgresqlProject(ScipionProject):
         self._postgresqlRuntimeMapper: Optional[PostgresqlRuntimeMapper] = None
 
     def _loadDb(self, dbPath=None):
-        """Load PostgreSQL for the project database and SQLite only for legacy runtime databases."""
-        if dbPath is not None:
-            self.setDbPath(dbPath)
-
-        sqlitePath = self._normalizeSqlitePath(self.dbPath)
-
-        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
-            self.mapper = self.createMapper(sqlitePath)
-            return
-
+        """Load PostgreSQL as the only project runtime mapper."""
         self.mapper = self.createMapper(None)
 
     def createMapper(self, sqliteFn):
-        """Use PostgreSQL for the project and SQLite only for legacy runtime databases."""
-        sqlitePath = self._normalizeSqlitePath(sqliteFn)
-
-        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
-            logger.info("Creating legacy SQLite mapper for protocol runtime db: %s", sqlitePath)
-            return ScipionProject.createMapper(self, sqlitePath)
-
+        """Create the PostgreSQL runtime mapper regardless of sqliteFn."""
         runtimeMapper = PostgresqlRuntimeMapper(
             flatMapper=self.postgresqlFlatMapper,
             projectId=self.postgresqlProjectId,
@@ -166,17 +150,6 @@ class PostgresqlProject(ScipionProject):
             return pw.PROTOCOL_UPDATED
 
         return pw.NOT_UPDATED_UNNECESSARY
-
-    def _normalizeSqlitePath(self, sqliteFn) -> Optional[str]:
-        if not sqliteFn:
-            return None
-
-        sqlitePath = str(sqliteFn)
-
-        if os.path.isabs(sqlitePath):
-            return sqlitePath
-
-        return os.path.abspath(os.path.join(self.path, sqlitePath))
 
     def closeMapper(self):
         """Close the PostgreSQL runtime mapper."""

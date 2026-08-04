@@ -236,9 +236,9 @@ class ProtocolService:
         """
         Return the web context of an existing protocol.
 
-        PostgreSQL-runtime protocols reuse the context built from the real
-        run.db protocol, preserving runtime outputs and avoiding a second
-        protocol reconstruction.
+        PostgreSQL-runtime protocols reuse the context returned by the
+        runtime graph synchronization, preserving hydrated outputs and
+        avoiding a second protocol reconstruction.
         """
         if usingPostgresqlRuntime:
             syncResult = (

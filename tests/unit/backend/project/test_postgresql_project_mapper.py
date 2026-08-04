@@ -41,14 +41,6 @@ class FakeRuntimeMapper:
         self.closeCalls += 1
 
 
-class FakeWriteFallbackMapper:
-    def __init__(self):
-        self.closeCalls = 0
-
-    def close(self):
-        self.closeCalls += 1
-
-
 def buildProject(
         tmpPath,
 ):
@@ -65,7 +57,6 @@ def buildProject(
 
     project.mapper = None
     project._postgresqlRuntimeMapper = None
-    project._writeFallbackMapper = None
 
     return project
 
@@ -78,7 +69,7 @@ def test_ConstructorDoesNotExposeReadFallback():
     assert "enableReadFallback" not in parameters
 
 
-def test_CreateMapperDoesNotConfigureReadFallback(
+def test_CreateMapperAlwaysUsesPostgresqlRuntime(
         monkeypatch,
         tmp_path,
 ):
@@ -99,14 +90,25 @@ def test_CreateMapperDoesNotConfigureReadFallback(
 
         return runtimeMapper
 
+    def failSqliteMapper(*args, **kwargs):
+        raise AssertionError(
+            "PostgresqlProject must not create SQLite mappers"
+        )
+
     monkeypatch.setattr(
         projectModule,
         "PostgresqlRuntimeMapper",
         buildRuntimeMapper,
     )
 
+    monkeypatch.setattr(
+        projectModule.ScipionProject,
+        "createMapper",
+        failSqliteMapper,
+    )
+
     runtimeMapper = project.createMapper(
-        tmp_path / "project.sqlite"
+        tmp_path / "logs" / "run.db"
     )
 
     assert len(createdRuntimeMappers) == 1
@@ -120,6 +122,44 @@ def test_CreateMapperDoesNotConfigureReadFallback(
     assert project._postgresqlRuntimeMapper is (
         runtimeMapper
     )
+
+    assert not hasattr(
+        project,
+        "_normalizeSqlitePath",
+    )
+
+
+def test_LoadDbIgnoresLegacyRuntimeDatabasePath(
+        monkeypatch,
+        tmp_path,
+):
+    project = buildProject(
+        tmpPath=tmp_path,
+    )
+
+    runtimeMapper = FakeRuntimeMapper()
+    createMapperCalls = []
+
+    def createMapper(sqliteFn):
+        createMapperCalls.append(
+            sqliteFn
+        )
+        return runtimeMapper
+
+    monkeypatch.setattr(
+        project,
+        "createMapper",
+        createMapper,
+    )
+
+    project._loadDb(
+        tmp_path / "logs" / "run.db"
+    )
+
+    assert createMapperCalls == [
+        None,
+    ]
+    assert project.mapper is runtimeMapper
 
 
 def test_CloseMapperClosesRuntimeMapper(

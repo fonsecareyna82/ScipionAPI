@@ -594,8 +594,7 @@ class RuntimeProtocolDuplicateService:
     ) -> Dict[str, Any]:
         """
         Verify that every non-empty Pointer target is a Scipion object.
-
-        This validation must run before project.sqlite is modified.
+        This validation must run before the duplicated protocol is persisted.
         """
         errors = []
         visited = set()
