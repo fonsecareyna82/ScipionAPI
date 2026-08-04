@@ -26,17 +26,14 @@
 import os
 import json
 import logging
-import sqlite3
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pyworkflow.object as pwobject
 from pyworkflow.mapper.mapper import Mapper
 from pyworkflow.mapper.sqlite import (
     SqliteFlatMapper,
 )
-from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project.project import PROJECT_CREATION_TIME
 from pyworkflow.protocol.protocol import LegacyProtocol, Protocol
 from pyworkflow.protocol.params import (
@@ -84,9 +81,6 @@ class PostgresqlRuntimeMapper(Mapper):
     - Scipion object trees go to scipion_objects.
     - SetOf... objects go to scipion_sets/scipion_set_items.
     - Runtime relations go to scipion_relations.
-
-    Legacy project.sqlite files are consulted read-only only when preventing
-    protocol id collisions in imported projects.
     """
 
     isPostgresqlRuntimeMapper = True
@@ -326,150 +320,6 @@ class PostgresqlRuntimeMapper(Mapper):
                 cachesCleared
             ),
         }
-
-    def _getProjectSqlitePath(
-            self,
-    ) -> Optional[str]:
-        """
-        Return the physical project.sqlite path independently of whether
-        a SQLite fallback mapper is currently open.
-        """
-        project = self.project
-
-        if project is None:
-            return None
-
-        projectPath = getattr(
-            project,
-            "path",
-            None,
-        )
-
-        if not projectPath:
-            projectPathGetter = getattr(
-                project,
-                "getPath",
-                None,
-            )
-
-            if callable(
-                    projectPathGetter
-            ):
-                try:
-                    projectPath = (
-                        projectPathGetter()
-                    )
-                except Exception:
-                    projectPath = None
-
-        sqlitePath = None
-
-        dbPathGetter = getattr(
-            project,
-            "getDbPath",
-            None,
-        )
-
-        if callable(
-                dbPathGetter
-        ):
-            try:
-                sqlitePath = dbPathGetter()
-            except Exception:
-                sqlitePath = None
-
-        if not sqlitePath and projectPath:
-            sqlitePath = os.path.join(
-                str(projectPath),
-                PROJECT_DBNAME,
-            )
-
-        if not sqlitePath:
-            return None
-
-        sqlitePath = os.path.expanduser(
-            str(sqlitePath)
-        )
-
-        if not os.path.isabs(
-                sqlitePath
-        ):
-            if not projectPath:
-                return None
-
-            sqlitePath = os.path.join(
-                str(projectPath),
-                sqlitePath,
-            )
-
-        return os.path.abspath(
-            sqlitePath
-        )
-
-    def _existsInProjectSqlite(
-            self,
-            objId,
-    ) -> bool:
-        """
-        Check the physical project.sqlite Objects namespace.
-
-        Imported legacy projects may retain project.sqlite on disk while PostgreSQL
-        allocates new runtime object ids. The file is consulted only to avoid id
-        collisions during migration.
-        """
-        if objId is None:
-            return False
-
-        sqlitePath = (
-            self._getProjectSqlitePath()
-        )
-
-        if (
-                not sqlitePath
-                or not os.path.isfile(
-            sqlitePath
-        )
-        ):
-            return False
-
-        sqliteUri = (
-            f"{Path(sqlitePath).resolve().as_uri()}"
-            "?mode=ro"
-        )
-
-        try:
-            with sqlite3.connect(
-                    sqliteUri,
-                    uri=True,
-                    timeout=5.0,
-            ) as connection:
-                connection.execute(
-                    "PRAGMA query_only = ON"
-                )
-
-                row = connection.execute(
-                    """
-                    SELECT 1
-                      FROM Objects
-                     WHERE id = ?
-                     LIMIT 1
-                    """,
-                    (
-                        int(objId),
-                    ),
-                ).fetchone()
-
-            return row is not None
-
-        except sqlite3.Error as error:
-            raise RuntimeError(
-                "Could not verify protocol id %s "
-                "against project SQLite database %s."
-                % (
-                    objId,
-                    sqlitePath,
-                )
-            ) from error
 
     def insert(self, obj):
         if obj is None:
@@ -4770,39 +4620,11 @@ class PostgresqlRuntimeMapper(Mapper):
                 % allocatorName
             )
 
-        skippedSqliteIds = []
-
-        while True:
-            objId = int(
-                allocator(
-                    self.projectId
-                )
+        objId = int(
+            allocator(
+                self.projectId
             )
-
-            if not isProtocol:
-                break
-
-            # Imported project.sqlite databases use one global Objects
-            # namespace. Check the physical SQLite database even when
-            # no fallback mapper is currently open.
-            if not self._existsInProjectSqlite(
-                    objId
-            ):
-                break
-
-            skippedSqliteIds.append(
-                objId
-            )
-
-        if skippedSqliteIds:
-            logger.info(
-                "Skipped occupied SQLite ids while allocating "
-                "PostgreSQL protocol identity. "
-                "projectId=%s selectedId=%s skippedIds=%s",
-                self.projectId,
-                objId,
-                skippedSqliteIds,
-            )
+        )
 
         try:
             self._setObjId(
