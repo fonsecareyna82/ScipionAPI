@@ -402,6 +402,15 @@ def test_ListPersistedSetOutputRowsValidatesProject():
         )
 
 
+def test_LegacyRuntimeOutputRelationWriterIsRemoved():
+    repository = ProtocolGraphRepository()
+
+    assert not hasattr(
+        repository,
+        "replaceRuntimeOutputRelation",
+    )
+
+
 def test_LoadRuntimeOutputRelationsUsesRuntimeObjectIdentity():
     relationRow = {
         "relationId": 71,
