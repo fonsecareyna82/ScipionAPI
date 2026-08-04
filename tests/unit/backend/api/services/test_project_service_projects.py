@@ -278,7 +278,6 @@ def service(projectServiceModule, tmp_path):
 
     instance = object.__new__(projectServiceModule.ProjectService)
     instance.manager = FakeManager(projectsRoot)
-    instance.objectManager = None
     instance.currentProject = None
     instance.tomoList = {}
     return instance

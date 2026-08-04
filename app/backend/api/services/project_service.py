@@ -165,10 +165,6 @@ class ProjectService:
         self.manager = Manager()
         self.manager.PROJECTS = str(self.projectsPath)
 
-        # Keep objectManager attribute for backward compatibility,
-        # but new HTTP endpoints use a fresh ObjectManager per request.
-        self.objectManager = None
-
         # Real per-instance state
         self.currentProject: Optional[ScipionProject] = None
         self.tomoList: Dict[Any, Any] = {}
@@ -303,16 +299,6 @@ class ProjectService:
         objMgr.registerReader(ScipionImageReader)
         NumpyDao.addCompatibleFileType('cs')
         return objMgr
-
-    def initializeOrderManager(self):
-        """Kept for backward compatibility with older code paths.
-
-        New HTTP endpoints should call _createObjectManager() instead
-        of relying on a shared instance.
-        """
-        if self.objectManager is None:
-            self.objectManager = self._createObjectManager()
-        return self.objectManager
 
     def _getPreviewObjectManager(self) -> ObjectManager:
         """

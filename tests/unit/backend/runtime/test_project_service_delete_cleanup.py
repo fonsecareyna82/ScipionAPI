@@ -159,7 +159,6 @@ def makeService(
         projectPath
     )
     service.manager = None
-    service.objectManager = None
     service.currentProject = (
         FakeCurrentProject(
             runtimeMapper=runtimeMapper,
