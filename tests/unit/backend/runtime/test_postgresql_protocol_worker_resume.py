@@ -345,198 +345,63 @@ class ResumeOutputProtocolStub:
         )
 
 
-class WritableMaterializerStub:
-    def __init__(
-            self,
-            writableSet,
-    ):
-        self.writableSet = (
-            writableSet
-        )
-
-        self.calls = []
-
-    def openWritable(
-            self,
-            runtimeSet,
-    ):
-        self.calls.append(
-            runtimeSet
-        )
-
-        return self.writableSet
-
-
-class RuntimeSetFactoryStub:
-    def __init__(self):
-        self.evictCalls = []
-
-    def evictRuntimeSet(
-            self,
-            **kwargs,
-    ):
-        self.evictCalls.append(
-            kwargs
-        )
-
-
-def test_ResumeRestoresOwnOutputsAsWritableSets():
+def test_ResumeRejectsSetWithoutNativePostgresqlWriteSupport():
     worker = RuntimePostgresqlProtocolWorker(
         projectId=7,
         protocolId=10,
-        runMode=(
-            POSTGRESQL_RUN_MODE_RESUME
-        ),
+        runMode=POSTGRESQL_RUN_MODE_RESUME,
     )
 
-    protocol = (
-        ResumeOutputProtocolStub()
-    )
+    protocol = ResumeOutputProtocolStub()
 
-    readOnlyOutput = Set()
-    readOnlyOutput.setObjId(
-        500
-    )
-
-    writableOutput = Set()
-    writableOutput.setObjId(
-        500
-    )
-
-    materializer = (
-        WritableMaterializerStub(
-            writableOutput
-        )
-    )
-
-    readOnlyOutput._postgresqlSqliteMaterializer = (
-        materializer
-    )
-
-    runtimeSetFactory = (
-        RuntimeSetFactoryStub()
-    )
+    outputSet = Set()
+    outputSet.setObjId(500)
 
     objectMapper = SimpleNamespace(
-        listProtocolStoredObjects=(
-            lambda **kwargs: [
-                {
-                    "protocolDbId": 110,
-                    "scipionObjId": 500,
-                    "parentObjectId": None,
-                    "name": "outputSet",
-                    "path": "outputSet",
-                    "className": "Set",
-                },
-            ]
-        )
-    )
-
-    runtimeMapper = SimpleNamespace(
-        objectMapper=objectMapper,
-        runtimeSetFactory=(
-            runtimeSetFactory
-        ),
-        selectRuntimeInputObjectById=(
-            lambda runtimeObjectId: (
-                readOnlyOutput
-                if runtimeObjectId == 500
-                else None
-            )
-        ),
+        listProtocolStoredObjects=lambda **kwargs: [
+            {
+                "protocolDbId": 110,
+                "scipionObjId": 500,
+                "parentObjectId": None,
+                "name": "outputSet",
+                "path": "outputSet",
+                "className": "Set",
+            },
+        ]
     )
 
     worker.protocol = protocol
-    worker.runtimeMapper = (
-        runtimeMapper
+
+    worker.runtimeMapper = SimpleNamespace(
+        objectMapper=objectMapper,
+        selectRuntimeInputObjectById=lambda runtimeObjectId: (
+            outputSet
+            if runtimeObjectId == 500
+            else None
+        ),
     )
 
-    worker.getProtocolDbId = (
-        lambda: 110
+    worker.getProtocolDbId = lambda: 110
+
+    report = worker.restoreResumeOutputs()
+
+    assert report["restored"] == 0
+    assert report["items"] == []
+    assert len(report["errors"]) == 1
+
+    error = report["errors"][0]
+
+    assert error["outputName"] == "outputSet"
+    assert error["runtimeObjectId"] == 500
+    assert error["error"] == (
+        "PostgreSQL Set output cannot be resumed because "
+        "native PostgreSQL writing is not supported."
     )
 
-    report = (
-        worker.restoreResumeOutputs()
-    )
-
-    assert report["errors"] == []
-    assert report["restored"] == 1
-
-    assert report[
-        "parentProtocolsModified"
-    ] is False
-
-    assert protocol.outputSet is (
-        writableOutput
-    )
-
-    assert protocol.outputSet is not (
-        readOnlyOutput
-    )
-
-    assert materializer.calls == [
-        readOnlyOutput,
-    ]
-
-    assert writableOutput._objParent is None
-
-    assert (
-            writableOutput
-            ._postgresqlRuntimeParentRef()
-            is protocol
-    )
-
-    assert (
-            writableOutput.getObjParentId()
-            == 10
-    )
-
-    # The protocol already references writableOutput through
-    # protocol.outputSet. Serializing the Set must not traverse
-    # back into the protocol.
-    outputProperties = (
-        writableOutput.getObjDict()
-    )
-
-    assert all(
-        "_objParent"
-        not in str(propertyPath)
-        for propertyPath
-        in outputProperties
-    )
-
-    assert writableOutput.isStreamOpen()
-
-    assert writableOutput.getObjName() == (
-        "outputSet"
-    )
-
-    assert "outputSet" in (
-        protocol._outputs
-    )
-
-    assert (
-        protocol
-        ._useOutputList
-        .get()
-        is True
-    )
-
-    assert report["items"][0][
-        "writableMirror"
-    ] is True
-
-    assert len(
-        runtimeSetFactory.evictCalls
-    ) == 1
-
-    assert (
-        runtimeSetFactory
-        .evictCalls[0][
-            "runtimeObjectId"
-        ]
-        == 500
-    )
+    assert not hasattr(protocol, "outputSet")
+    assert "outputSet" not in protocol._outputs
+    assert protocol._useOutputList.get() is False
+    assert report["parentProtocolsModified"] is False
 
 
 def test_RestartDoesNotRestorePreviousOutputs():

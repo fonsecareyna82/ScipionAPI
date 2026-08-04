@@ -958,13 +958,6 @@ def test_ResumeUsesNativePostgresqlWritableSet():
     )
 
     assert (
-        report["items"][0][
-            "writableMirror"
-        ]
-        is False
-    )
-
-    assert (
         outputSet.getStreamState()
         == Set.STREAM_OPEN
     )
