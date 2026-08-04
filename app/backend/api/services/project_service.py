@@ -108,7 +108,6 @@ from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInput
 from app.backend.runtime import (
     RuntimeOutputProxyService,
     RuntimeOutputRelationRepairService,
-    RuntimeOutputMapperRepairService,
     RuntimeProtocolOutputPersistenceService,
     RuntimeProtocolStepPersistenceService,
     RuntimeProtocolStatusSyncService,
@@ -5417,7 +5416,6 @@ class ProjectService:
             inputRefRows=inputRefRows,
             currentInputName=currentInputName,
             getParentProtocolCallback=self._getParentProtocolForPointer,
-            repairOutputMapperCallback=self._repairPostgresqlRuntimeSetMapperInfo,
             storeProtocolCallback=None,
         )
 
@@ -5516,23 +5514,6 @@ class ProjectService:
                     ._resolvePostgresqlRuntimeInputObject
                 ),
             )
-        )
-
-    def _repairPostgresqlRuntimeSetMapperInfo(
-            self,
-            mapper,
-            projectId: int,
-            outputObj,
-            outputInfo: Dict[str, Any],
-    ) -> bool:
-        runtimeOutputMapperRepairService = RuntimeOutputMapperRepairService()
-
-        return runtimeOutputMapperRepairService.repairPostgresqlRuntimeSetMapperInfo(
-            mapper=mapper,
-            projectId=projectId,
-            outputObj=outputObj,
-            outputInfo=outputInfo,
-            getCurrentProjectPathCallback=self._getCurrentProjectPath,
         )
 
     def _resolveParentOutputForRuntimePointer(
