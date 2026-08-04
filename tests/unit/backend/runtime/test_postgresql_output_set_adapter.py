@@ -439,7 +439,7 @@ def test_InsertChildAdoptsDirectlyConstructedOutputSet():
     assert runtimeMapper.discarded == []
 
 
-def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
+def test_InsertChildAdoptsPopulatedDirectOutputSet():
     class PopulatedOutputSetStub(OutputSetStub):
         def isEmpty(self):
             return False
@@ -472,8 +472,14 @@ def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
         ),
     ]
 
-    assert runtimeMapper.created == []
-    assert runtimeMapper.finalized == []
+    assert len(runtimeMapper.created) == 1
+    assert runtimeMapper.created[0]["setClass"] is PopulatedOutputSetStub
+    assert runtimeMapper.created[0]["providedRuntimeSet"] is outputSet
+    assert runtimeMapper.created[0]["runtimeSet"] is outputSet
+
+    assert len(runtimeMapper.finalized) == 1
+    assert runtimeMapper.finalized[0]["outputName"] == "outputParticles"
+    assert runtimeMapper.finalized[0]["runtimeSet"] is outputSet
 
     adapter.uninstall()
 

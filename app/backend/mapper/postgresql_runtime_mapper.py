@@ -3974,6 +3974,158 @@ class PostgresqlRuntimeMapper(Mapper):
             ),
         }
 
+    @staticmethod
+    def _closeSetMapper(runtimeSet) -> None:
+        currentMapper = getattr(runtimeSet, "_mapper", None)
+
+        if currentMapper is not None:
+            closeMapper = getattr(currentMapper, "close", None)
+
+            if callable(closeMapper):
+                closeMapper()
+
+        runtimeSet._mapper = None
+
+    def _restoreNativeSetAfterFailedAdoption(self, runtimeSet, originalClass) -> None:
+        try:
+            self._closeSetMapper(runtimeSet)
+        except Exception:
+            logger.debug(
+                "Could not close PostgreSQL mapper after failed Set adoption.",
+                exc_info=True,
+            )
+
+        if runtimeSet.__class__ is not originalClass:
+            try:
+                runtimeSet.__class__ = originalClass
+            except TypeError:
+                logger.exception(
+                    "Could not restore native Set class after failed PostgreSQL adoption. "
+                    "currentClass=%s originalClass=%s objectId=%s",
+                    runtimeSet.__class__.__name__,
+                    originalClass.__name__,
+                    runtimeSet.getObjId(),
+                )
+                return
+
+        for attributeName in (
+                "_postgresqlNativeSetClass",
+                "_postgresqlRuntimeInfo",
+                "_postgresqlRuntimeProperties",
+                "_postgresqlRuntimeClasses",
+                "_postgresqlRuntimeValues",
+                "_postgresqlSqliteMaterializer",
+                "_postgresqlMaterializedFileName",
+                "_postgresqlMaterializedRevision",
+                "_postgresqlSupportsNativeWrite",
+                "_postgresqlWritable",
+                "_postgresqlMapperFactory",
+        ):
+            runtimeSet.__dict__.pop(attributeName, None)
+
+        loadSet = getattr(runtimeSet, "load", None)
+
+        if callable(loadSet):
+            try:
+                loadSet()
+            except Exception:
+                logger.exception(
+                    "Could not reopen native Set after failed PostgreSQL adoption. "
+                    "className=%s objectId=%s",
+                    originalClass.__name__,
+                    runtimeSet.getObjId(),
+                )
+
+    def _adoptPopulatedPostgresqlOutputSet(
+            self,
+            protocol,
+            protocolDbId: int,
+            setClass,
+            provisionalOutputName: str,
+            reservationToken,
+            runtimeSet,
+    ):
+        runtimeObjectId = self._ensureObjId(runtimeSet)
+        originalClass = runtimeSet.__class__
+        snapshotReport = None
+
+        try:
+            self._prepareNativeSetForPostgresqlSnapshot(runtimeSet)
+
+            snapshotReport = self.setMapper.storeSet(
+                projectId=self.projectId,
+                protocolDbId=protocolDbId,
+                outputName=provisionalOutputName,
+                scipionSet=runtimeSet,
+                runtimeReserved=True,
+                reservationToken=reservationToken,
+            )
+
+            outputInfo = {
+                "setId": int(snapshotReport["setId"]),
+                "rootTableId": int(snapshotReport["rootTableId"]),
+                "projectId": int(self.projectId),
+                "protocolDbId": int(protocolDbId),
+                "protocolId": int(protocol.getObjId()),
+                "objectId": int(snapshotReport["rootObjectId"]),
+                "runtimeObjectId": int(runtimeObjectId),
+                "outputName": provisionalOutputName,
+                "className": str(snapshotReport["setClassName"]),
+                "setClassName": str(snapshotReport["setClassName"]),
+                "itemClassName": str(snapshotReport["itemClassName"]),
+                "properties": dict(snapshotReport.get("properties") or {}),
+            }
+
+            self._closeSetMapper(runtimeSet)
+
+            self.runtimeSetFactory._promoteRuntimeSetInstance(
+                runtimeSet=runtimeSet,
+                nativeSetClass=setClass,
+            )
+
+            runtimeSet = self.runtimeSetFactory.build(
+                db=self.db,
+                parent=protocol,
+                outputName=provisionalOutputName,
+                outputInfo=outputInfo,
+                classes=getattr(self, "dictClasses", None),
+                runtimeSet=runtimeSet,
+                cache=True,
+            )
+
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=runtimeSet,
+                parent=protocol,
+            )
+
+            runtimeSet.enablePostgresqlWrite()
+            return runtimeSet
+
+        except Exception:
+            self._restoreNativeSetAfterFailedAdoption(
+                runtimeSet=runtimeSet,
+                originalClass=originalClass,
+            )
+
+            if snapshotReport is not None:
+                try:
+                    self.setMapper.deleteStoredSetOutput(
+                        projectId=self.projectId,
+                        setId=int(snapshotReport["setId"]),
+                        objectId=int(snapshotReport["rootObjectId"]),
+                        runtimeObjectId=int(runtimeObjectId),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not delete failed populated PostgreSQL Set snapshot. "
+                        "projectId=%s protocolId=%s runtimeObjectId=%s",
+                        self.projectId,
+                        protocol.getObjId(),
+                        runtimeObjectId,
+                    )
+
+            raise
+
     def createPostgresqlOutputSet(
             self,
             protocol,
@@ -4014,6 +4166,27 @@ class PostgresqlRuntimeMapper(Mapper):
                 "Set without its owner protocol."
             )
 
+        if runtimeSet is not None:
+            if not isinstance(runtimeSet, setClass):
+                raise TypeError(
+                    "Cannot adopt output Set %s as %s."
+                    % (
+                        runtimeSet.__class__.__name__,
+                        setClass.__name__,
+                    )
+                )
+
+            if not runtimeSet.isEmpty():
+                return self._adoptPopulatedPostgresqlOutputSet(
+                    protocol=protocol,
+                    protocolDbId=protocolDbId,
+                    setClass=setClass,
+                    provisionalOutputName=provisionalOutputName,
+                    reservationToken=reservationToken,
+                    runtimeSet=runtimeSet,
+                )
+
+        originalRuntimeSetClass = None
         if runtimeSet is None:
             runtimeSetClass = (
                 self.runtimeSetFactory
@@ -4030,15 +4203,8 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
         else:
-            if not isinstance(runtimeSet, setClass):
-                raise TypeError(
-                    "Cannot adopt output Set %s as %s."
-                    % (
-                        runtimeSet.__class__.__name__,
-                        setClass.__name__,
-                    )
-                )
-
+            originalRuntimeSetClass = runtimeSet.__class__
+            self._closeSetMapper(runtimeSet)
             self.runtimeSetFactory._promoteRuntimeSetInstance(
                 runtimeSet=runtimeSet,
                 nativeSetClass=setClass,
@@ -4125,6 +4291,11 @@ class PostgresqlRuntimeMapper(Mapper):
                             runtimeObjectId
                         ),
                     )
+                    if originalRuntimeSetClass is not None:
+                        self._restoreNativeSetAfterFailedAdoption(
+                            runtimeSet=runtimeSet,
+                            originalClass=originalRuntimeSetClass,
+                        )
                 except Exception:
                     logger.exception(
                         "Could not discard failed "

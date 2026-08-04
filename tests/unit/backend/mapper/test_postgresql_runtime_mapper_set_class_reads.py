@@ -281,3 +281,130 @@ def test_SelectByClassRejectsUnsupportedClass():
             "UnsupportedObject"
         )
 
+class PopulatedRuntimeOutputSet(ExampleSet):
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+        self.postgresqlWritable = False
+
+    def isEmpty(self):
+        return False
+
+    def enablePostgresqlWrite(self):
+        self.events.append("enable-write")
+        self.postgresqlWritable = True
+
+
+class NativeMapperStub:
+    def __init__(self, events):
+        self.events = events
+
+    def close(self):
+        self.events.append("close-native-mapper")
+
+
+class RuntimeSetMapperStub:
+    def __init__(self, events):
+        self.events = events
+        self.storeCalls = []
+        self.deleteCalls = []
+
+    def storeSet(self, **kwargs):
+        self.events.append("store-snapshot")
+        self.storeCalls.append(dict(kwargs))
+
+        return {
+            "setId": 31,
+            "rootTableId": 41,
+            "rootObjectId": 51,
+            "runtimeObjectId": 91,
+            "setClassName": "PopulatedRuntimeOutputSet",
+            "itemClassName": "ExampleItem",
+            "properties": {
+                "runtimeReserved": True,
+                "runtimeWritable": True,
+                "postgresqlNativeOutput": True,
+            },
+        }
+
+    def deleteStoredSetOutput(self, **kwargs):
+        self.deleteCalls.append(dict(kwargs))
+
+
+class PopulatedRuntimeSetFactoryStub:
+    def __init__(self, events):
+        self.events = events
+        self.buildCalls = []
+
+    def _promoteRuntimeSetInstance(self, runtimeSet, nativeSetClass):
+        self.events.append("promote-runtime-set")
+        return runtimeSet
+
+    def build(self, **kwargs):
+        self.events.append("build-runtime-set")
+        self.buildCalls.append(dict(kwargs))
+        return kwargs["runtimeSet"]
+
+
+class OutputProtocolStub:
+    def getObjId(self):
+        return 17
+
+
+def test_CreatePostgresqlOutputSetCopiesPopulatedNativeSetBeforePromotion():
+    events = []
+    mapper = buildMapper()
+    protocol = OutputProtocolStub()
+
+    outputSet = PopulatedRuntimeOutputSet(events)
+    outputSet.setObjId(91)
+    outputSet._mapper = NativeMapperStub(events)
+
+    setMapper = RuntimeSetMapperStub(events)
+    runtimeSetFactory = PopulatedRuntimeSetFactoryStub(events)
+
+    mapper.setMapper = setMapper
+    mapper.runtimeSetFactory = runtimeSetFactory
+    mapper.getPostgresqlOutputSetCapability = lambda setClass: {
+        "supported": True,
+        "reason": None,
+    }
+    mapper._resolveProtocolDbIdFromObject = lambda currentProtocol: 23
+    mapper._prepareNativeSetForPostgresqlSnapshot = lambda runtimeSet: events.append("prepare-snapshot")
+
+    result = mapper.createPostgresqlOutputSet(
+        protocol=protocol,
+        setClass=PopulatedRuntimeOutputSet,
+        provisionalOutputName="__postgresql_runtime_output_test",
+        constructorKwargs={},
+        reservationToken="test-token",
+        runtimeSet=outputSet,
+    )
+
+    assert result is outputSet
+    assert outputSet.postgresqlWritable is True
+
+    assert events == [
+        "prepare-snapshot",
+        "store-snapshot",
+        "close-native-mapper",
+        "promote-runtime-set",
+        "build-runtime-set",
+        "enable-write",
+    ]
+
+    assert len(setMapper.storeCalls) == 1
+
+    storeCall = setMapper.storeCalls[0]
+
+    assert storeCall["projectId"] == 4
+    assert storeCall["protocolDbId"] == 23
+    assert storeCall["scipionSet"] is outputSet
+    assert storeCall["runtimeReserved"] is True
+    assert storeCall["reservationToken"] == "test-token"
+
+    assert len(runtimeSetFactory.buildCalls) == 1
+    assert runtimeSetFactory.buildCalls[0]["runtimeSet"] is outputSet
+    assert setMapper.deleteCalls == []
+
+

@@ -657,32 +657,12 @@ class RuntimePostgresqlOutputSetAdapter:
                 )
             )
 
-        if not child.isEmpty():
-            logger.debug(
-                "Keeping populated directly constructed output Set on the existing persistence path. projectId=%s protocolId=%s outputName=%s setClass=%s size=%s",
-                self.projectId, self.protocol.getObjId(), outputName, setClass.__name__, child.getSize())
-            return child
-
         legacyPath = None
 
         try:
             legacyPath = child.getFileName()
         except Exception:
             pass
-
-        closeSet = getattr(
-            child,
-            "close",
-            None,
-        )
-
-        if callable(closeSet):
-            closeSet()
-
-        if legacyPath:
-            pwutils.cleanPath(
-                legacyPath
-            )
 
         runtimeSet = self._createPostgresqlRuntimeSet(
             setClass=setClass,
@@ -704,6 +684,11 @@ class RuntimePostgresqlOutputSetAdapter:
                     outputName,
                     setClass.__name__,
                 )
+            )
+
+        if legacyPath:
+            pwutils.cleanPath(
+                legacyPath
             )
 
         return child

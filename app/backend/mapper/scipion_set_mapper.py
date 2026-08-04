@@ -489,13 +489,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         }
 
     def storeSet(
-        self,
-        projectId: int,
-        protocolDbId: int,
-        outputName: str,
-        scipionSet: Any,
-        registerType: bool = True,
-        batchSize: int = 1000,
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            scipionSet: Any,
+            registerType: bool = True,
+            batchSize: int = 1000,
+            runtimeReserved: bool = False,
+            reservationToken: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not projectId:
             raise ValueError("projectId is required")
@@ -505,6 +507,13 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             raise ValueError("outputName is required")
         if batchSize <= 0:
             raise ValueError("batchSize must be greater than zero")
+        runtimeObjectId = self._getSourceObjId(scipionSet)
+
+        if runtimeReserved and runtimeObjectId is None:
+            raise ValueError(
+                "Cannot reserve a populated PostgreSQL runtime Set "
+                "without a Scipion object id."
+            )
 
         protocolDbId = self._resolveProtocolDbId(
             projectId,
@@ -614,8 +623,25 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         initialProperties = self._getSetProperties(scipionSet)
         initialProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
         initialProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
+        if runtimeReserved:
+            self._removePostgresqlRuntimeStorageProperties(initialProperties)
+
+            initialProperties.update({
+                "runtimeReserved": True,
+                "runtimeWritable": True,
+                "postgresqlNativeOutput": True,
+                "provisionalOutputName": outputName,
+                "reservationToken": reservationToken,
+            })
 
         storedPaths: List[str] = []
+        rootTableProperties = {
+            "source": "postgresql",
+            "legacySetTable": True,
+        }
+
+        if runtimeReserved:
+            rootTableProperties["runtimeWritable"] = True
         with self.db.transaction():
             rootObjectId = self._storeObjectNode(
                 projectId=projectId,
@@ -668,10 +694,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 parentTableId=None,
                 parentItemId=None,
                 itemClassName=itemClassName,
-                properties={
-                    "source": "postgresql",
-                    "legacySetTable": True,
-                },
+                properties=rootTableProperties,
             )
             self._upsertSetTableColumns(rootTableId, columns)
 
@@ -702,6 +725,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self._updateSetProperties(setId, finalProperties)
             self._upsertSetProperties(setId, finalProperties)
 
+        eventRuntimeObjectId = runtimeObjectId if runtimeObjectId is not None else rootObjectId
+
         PostgresqlRuntimeEventPublisher.publish(
             db=self.db,
             projectId=projectId,
@@ -709,14 +734,16 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             protocolDbId=protocolDbId,
             outputName=outputName,
             setId=setId,
-            runtimeObjectId=rootObjectId,
+            runtimeObjectId=eventRuntimeObjectId,
             itemsCount=itemsCount,
             maxItemId=maxItemId,
         )
 
         return {
             "setId": setId,
+            "rootTableId": rootTableId,
             "rootObjectId": rootObjectId,
+            "runtimeObjectId": runtimeObjectId,
             "projectId": projectId,
             "protocolDbId": protocolDbId,
             "outputName": outputName,
@@ -730,6 +757,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "skipped": False,
             "snapshotReplaced": existingSet is not None,
             "staleObjectsDeleted": staleObjectsDeleted,
+            "properties": finalProperties,
+            "reserved": bool(runtimeReserved),
         }
 
     def reserveRuntimeSet(
