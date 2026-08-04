@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
 from pyworkflow.object import (
     Object,
     Set,
@@ -102,6 +103,11 @@ class DirectCreateOutputSetStub(
     nativeCreateCalls = []
 
 
+class DirectCreateUnsupportedOutputSetStub(DirectCreateBaseSet):
+    ITEM_TYPE = None
+    nativeCreateCalls = []
+
+
 class NestedItemStub(Set):
     ITEM_TYPE = ItemStub
 
@@ -177,6 +183,11 @@ class DirectCreateProtocolStub(
     }
 
 
+class DirectCreateUnsupportedProtocolStub(ProtocolStub):
+    _possibleOutputs = {
+        "outputUnsupported": DirectCreateUnsupportedOutputSetStub,
+    }
+
 
 class TomoProtocolStub:
     def __init__(self):
@@ -225,7 +236,7 @@ class RuntimeMapperStub:
             self,
             setClass,
     ):
-        if setClass is UnsupportedOutputSetStub:
+        if setClass in {UnsupportedOutputSetStub, DirectCreateUnsupportedOutputSetStub}:
             return {
                 "supported": False,
                 "reason": (
@@ -914,38 +925,45 @@ def test_DeclaredOutputClassCreateUsesPostgresqlAndRemovesLegacyFile(
     ) == 1
 
 
-def test_UnsupportedSetUsesNativeCreator():
-    protocol = ProtocolStub()
-    runtimeMapper = RuntimeMapperStub()
+def test_UnsupportedDeclaredOutputClassCreateDoesNotFallbackToNativeCreator(tmp_path):
+    DirectCreateUnsupportedOutputSetStub.nativeCreateCalls.clear()
 
-    adapter = (
-        RuntimePostgresqlOutputSetAdapter(
-            runtimeMapper=runtimeMapper,
-            projectId=4,
-            protocol=protocol,
-        )
-    )
+    protocol = DirectCreateUnsupportedProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
 
     adapter.install()
 
-    outputSet = (
-        protocol
-        ._EMProtocol__createSet(
-            UnsupportedOutputSetStub,
-            "unsupported%s.sqlite",
-            "",
-        )
-    )
+    assert "create" in DirectCreateUnsupportedOutputSetStub.__dict__
 
-    assert isinstance(
-        outputSet,
-        UnsupportedOutputSetStub,
-    )
+    with pytest.raises(
+            NotImplementedError,
+            match="Declared output Set cannot be stored natively in PostgreSQL",
+    ):
+        DirectCreateUnsupportedOutputSetStub.create(str(tmp_path), prefix="unsupported")
 
-    assert len(
-        protocol.nativeCreated
-    ) == 1
+    assert DirectCreateUnsupportedOutputSetStub.nativeCreateCalls == []
+    assert runtimeMapper.created == []
 
+    adapter.uninstall()
+
+    assert "create" not in DirectCreateUnsupportedOutputSetStub.__dict__
+
+
+def test_UnsupportedSetDoesNotFallbackToNativeCreator():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
+
+    adapter.install()
+
+    with pytest.raises(
+            NotImplementedError,
+            match="Declared output Set cannot be stored natively in PostgreSQL",
+    ):
+        protocol._EMProtocol__createSet(UnsupportedOutputSetStub, "unsupported%s.sqlite", "")
+
+    assert protocol.nativeCreated == []
     assert runtimeMapper.created == []
 
     adapter.uninstall()

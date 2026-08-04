@@ -347,33 +347,6 @@ class RuntimePostgresqlOutputSetAdapter:
         for setClass, outputNames in (
                 outputNamesByClass.items()
         ):
-            capability = (
-                self.runtimeMapper
-                .getPostgresqlOutputSetCapability(
-                    setClass
-                )
-            )
-
-            if not capability.get(
-                    "supported"
-            ):
-                logger.debug(
-                    "Not patching declared output "
-                    "Set class creator. "
-                    "projectId=%s protocolId=%s "
-                    "setClass=%s outputNames=%s "
-                    "reason=%s",
-                    self.projectId,
-                    self.protocol.getObjId(),
-                    setClass.__name__,
-                    outputNames,
-                    capability.get(
-                        "reason"
-                    ),
-                )
-
-                continue
-
             originalCreator = getattr(
                 setClass,
                 "create",
@@ -735,6 +708,23 @@ class RuntimePostgresqlOutputSetAdapter:
 
         return child
 
+    def _raiseUnsupportedOutputSet(self, setClass, creatorKind, capability):
+        setClassName = getattr(setClass, "__name__", str(setClass))
+
+        raise NotImplementedError(
+            "Declared output Set cannot be stored natively in PostgreSQL. "
+            "projectId=%s protocolId=%s protocolClass=%s "
+            "setClass=%s creator=%s reason=%s"
+            % (
+                self.projectId,
+                self.protocol.getObjId(),
+                self.protocol.__class__.__name__,
+                setClassName,
+                creatorKind,
+                capability.get("reason"),
+            )
+        )
+
     def _createSetFromClassCreator(
             self,
             originalCreator,
@@ -752,19 +742,10 @@ class RuntimePostgresqlOutputSetAdapter:
             )
         )
 
-        if not capability.get(
-                "supported"
-        ):
-            return originalCreator(
-                outputPath,
-                prefix=prefix,
-                suffix=suffix,
-                ext=ext,
-                **dict(
-                    constructorKwargs
-                    or {}
-                ),
-            )
+        if not capability.get("supported"):
+            self._raiseUnsupportedOutputSet(setClass=setClass,
+                                            creatorKind="class-create",
+                                            capability=capability)
 
         legacyPath = (
             self._buildLegacyClassCreatePath(
@@ -893,36 +874,8 @@ class RuntimePostgresqlOutputSetAdapter:
             )
         )
 
-        if not capability.get(
-                "supported"
-        ):
-            logger.warning(
-                "Using native SQLite output Set "
-                "compatibility path. "
-                "projectId=%s protocolId=%s "
-                "setClass=%s creator=%s reason=%s",
-                self.projectId,
-                self.protocol.getObjId(),
-                getattr(
-                    setClass,
-                    "__name__",
-                    str(setClass),
-                ),
-                creatorKind,
-                capability.get(
-                    "reason"
-                ),
-            )
-
-            return originalCreator(
-                setClass,
-                template,
-                suffix,
-                **dict(
-                    constructorKwargs
-                    or {}
-                ),
-            )
+        if not capability.get("supported"):
+            self._raiseUnsupportedOutputSet(setClass=setClass, creatorKind=creatorKind, capability=capability)
 
         return (
             self
