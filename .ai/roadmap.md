@@ -4,10 +4,14 @@
 
 ## This repo specifically
 
-- Consolidate `requirements.txt` into `pyproject.toml` (same pattern as the 3 core repos), and fix the fork-pin so it points at the official `scipion-em` org repos instead of a personal fork — see `.ai/tech-debt.md`.
+- Consolidate `requirements.txt` into `pyproject.toml` (same pattern as the 3 core repos) — see `.ai/tech-debt.md`.
 - Untrack `dump.rdb`/`.backend_reload_marker` and gitignore them.
 - Bump `actions/checkout`/`actions/setup-python` to `@v7` in `.github/workflows/tests.yml`.
 - Consider a real refactor plan for `app/backend/api/services/project_service.py` (15176 lines) - this is the single largest tech-debt item across all 5 repos by size alone.
+
+## For right after the fork merges back upstream
+
+- **Point `requirements.txt` (or its `pyproject.toml` successor) at the official `scipion-em` org repos instead of `fonsecareyna82`'s personal fork.** Not before - the fork is intentionally ahead of upstream on this whole initiative (tests/CI/Python 3.8-3.12, AI-agent docs, the plugin-free-workflows test-debt work, etc.), and `ScipionAPI` needs to build against those in-progress changes, not stale upstream code. Switching too early would silently point a new `ScipionAPI` at an old `scipion-em` and break things. See `.ai/tech-debt.md` for the exact pins.
 
 ## Ecosystem-wide (applies to all 5 repos, not just this one)
 
