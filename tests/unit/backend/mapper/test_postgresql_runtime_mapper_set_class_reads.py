@@ -295,6 +295,11 @@ class PopulatedRuntimeOutputSet(ExampleSet):
         self.postgresqlWritable = True
 
 
+class EmptyRuntimeOutputSet(PopulatedRuntimeOutputSet):
+    def isEmpty(self):
+        return True
+
+
 class NativeMapperStub:
     def __init__(self, events):
         self.events = events
@@ -331,6 +336,23 @@ class RuntimeSetMapperStub:
         self.deleteCalls.append(dict(kwargs))
 
 
+class FailingReservationSetMapperStub:
+    def reserveRuntimeSet(self, **kwargs):
+        raise RuntimeError(
+            "forced reservation failure"
+        )
+
+
+class FailingDiscardSetMapperStub:
+    def reserveRuntimeSet(self, **kwargs):
+        return {}
+
+    def discardReservedRuntimeSet(self, **kwargs):
+        raise RuntimeError(
+            "forced reservation discard failure"
+        )
+
+
 class PopulatedRuntimeSetFactoryStub:
     def __init__(self, events):
         self.events = events
@@ -344,6 +366,13 @@ class PopulatedRuntimeSetFactoryStub:
         self.events.append("build-runtime-set")
         self.buildCalls.append(dict(kwargs))
         return kwargs["runtimeSet"]
+
+
+class FailingBuildRuntimeSetFactoryStub(PopulatedRuntimeSetFactoryStub):
+    def build(self, **kwargs):
+        raise RuntimeError(
+            "forced runtime Set build failure"
+        )
 
 
 class OutputProtocolStub:
@@ -408,3 +437,102 @@ def test_CreatePostgresqlOutputSetCopiesPopulatedNativeSetBeforePromotion():
     assert setMapper.deleteCalls == []
 
 
+def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenReservationFails():
+    events = []
+    restoreCalls = []
+
+    mapper = buildMapper()
+    protocol = OutputProtocolStub()
+
+    outputSet = EmptyRuntimeOutputSet(events)
+    outputSet.setObjId(91)
+    outputSet._mapper = NativeMapperStub(events)
+
+    mapper.setMapper = FailingReservationSetMapperStub()
+    mapper.runtimeSetFactory = PopulatedRuntimeSetFactoryStub(events)
+
+    mapper.getPostgresqlOutputSetCapability = lambda setClass: {
+        "supported": True,
+        "reason": None,
+    }
+
+    mapper._resolveProtocolDbIdFromObject = lambda currentProtocol: 23
+
+    def restoreNativeSetAfterFailedAdoption(runtimeSet, originalClass):
+        restoreCalls.append({
+            "runtimeSet": runtimeSet,
+            "originalClass": originalClass,
+        })
+
+    mapper._restoreNativeSetAfterFailedAdoption = restoreNativeSetAfterFailedAdoption
+
+    with pytest.raises(
+            RuntimeError,
+            match="forced reservation failure",
+    ):
+        mapper.createPostgresqlOutputSet(
+            protocol=protocol,
+            setClass=EmptyRuntimeOutputSet,
+            provisionalOutputName="__postgresql_runtime_output_test",
+            constructorKwargs={},
+            reservationToken="test-token",
+            runtimeSet=outputSet,
+        )
+
+    assert events == [
+        "close-native-mapper",
+        "promote-runtime-set",
+    ]
+
+    assert restoreCalls == [{
+        "runtimeSet": outputSet,
+        "originalClass": EmptyRuntimeOutputSet,
+    }]
+
+
+def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenDiscardFails():
+    events = []
+    restoreCalls = []
+
+    mapper = buildMapper()
+    protocol = OutputProtocolStub()
+
+    outputSet = EmptyRuntimeOutputSet(events)
+    outputSet.setObjId(91)
+    outputSet._mapper = NativeMapperStub(events)
+
+    mapper.setMapper = FailingDiscardSetMapperStub()
+    mapper.runtimeSetFactory = FailingBuildRuntimeSetFactoryStub(events)
+
+    mapper.getPostgresqlOutputSetCapability = lambda setClass: {
+        "supported": True,
+        "reason": None,
+    }
+
+    mapper._resolveProtocolDbIdFromObject = lambda currentProtocol: 23
+
+    def restoreNativeSetAfterFailedAdoption(runtimeSet, originalClass):
+        restoreCalls.append({
+            "runtimeSet": runtimeSet,
+            "originalClass": originalClass,
+        })
+
+    mapper._restoreNativeSetAfterFailedAdoption = restoreNativeSetAfterFailedAdoption
+
+    with pytest.raises(
+            RuntimeError,
+            match="forced runtime Set build failure",
+    ):
+        mapper.createPostgresqlOutputSet(
+            protocol=protocol,
+            setClass=EmptyRuntimeOutputSet,
+            provisionalOutputName="__postgresql_runtime_output_test",
+            constructorKwargs={},
+            reservationToken="test-token",
+            runtimeSet=outputSet,
+        )
+
+    assert restoreCalls == [{
+        "runtimeSet": outputSet,
+        "originalClass": EmptyRuntimeOutputSet,
+    }]

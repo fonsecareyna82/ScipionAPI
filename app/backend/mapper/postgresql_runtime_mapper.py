@@ -4281,21 +4281,23 @@ class PostgresqlRuntimeMapper(Mapper):
 
             return runtimeSet
 
+
         except Exception:
+
             if reservation is not None:
+
                 try:
+
                     self.setMapper.discardReservedRuntimeSet(
+
                         projectId=self.projectId,
+
                         protocolDbId=protocolDbId,
-                        runtimeObjectId=(
-                            runtimeObjectId
-                        ),
+
+                        runtimeObjectId=runtimeObjectId,
+
                     )
-                    if originalRuntimeSetClass is not None:
-                        self._restoreNativeSetAfterFailedAdoption(
-                            runtimeSet=runtimeSet,
-                            originalClass=originalRuntimeSetClass,
-                        )
+
                 except Exception:
                     logger.exception(
                         "Could not discard failed "
@@ -4306,6 +4308,12 @@ class PostgresqlRuntimeMapper(Mapper):
                         protocol.getObjId(),
                         runtimeObjectId,
                     )
+            if originalRuntimeSetClass is not None:
+                self._restoreNativeSetAfterFailedAdoption(
+                    runtimeSet=runtimeSet,
+                    originalClass=originalRuntimeSetClass,
+
+                )
 
             raise
 
