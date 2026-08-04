@@ -2576,6 +2576,14 @@ class RuntimePropertiesMapperStub:
             self.events.append("close")
 
 
+class ForbiddenCloseMaterializer:
+    def __getattr__(self, attributeName):
+        raise AssertionError(
+            "SQLite materializer must not be accessed during PostgreSQL runtime Set close(). "
+            "attributeName=%s"
+            % attributeName
+        )
+
 def test_RefreshPostgresqlRuntimeStatePreservesHydratedPointer():
     factory = PostgresqlRuntimeSetFactory()
     runtimeSetClass = factory._getRuntimeSetClass(ExampleLinkedSet)
@@ -2609,7 +2617,7 @@ def test_RefreshPostgresqlRuntimeStatePreservesHydratedPointer():
     assert compatibilitySet.getLinkedSet() is linkedSet
 
 
-def test_CloseRefreshesExistingCompatibilitySnapshot():
+def test_CloseDoesNotRefreshExistingCompatibilitySnapshot():
     events = []
     mapper = RuntimePropertiesMapperStub(events=events)
 
@@ -2617,51 +2625,32 @@ def test_CloseRefreshesExistingCompatibilitySnapshot():
     runtimeSetClass = factory._getRuntimeSetClass(ExampleLinkedSet)
     runtimeSet = runtimeSetClass()
 
-    runtimeSet._mapper = None
+    runtimeSet._mapper = mapper
     runtimeSet._postgresqlMaterializedFileName = "/tmp/postgresql-input.sqlite"
-
-    class MaterializerStub:
-        def materialize(self, sourceSet):
-            events.append("materialize")
-            sourceSet._mapper = mapper
-            return sourceSet._postgresqlMaterializedFileName
-
-    runtimeSet._postgresqlSqliteMaterializer = MaterializerStub()
+    runtimeSet._postgresqlSqliteMaterializer = ForbiddenCloseMaterializer()
 
     runtimeSet.close()
 
-    assert events == ["materialize", "close"]
+    assert events == ["close"]
     assert runtimeSet._mapper is None
+    assert runtimeSet._postgresqlMaterializedFileName == "/tmp/postgresql-input.sqlite"
 
 
-def test_RuntimeSetCloseSkipsMaterializationWhenPostgresqlIsClosed():
-    class FakeClosedDb:
-        isClosed = True
+def test_RuntimeSetCloseWithoutMapperDoesNotAccessMaterializer():
+    factory = PostgresqlRuntimeSetFactory()
+    runtimeSetClass = factory._getRuntimeSetClass(ExampleLinkedSet)
+    runtimeSet = runtimeSetClass()
 
-    class FakeMapper:
-        def __init__(self):
-            self.db = FakeClosedDb()
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    class FakeMaterializer:
-        def __init__(self):
-            self.calls = 0
-
-        def materialize(self, runtimeSet):
-            self.calls += 1
-
-    runtimeSet = PostgresqlRuntimeSetMixin()
-    runtimeSet._mapper = FakeMapper()
-    runtimeSet._postgresqlSqliteMaterializer = FakeMaterializer()
+    runtimeSet._mapper = None
     runtimeSet._postgresqlMaterializedFileName = "/tmp/compatibility.sqlite"
+    runtimeSet._postgresqlSqliteMaterializer = ForbiddenCloseMaterializer()
 
     runtimeSet.close()
 
-    assert runtimeSet._postgresqlSqliteMaterializer.calls == 0
     assert runtimeSet._mapper is None
+
+
+
 
 
 
