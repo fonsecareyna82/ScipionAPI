@@ -35,6 +35,8 @@ dist-ssr
 *.pid
 logs/
 /scipion_home/
+/dump.rdb
+/.backend_reload_marker
 
 # python
 __pycache__/
