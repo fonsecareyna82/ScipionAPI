@@ -6437,26 +6437,22 @@ class ProjectService:
             projectId: int,
             protocolId,
     ):
-        runtimeProtocolResetService = (
-            RuntimeProtocolResetService()
-        )
+        runtimeProtocolResetService = RuntimeProtocolResetService()
 
-        return (
-            runtimeProtocolResetService
-            .resetProtocolSubworkflow(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                stopPostgresqlProtocolsCallback=self.stopProtocol,
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolResetService.resetProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentProject=self.currentProject,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            stopPostgresqlProtocolsCallback=self.stopProtocol,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def stopProtocol(

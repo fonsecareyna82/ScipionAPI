@@ -255,8 +255,6 @@ class FakeCurrentProject:
         self.launchedProtocols = []
         self.scheduledProtocols = []
         self.stoppedProtocols = []
-        self.resetWorkflowResult = []
-        self.failResetWorkflow = None
 
     def getDomain(self):
         return FakeDomain(self.protocolFactories)
@@ -288,14 +286,6 @@ class FakeCurrentProject:
 
     def stopProtocol(self, protocol):
         self.stoppedProtocols.append(protocol)
-
-    def _getSubworkflow(self, protocol):
-        return ["wf-a", "wf-b"], ["active-a"]
-
-    def resetWorkFlow(self, workflowProtocolList):
-        if self.failResetWorkflow is not None:
-            raise self.failResetWorkflow
-        return self.resetWorkflowResult
 
 
 class FakeDb:
@@ -1679,20 +1669,6 @@ def test_DuplicateProtocolUsesPostgresqlRuntimeService(
     }
 
 
-def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-    service.currentProject.resetWorkflowResult = []
-
-    result = service.resetProtocolFrom(
-        mapper=None,
-        projectId=None,
-        protocolId=10,
-    )
-
-    assertSuccessEnvelope(result)
-
-
 def test_StopProtocolStopsEachProtocol(service):
     protocolA = FakeProtocol(objId=10)
     protocolB = FakeProtocol(objId=11)
@@ -1869,22 +1845,33 @@ def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
     }
 
 
-def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10)
+def test_ResetProtocolFromUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeReset": True,
+    }
 
-    service.currentProject.protocols[10] = protocol
-    service.currentProject.resetWorkflowResult = []
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    resetCalls = []
 
-    subworkflowCalls = []
+    class FakeResetService:
+        def resetProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            resetCalls.append(kwargs)
+            return expectedResult
 
-    def fakeGetSubworkflow(protocolObj):
-        subworkflowCalls.append(protocolObj)
-        return [protocol], []
-
-    service.currentProject._getSubworkflow = fakeGetSubworkflow
-
-
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolResetService",
+        FakeResetService,
+    )
 
     result = service.resetProtocolFrom(
         mapper=mapper,
@@ -1892,9 +1879,27 @@ def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypa
         protocolId=500,
     )
 
-    assertSuccessEnvelope(result)
-    assert subworkflowCalls == [protocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    assert result is expectedResult
+    assert len(resetCalls) == 1
+
+    resetCall = resetCalls[0]
+
+    assert resetCall["mapper"] is mapper
+    assert resetCall["projectId"] == 1
+    assert resetCall["protocolId"] == 500
+    assert resetCall["currentProject"] is service.currentProject
+
+    assert set(resetCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "currentProject",
+        "getPostgresqlRuntimeSubworkflowCallback",
+        "stopPostgresqlProtocolsCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_GetNextProtocolSuggestionsResolvesPostgresqlProtocolId(
