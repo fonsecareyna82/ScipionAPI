@@ -306,6 +306,62 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         sourceSet.close()
 
 
+def test_MaterializeRefreshesRuntimeStateBeforeReturningCachedPath(
+        tmp_path,
+):
+    sourcePath = tmp_path / "cached-runtime-state-source.sqlite"
+
+    owner = FakePathOwner(
+        tmp_path / "extra"
+    )
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 31,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    refreshCalls = []
+
+    def refreshRuntimeState():
+        refreshCalls.append(True)
+        sourceSet._samplingRate.set(1.5)
+        return sourceSet
+
+    sourceSet.refreshPostgresqlRuntimeState = refreshRuntimeState
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    try:
+        targetPath = materializer.materialize(
+            sourceSet
+        )
+
+        assert refreshCalls == [True]
+
+        sourceSet._samplingRate.set(None)
+
+        cachedPath = materializer.materialize(
+            sourceSet
+        )
+
+        assert cachedPath == targetPath
+        assert refreshCalls == [True, True]
+        assert sourceSet.getSamplingRate() == 1.5
+
+    finally:
+        sourceSet.close()
+
+
 def test_MaterializeUsesStableItemIdStreamingCursor(
         tmp_path,
 ):
@@ -593,6 +649,76 @@ def test_MaterializeSupportsEmptySets(
     finally:
         sourceSet.close()
 
+
+def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
+        tmp_path,
+):
+    sourcePath = tmp_path / "heterogeneous-source.sqlite"
+
+    owner = FakePathOwner(
+        tmp_path / "extra"
+    )
+
+    sourceSet = _createEmptySource(
+        sourcePath
+    )
+
+    firstItem = ExampleItem()
+    firstItem.setObjId(1)
+    firstItem._name.set("first")
+    firstItem._metadata = ExampleChildItem()
+    firstItem._metadata._value.set("present")
+
+    secondItem = ExampleItem()
+    secondItem.setObjId(2)
+    secondItem._name.set("second")
+
+    sourceSet.iterItems = (
+        lambda *args, **kwargs:
+        iter([
+            firstItem,
+            secondItem,
+        ])
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 501,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    targetPath = materializer.materialize(
+        sourceSet
+    )
+
+    compatibilitySet = _openSet(
+        ExampleSet,
+        targetPath,
+    )
+
+    try:
+        itemsById = {
+            item.getObjId(): item
+            for item in compatibilitySet
+        }
+
+        assert itemsById[1]._name.get() == "first"
+        assert itemsById[1]._metadata._value.get() == "present"
+
+        assert itemsById[2]._name.get() == "second"
+        assert itemsById[2]._metadata is not None
+        assert itemsById[2]._metadata._value.get() is None
+
+    finally:
+        compatibilitySet.close()
+        sourceSet.close()
 
 def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         tmp_path,

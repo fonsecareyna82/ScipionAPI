@@ -44,15 +44,24 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         with self._lock:
-            cachedPath = self._getCachedPath(
-                runtimeSet
-            )
+            if runtimeSetIdentity in self._materializingSetIdentities:
+                runtimeInfo = self._getRuntimeInfo(runtimeSet)
 
-            sourceRevision = (
-                self._getSourceRevision(
-                    runtimeSet
+                raise RuntimeError(
+                    "Recursive PostgreSQL SQLite "
+                    "materialization detected. "
+                    "className=%s setId=%s tableId=%s"
+                    % (
+                        runtimeSet.getClassName(),
+                        runtimeInfo.get("setId"),
+                        runtimeInfo.get("tableId"),
+                    )
                 )
-            )
+
+            self._refreshRuntimeSetState(runtimeSet)
+
+            cachedPath = self._getCachedPath(runtimeSet)
+            sourceRevision = self._getSourceRevision(runtimeSet)
 
             cachedRevision = getattr(
                 runtimeSet,
@@ -63,39 +72,13 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             if (
                     cachedPath is not None
                     and (
-                    sourceRevision is None
-                    or cachedRevision
-                    == sourceRevision
-            )
+                        sourceRevision is None
+                        or cachedRevision == sourceRevision
+                    )
             ):
                 return cachedPath
 
-            if (
-                    runtimeSetIdentity
-                    in self._materializingSetIdentities
-            ):
-                runtimeInfo = self._getRuntimeInfo(
-                    runtimeSet
-                )
-
-                raise RuntimeError(
-                    "Recursive PostgreSQL SQLite "
-                    "materialization detected. "
-                    "className=%s setId=%s tableId=%s"
-                    % (
-                        runtimeSet.getClassName(),
-                        runtimeInfo.get(
-                            "setId"
-                        ),
-                        runtimeInfo.get(
-                            "tableId"
-                        ),
-                    )
-                )
-
-            self._materializingSetIdentities.add(
-                runtimeSetIdentity
-            )
+            self._materializingSetIdentities.add(runtimeSetIdentity)
 
             materializedPath = None
             targetSet = None
@@ -136,10 +119,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     setClass=nativeSetClass,
                     fileName=materializedPath,
                     classes=classes,
-                )
-
-                self._refreshRuntimeSetState(
-                    runtimeSet
                 )
 
                 self._copySetMetadata(
@@ -407,34 +386,32 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet: ScipionSet,
             classes: Dict[str, Type],
     ) -> None:
-        sourceClasses = (
-                self._getRuntimeClasses(
-                    sourceSet
-                )
-                or classes
-        )
+        sourceClasses = self._getRuntimeClasses(sourceSet) or classes
+        itemSchema = None
 
-        for sourceItem in self._iterSourceItems(
-                sourceSet
-        ):
+        for sourceItem in self._iterSourceItems(sourceSet):
             targetItem = self._cloneItem(
                 sourceItem,
                 sourceClasses,
             )
 
-            targetSet.append(
-                targetItem
-            )
+            if not isinstance(sourceItem, ScipionSet):
+                if itemSchema is None:
+                    itemSchema = targetItem
+                else:
+                    self._completeMissingItemAttributes(
+                        targetItem,
+                        itemSchema,
+                    )
+
+            targetSet.append(targetItem)
 
             self._setStableStreamingCreation(
                 targetItem=targetItem,
                 targetSet=targetSet,
             )
 
-            if not isinstance(
-                    sourceItem,
-                    ScipionSet,
-            ):
+            if not isinstance(sourceItem, ScipionSet):
                 continue
 
             self._ensureNestedMapper(
@@ -450,13 +427,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     classes=sourceClasses,
                 )
 
-                targetItem.write(
-                    properties=False
-                )
+                targetItem.write(properties=False)
+                targetSet.update(targetItem)
 
-                targetSet.update(
-                    targetItem
-                )
             finally:
                 # The nested mapper shares the root SQLite connection.
                 # Detach it without closing the shared connection.
@@ -467,6 +440,34 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet=targetSet,
             classes=sourceClasses,
         )
+
+    def _completeMissingItemAttributes(
+            self,
+            targetItem,
+            schemaItem,
+    ) -> None:
+        for attributeName, schemaAttribute in schemaItem.getAttributesToStore():
+            targetAttribute = getattr(
+                targetItem,
+                attributeName,
+                None,
+            )
+
+            if targetAttribute is None:
+                targetAttribute = schemaAttribute.getClass()()
+                setattr(
+                    targetItem,
+                    attributeName,
+                    targetAttribute,
+                )
+
+            if schemaAttribute.isPointer():
+                continue
+
+            self._completeMissingItemAttributes(
+                targetAttribute,
+                schemaAttribute,
+            )
 
     @classmethod
     def _buildStableStreamingCreation(
