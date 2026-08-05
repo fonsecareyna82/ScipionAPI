@@ -521,14 +521,16 @@ class SnapshotSetMapper(ScipionSetPostgresqlMapper):
     ) -> str:
         return "SetOfParticles"
 
+
 def test_CompleteItemSchemaKeepsLegacyOverrideSignature():
     mapper = SnapshotSetMapper(
-        RecordingDb()
+        itemIds=[
+            1,
+        ]
     )
 
     item = FakeItem(
-        itemId=1,
-        value="item-1",
+        itemId=1
     )
 
     schema = mapper._getCompleteItemSchema(
@@ -536,10 +538,11 @@ def test_CompleteItemSchemaKeepsLegacyOverrideSignature():
         scipionSet=FakeSet(),
     )
 
-    assert isinstance(
-        schema,
-        dict,
-    )
+    assert schema == {
+        "_objId": {
+            "className": "Integer",
+        },
+    }
 
 
 class SnapshotObjectMapper(ScipionObjectPostgresqlMapper):

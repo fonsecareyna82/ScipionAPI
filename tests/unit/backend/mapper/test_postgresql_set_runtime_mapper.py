@@ -934,23 +934,92 @@ def test_DynamicScalarFieldTypeIsCachedWithinReadOperation():
     ]
 
 
-def test_UnknownDynamicScalarFieldStillFailsExplicitly():
+def test_MissingDynamicScalarFieldUsesNullableTextExpression():
+    db = DynamicFieldFakeDb(
+        rows=[]
+    )
+
     mapper = PostgresqlSetRuntimeMapper(
-        db=DynamicFieldFakeDb(),
+        db=db,
         setId=31,
         itemBuilder=buildItem,
     )
 
-    with pytest.raises(
-            ValueError,
-            match=(
-                "Unknown Scipion set item field: "
-                "_missingField"
-            ),
-    ):
-        mapper.unique(
-            "_missingField"
-        )
+    result = mapper.unique(
+        "_missingField"
+    )
+
+    assert result == []
+
+    assert (
+        '"values" ->> %s AS "value_0"'
+        in db.query
+    )
+
+    assert db.params == (
+        "_missingField",
+        31,
+    )
+
+
+def test_MissingDynamicFieldIsRetypedWhenStreamingValueAppears():
+    db = DynamicFieldFakeDb(
+        rows=[]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    firstResult = mapper.unique(
+        "_streamingField"
+    )
+
+    assert firstResult == []
+
+    assert (
+        '"values" ->> %s AS "value_0"'
+        in db.query
+    )
+
+    db.fieldTypes[
+        "_streamingField"
+    ] = [
+        {
+            "json_type": "number",
+            "has_floating_number": True,
+        },
+    ]
+
+    db.rows = [
+        {
+            "value_0": 2.5,
+        },
+    ]
+
+    secondResult = mapper.unique(
+        "_streamingField"
+    )
+
+    assert secondResult == [
+        2.5,
+    ]
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')::DOUBLE PRECISION '
+        'AS "value_0"'
+        in db.query
+    )
+
+    assert [
+        call["field"]
+        for call in db.dynamicFieldQueries
+    ] == [
+        "_streamingField",
+        "_streamingField",
+    ]
 
 
 def test_DynamicComplexFieldFailsExplicitly():

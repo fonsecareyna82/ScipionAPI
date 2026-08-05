@@ -2767,10 +2767,11 @@ class PostgresqlSetRuntimeMapper:
             )
 
             if valueType is None:
-                raise ValueError(
-                    "Unknown Scipion set item field: %s"
-                    % field
-                )
+                valueType = "text"
+
+                self._dynamicFieldValueTypes[
+                    field
+                ] = valueType
 
         else:
             valueType = self._getColumnQueryValueType(
