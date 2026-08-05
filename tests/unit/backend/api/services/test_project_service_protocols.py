@@ -1513,28 +1513,46 @@ def test_LaunchProtocolPostgresqlResumeDoesNotUseLegacyRuntimeDb(
     assert result["protocolStatus"] == "scheduled"
 
 
-def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
+def test_LaunchProtocolStopReturnsPostgresqlStopResult(
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeStop": True,
+    }
+
     calls = []
 
-    def fakeStopProtocol(mapper, projectId, protocolIds):
-        calls.append(protocolIds)
-
-    def fakeSyncProjectProtocolsAndDependencies(
-        mapper,
-        projectId,
-        refresh=False,
-        checkPid=False,
+    def fakeStopProtocol(
+            mapper,
+            projectId,
+            protocolIds,
     ):
-        return {
-            "protocols": 1,
-            "dependencies": 0,
-        }
+        calls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        })
 
-    monkeypatch.setattr(service, "stopProtocol", fakeStopProtocol)
+        return expectedResult
+
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Launch stop must not synchronize the legacy project graph"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "stopProtocol",
+        fakeStopProtocol,
+    )
     monkeypatch.setattr(
         service,
         "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+        failLegacyGraphSync,
     )
 
     result = service.launchProtocol(
@@ -1546,11 +1564,12 @@ def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch)
         executeMode="stop",
     )
 
-    assert calls == [["10"]]
-    assert result == {
-        "protocols": 1,
-        "dependencies": 0,
-    }
+    assert result is expectedResult
+    assert calls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocolIds": ["10"],
+    }]
 
 
 def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch):
