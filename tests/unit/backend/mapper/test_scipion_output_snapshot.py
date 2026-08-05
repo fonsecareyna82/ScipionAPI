@@ -167,7 +167,7 @@ def test_RelationIdentityFieldsAreIncludedInItemSchema():
 
     item = FakeRelationIdentityItem()
 
-    schema = mapper._getItemSchema(
+    schema = mapper._getCompleteItemSchema(
         item
     )
 
@@ -205,7 +205,7 @@ def test_ArbitraryScalarValuesCompleteItemSchema():
 
     item = FakeSyntheticScalarItem()
 
-    schema = mapper._getItemSchema(
+    schema = mapper._getCompleteItemSchema(
         item
     )
 
@@ -520,6 +520,26 @@ class SnapshotSetMapper(ScipionSetPostgresqlMapper):
             obj,
     ) -> str:
         return "SetOfParticles"
+
+def test_CompleteItemSchemaKeepsLegacyOverrideSignature():
+    mapper = SnapshotSetMapper(
+        RecordingDb()
+    )
+
+    item = FakeItem(
+        itemId=1,
+        value="item-1",
+    )
+
+    schema = mapper._getCompleteItemSchema(
+        item,
+        scipionSet=FakeSet(),
+    )
+
+    assert isinstance(
+        schema,
+        dict,
+    )
 
 
 class SnapshotObjectMapper(ScipionObjectPostgresqlMapper):

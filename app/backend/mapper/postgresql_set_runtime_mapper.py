@@ -2844,27 +2844,31 @@ class PostgresqlSetRuntimeMapper:
         if cachedValueType is not None:
             return cachedValueType
 
-        row = self.db.fetchOne(
+        rows = self.db.fetchAll(
             """
-            SELECT ARRAY_AGG(
-                       DISTINCT "jsonType"
-                   ) AS "jsonTypes",
+            SELECT jsonb_typeof(
+                       "values" -> %s
+                   ) AS json_type,
                    BOOL_OR(
-                       "jsonType" = 'number'
-                       AND "valueText" ~ '[.eE]'
-                   ) AS "hasFloatingNumber"
-              FROM (
-                    SELECT jsonb_typeof(
+                       CASE
+                           WHEN jsonb_typeof(
                                "values" -> %s
-                           ) AS "jsonType",
-                           "values" ->> %s AS "valueText"
-                      FROM {itemsTable}
-                     WHERE "{scopeColumn}" = %s
-                       AND "values" ? %s
-                       AND jsonb_typeof(
-                               "values" -> %s
-                           ) <> 'null'
-                   ) AS "fieldValues"
+                           ) = 'number'
+                           THEN (
+                               "values" ->> %s
+                           ) ~ '[.eE]'
+                           ELSE FALSE
+                       END
+                   ) AS has_floating_number
+              FROM {itemsTable}
+             WHERE "{scopeColumn}" = %s
+               AND "values" ? %s
+               AND jsonb_typeof(
+                       "values" -> %s
+                   ) <> 'null'
+             GROUP BY jsonb_typeof(
+                          "values" -> %s
+                      )
             """.format(
                 itemsTable=self._itemsTable,
                 scopeColumn=self._scopeColumn,
@@ -2872,25 +2876,21 @@ class PostgresqlSetRuntimeMapper:
             (
                 field,
                 field,
+                field,
                 self._scopeId,
                 field,
                 field,
+                field,
             ),
-        ) or {}
-
-        rawJsonTypes = row.get(
-            "jsonTypes"
         ) or []
 
-        if isinstance(rawJsonTypes, str):
-            rawJsonTypes = [
-                rawJsonTypes,
-            ]
-
         jsonTypes = {
-            str(jsonType).lower()
-            for jsonType in rawJsonTypes
-            if jsonType not in (
+            str(
+                row.get("json_type")
+                or ""
+            ).lower()
+            for row in rows
+            if row.get("json_type") not in (
                 None,
                 "",
             )
@@ -2900,12 +2900,12 @@ class PostgresqlSetRuntimeMapper:
             return None
 
         unsupportedTypes = (
-            jsonTypes
-            - {
-                "string",
-                "number",
-                "boolean",
-            }
+                jsonTypes
+                - {
+                    "string",
+                    "number",
+                    "boolean",
+                }
         )
 
         if unsupportedTypes:
@@ -2938,8 +2938,13 @@ class PostgresqlSetRuntimeMapper:
         elif jsonType == "boolean":
             valueType = "boolean"
 
-        elif row.get(
-                "hasFloatingNumber"
+        elif any(
+                bool(
+                    row.get(
+                        "has_floating_number"
+                    )
+                )
+                for row in rows
         ):
             valueType = "float"
 

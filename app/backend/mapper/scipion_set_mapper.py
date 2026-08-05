@@ -234,7 +234,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             scipionSet=scipionSet,
         )
 
-        itemSchema = self._getItemSchema(
+        itemSchema = self._getCompleteItemSchema(
             item,
             scipionSet=scipionSet,
             itemValues=itemValues,
@@ -291,7 +291,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             rootTableId
         )
 
-        itemSchema = self._getItemSchema(
+        itemSchema = self._getCompleteItemSchema(
             item,
             scipionSet=scipionSet,
         )
@@ -433,7 +433,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             tableId
         )
 
-        itemSchema = self._getItemSchema(
+        itemSchema = self._getCompleteItemSchema(
             item,
             scipionSet=parentSet,
         )
@@ -639,7 +639,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         itemIterator = iter(self._iterSetItems(scipionSet))
         firstItem = self._nextOrNone(itemIterator)
-        itemSchema = self._getItemSchema(firstItem, scipionSet=scipionSet) if firstItem is not None else {}
+        itemSchema = (
+            self._getCompleteItemSchema(
+                firstItem,
+                scipionSet=scipionSet,
+            )
+            if firstItem is not None
+            else {}
+        )
         itemClassName = self._getItemClassName(firstItem, itemSchema, scipionSet=scipionSet,)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
@@ -2758,7 +2765,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 )
 
         else:
-            childSchema = self._getItemSchema(
+            childSchema = self._getCompleteItemSchema(
                 firstChild,
                 scipionSet=parentItem,
             )
@@ -3405,8 +3412,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     def _getItemSchema(
             self,
             item: Any,
-            scipionSet: Optional[Any] = None,
-            itemValues: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         schema = self._getObjDict(
             item,
@@ -3422,6 +3427,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 self._getClassName(pointerAttribute),
                 None,
             )
+
+        return schema
+
+    def _getCompleteItemSchema(
+            self,
+            item: Any,
+            scipionSet: Optional[Any] = None,
+            itemValues: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        schema = self._getItemSchema(
+            item
+        )
 
         if itemValues is None:
             itemValues = self._getItemValues(

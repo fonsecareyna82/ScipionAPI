@@ -88,7 +88,7 @@ class DynamicFieldFakeDb(FakeDb):
 
         self.dynamicFieldQueries = []
 
-    def fetchOne(
+    def fetchAll(
             self,
             query,
             params=None,
@@ -98,9 +98,9 @@ class DynamicFieldFakeDb(FakeDb):
         )
 
         if (
-                'AS "jsonTypes"'
+                "AS json_type"
                 in normalizedQuery
-                and 'AS "fieldValues"'
+                and "AS has_floating_number"
                 in normalizedQuery
         ):
             field = str(
@@ -112,17 +112,15 @@ class DynamicFieldFakeDb(FakeDb):
                 "params": params,
             })
 
-            return dict(
-                self.fieldTypes.get(
+            return [
+                dict(row)
+                for row in self.fieldTypes.get(
                     field,
-                    {
-                        "jsonTypes": [],
-                        "hasFloatingNumber": False,
-                    },
+                    []
                 )
-            )
+            ]
 
-        return super().fetchOne(
+        return super().fetchAll(
             query,
             params,
         )
@@ -759,12 +757,12 @@ def test_UniqueSupportsTsIdWithoutStoredColumnMetadata():
             },
         ],
         fieldTypes={
-            "_tsId": {
-                "jsonTypes": [
-                    "string",
-                ],
-                "hasFloatingNumber": False,
-            },
+            "_tsId": [
+                {
+                    "json_type": "string",
+                    "has_floating_number": False,
+                },
+            ],
         },
     )
 
@@ -804,30 +802,30 @@ def test_UniqueDiscoversArbitraryTypedScalarFields():
             },
         ],
         fieldTypes={
-            "_micName": {
-                "jsonTypes": [
-                    "string",
+            "_micName": [
+                    {
+                        "json_type": "string",
+                        "has_floating_number": False,
+                    },
                 ],
-                "hasFloatingNumber": False,
-            },
-            "_samplingRate": {
-                "jsonTypes": [
-                    "number",
+            "_samplingRate": [
+                    {
+                        "json_type": "number",
+                        "has_floating_number": True,
+                    },
                 ],
-                "hasFloatingNumber": True,
-            },
-            "_enabledFlag": {
-                "jsonTypes": [
-                    "boolean",
+            "_enabledFlag": [
+                    {
+                        "json_type": "boolean",
+                        "has_floating_number": False,
+                    },
                 ],
-                "hasFloatingNumber": False,
-            },
-            "_index": {
-                "jsonTypes": [
-                    "number",
-                ],
-                "hasFloatingNumber": False,
-            },
+            "_index": [
+                {
+                    "json_type": "number",
+                    "has_floating_number": False,
+                },
+            ],
         },
     )
 
@@ -908,12 +906,12 @@ def test_DynamicScalarFieldTypeIsCachedWithinReadOperation():
             },
         ],
         fieldTypes={
-            "_samplingRate": {
-                "jsonTypes": [
-                    "number",
-                ],
-                "hasFloatingNumber": True,
-            },
+            "_samplingRate": [
+                {
+                    "json_type": "number",
+                    "has_floating_number": True,
+                },
+            ],
         },
     )
 
@@ -959,12 +957,12 @@ def test_DynamicComplexFieldFailsExplicitly():
     mapper = PostgresqlSetRuntimeMapper(
         db=DynamicFieldFakeDb(
             fieldTypes={
-                "_matrix": {
-                    "jsonTypes": [
-                        "array",
-                    ],
-                    "hasFloatingNumber": False,
-                },
+                "_matrix": [
+                    {
+                        "json_type": "array",
+                        "has_floating_number": False,
+                    },
+                ],
             },
         ),
         setId=31,
