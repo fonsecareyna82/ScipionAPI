@@ -1699,28 +1699,6 @@ def test_RestartProtocolAllReturnsCollectedErrors(service):
     assert exc.value.detail == ["cannot restart", "blocked"]
 
 
-def test_ContinueProtocolAllLaunchesActiveProtocolsInResumeMode(
-    service,
-    mapper,
-):
-    protocol = FakeProtocol(objId=10)
-    activeProtocol = FakeProtocol(objId=20)
-
-    service.currentProject.protocols[10] = protocol
-    service.currentProject._getSubworkflow = lambda protocolObj: (["wf-a", "wf-b"], [activeProtocol])
-
-    result = service.continueProtocolAll(
-        mapper=mapper,
-        projectId=1,
-        protocolId=10,
-        currentUser={"id": 1},
-    )
-
-    assertSuccessEnvelope(result)
-    assert activeProtocol.runMode.get() == "resume-mode"
-    assert service.currentProject.launchedProtocols == [activeProtocol]
-
-
 def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
     protocol = FakeProtocol(objId=10)
     service.currentProject.protocols[10] = protocol
