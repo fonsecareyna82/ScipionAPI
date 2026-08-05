@@ -819,6 +819,26 @@ class RuntimePostgresqlOutputSetAdapter:
 
         setClass = child.__class__
 
+        if not self._shouldRedirectSetClass(
+                setClass
+        ):
+            return child
+
+        if not child.isEmpty():
+            logger.debug(
+                "Keeping populated directly constructed "
+                "output Set on the existing persistence path. "
+                "projectId=%s protocolId=%s "
+                "outputName=%s setClass=%s size=%s",
+                self.projectId,
+                self.protocol.getObjId(),
+                outputName,
+                setClass.__name__,
+                child.getSize(),
+            )
+
+            return child
+
         capability = (
             self.runtimeMapper
             .getPostgresqlOutputSetCapability(

@@ -469,29 +469,55 @@ def test_InsertChildAdoptsDirectlyConstructedOutputSet():
     assert runtimeMapper.discarded == []
 
 
-def test_InsertChildAdoptsPopulatedDirectOutputSet():
-    class PopulatedOutputSetStub(OutputSetStub):
+def test_InsertChildKeepsPopulatedDirectOutputSetOnExistingPersistencePath():
+    class PopulatedOutputSetStub(
+            OutputSetStub
+    ):
         def isEmpty(self):
             return False
 
         def getSize(self):
             return 500
 
-    class DirectConstructorProtocolStub(ProtocolStub):
+    class DirectConstructorProtocolStub(
+            ProtocolStub
+    ):
         _possibleOutputs = {
-            "outputParticles": PopulatedOutputSetStub,
+            "outputParticles": (
+                PopulatedOutputSetStub
+            ),
         }
 
-    protocol = DirectConstructorProtocolStub()
-    runtimeMapper = RuntimeMapperStub()
+    protocol = (
+        DirectConstructorProtocolStub()
+    )
 
-    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
     adapter.install()
 
-    outputSet = PopulatedOutputSetStub()
-    originalIdentity = id(outputSet)
+    outputSet = (
+        PopulatedOutputSetStub()
+    )
 
-    protocol._insertChild("outputParticles", outputSet)
+    originalIdentity = id(
+        outputSet
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        outputSet,
+    )
 
     assert id(outputSet) == originalIdentity
 
@@ -502,14 +528,21 @@ def test_InsertChildAdoptsPopulatedDirectOutputSet():
         ),
     ]
 
-    assert len(runtimeMapper.created) == 1
-    assert runtimeMapper.created[0]["setClass"] is PopulatedOutputSetStub
-    assert runtimeMapper.created[0]["providedRuntimeSet"] is outputSet
-    assert runtimeMapper.created[0]["runtimeSet"] is outputSet
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+    assert runtimeMapper.replaced == []
 
-    assert len(runtimeMapper.finalized) == 1
-    assert runtimeMapper.finalized[0]["outputName"] == "outputParticles"
-    assert runtimeMapper.finalized[0]["runtimeSet"] is outputSet
+    assert (
+        adapter
+        ._finalizedSetsByOutputName
+        == {}
+    )
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
+    )
 
     adapter.uninstall()
 
@@ -592,27 +625,42 @@ def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
     assert runtimeMapper.discarded == []
 
 
-def test_InsertChildAdoptsUndeclaredWorkingSetWhenRegisteredAsOutput():
-    protocol = DeclaredOutputProtocolStub()
-    runtimeMapper = RuntimeMapperStub()
+def test_InsertChildKeepsUndeclaredWorkingSetOnExistingPersistencePath():
+    protocol = (
+        DeclaredOutputProtocolStub()
+    )
 
-    adapter = RuntimePostgresqlOutputSetAdapter(
-        runtimeMapper=runtimeMapper,
-        projectId=4,
-        protocol=protocol,
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
     )
 
     adapter.install()
 
-    workingSet = protocol._EMProtocol__createSet(
-        OutputSetStub,
-        "particles%s.sqlite",
-        "",
+    workingSet = (
+        protocol
+        ._EMProtocol__createSet(
+            OutputSetStub,
+            "particles%s.sqlite",
+            "",
+        )
     )
 
-    originalIdentity = id(workingSet)
+    originalIdentity = id(
+        workingSet
+    )
 
-    assert len(protocol.nativeCreated) == 1
+    assert len(
+        protocol.nativeCreated
+    ) == 1
+
     assert runtimeMapper.created == []
     assert runtimeMapper.finalized == []
 
@@ -630,20 +678,9 @@ def test_InsertChildAdoptsUndeclaredWorkingSetWhenRegisteredAsOutput():
         ),
     ]
 
-    assert len(runtimeMapper.created) == 1
-
-    createdSet = runtimeMapper.created[0]
-
-    assert createdSet["setClass"] is OutputSetStub
-    assert createdSet["providedRuntimeSet"] is workingSet
-    assert createdSet["runtimeSet"] is workingSet
-
-    assert len(runtimeMapper.finalized) == 1
-
-    finalizedSet = runtimeMapper.finalized[0]
-
-    assert finalizedSet["outputName"] == "outputParticles"
-    assert finalizedSet["runtimeSet"] is workingSet
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+    assert runtimeMapper.replaced == []
 
     adapter.uninstall()
 
@@ -1291,6 +1328,98 @@ def test_DeleteChildDelegatesForUnregisteredNativeSet():
 
     adapter.uninstall()
 
+
+def test_RepeatedPopulatedDirectOutputDefinitionsStayOnExistingPersistencePath():
+    class PopulatedOutputSetStub(
+            OutputSetStub
+    ):
+        def isEmpty(self):
+            return False
+
+        def getSize(self):
+            return 500
+
+    class StreamingProtocolStub(
+            ProtocolStub
+    ):
+        _possibleOutputs = {
+            "outputParticles": (
+                PopulatedOutputSetStub
+            ),
+        }
+
+    protocol = StreamingProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    firstSnapshot = (
+        PopulatedOutputSetStub()
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        firstSnapshot,
+    )
+
+    secondSnapshot = (
+        PopulatedOutputSetStub()
+    )
+
+    protocol._deleteChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
+    assert protocol.deleted == [
+        (
+            "outputParticles",
+            secondSnapshot,
+        ),
+    ]
+
+    assert protocol.inserted == [
+        (
+            "outputParticles",
+            firstSnapshot,
+        ),
+        (
+            "outputParticles",
+            secondSnapshot,
+        ),
+    ]
+
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+    assert runtimeMapper.replaced == []
+    assert runtimeMapper.discarded == []
+
+    assert (
+        adapter
+        ._finalizedSetsByOutputName
+        == {}
+    )
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
+    )
+
+    adapter.uninstall()
 
 
 
