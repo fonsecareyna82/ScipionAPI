@@ -89,9 +89,6 @@ class PostgresqlProject(ScipionProject):
     def getPostgresqlRuntimeMapper(self) -> Optional[PostgresqlRuntimeMapper]:
         return self._postgresqlRuntimeMapper
 
-    def usingPostgresqlRuntimeMapper(self) -> bool:
-        return isinstance(self.mapper, PostgresqlRuntimeMapper)
-
     def _updateProtocol(
             self,
             protocol: Protocol,

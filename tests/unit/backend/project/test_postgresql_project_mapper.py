@@ -69,6 +69,13 @@ def test_ConstructorDoesNotExposeReadFallback():
     assert "enableReadFallback" not in parameters
 
 
+def test_ProjectDoesNotExposeRuntimeMapperModeSwitch():
+    assert not hasattr(
+        PostgresqlProject,
+        "usingPostgresqlRuntimeMapper",
+    )
+
+
 def test_RuntimeOperationsDoNotDelegateToLegacyProject():
     methodNames = (
         "_updateProtocol",

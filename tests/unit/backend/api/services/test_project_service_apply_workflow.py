@@ -33,11 +33,6 @@ class FakePostgresqlProject:
         self.loadResult = loadResult
         self.loadCalls = []
 
-    def usingPostgresqlRuntimeMapper(self):
-        raise AssertionError(
-            "Workflow application must not inspect a runtime mapper mode switch"
-        )
-
     def loadProtocols(self, *args, **kwargs):
         assert args == ()
         self.loadCalls.append(kwargs)

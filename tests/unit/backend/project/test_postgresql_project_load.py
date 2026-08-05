@@ -82,7 +82,12 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
         loadAllConfig=False,
     )
 
-    assert project.usingPostgresqlRuntimeMapper()
+    assert project.mapper is project.getPostgresqlRuntimeMapper()
+    assert isinstance(
+        project.mapper,
+        module.PostgresqlRuntimeMapper,
+    )
+
     classes = project.mapper.dictClasses
 
     assert hasattr(classes, "items")
@@ -131,7 +136,11 @@ def test_PostgresqlProjectIgnoresExistingProjectSqlite(
     project._loadDb()
 
     assert sqlitePath.exists()
-    assert project.usingPostgresqlRuntimeMapper()
+    assert project.mapper is project.getPostgresqlRuntimeMapper()
+    assert isinstance(
+        project.mapper,
+        module.PostgresqlRuntimeMapper,
+    )
     assert not hasattr(project.mapper, "writeFallbackMapper")
 
     project.closeMapper()

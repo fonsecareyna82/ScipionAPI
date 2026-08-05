@@ -111,3 +111,28 @@ def test_AuditProjectDelegatesRuntimeCounts(monkeypatch):
     assert ".db.fetchAll(" not in source
     assert ".db.execute(" not in source
 
+
+def test_ImportAuditDoesNotExposeUnusedRuntimeAudits():
+    auditServiceClass = RuntimeProjectImportAuditService
+    classSource = inspect.getsource(
+        auditServiceClass
+    )
+
+    assert hasattr(
+        auditServiceClass,
+        "auditProject",
+    )
+    assert not hasattr(
+        auditServiceClass,
+        "auditLoadedProject",
+    )
+    assert not hasattr(
+        auditServiceClass,
+        "auditRuntimeProject",
+    )
+
+    assert "usingPostgresqlRuntimeMapper" not in classSource
+    assert "writeFallbackMapper" not in classSource
+    assert "project.sqlite" not in classSource
+
+
