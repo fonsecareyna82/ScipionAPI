@@ -131,6 +131,7 @@ class DeepNestedOutputSetStub(Set):
 class ProtocolStub:
     def __init__(self):
         self.inserted = []
+        self.deleted = []
         self.nativeCreated = []
 
     def getObjId(self):
@@ -158,6 +159,18 @@ class ProtocolStub:
             child,
     ):
         self.inserted.append(
+            (
+                key,
+                child,
+            )
+        )
+
+    def _deleteChild(
+            self,
+            key,
+            child,
+    ):
+        self.deleted.append(
             (
                 key,
                 child,
@@ -1168,22 +1181,32 @@ def test_RepeatedOutputDefinitionRefreshesExistingPostgresqlSet():
         firstSnapshot,
     )
 
-    firstSnapshot.isPostgresqlRuntimeOutput = (
-        lambda: True
-    )
-
-    protocol.outputParticles = (
-        firstSnapshot
+    assert (
+        adapter
+        ._finalizedSetsByOutputName[
+            "outputParticles"
+        ]
+        is firstSnapshot
     )
 
     secondSnapshot = (
         RepeatedOutputSetStub()
     )
 
+    # Reproduce Protocol._defineOutputs():
+    # delete the previous child first and then insert
+    # the newly generated output snapshot.
+    protocol._deleteChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
     protocol._insertChild(
         "outputParticles",
         secondSnapshot,
     )
+
+    assert protocol.deleted == []
 
     assert len(
         runtimeMapper.created
@@ -1212,13 +1235,63 @@ def test_RepeatedOutputDefinitionRefreshesExistingPostgresqlSet():
     ]
 
     assert (
-        protocol.outputParticles
+        adapter
+        ._finalizedSetsByOutputName[
+            "outputParticles"
+        ]
         is firstSnapshot
+    )
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
     )
 
     adapter.uninstall()
 
     assert runtimeMapper.discarded == []
+    assert adapter._createdSets == {}
+    assert adapter._finalizedSetsByOutputName == {}
+    assert adapter._pendingOutputSetReplacements == {}
+
+
+def test_DeleteChildDelegatesForUnregisteredNativeSet():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    workingSet = OutputSetStub()
+
+    protocol._deleteChild(
+        "workingSet",
+        workingSet,
+    )
+
+    assert protocol.deleted == [
+        (
+            "workingSet",
+            workingSet,
+        ),
+    ]
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
+    )
+
+    adapter.uninstall()
+
+
+
 
 
 

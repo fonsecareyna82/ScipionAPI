@@ -61,6 +61,10 @@ class RuntimePostgresqlOutputSetAdapter:
         "_createSet"
     )
 
+    DELETE_CHILD_ATTRIBUTE = (
+        "_deleteChild"
+    )
+
     INSERT_CHILD_ATTRIBUTE = (
         "_insertChild"
     )
@@ -95,6 +99,15 @@ class RuntimePostgresqlOutputSetAdapter:
         self._createdSets: Dict[
             int,
             Dict[str, Any],
+        ] = {}
+        self._finalizedSetsByOutputName: Dict[
+            str,
+            Any,
+        ] = {}
+
+        self._pendingOutputSetReplacements: Dict[
+            str,
+            Any,
         ] = {}
         self._declaredOutputSetClasses = (
             self._resolveDeclaredOutputSetClasses()
@@ -160,6 +173,7 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchSpaCreator()
         self._patchTomoCreator()
         self._patchDeclaredOutputClassCreators()
+        self._patchDeleteChild()
         self._patchInsertChild()
         logger.info(
             "Installed PostgreSQL output Set adapter. "
@@ -191,6 +205,9 @@ class RuntimePostgresqlOutputSetAdapter:
                         self.protocol.__dict__.pop(attributeName, None,)
 
                 self._patches.clear()
+                self._createdSets.clear()
+                self._finalizedSetsByOutputName.clear()
+                self._pendingOutputSetReplacements.clear()
                 self._installed = False
 
     def _patchSpaCreator(self) -> None:
@@ -572,6 +589,97 @@ class RuntimePostgresqlOutputSetAdapter:
             for parameter in parameters
         )
 
+    def _getRegisteredPostgresqlOutputSet(
+            self,
+            outputName: str,
+    ):
+        outputName = str(
+            outputName
+        )
+
+        runtimeSet = (
+            self
+            ._finalizedSetsByOutputName
+            .get(
+                outputName
+            )
+        )
+
+        if runtimeSet is not None:
+            return runtimeSet
+
+        existingOutput = getattr(
+            self.protocol,
+            outputName,
+            None,
+        )
+
+        if not self._isPostgresqlRuntimeOutputSet(
+                existingOutput
+        ):
+            return None
+
+        self._finalizedSetsByOutputName[
+            outputName
+        ] = existingOutput
+
+        return existingOutput
+
+    def _patchDeleteChild(self) -> None:
+        originalDeleteChild = getattr(
+            self.protocol,
+            self.DELETE_CHILD_ATTRIBUTE,
+            None,
+        )
+
+        if not callable(
+                originalDeleteChild
+        ):
+            raise RuntimeError(
+                "Protocol does not expose _deleteChild()."
+            )
+
+        adapter = self
+
+        def deleteChild(
+                protocolSelf,
+                key,
+                child,
+        ):
+            outputName = str(
+                key
+            )
+
+            existingOutput = (
+                adapter
+                ._getRegisteredPostgresqlOutputSet(
+                    outputName
+                )
+            )
+
+            if (
+                    isinstance(
+                        child,
+                        ScipionSet,
+                    )
+                    and existingOutput is not None
+            ):
+                adapter._pendingOutputSetReplacements[
+                    outputName
+                ] = existingOutput
+
+                return None
+
+            return originalDeleteChild(
+                key,
+                child,
+            )
+
+        self._patchMethod(
+            self.DELETE_CHILD_ATTRIBUTE,
+            deleteChild,
+        )
+
     def _patchInsertChild(self) -> None:
         originalInsertChild = getattr(
             self.protocol,
@@ -645,18 +753,27 @@ class RuntimePostgresqlOutputSetAdapter:
         if not isinstance(child, ScipionSet):
             return child
 
-        existingOutput = getattr(
-            self.protocol,
-            outputName,
-            None,
+        existingOutput = (
+            self
+            ._pendingOutputSetReplacements
+            .pop(
+                outputName,
+                None,
+            )
         )
 
-        if (
-                existingOutput is not child
-                and self._isPostgresqlRuntimeOutputSet(
-            existingOutput
-        )
-        ):
+        if existingOutput is None:
+            existingOutput = (
+                self
+                ._getRegisteredPostgresqlOutputSet(
+                    outputName
+                )
+            )
+
+        if existingOutput is child:
+            return child
+
+        if existingOutput is not None:
             legacyPath = None
 
             try:
@@ -686,6 +803,9 @@ class RuntimePostgresqlOutputSetAdapter:
                 pwutils.cleanPath(
                     legacyPath
                 )
+            self._finalizedSetsByOutputName[
+                outputName
+            ] = existingOutput
 
             return existingOutput
 
@@ -1087,6 +1207,14 @@ class RuntimePostgresqlOutputSetAdapter:
             outputName
         )
         entry["report"] = report
+        self._finalizedSetsByOutputName[
+            outputName
+        ] = child
+
+        self._pendingOutputSetReplacements.pop(
+            outputName,
+            None,
+        )
 
         logger.info(
             "Finalized native PostgreSQL output Set. "
