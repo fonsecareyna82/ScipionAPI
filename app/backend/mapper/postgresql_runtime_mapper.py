@@ -4226,6 +4226,187 @@ class PostgresqlRuntimeMapper(Mapper):
 
             raise
 
+    def replacePostgresqlOutputSetSnapshot(
+            self,
+            protocol,
+            outputName: str,
+            runtimeSet,
+            sourceSet,
+    ):
+        protocolDbId = self._resolveProtocolDbIdFromObject(
+            protocol
+        )
+
+        if protocolDbId is None:
+            raise RuntimeError(
+                "Cannot replace PostgreSQL output "
+                "without its owner protocol."
+            )
+
+        runtimeChecker = getattr(
+            runtimeSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if (
+                not callable(runtimeChecker)
+                or not runtimeChecker()
+        ):
+            raise TypeError(
+                "Existing protocol output is not "
+                "a PostgreSQL runtime Set."
+            )
+
+        runtimeObjectId = self._getObjId(
+            runtimeSet
+        )
+
+        if runtimeObjectId is None:
+            raise RuntimeError(
+                "Existing PostgreSQL output Set "
+                "does not have a runtime object id."
+            )
+
+        nativeSetClass = getattr(
+            runtimeSet,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        if not isinstance(nativeSetClass, type):
+            nativeSetClass = runtimeSet.getClass()
+
+        if not isinstance(sourceSet, nativeSetClass):
+            raise TypeError(
+                "Cannot replace PostgreSQL output %s "
+                "using Set class %s. Expected %s."
+                % (
+                    outputName,
+                    sourceSet.__class__.__name__,
+                    nativeSetClass.__name__,
+                )
+            )
+
+        originalSourceClass = sourceSet.__class__
+        originalSourceState = (
+            self._captureNativeSetAdoptionState(
+                sourceSet
+            )
+        )
+
+        try:
+            self._prepareNativeSetForPostgresqlSnapshot(
+                sourceSet
+            )
+
+            self._setObjId(
+                sourceSet,
+                runtimeObjectId,
+            )
+
+            sourceSet.setName(
+                outputName
+            )
+
+            sourceSet.setObjLabel(
+                outputName
+            )
+
+            sourceSet._objParentId = (
+                protocol.getObjId()
+            )
+
+            snapshotReport = self.setMapper.storeSet(
+                projectId=self.projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=sourceSet,
+                runtimeReserved=False,
+                replaceRuntimeOutput=True,
+            )
+
+            storedRuntimeObjectId = (
+                snapshotReport.get(
+                    "runtimeObjectId"
+                )
+            )
+
+            if (
+                    storedRuntimeObjectId is None
+                    or int(storedRuntimeObjectId)
+                    != int(runtimeObjectId)
+            ):
+                raise RuntimeError(
+                    "PostgreSQL output snapshot changed "
+                    "runtime identity. expected=%s actual=%s"
+                    % (
+                        runtimeObjectId,
+                        storedRuntimeObjectId,
+                    )
+                )
+
+            runtimeInfo = getattr(
+                runtimeSet,
+                "_postgresqlRuntimeInfo",
+                {},
+            )
+
+            expectedSetId = (
+                runtimeInfo.get("setId")
+                if isinstance(runtimeInfo, dict)
+                else None
+            )
+
+            storedSetId = snapshotReport.get(
+                "setId"
+            )
+
+            if (
+                    expectedSetId is not None
+                    and storedSetId is not None
+                    and int(storedSetId)
+                    != int(expectedSetId)
+            ):
+                raise RuntimeError(
+                    "PostgreSQL output snapshot changed "
+                    "Set identity. expected=%s actual=%s"
+                    % (
+                        expectedSetId,
+                        storedSetId,
+                    )
+                )
+
+            self._closeSetMapper(
+                sourceSet
+            )
+
+            if not self._updateSetFromPostgresql(
+                    runtimeSet
+            ):
+                raise RuntimeError(
+                    "Updated PostgreSQL output Set "
+                    "could not be refreshed in place. "
+                    "outputName=%s runtimeObjectId=%s"
+                    % (
+                        outputName,
+                        runtimeObjectId,
+                    )
+                )
+
+            runtimeSet.enablePostgresqlWrite()
+
+            return runtimeSet
+
+        except Exception:
+            self._restoreNativeSetAfterFailedAdoption(
+                runtimeSet=sourceSet,
+                originalClass=originalSourceClass,
+                originalState=originalSourceState,
+            )
+
+            raise
+
     def finalizePostgresqlOutputSet(
             self,
             protocol,

@@ -520,6 +520,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             batchSize: int = 1000,
             runtimeReserved: bool = False,
             reservationToken: Optional[str] = None,
+            replaceRuntimeOutput: bool = False,
     ) -> Dict[str, Any]:
         if not projectId:
             raise ValueError("projectId is required")
@@ -563,6 +564,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 and self._hasPostgresqlNativeOutputFlag(
             existingProperties
         )
+                and not replaceRuntimeOutput
         ):
             return self.finalizeRuntimeSetOutput(
                 projectId=projectId,
@@ -649,18 +651,46 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
         itemClassName = self._getItemClassName(firstItem, itemSchema, scipionSet=scipionSet,)
         columns = self._getSetColumns(itemSchema)
-        initialProperties = self._getSetProperties(scipionSet)
-        initialProperties["nestedTablesVersion"] = NESTED_LOGICAL_TABLES_VERSION
-        initialProperties["setPropertiesVersion"] = SET_PROPERTIES_VERSION
-        if runtimeReserved:
-            self._removePostgresqlRuntimeStorageProperties(initialProperties)
+        initialProperties = self._getSetProperties(
+            scipionSet
+        )
+
+        initialProperties[
+            "nestedTablesVersion"
+        ] = NESTED_LOGICAL_TABLES_VERSION
+
+        initialProperties[
+            "setPropertiesVersion"
+        ] = SET_PROPERTIES_VERSION
+
+        nativeRuntimeOutput = bool(
+            runtimeReserved
+            or replaceRuntimeOutput
+        )
+
+        if nativeRuntimeOutput:
+            self._removePostgresqlRuntimeStorageProperties(
+                initialProperties
+            )
 
             initialProperties.update({
-                "runtimeReserved": True,
                 "runtimeWritable": True,
                 "postgresqlNativeOutput": True,
+                "incremental": True,
+            })
+
+        if runtimeReserved:
+            initialProperties.update({
+                "runtimeReserved": True,
                 "provisionalOutputName": outputName,
                 "reservationToken": reservationToken,
+            })
+
+        elif replaceRuntimeOutput:
+            initialProperties.update({
+                "runtimeReserved": False,
+                "outputName": outputName,
+                "finalOutputName": outputName,
             })
 
         storedPaths: List[str] = []
@@ -669,8 +699,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "legacySetTable": True,
         }
 
-        if runtimeReserved:
-            rootTableProperties["runtimeWritable"] = True
+        if nativeRuntimeOutput:
+            rootTableProperties[
+                "runtimeWritable"
+            ] = True
         with self.db.transaction():
             rootObjectId = self._storeObjectNode(
                 projectId=projectId,

@@ -231,6 +231,7 @@ class RuntimeMapperStub:
         self.created = []
         self.finalized = []
         self.discarded = []
+        self.replaced = []
 
     def getPostgresqlOutputSetCapability(
             self,
@@ -320,6 +321,22 @@ class RuntimeMapperStub:
             "setId": 33,
             "outputName": outputName,
         }
+
+    def replacePostgresqlOutputSetSnapshot(
+            self,
+            protocol,
+            outputName,
+            runtimeSet,
+            sourceSet,
+    ):
+        self.replaced.append({
+            "protocol": protocol,
+            "outputName": outputName,
+            "runtimeSet": runtimeSet,
+            "sourceSet": sourceSet,
+        })
+
+        return runtimeSet
 
     def discardPostgresqlOutputSet(
             self,
@@ -1104,6 +1121,104 @@ def test_RealCapabilitySupportsFlatItems():
         "itemClassName": "ItemStub",
     }
 
+
+def test_RepeatedOutputDefinitionRefreshesExistingPostgresqlSet():
+    class RepeatedOutputSetStub(
+            OutputSetStub
+    ):
+        def isEmpty(self):
+            return False
+
+        def getSize(self):
+            return 10
+
+    class RepeatedOutputProtocolStub(
+            ProtocolStub
+    ):
+        _possibleOutputs = {
+            "outputParticles": (
+                RepeatedOutputSetStub
+            ),
+        }
+
+    protocol = (
+        RepeatedOutputProtocolStub()
+    )
+
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    firstSnapshot = (
+        RepeatedOutputSetStub()
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        firstSnapshot,
+    )
+
+    firstSnapshot.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    protocol.outputParticles = (
+        firstSnapshot
+    )
+
+    secondSnapshot = (
+        RepeatedOutputSetStub()
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
+    assert len(
+        runtimeMapper.created
+    ) == 1
+
+    assert len(
+        runtimeMapper.finalized
+    ) == 1
+
+    assert runtimeMapper.replaced == [{
+        "protocol": protocol,
+        "outputName": "outputParticles",
+        "runtimeSet": firstSnapshot,
+        "sourceSet": secondSnapshot,
+    }]
+
+    assert protocol.inserted == [
+        (
+            "outputParticles",
+            firstSnapshot,
+        ),
+        (
+            "outputParticles",
+            firstSnapshot,
+        ),
+    ]
+
+    assert (
+        protocol.outputParticles
+        is firstSnapshot
+    )
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
 
 
 

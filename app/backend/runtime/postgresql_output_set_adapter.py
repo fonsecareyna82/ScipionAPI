@@ -613,6 +613,30 @@ class RuntimePostgresqlOutputSetAdapter:
             insertChild,
         )
 
+    @staticmethod
+    def _isPostgresqlRuntimeOutputSet(
+            runtimeSet,
+    ) -> bool:
+        if not isinstance(
+                runtimeSet,
+                ScipionSet,
+        ):
+            return False
+
+        checker = getattr(
+            runtimeSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if not callable(checker):
+            return False
+
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+
     def _adoptDirectOutputSet(
             self,
             outputName: str,
@@ -620,6 +644,50 @@ class RuntimePostgresqlOutputSetAdapter:
     ):
         if not isinstance(child, ScipionSet):
             return child
+
+        existingOutput = getattr(
+            self.protocol,
+            outputName,
+            None,
+        )
+
+        if (
+                existingOutput is not child
+                and self._isPostgresqlRuntimeOutputSet(
+            existingOutput
+        )
+        ):
+            legacyPath = None
+
+            try:
+                legacyPath = child.getFileName()
+            except Exception:
+                pass
+
+            refreshedOutput = (
+                self.runtimeMapper
+                .replacePostgresqlOutputSetSnapshot(
+                    protocol=self.protocol,
+                    outputName=outputName,
+                    runtimeSet=existingOutput,
+                    sourceSet=child,
+                )
+            )
+
+            if refreshedOutput is not existingOutput:
+                raise RuntimeError(
+                    "Repeated PostgreSQL output update "
+                    "replaced runtime object identity. "
+                    "outputName=%s"
+                    % outputName
+                )
+
+            if legacyPath:
+                pwutils.cleanPath(
+                    legacyPath
+                )
+
+            return existingOutput
 
         if id(child) in self._createdSets:
             return child
