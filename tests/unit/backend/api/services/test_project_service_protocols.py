@@ -2690,7 +2690,11 @@ def test_LaunchProtocolScheduleResolvesPostgresqlProtocolId(
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
+def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(
+        service,
+        mapper,
+        monkeypatch,
+):
     protocolA = FakeProtocol(objId=10, className="ProtA")
     protocolB = FakeProtocol(objId=11, className="ProtB")
 
@@ -2701,9 +2705,11 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
     mapper.db.runtimeProtocolIdByDbId[501] = 11
 
     exportedProtocolLists = []
+    restoreCalls = []
 
     def fakeGetProtocolsJson(protocolList):
         exportedProtocolLists.append(protocolList)
+
         return [
             {
                 "protocol": "exported-a",
@@ -2713,7 +2719,21 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
             },
         ]
 
+    def fakeRestorePostgresqlRuntimePointersForProtocols(**kwargs):
+        restoreCalls.append(kwargs)
+
+        return {
+            "reports": [],
+            "errors": [],
+        }
+
     service.currentProject.getProtocolsJson = fakeGetProtocolsJson
+
+    monkeypatch.setattr(
+        service,
+        "_restorePostgresqlRuntimePointersForProtocols",
+        fakeRestorePostgresqlRuntimePointersForProtocols,
+    )
 
     class FakeExportPayload:
         includeUpstream = False
@@ -2727,6 +2747,22 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
     )
 
     assert exportedProtocolLists == [[protocolA, protocolB]]
+
+    assert restoreCalls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocols": [
+            protocolA,
+            protocolB,
+        ],
+        "prepareOutputsForLaunch": False,
+        "allowMissingParentOutputs": True,
+        "parentProtocolsById": {
+            "10": protocolA,
+            "11": protocolB,
+        },
+    }]
+
     assert result["sourceProjectId"] == 1
     assert result["protocolIds"] == ["500", "501"]
     assert result["workflow"] == [
