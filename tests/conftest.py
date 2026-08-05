@@ -867,6 +867,25 @@ class FakeProjectService:
         }
         return self.protocolsResult
 
+    def applyWorkflowToProject(
+            self,
+            mapper,
+            projectId,
+            workflowId,
+            currentUser,
+    ):
+        self.lastApplyWorkflowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "workflowId": workflowId,
+            "currentUser": currentUser,
+        }
+
+        if self.applyWorkflowError is not None:
+            raise self.applyWorkflowError
+
+        return self.applyWorkflowResult
+
     def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {
             "projectId": projectId,
