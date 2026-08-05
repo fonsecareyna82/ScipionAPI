@@ -101,19 +101,10 @@ class FakeCurrentProject:
             runtimeMapper
             or FakeRuntimeMapper()
         )
-        self.deleteCalls = []
         self.executionMirrorCleanupCalls = []
 
     def getPostgresqlRuntimeMapper(self):
         return self.runtimeMapper
-
-    def deleteProtocol(
-            self,
-            *protocols,
-    ):
-        self.deleteCalls.append(
-            list(protocols)
-        )
 
     def cleanupProtocolExecutionMirrors(
             self,
@@ -132,20 +123,7 @@ class FakeCurrentProject:
 
 
 class FakeFlatMapper:
-    def __init__(self):
-        self.deleteCalls = []
-
-    def deleteProtocol(
-            self,
-            projectId,
-            protocols,
-    ):
-        self.deleteCalls.append({
-            "projectId": int(projectId),
-            "protocols": list(
-                protocols
-            ),
-        })
+    pass
 
 
 def makeService(
@@ -639,16 +617,9 @@ def test_DeleteProtocolWiresPostgresqlCleanupWithoutProjectSqlite(
         "RuntimeProtocolDeleteService",
         FakeDeleteService,
     )
-    service._currentProjectUsesPostgresqlRuntimeMapper = (
-        lambda: True
-    )
     service._getScipionProtocolForRuntime = (
         lambda **kwargs: None
     )
-    service.syncProjectProtocolsAndDependencies = (
-        lambda *args, **kwargs: None
-    )
-
     result = service.deleteProtocol(
         mapper=mapper,
         projectId=1,
@@ -661,9 +632,13 @@ def test_DeleteProtocolWiresPostgresqlCleanupWithoutProjectSqlite(
         "status": 0,
         "errors": [],
     }
-    assert captured[
-        "usingPostgresqlRuntime"
-    ] is True
+    assert set(captured) == {
+        "mapper",
+        "projectId",
+        "protocols",
+        "getScipionProtocolForRuntimeCallback",
+        "cleanupPostgresqlRuntimeDeleteCallback",
+    }
     assert callable(
         captured[
             "cleanupPostgresqlRuntimeDeleteCallback"
@@ -681,3 +656,7 @@ def test_DeleteProtocolWiresPostgresqlCleanupWithoutProjectSqlite(
         .executionMirrorCleanupCalls
         == []
     )
+    assert "usingPostgresqlRuntime" not in captured
+    assert "currentProjectDeleteProtocolCallback" not in captured
+    assert "mapperDeleteProtocolCallback" not in captured
+    assert "syncProjectProtocolsAndDependenciesCallback" not in captured

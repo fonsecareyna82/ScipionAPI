@@ -409,11 +409,7 @@ class RuntimeProtocolDeleteService:
             mapper,
             projectId: int,
             protocols,
-            usingPostgresqlRuntime: bool,
             getScipionProtocolForRuntimeCallback,
-            currentProjectDeleteProtocolCallback,
-            mapperDeleteProtocolCallback,
-            syncProjectProtocolsAndDependenciesCallback,
             cleanupPostgresqlRuntimeDeleteCallback=None,
     ):
         try:
@@ -434,11 +430,7 @@ class RuntimeProtocolDeleteService:
                     detail="No valid protocols to delete",
                 )
 
-            protocolGraphRepository = (
-                ProtocolGraphRepository()
-                if usingPostgresqlRuntime
-                else None
-            )
+            protocolGraphRepository = ProtocolGraphRepository()
 
             blockedProtocols = self.buildBlockedProtocolReports(
                 mapper=mapper,
@@ -459,155 +451,104 @@ class RuntimeProtocolDeleteService:
                     },
                 )
 
-            deleteValidationInfo = None
-            selectedProtocolDbIds = []
-            selectedProtocolIds = []
-
-            if usingPostgresqlRuntime:
-                deletePreparationInfo = self.preparePostgresqlRuntimeProtocolDelete(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protList,
-                    protocolGraphRepository=protocolGraphRepository,
-                )
-
-                selectedProtocolDbIds = deletePreparationInfo.get("selectedProtocolDbIds") or []
-                missingPostgresqlProtocols = deletePreparationInfo.get("missingPostgresqlProtocols") or []
-                selectedProtocolIds = deletePreparationInfo.get("selectedProtocolIds") or []
-                deleteValidationInfo = deletePreparationInfo.get("deleteValidationInfo")
-
-                if missingPostgresqlProtocols:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "message": (
-                                "Some selected protocols exist in the execution runtime but "
-                                "were not found in PostgreSQL. Delete was aborted to avoid "
-                                "leaving the runtime graph inconsistent."
-                            ),
-                            "protocolIds": missingPostgresqlProtocols,
-                        },
-                    )
-
-                if deleteValidationInfo and deleteValidationInfo.get("blocked"):
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "message": (
-                                "The selected protocols cannot be deleted because there are "
-                                "downstream protocols outside the selection that are active "
-                                "or already have outputs. Select the full affected subworkflow "
-                                "or stop/reset the downstream protocols first."
-                            ),
-                            "blockedDescendants": (
-                                    deleteValidationInfo.get("externalDescendants") or []
-                            ),
-                        },
-                    )
-
-            if usingPostgresqlRuntime:
-                result = self.executePostgresqlRuntimeProtocolDelete(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=protList,
-                    protocolDbIds=selectedProtocolDbIds,
-                    protocolIds=selectedProtocolIds,
-                    protocolGraphRepository=protocolGraphRepository,
-                    deleteValidationInfo=deleteValidationInfo,
-                )
-
-                runtimeCleanup = None
-                cleanupErrors = []
-
-                if (
-                        cleanupPostgresqlRuntimeDeleteCallback
-                        is not None
-                ):
-                    try:
-                        runtimeCleanup = (
-                            cleanupPostgresqlRuntimeDeleteCallback(
-                                projectId=projectId,
-                                protocols=protList,
-                                deleteInfo=(
-                                    result.get(
-                                        "deleteInfo"
-                                    )
-                                    or {}
-                                ),
-                            )
-                        )
-
-                        cleanupErrors = list(
-                            (
-                                runtimeCleanup
-                                or {}
-                            ).get(
-                                "errors"
-                            )
-                            or []
-                        )
-
-                    except Exception as error:
-                        cleanupErrors = [{
-                            "error": str(
-                                error
-                            ),
-                        }]
-
-                        runtimeCleanup = {
-                            "postgresqlOnly": True,
-                            "usesProjectSqlite": False,
-                            "errors": (
-                                cleanupErrors
-                            ),
-                        }
-
-                result[
-                    "runtimeCleanup"
-                ] = runtimeCleanup
-
-                if cleanupErrors:
-                    result["status"] = 1
-                    result["errors"] = [
-                        (
-                            "Protocols were deleted from "
-                            "PostgreSQL, but runtime cleanup "
-                            "failed: %s"
-                            % cleanupError
-                        )
-                        for cleanupError
-                        in cleanupErrors
-                    ]
-
-                    result["message"] = (
-                        "Protocols were deleted from "
-                        "PostgreSQL, but filesystem "
-                        "cleanup was incomplete"
-                    )
-
-                return result
-
-                return result
-
-            currentProjectDeleteProtocolCallback(*protList)
-            mapperDeleteProtocolCallback(projectId, protList,)
-
-            syncInfo = syncProjectProtocolsAndDependenciesCallback(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
+            deletePreparationInfo = self.preparePostgresqlRuntimeProtocolDelete(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protList,
+                protocolGraphRepository=protocolGraphRepository,
             )
 
-            return {
-                "status": 0,
-                "message": "Protocol deleted successfully",
-                "protocolsCount": syncInfo.get("protocols"),
-                "dependenciesCount": syncInfo.get("dependencies"),
-            }
+            selectedProtocolDbIds = deletePreparationInfo.get("selectedProtocolDbIds") or []
+            missingPostgresqlProtocols = deletePreparationInfo.get("missingPostgresqlProtocols") or []
+            selectedProtocolIds = deletePreparationInfo.get("selectedProtocolIds") or []
+            deleteValidationInfo = deletePreparationInfo.get("deleteValidationInfo")
+
+            if missingPostgresqlProtocols:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "message": (
+                            "Some selected protocols exist in the execution runtime but "
+                            "were not found in PostgreSQL. Delete was aborted to avoid "
+                            "leaving the runtime graph inconsistent."
+                        ),
+                        "protocolIds": missingPostgresqlProtocols,
+                    },
+                )
+
+            if deleteValidationInfo and deleteValidationInfo.get("blocked"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": (
+                            "The selected protocols cannot be deleted because there are "
+                            "downstream protocols outside the selection that are active "
+                            "or already have outputs. Select the full affected subworkflow "
+                            "or stop/reset the downstream protocols first."
+                        ),
+                        "blockedDescendants": deleteValidationInfo.get("externalDescendants") or [],
+                    },
+                )
+
+            result = self.executePostgresqlRuntimeProtocolDelete(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=protList,
+                protocolDbIds=selectedProtocolDbIds,
+                protocolIds=selectedProtocolIds,
+                protocolGraphRepository=protocolGraphRepository,
+                deleteValidationInfo=deleteValidationInfo,
+            )
+
+            runtimeCleanup = None
+            cleanupErrors = []
+
+            if cleanupPostgresqlRuntimeDeleteCallback is not None:
+                try:
+                    runtimeCleanup = cleanupPostgresqlRuntimeDeleteCallback(
+                        projectId=projectId,
+                        protocols=protList,
+                        deleteInfo=result.get("deleteInfo") or {},
+                    )
+
+                    cleanupErrors = list(
+                        (runtimeCleanup or {}).get("errors") or []
+                    )
+
+                except Exception as error:
+                    cleanupErrors = [{
+                        "error": str(error),
+                    }]
+
+                    runtimeCleanup = {
+                        "postgresqlOnly": True,
+                        "usesProjectSqlite": False,
+                        "errors": cleanupErrors,
+                    }
+
+            result["runtimeCleanup"] = runtimeCleanup
+
+            if cleanupErrors:
+                result["status"] = 1
+                result["errors"] = [
+                    (
+                            "Protocols were deleted from PostgreSQL, but runtime cleanup "
+                            "failed: %s" % cleanupError
+                    )
+                    for cleanupError in cleanupErrors
+                ]
+                result["message"] = (
+                    "Protocols were deleted from PostgreSQL, but filesystem "
+                    "cleanup was incomplete"
+                )
+
+            return result
 
         except HTTPException:
             raise
 
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(error),
+            ) from error

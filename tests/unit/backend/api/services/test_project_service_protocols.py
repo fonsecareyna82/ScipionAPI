@@ -255,10 +255,8 @@ class FakeCurrentProject:
         self.launchedProtocols = []
         self.scheduledProtocols = []
         self.stoppedProtocols = []
-        self.deleteProtocolCalls = []
         self.restartWorkflowInjectedErrors = []
         self.resetWorkflowResult = []
-        self.failDeleteProtocol = None
         self.failResetWorkflow = None
 
     def getDomain(self):
@@ -291,11 +289,6 @@ class FakeCurrentProject:
 
     def stopProtocol(self, protocol):
         self.stoppedProtocols.append(protocol)
-
-    def deleteProtocol(self, *protocols):
-        if self.failDeleteProtocol is not None:
-            raise self.failDeleteProtocol
-        self.deleteProtocolCalls.append(list(protocols))
 
     def _getSubworkflow(self, protocol):
         return ["wf-a", "wf-b"], ["active-a"]
@@ -1695,43 +1688,6 @@ def test_DuplicateProtocolUsesPostgresqlRuntimeService(
     }
 
 
-def test_DeleteProtocolDelegatesToCurrentProjectAndMapper(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    service.deleteProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=["10", "11"],
-    )
-
-    assert service.currentProject.deleteProtocolCalls == [[protocolA, protocolB]]
-    assert mapper.deleteProtocolCalls == [
-        {
-            "projectId": 1,
-            "protocolList": [protocolA, protocolB],
-        }
-    ]
-
-
-def test_DeleteProtocolWrapsUnexpectedErrorAsHttpException(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.failDeleteProtocol = RuntimeError("delete failed")
-
-    with pytest.raises(HTTPException) as exc:
-        service.deleteProtocol(
-            mapper=mapper,
-            projectId=1,
-            protocols=["10"],
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "delete failed"
-
-
 def test_RestartProtocolAllReturnsCollectedErrors(service):
     protocol = FakeProtocol(objId=10)
     service.currentProject.protocols[10] = protocol
@@ -1819,40 +1775,6 @@ def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     assert service.currentProject.storedProtocols == [protocol]
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
-
-def test_DeleteProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        lambda mapper, projectId, refresh=False, checkPid=False: {
-            "protocols": 0,
-            "dependencies": 0,
-        },
-    )
-
-    result = service.deleteProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=["500", "501"],
-    )
-
-    assert result["status"] == 0
-    assert service.currentProject.deleteProtocolCalls == [[protocolA, protocolB]]
-    assert mapper.deleteProtocolCalls == [
-        {
-            "projectId": 1,
-            "protocolList": [protocolA, protocolB],
-        }
-    ]
 
 def test_StopProtocolResolvesPostgresqlProtocolIds(service, mapper):
     protocolA = FakeProtocol(objId=10)

@@ -6037,13 +6037,7 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            currentProjectDeleteProtocolCallback=self.currentProject.deleteProtocol,
-            mapperDeleteProtocolCallback=mapper.deleteProtocol,
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
-            ),
             cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
         )
 
