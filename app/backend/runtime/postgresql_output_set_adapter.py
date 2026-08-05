@@ -26,6 +26,7 @@
 import inspect
 import logging
 import os
+import threading
 import uuid
 from types import MethodType
 from typing import Any, Dict
@@ -109,62 +110,23 @@ class RuntimePostgresqlOutputSetAdapter:
             str,
             Any,
         ] = {}
-        self._declaredOutputSetClasses = (
-            self._resolveDeclaredOutputSetClasses()
-        )
+        self._pendingOutputMetadataSources: Dict[
+            str,
+            Any,
+        ] = {}
 
-    def _resolveDeclaredOutputSetClasses(
-            self,
-    ) -> set:
-        possibleOutputs = getattr(
-            self.protocol,
-            "_possibleOutputs",
-            None,
-        )
+        self._directRuntimeSetsByStorageKey: Dict[
+            tuple,
+            Any,
+        ] = {}
 
-        if not isinstance(possibleOutputs, dict):
-            return set()
+        self._directCanonicalSetsByAliasIdentity: Dict[
+            int,
+            Any,
+        ] = {}
 
-        declaredClasses = set()
-
-        for setClass in possibleOutputs.values():
-            if not isinstance(setClass, type):
-                continue
-
-            try:
-                if issubclass(setClass, ScipionSet):
-                    declaredClasses.add(setClass)
-
-            except TypeError:
-                continue
-
-        return declaredClasses
-
-    def _shouldRedirectSetClass(
-            self,
-            setClass,
-    ) -> bool:
-        """
-        Redirect declared output Sets to PostgreSQL.
-
-        Protocols without _possibleOutputs preserve the previous
-        behavior for backward compatibility.
-        """
-        if not self._declaredOutputSetClasses:
-            return True
-
-        if not isinstance(setClass, type):
-            return False
-
-        for declaredClass in self._declaredOutputSetClasses:
-            try:
-                if issubclass(setClass, declaredClass):
-                    return True
-
-            except TypeError:
-                continue
-
-        return False
+        self._directSetLoadPatch = None
+        self._directSetLock = threading.RLock()
 
     def install(self) -> None:
         if self._installed:
@@ -175,6 +137,7 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchDeclaredOutputClassCreators()
         self._patchDeleteChild()
         self._patchInsertChild()
+        self._patchDirectSetLoad()
         logger.info(
             "Installed PostgreSQL output Set adapter. "
             "projectId=%s protocolId=%s "
@@ -194,20 +157,36 @@ class RuntimePostgresqlOutputSetAdapter:
 
         try:
             self._discardUnfinalizedSets()
+
         finally:
+            self._restoreDirectSetLoad()
+
             try:
                 self._restoreDeclaredOutputClassCreators()
+
             finally:
-                for attributeName, patchInfo in reversed(list(self._patches.items())):
+                for attributeName, patchInfo in reversed(
+                        list(self._patches.items())
+                ):
                     if patchInfo["hadInstanceAttribute"]:
-                        setattr(self.protocol, attributeName, patchInfo["instanceValue"],)
+                        setattr(
+                            self.protocol,
+                            attributeName,
+                            patchInfo["instanceValue"],
+                        )
                     else:
-                        self.protocol.__dict__.pop(attributeName, None,)
+                        self.protocol.__dict__.pop(
+                            attributeName,
+                            None,
+                        )
 
                 self._patches.clear()
                 self._createdSets.clear()
                 self._finalizedSetsByOutputName.clear()
                 self._pendingOutputSetReplacements.clear()
+                self._pendingOutputMetadataSources.clear()
+                self._directRuntimeSetsByStorageKey.clear()
+                self._directCanonicalSetsByAliasIdentity.clear()
                 self._installed = False
 
     def _patchSpaCreator(self) -> None:
@@ -589,6 +568,219 @@ class RuntimePostgresqlOutputSetAdapter:
             for parameter in parameters
         )
 
+    def _patchDirectSetLoad(self) -> None:
+        if self._directSetLoadPatch is not None:
+            return
+
+        originalLoad = ScipionSet.load
+
+        existingOwner = getattr(
+            originalLoad,
+            "_postgresqlOutputSetAdapter",
+            None,
+        )
+
+        if (
+                existingOwner is not None
+                and existingOwner is not self
+        ):
+            raise RuntimeError(
+                "Scipion Set.load() is already patched by "
+                "another PostgreSQL output adapter."
+            )
+
+        adapter = self
+
+        def load(runtimeSet):
+            return adapter._loadDirectPostgresqlSet(
+                originalLoad=originalLoad,
+                runtimeSet=runtimeSet,
+            )
+
+        load._postgresqlOutputSetAdapter = self
+
+        self._directSetLoadPatch = {
+            "originalLoad": originalLoad,
+            "patchedLoad": load,
+        }
+
+        ScipionSet.load = load
+
+    def _restoreDirectSetLoad(self) -> None:
+        patchInfo = self._directSetLoadPatch
+
+        if patchInfo is None:
+            return
+
+        if ScipionSet.load is patchInfo["patchedLoad"]:
+            ScipionSet.load = patchInfo["originalLoad"]
+
+        self._directSetLoadPatch = None
+
+    def _getDirectSetStorageKey(
+            self,
+            runtimeSet,
+    ):
+        mapperPath = getattr(
+            runtimeSet,
+            "_mapperPath",
+            None,
+        )
+
+        if mapperPath is None or len(mapperPath) == 0:
+            return None
+
+        storagePath = str(
+            mapperPath[0]
+        ).strip()
+
+        if not storagePath:
+            return None
+
+        getWorkingDir = getattr(
+            self.protocol,
+            "getWorkingDir",
+            None,
+        )
+
+        if not callable(getWorkingDir):
+            return None
+
+        workingDir = str(
+            getWorkingDir()
+            or ""
+        ).strip()
+
+        if not workingDir:
+            return None
+
+        absoluteStoragePath = os.path.abspath(
+            os.path.normpath(
+                storagePath
+            )
+        )
+
+        absoluteWorkingDir = os.path.abspath(
+            os.path.normpath(
+                workingDir
+            )
+        )
+
+        try:
+            commonPath = os.path.commonpath([
+                absoluteStoragePath,
+                absoluteWorkingDir,
+            ])
+
+        except ValueError:
+            return None
+
+        if commonPath != absoluteWorkingDir:
+            return None
+
+        prefix = (
+            str(mapperPath[1]).strip()
+            if len(mapperPath) > 1
+            else ""
+        )
+
+        return (
+            runtimeSet.__class__,
+            absoluteStoragePath,
+            prefix,
+        )
+
+    def _loadDirectPostgresqlSet(
+            self,
+            originalLoad,
+            runtimeSet,
+    ):
+        storageKey = self._getDirectSetStorageKey(
+            runtimeSet
+        )
+
+        if storageKey is None:
+            return originalLoad(
+                runtimeSet
+            )
+
+        setClass = runtimeSet.__class__
+
+        capability = (
+            self.runtimeMapper
+            .getPostgresqlOutputSetCapability(
+                setClass
+            )
+        )
+
+        if not capability.get("supported"):
+            self._raiseUnsupportedOutputSet(
+                setClass=setClass,
+                creatorKind="direct-load",
+                capability=capability,
+            )
+
+        with self._directSetLock:
+            canonicalSet = (
+                self
+                ._directRuntimeSetsByStorageKey
+                .get(
+                    storageKey
+                )
+            )
+
+            if canonicalSet is None:
+                storagePath = storageKey[1]
+
+                # Delete only a stale artifact from an older
+                # execution. No SQLite file is opened or created.
+                pwutils.cleanPath(
+                    storagePath
+                )
+
+                canonicalSet = (
+                    self
+                    ._createPostgresqlRuntimeSet(
+                        setClass=setClass,
+                        constructorKwargs={},
+                        creatorKind="direct-load",
+                        creationMetadata={
+                            "storagePath": storagePath,
+                            "storagePrefix": storageKey[2],
+                        },
+                    )
+                )
+
+                self._directRuntimeSetsByStorageKey[
+                    storageKey
+                ] = canonicalSet
+
+            runtimeAlias = (
+                self.runtimeMapper
+                .bindPostgresqlOutputSetAlias(
+                    protocol=self.protocol,
+                    runtimeSet=runtimeSet,
+                    canonicalSet=canonicalSet,
+                )
+            )
+
+            if runtimeAlias is not runtimeSet:
+                raise RuntimeError(
+                    "PostgreSQL direct Set binding replaced "
+                    "constructor object identity. "
+                    "setClass=%s storagePath=%s"
+                    % (
+                        setClass.__name__,
+                        storageKey[1],
+                    )
+                )
+
+            self._directCanonicalSetsByAliasIdentity[
+                id(runtimeAlias)
+            ] = canonicalSet
+
+            return runtimeAlias
+
     def _getRegisteredPostgresqlOutputSet(
             self,
             outputName: str,
@@ -746,8 +938,26 @@ class RuntimePostgresqlOutputSetAdapter:
             outputName: str,
             child,
     ):
-        if not isinstance(child, ScipionSet):
-            return child
+        directCanonicalSet = (
+            self
+            ._directCanonicalSetsByAliasIdentity
+            .pop(
+                id(child),
+                None,
+            )
+        )
+
+        if directCanonicalSet is not None:
+            self._pendingOutputMetadataSources[
+                outputName
+            ] = child
+
+            self._pendingOutputSetReplacements.pop(
+                outputName,
+                None,
+            )
+
+            return directCanonicalSet
 
         existingOutput = (
             self
@@ -818,26 +1028,6 @@ class RuntimePostgresqlOutputSetAdapter:
             return child
 
         setClass = child.__class__
-
-        if not self._shouldRedirectSetClass(
-                setClass
-        ):
-            return child
-
-        if not child.isEmpty():
-            logger.debug(
-                "Keeping populated directly constructed "
-                "output Set on the existing persistence path. "
-                "projectId=%s protocolId=%s "
-                "outputName=%s setClass=%s size=%s",
-                self.projectId,
-                self.protocol.getObjId(),
-                outputName,
-                setClass.__name__,
-                child.getSize(),
-            )
-
-            return child
 
         capability = (
             self.runtimeMapper
@@ -1025,34 +1215,6 @@ class RuntimePostgresqlOutputSetAdapter:
             constructorKwargs,
             creatorKind: str,
     ):
-        if not self._shouldRedirectSetClass(
-                setClass
-        ):
-            logger.debug(
-                "Using native SQLite working Set. "
-                "projectId=%s protocolId=%s "
-                "protocolClass=%s setClass=%s creator=%s",
-                self.projectId,
-                self.protocol.getObjId(),
-                self.protocol.__class__.__name__,
-                getattr(
-                    setClass,
-                    "__name__",
-                    str(setClass),
-                ),
-                creatorKind,
-            )
-
-            return originalCreator(
-                setClass,
-                template,
-                suffix,
-                **dict(
-                    constructorKwargs
-                    or {}
-                ),
-            )
-
         capability = (
             self.runtimeMapper
             .getPostgresqlOutputSetCapability(
@@ -1061,25 +1223,20 @@ class RuntimePostgresqlOutputSetAdapter:
         )
 
         if not capability.get("supported"):
-            self._raiseUnsupportedOutputSet(setClass=setClass, creatorKind=creatorKind, capability=capability)
-
-        return (
-            self
-            ._createPostgresqlRuntimeSet(
+            self._raiseUnsupportedOutputSet(
                 setClass=setClass,
-                constructorKwargs=(
-                    constructorKwargs
-                ),
                 creatorKind=creatorKind,
-                creationMetadata={
-                    "template": str(
-                        template
-                    ),
-                    "suffix": str(
-                        suffix
-                    ),
-                },
+                capability=capability,
             )
+
+        return self._createPostgresqlRuntimeSet(
+            setClass=setClass,
+            constructorKwargs=constructorKwargs,
+            creatorKind=creatorKind,
+            creationMetadata={
+                "template": str(template),
+                "suffix": str(suffix),
+            },
         )
 
     def _createPostgresqlRuntimeSet(
@@ -1199,6 +1356,15 @@ class RuntimePostgresqlOutputSetAdapter:
         ):
             return
 
+        metadataSource = (
+            self
+            ._pendingOutputMetadataSources
+            .pop(
+                outputName,
+                None,
+            )
+        )
+
         entry = self._createdSets.get(
             id(child)
         )
@@ -1206,7 +1372,14 @@ class RuntimePostgresqlOutputSetAdapter:
         if entry is None:
             return
 
-        if entry["finalized"]:
+        alreadyFinalized = bool(
+            entry["finalized"]
+        )
+
+        if (
+                alreadyFinalized
+                and metadataSource is None
+        ):
             return
 
         report = (
@@ -1215,14 +1388,14 @@ class RuntimePostgresqlOutputSetAdapter:
                 protocol=self.protocol,
                 outputName=outputName,
                 runtimeSet=child,
+                metadataSource=metadataSource,
             )
         )
 
         entry["finalized"] = True
-        entry["outputName"] = (
-            outputName
-        )
+        entry["outputName"] = outputName
         entry["report"] = report
+
         self._finalizedSetsByOutputName[
             outputName
         ] = child
@@ -1231,6 +1404,25 @@ class RuntimePostgresqlOutputSetAdapter:
             outputName,
             None,
         )
+
+        if alreadyFinalized:
+            logger.debug(
+                "Refreshed native PostgreSQL output Set metadata. "
+                "projectId=%s protocolId=%s "
+                "runtimeObjectId=%s outputName=%s "
+                "setId=%s itemsCount=%s",
+                self.projectId,
+                self.protocol.getObjId(),
+                child.getObjId(),
+                outputName,
+                report.get("setId"),
+                (
+                    report.get("properties")
+                    or {}
+                ).get("itemsCount"),
+            )
+
+            return
 
         logger.info(
             "Finalized native PostgreSQL output Set. "
@@ -1241,9 +1433,7 @@ class RuntimePostgresqlOutputSetAdapter:
             self.protocol.getObjId(),
             child.getObjId(),
             outputName,
-            report.get(
-                "setId"
-            ),
+            report.get("setId"),
         )
 
     def _discardUnfinalizedSets(

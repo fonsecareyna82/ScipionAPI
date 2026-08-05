@@ -349,3 +349,100 @@ def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():
         ]
         == freshObjectId
     )
+
+
+def test_BindPostgresqlOutputSetAliasPreservesCanonicalStorage():
+    class ProtocolStub:
+        def getObjId(self):
+            return 17
+
+    class RuntimeSetFactoryStub:
+        def __init__(self):
+            self.promoted = []
+            self.built = []
+
+        def _promoteRuntimeSetInstance(
+                self,
+                runtimeSet,
+                nativeSetClass,
+        ):
+            self.promoted.append({
+                "runtimeSet": runtimeSet,
+                "nativeSetClass": nativeSetClass,
+            })
+
+            runtimeSet.isPostgresqlRuntimeOutput = (
+                lambda: True
+            )
+
+            runtimeSet._postgresqlNativeSetClass = (
+                nativeSetClass
+            )
+
+            return runtimeSet
+
+        def build(self, **kwargs):
+            self.built.append(
+                dict(kwargs)
+            )
+
+            return kwargs[
+                "runtimeSet"
+            ]
+
+    mapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 31
+    mapper.db = object()
+    mapper.dictClasses = CLASSES
+    mapper.runtimeSetFactory = (
+        RuntimeSetFactoryStub()
+    )
+
+    mapper._resolveProtocolDbIdFromObject = (
+        lambda protocol: 700
+    )
+
+    canonicalSet = SnapshotSet()
+    canonicalSet.setObjId(91)
+    canonicalSet.isPostgresqlRuntimeOutput = lambda: True
+    canonicalSet._postgresqlNativeSetClass = SnapshotSet
+    canonicalSet.getPostgresqlRuntimeInfo = lambda: {
+        "setId": 501,
+        "rootTableId": 601,
+        "runtimeObjectId": 91,
+        "outputName": "outputParticles",
+        "className": "SnapshotSet",
+        "setClassName": "SnapshotSet",
+        "itemClassName": "SnapshotItem",
+    }
+    canonicalSet.getPostgresqlRuntimeProperties = lambda: {
+        "itemsCount": 500,
+    }
+
+    runtimeAlias = SnapshotSet()
+    runtimeAlias.enablePostgresqlWrite = lambda: runtimeAlias
+
+    result = mapper.bindPostgresqlOutputSetAlias(
+        protocol=ProtocolStub(),
+        runtimeSet=runtimeAlias,
+        canonicalSet=canonicalSet,
+    )
+
+    assert result is runtimeAlias
+    assert runtimeAlias.getObjId() == 91
+
+    buildCall = (
+        mapper
+        .runtimeSetFactory
+        .built[0]
+    )
+
+    assert buildCall["runtimeSet"] is runtimeAlias
+    assert buildCall["cache"] is False
+    assert buildCall["outputInfo"]["setId"] == 501
+    assert buildCall["outputInfo"]["runtimeObjectId"] == 91
+
+

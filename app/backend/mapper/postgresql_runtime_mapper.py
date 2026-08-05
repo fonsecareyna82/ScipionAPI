@@ -3853,6 +3853,7 @@ class PostgresqlRuntimeMapper(Mapper):
             runtimeSet,
             originalClass,
             originalState=None,
+            reopenNative: bool = True,
     ) -> None:
         try:
             self._closeSetMapper(runtimeSet)
@@ -3908,6 +3909,8 @@ class PostgresqlRuntimeMapper(Mapper):
                 runtimeSet._postgresqlRuntimeParentRef = originalState["runtimeParentRef"]
 
         loadSet = getattr(runtimeSet, "load", None)
+        if not reopenNative:
+            return
 
         if callable(loadSet):
             try:
@@ -4226,6 +4229,169 @@ class PostgresqlRuntimeMapper(Mapper):
 
             raise
 
+    def bindPostgresqlOutputSetAlias(
+            self,
+            protocol,
+            runtimeSet,
+            canonicalSet,
+    ):
+        protocolDbId = self._resolveProtocolDbIdFromObject(
+            protocol
+        )
+
+        if protocolDbId is None:
+            raise RuntimeError(
+                "Cannot bind PostgreSQL Set alias "
+                "without its owner protocol."
+            )
+
+        canonicalChecker = getattr(
+            canonicalSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if (
+                not callable(canonicalChecker)
+                or not canonicalChecker()
+        ):
+            raise TypeError(
+                "Canonical direct Set is not a "
+                "PostgreSQL runtime output."
+            )
+
+        runtimeObjectId = self._getObjId(
+            canonicalSet
+        )
+
+        if runtimeObjectId is None:
+            raise RuntimeError(
+                "Canonical PostgreSQL Set does not "
+                "have a runtime object id."
+            )
+
+        canonicalInfo = (
+            canonicalSet
+            .getPostgresqlRuntimeInfo()
+        )
+
+        if not canonicalInfo.get("setId"):
+            raise RuntimeError(
+                "Canonical PostgreSQL Set does not "
+                "have a persisted set id."
+            )
+
+        nativeSetClass = getattr(
+            canonicalSet,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        if not isinstance(nativeSetClass, type):
+            nativeSetClass = canonicalSet.getClass()
+
+        if not isinstance(runtimeSet, nativeSetClass):
+            raise TypeError(
+                "Cannot bind direct PostgreSQL Set alias %s "
+                "to canonical class %s."
+                % (
+                    runtimeSet.__class__.__name__,
+                    nativeSetClass.__name__,
+                )
+            )
+
+        originalClass = runtimeSet.__class__
+        originalState = (
+            self
+            ._captureNativeSetAdoptionState(
+                runtimeSet
+            )
+        )
+
+        try:
+            self._closeSetMapper(
+                runtimeSet
+            )
+
+            self.runtimeSetFactory._promoteRuntimeSetInstance(
+                runtimeSet=runtimeSet,
+                nativeSetClass=nativeSetClass,
+            )
+
+            self._setObjId(
+                runtimeSet,
+                runtimeObjectId,
+            )
+
+            outputInfo = dict(
+                canonicalInfo
+            )
+
+            outputInfo.update({
+                "projectId": self.projectId,
+                "protocolDbId": protocolDbId,
+                "protocolId": protocol.getObjId(),
+                "runtimeObjectId": runtimeObjectId,
+                "properties": (
+                    canonicalSet
+                    .getPostgresqlRuntimeProperties()
+                ),
+            })
+
+            outputName = str(
+                outputInfo.get("outputName")
+                or canonicalSet.getObjName()
+                or ""
+            ).strip()
+
+            if not outputName:
+                raise RuntimeError(
+                    "Canonical PostgreSQL Set does not "
+                    "have an output name."
+                )
+
+            runtimeAlias = (
+                self.runtimeSetFactory
+                .build(
+                    db=self.db,
+                    parent=protocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    classes=getattr(
+                        self,
+                        "dictClasses",
+                        None,
+                    ),
+                    runtimeSet=runtimeSet,
+                    cache=False,
+                )
+            )
+
+            if runtimeAlias is not runtimeSet:
+                raise RuntimeError(
+                    "PostgreSQL Set alias binding "
+                    "replaced object identity."
+                )
+
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=runtimeAlias,
+                parent=protocol,
+            )
+
+            runtimeAlias.enablePostgresqlWrite()
+
+            return runtimeAlias
+
+        except Exception:
+            self._restoreNativeSetAfterFailedAdoption(
+                runtimeSet=runtimeSet,
+                originalClass=originalClass,
+                originalState=originalState,
+                reopenNative=False,
+            )
+
+            raise
+
     def replacePostgresqlOutputSetSnapshot(
             self,
             protocol,
@@ -4412,6 +4578,7 @@ class PostgresqlRuntimeMapper(Mapper):
             protocol,
             outputName: str,
             runtimeSet,
+            metadataSource=None,
     ) -> Dict[str, Any]:
         protocolDbId = (
             self
@@ -4424,6 +4591,36 @@ class PostgresqlRuntimeMapper(Mapper):
             raise RuntimeError(
                 "Cannot finalize PostgreSQL output "
                 "without its owner protocol."
+            )
+
+        persistenceSet = (
+            metadataSource
+            if metadataSource is not None
+            else runtimeSet
+        )
+
+        canonicalObjectId = self._getObjId(
+            runtimeSet
+        )
+
+        persistenceObjectId = self._getObjId(
+            persistenceSet
+        )
+
+        if (
+                canonicalObjectId is None
+                or persistenceObjectId is None
+                or int(canonicalObjectId)
+                != int(persistenceObjectId)
+        ):
+            raise RuntimeError(
+                "PostgreSQL output metadata source "
+                "does not share canonical runtime identity. "
+                "canonical=%s source=%s"
+                % (
+                    canonicalObjectId,
+                    persistenceObjectId,
+                )
             )
 
         runtimeInfo = getattr(
@@ -4469,6 +4666,35 @@ class PostgresqlRuntimeMapper(Mapper):
             protocol.getObjId()
         )
 
+        if persistenceSet is not runtimeSet:
+            persistenceSet.setName(
+                outputName
+            )
+
+            persistenceLabel = None
+
+            try:
+                persistenceLabel = (
+                    persistenceSet
+                    .getObjLabel()
+                )
+            except Exception:
+                pass
+
+            if not persistenceLabel:
+                persistenceSet.setObjLabel(
+                    outputName
+                )
+
+            persistenceSet._objParentId = (
+                protocol.getObjId()
+            )
+
+            setPostgresqlRuntimeParentReference(
+                runtimeObject=persistenceSet,
+                parent=protocol,
+            )
+
         setPostgresqlRuntimeParentReference(
             runtimeObject=runtimeSet,
             parent=protocol,
@@ -4480,7 +4706,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 projectId=self.projectId,
                 protocolDbId=protocolDbId,
                 outputName=outputName,
-                scipionSet=runtimeSet,
+                scipionSet=persistenceSet,
             )
         )
 
@@ -4494,6 +4720,41 @@ class PostgresqlRuntimeMapper(Mapper):
             )
             or {}
         )
+
+        if persistenceSet is not runtimeSet:
+            runtimeSize = getattr(
+                runtimeSet,
+                "_size",
+                None,
+            )
+
+            sizeSetter = getattr(
+                runtimeSize,
+                "set",
+                None,
+            )
+
+            if callable(sizeSetter):
+                sizeSetter(
+                    persistenceSet.getSize()
+                )
+
+            runtimeSet._idCount = getattr(
+                persistenceSet,
+                "_idCount",
+                getattr(
+                    runtimeSet,
+                    "_idCount",
+                    0,
+                ),
+            )
+
+            try:
+                runtimeSet.setStreamState(
+                    persistenceSet.getStreamState()
+                )
+            except Exception:
+                pass
 
         self.runtimeSetFactory._cacheRuntimeSet(
             runtimeSet
