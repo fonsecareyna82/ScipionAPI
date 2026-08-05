@@ -2693,6 +2693,78 @@ def test_RuntimeSetCloseWithoutMapperDoesNotAccessMaterializer():
     assert runtimeSet._mapper is None
 
 
+def test_RuntimeSetLoadHydratesPersistedSetProperties():
+    class RuntimeSetStub(
+            PostgresqlRuntimeSetMixin,
+            Set,
+    ):
+        ITEM_TYPE = Object
+
+        def __init__(self):
+            super().__init__()
+
+            self._samplingRate = Float()
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.properties = {}
+            self.closeCalls = 0
+
+        def count(self):
+            return 2000
+
+        def maxId(self):
+            return 2000
+
+        def getPropertyKeys(self):
+            return list(
+                self.properties
+            )
+
+        def getProperty(
+                self,
+                propertyName,
+                defaultValue=None,
+        ):
+            return self.properties.get(
+                propertyName,
+                defaultValue,
+            )
+
+        def close(self):
+            self.closeCalls += 1
+
+    mapper = RuntimeMapperStub()
+    runtimeSet = RuntimeSetStub()
+
+    runtimeSet._postgresqlRuntimeProperties = {
+        "_samplingRate": 1.5,
+    }
+
+    runtimeSet._postgresqlMapperFactory = (
+        lambda: mapper
+    )
+
+    runtimeSet._postgresqlWritable = False
+
+    runtimeSet.load()
+
+    assert runtimeSet.getSize() == 2000
+    assert runtimeSet._idCount == 2000
+    assert runtimeSet._samplingRate.get() == 1.5
+
+    mapper.properties[
+        "_samplingRate"
+    ] = 2.25
+
+    runtimeSet.close()
+    runtimeSet.load()
+
+    assert mapper.closeCalls == 1
+    assert runtimeSet._samplingRate.get() == 2.25
+
+
+
 
 
 
