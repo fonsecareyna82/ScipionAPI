@@ -62,6 +62,22 @@ POSTGRESQL_RUNTIME_STORAGE_PROPERTY_KEYS = (
     "materializedFileName",
 )
 
+RELATION_IDENTITY_FIELDS = (
+    (
+        "_tsId",
+        (
+            "getTsId",
+            "getTiltSeriesId",
+        ),
+    ),
+    (
+        "_tomoId",
+        (
+            "getTomoId",
+        ),
+    ),
+)
+
 
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
@@ -3404,6 +3420,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 None,
             )
 
+        self._addRelationIdentitySchema(
+            item=item,
+            schema=schema,
+        )
+
         return schema
 
     def _getItemValues(
@@ -3693,24 +3714,51 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     None,
                 )
 
+    def _addRelationIdentitySchema(
+            self,
+            item: Any,
+            schema: Dict[str, Any],
+    ) -> None:
+        for fieldName, getterNames in RELATION_IDENTITY_FIELDS:
+            if fieldName in schema:
+                continue
+
+            value = self._getFirstGetterValue(
+                item,
+                getterNames,
+            )
+
+            if value is None:
+                continue
+
+            schema[fieldName] = (
+                "String",
+                None,
+            )
+
     def _addRelationIdentityValues(
             self,
             item: Any,
             values: Dict[str, Any],
     ) -> None:
-        tsId = self._getFirstGetterValue(
-            item,
-            ("getTsId", "getTiltSeriesId"),
-        )
-        if tsId is not None and not values.get("_tsId"):
-            values["_tsId"] = self._toJsonValue(tsId)
+        for fieldName, getterNames in RELATION_IDENTITY_FIELDS:
+            if values.get(fieldName) not in (
+                    None,
+                    "",
+            ):
+                continue
 
-        tomoId = self._getFirstGetterValue(
-            item,
-            ("getTomoId",),
-        )
-        if tomoId is not None and not values.get("_tomoId"):
-            values["_tomoId"] = self._toJsonValue(tomoId)
+            value = self._getFirstGetterValue(
+                item,
+                getterNames,
+            )
+
+            if value is None:
+                continue
+
+            values[fieldName] = self._toJsonValue(
+                value
+            )
 
     def _getFirstGetterValue(
             self,

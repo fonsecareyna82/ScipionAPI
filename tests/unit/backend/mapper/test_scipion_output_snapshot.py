@@ -102,8 +102,71 @@ class FakeItem:
         return self.itemId
 
 
+class FakeRelationIdentityItem:
+    def getObjId(self):
+        return 7
+
+    def getObjDict(
+            self,
+            includeClass=False,
+    ):
+        if includeClass:
+            return {
+                "self": (
+                    "TiltSeries",
+                    None,
+                ),
+            }
+
+        return {}
+
+    def getTsId(self):
+        return "TS_001"
+
+    def getTomoId(self):
+        return "TOMO_001"
+
+
 class FakeSet:
     pass
+
+
+def test_RelationIdentityFieldsAreIncludedInItemSchema():
+    mapper = ScipionSetPostgresqlMapper(
+        RecordingDb()
+    )
+
+    item = FakeRelationIdentityItem()
+
+    schema = mapper._getItemSchema(
+        item
+    )
+
+    values = mapper._getItemValues(
+        item
+    )
+
+    columns = {
+        column["labelProperty"]: column
+        for column in mapper._getSetColumns(
+            schema
+        )
+    }
+
+    assert schema["_tsId"] == (
+        "String",
+        None,
+    )
+    assert schema["_tomoId"] == (
+        "String",
+        None,
+    )
+
+    assert values["_tsId"] == "TS_001"
+    assert values["_tomoId"] == "TOMO_001"
+
+    assert columns["_tsId"]["valueType"] == "text"
+    assert columns["_tomoId"]["valueType"] == "text"
 
 
 class SnapshotSetMapper(ScipionSetPostgresqlMapper):

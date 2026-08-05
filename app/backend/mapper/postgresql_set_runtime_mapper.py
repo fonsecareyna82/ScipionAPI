@@ -81,6 +81,11 @@ class PostgresqlSetRuntimeMapper:
         re.VERBOSE,
     )
 
+    RELATION_IDENTITY_FIELDS = frozenset({
+        "_tsId",
+        "_tomoId",
+    })
+
     def __init__(
             self,
             db,
@@ -2761,6 +2766,14 @@ class PostgresqlSetRuntimeMapper:
         )
 
         if column is None:
+            if field in self.RELATION_IDENTITY_FIELDS:
+                return (
+                    '"values" ->> %s',
+                    [
+                        field,
+                    ],
+                )
+
             raise ValueError(
                 "Unknown Scipion set item field: %s"
                 % field

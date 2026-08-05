@@ -692,6 +692,44 @@ def test_UniqueReturnsListForSingleAttribute():
     )
 
 
+def test_UniqueSupportsTsIdWithoutStoredColumnMetadata():
+    db = FakeDb(
+        rows=[
+            {
+                "value_0": "TS_001",
+            },
+            {
+                "value_0": "TS_002",
+            },
+        ]
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.unique(
+        "_tsId"
+    )
+
+    assert result == [
+        "TS_001",
+        "TS_002",
+    ]
+
+    assert (
+        '"values" ->> %s AS "value_0"'
+        in db.query
+    )
+
+    assert db.params == (
+        "_tsId",
+        31,
+    )
+
+
 def test_AggregateGroupsSetItemsByFilename():
     db = FakeDb(
         rows=[
