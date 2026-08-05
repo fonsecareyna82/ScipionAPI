@@ -32,6 +32,9 @@ from pyworkflow.object import (
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
+from app.backend.mapper.postgresql import (
+    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+)
 
 
 class SnapshotItem(Object):
@@ -153,3 +156,196 @@ def test_PostgresqlRuntimeSetIsNotReopened():
             "postgresql_runtime_set"
         ),
     }
+
+
+
+def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():
+    freshObjectId = (
+        POSTGRESQL_RUNTIME_OBJECT_ID_START
+        + 481
+    )
+
+    class ProtocolStub:
+        def getObjId(self):
+            return 17
+
+    class FlatMapperStub:
+        def __init__(self):
+            self.objectAllocationCalls = []
+
+        def allocateProjectObjectId(
+                self,
+                projectId,
+        ):
+            self.objectAllocationCalls.append(
+                int(projectId)
+            )
+
+            return freshObjectId
+
+    class SetMapperStub:
+        def __init__(self):
+            self.storedRuntimeObjectIds = []
+
+        def storeSet(
+                self,
+                *,
+                projectId,
+                protocolDbId,
+                outputName,
+                scipionSet,
+                runtimeReserved,
+                reservationToken,
+        ):
+            runtimeObjectId = (
+                scipionSet.getObjId()
+            )
+
+            self.storedRuntimeObjectIds.append(
+                runtimeObjectId
+            )
+
+            return {
+                "setId": 501,
+                "rootTableId": 601,
+                "rootObjectId": 701,
+                "runtimeObjectId": runtimeObjectId,
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+                "setClassName": "SnapshotSet",
+                "itemClassName": "SnapshotItem",
+                "properties": {},
+            }
+
+    class RuntimeSetFactoryStub:
+        def __init__(self):
+            self.buildCalls = []
+
+        def _promoteRuntimeSetInstance(
+                self,
+                *,
+                runtimeSet,
+                nativeSetClass,
+        ):
+            return runtimeSet
+
+        def build(
+                self,
+                *,
+                db,
+                parent,
+                outputName,
+                outputInfo,
+                classes,
+                runtimeSet,
+                cache,
+        ):
+            self.buildCalls.append({
+                "db": db,
+                "parent": parent,
+                "outputName": outputName,
+                "outputInfo": dict(
+                    outputInfo
+                ),
+                "classes": classes,
+                "runtimeSet": runtimeSet,
+                "cache": cache,
+            })
+
+            return runtimeSet
+
+    runtimeMapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    runtimeMapper.projectId = 31
+    runtimeMapper.db = object()
+    runtimeMapper.dictClasses = CLASSES
+    runtimeMapper.flatMapper = FlatMapperStub()
+    runtimeMapper.setMapper = SetMapperStub()
+    runtimeMapper.runtimeSetFactory = (
+        RuntimeSetFactoryStub()
+    )
+
+    outputSet = SnapshotSet()
+    outputSet.setObjId(
+        3_000_000_050
+    )
+
+    originalIdentity = id(
+        outputSet
+    )
+
+    def prepareNativeSet(runtimeSet):
+        # Simulate the SQLite mapper restoring its own
+        # internal root id when the Set is reopened.
+        runtimeSet.setObjId(
+            7
+        )
+
+        return {
+            "reopened": True,
+            "reason": (
+                "native_mapper_schema_initialized"
+            ),
+        }
+
+    runtimeMapper._prepareNativeSetForPostgresqlSnapshot = (
+        prepareNativeSet
+    )
+
+    outputSet.enablePostgresqlWrite = (
+        lambda: outputSet
+    )
+
+    result = (
+        runtimeMapper
+        ._adoptPopulatedPostgresqlOutputSet(
+            protocol=ProtocolStub(),
+            protocolDbId=700,
+            setClass=SnapshotSet,
+            provisionalOutputName=(
+                "__postgresql_runtime_output_test"
+            ),
+            reservationToken="test-token",
+            runtimeSet=outputSet,
+        )
+    )
+
+    assert result is outputSet
+    assert id(result) == originalIdentity
+    assert result.getObjId() == freshObjectId
+
+    assert (
+        runtimeMapper
+        .flatMapper
+        .objectAllocationCalls
+        == [
+            31,
+        ]
+    )
+
+    assert (
+        runtimeMapper
+        .setMapper
+        .storedRuntimeObjectIds
+        == [
+            freshObjectId,
+        ]
+    )
+
+    buildCall = (
+        runtimeMapper
+        .runtimeSetFactory
+        .buildCalls[0]
+    )
+
+    assert (
+        buildCall[
+            "outputInfo"
+        ][
+            "runtimeObjectId"
+        ]
+        == freshObjectId
+    )

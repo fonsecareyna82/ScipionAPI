@@ -3839,6 +3839,7 @@ class PostgresqlRuntimeMapper(Mapper):
     @staticmethod
     def _captureNativeSetAdoptionState(runtimeSet) -> Dict[str, Any]:
         return {
+            "objId": runtimeSet.getObjId(),
             "name": runtimeSet.getObjName(),
             "label": runtimeSet.getObjLabel(),
             "parentId": runtimeSet.getObjParentId(),
@@ -3891,6 +3892,13 @@ class PostgresqlRuntimeMapper(Mapper):
             runtimeSet.__dict__.pop(attributeName, None)
 
         if originalState is not None:
+            originalObjectId = originalState["objId"]
+
+            if originalObjectId is None:
+                runtimeSet.setObjId(None)
+            else:
+                self._setObjId(runtimeSet, originalObjectId)
+
             runtimeSet.setName(originalState["name"])
             runtimeSet.setObjLabel(originalState["label"])
             runtimeSet._objParentId = originalState["parentId"]
@@ -3921,13 +3929,17 @@ class PostgresqlRuntimeMapper(Mapper):
             reservationToken,
             runtimeSet,
     ):
-        runtimeObjectId = self._ensureObjId(runtimeSet)
         originalClass = runtimeSet.__class__
         originalState = self._captureNativeSetAdoptionState(runtimeSet)
         snapshotReport = None
+        runtimeObjectId = None
 
         try:
             self._prepareNativeSetForPostgresqlSnapshot(runtimeSet)
+
+            runtimeObjectId = self._assignFreshRuntimeObjectId(
+                runtimeSet
+            )
 
             snapshotReport = self.setMapper.storeSet(
                 projectId=self.projectId,
@@ -3937,6 +3949,23 @@ class PostgresqlRuntimeMapper(Mapper):
                 runtimeReserved=True,
                 reservationToken=reservationToken,
             )
+
+            storedRuntimeObjectId = snapshotReport.get(
+                "runtimeObjectId"
+            )
+
+            if (
+                    storedRuntimeObjectId is None
+                    or int(storedRuntimeObjectId) != runtimeObjectId
+            ):
+                raise RuntimeError(
+                    "PostgreSQL populated Set reservation changed "
+                    "runtime identity. expected=%s actual=%s"
+                    % (
+                        runtimeObjectId,
+                        storedRuntimeObjectId,
+                    )
+                )
 
             outputInfo = {
                 "setId": int(snapshotReport["setId"]),
@@ -3985,7 +4014,10 @@ class PostgresqlRuntimeMapper(Mapper):
                 originalState=originalState,
             )
 
-            if snapshotReport is not None:
+            if (
+                    snapshotReport is not None
+                    and runtimeObjectId is not None
+            ):
                 try:
                     self.setMapper.deleteStoredSetOutput(
                         projectId=self.projectId,
@@ -4090,9 +4122,14 @@ class PostgresqlRuntimeMapper(Mapper):
                 nativeSetClass=setClass,
             )
 
-        runtimeObjectId = self._ensureObjId(
-            runtimeSet
-        )
+        if originalRuntimeSetClass is None:
+            runtimeObjectId = self._ensureObjId(
+                runtimeSet
+            )
+        else:
+            runtimeObjectId = self._assignFreshRuntimeObjectId(
+                runtimeSet
+            )
 
         runtimeSet.setName(
             provisionalOutputName
@@ -4571,6 +4608,26 @@ class PostgresqlRuntimeMapper(Mapper):
     # ---------------------------------------------------------------------
     # Small utilities
     # ---------------------------------------------------------------------
+
+    def _assignFreshRuntimeObjectId(
+            self,
+            obj,
+    ) -> int:
+        allocator = getattr(
+            self.flatMapper,
+            "allocateProjectObjectId",
+            None,
+        )
+
+        if not callable(allocator):
+            raise RuntimeError(
+                "PostgresqlFlatMapper does not provide allocateProjectObjectId."
+            )
+
+        objId = int(allocator(self.projectId))
+        self._setObjId(obj, objId)
+
+        return objId
 
     def _ensureObjId(
             self,
