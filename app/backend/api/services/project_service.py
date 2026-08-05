@@ -5494,14 +5494,10 @@ class ProjectService:
             setToSave=setToSave,
             currentProject=self.currentProject,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
                 self.syncPostgresqlRuntimeProtocolInputsAndDependencies
-            ),
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
             ),
         )
 

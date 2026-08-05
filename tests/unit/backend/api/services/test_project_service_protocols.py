@@ -38,6 +38,9 @@ from app.backend.runtime.protocol_status_sync_service import (
 from app.backend.runtime.protocol_launch_service import (
     RuntimeProtocolLaunchService,
 )
+from app.backend.runtime.protocol_save_service import (
+    RuntimeProtocolSaveService,
+)
 
 
 class FakeValueHolder:
@@ -165,11 +168,45 @@ def patchRuntimePointerTypes(monkeypatch):
         FakePointerList,
     )
 
+def patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+):
+    syncCalls = []
+
+    def fakeSyncPostgresqlRuntimeInputsAndDependencies(
+            **kwargs,
+    ):
+        syncCalls.append(kwargs)
+
+        protocol = kwargs["protocol"]
+
+        return {
+            "protocolId": str(
+                protocol.getObjId()
+            ),
+            "inputs": 0,
+            "dependencies": 0,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+        fakeSyncPostgresqlRuntimeInputsAndDependencies,
+    )
+
+    return syncCalls
+
+
 def patchPostgresqlLaunchRuntime(
         monkeypatch,
         service,
         mapper,
 ):
+    patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
     monkeypatch.setattr(
         service,
         "_preparePostgresqlRuntimePointerOutputsForLaunch",
@@ -208,6 +245,28 @@ def patchPostgresqlLaunchRuntime(
             "params": {},
         },
         raising=False,
+    )
+    def fakeLaunchProtocol(protocol):
+        if protocol not in service.currentProject.storedProtocols:
+            service.currentProject.storedProtocols.append(protocol)
+
+        service.currentProject.launchedProtocols.append(protocol)
+
+    def fakeScheduleProtocol(protocol):
+        if protocol not in service.currentProject.storedProtocols:
+            service.currentProject.storedProtocols.append(protocol)
+
+        service.currentProject.scheduledProtocols.append(protocol)
+
+    monkeypatch.setattr(
+        service.currentProject,
+        "launchProtocol",
+        fakeLaunchProtocol,
+    )
+    monkeypatch.setattr(
+        service.currentProject,
+        "scheduleProtocol",
+        fakeScheduleProtocol,
     )
 
 
@@ -1328,51 +1387,81 @@ def test_CastParamValueSupportsPrimitiveTypes(monkeypatch):
     assert castValue(FakeCsvList(), "item") == ["item"]
 
 
-def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, service, mapper, monkeypatch):
+def test_SaveServiceHasNoLegacyRuntimePath():
+    signature = inspect.signature(
+        RuntimeProtocolSaveService.saveProtocol
+    )
+    classSource = inspect.getsource(
+        RuntimeProtocolSaveService
+    )
+
+    assert "usesPostgresqlRuntimeCallback" not in signature.parameters
+    assert "syncProjectProtocolsAndDependenciesCallback" not in signature.parameters
+    assert "usingPostgresqlRuntime" not in classSource
+    assert "_syncLegacyGraphAfterSaveIfNeeded" not in classSource
+    assert "_persistProtocolInScipion" not in classSource
+    assert "_persistProtocolInRuntime" in classSource
+
+
+def test_SaveProtocolCreatesNewProtocolAndSyncsPostgresqlInputs(
+        service,
+        mapper,
+        monkeypatch,
+):
     patchRuntimeParamCasting(
         monkeypatch
     )
-    monkeypatch.setattr(
+
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
         service,
-        "_buildProtocolContext",
-        lambda projectId, protocol: {
-            "projectId": projectId,
-            "protocolId": protocol.getObjId(),
-            "label": protocol._label,
-            "runName": protocol.runName.get(),
-            "comment": protocol._objComment.get(),
-        },
     )
 
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.setupProtocols:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {"protocols": len(service.currentProject.setupProtocols), "dependencies": 0}
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Save must not synchronize the legacy project graph"
+        )
 
     monkeypatch.setattr(
         service,
         "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+        failLegacyGraphSync,
     )
 
     def buildProtocol():
-        protocol = FakeProtocol(objId=None, className="ProtClass")
-        protocol.addParam("runName", FakeStringParam(label="Run name"))
-        protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+        protocol = FakeProtocol(
+            objId=None,
+            className="ProtClass",
+        )
+        protocol.addParam(
+            "runName",
+            FakeStringParam(
+                label="Run name"
+            ),
+        )
+        protocol.addParam(
+            "iterations",
+            FakeIntParam(
+                label="Iterations"
+            ),
+        )
+
         return protocol
 
     service.currentProject.protocolFactories["ProtClass"] = buildProtocol
+
+    params = {
+        "runName": "My protocol",
+        "iterations": "5",
+        "_objComment": "comment",
+    }
 
     protocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=None,
         protocolClassName="ProtClass",
-        params={
-            "runName": "My protocol",
-            "iterations": "5",
-            "_objComment": "comment",
-        },
+        params=params,
     )
 
     assert errors == []
@@ -1382,64 +1471,166 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
     assert protocol.attributeValues["runName"] == "My protocol"
     assert protocol.attributeValues["iterations"] == 5
     assert protocol._objComment.get() == "comment"
-    assert len(service.currentProject.setupProtocols) == 1
-    assert mapper.savedProtocolContexts == [
-        {
-            "projectId": 1,
-            "protocolId": 999,
-            "label": None,
-            "runName": "My protocol",
-            "comment": "comment",
-        }
+
+    assert service.currentProject.setupProtocols == [
+        protocol,
     ]
 
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["mapper"] is mapper
+    assert syncCalls[0]["projectId"] == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
 
-def test_SaveProtocolAggregatesValidationAndPointerErrors(projectServiceModule, service, mapper, monkeypatch):
+
+def test_SaveProtocolAggregatesValidationAndPointerErrors(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
     patchRuntimeParamCasting(
         monkeypatch
     )
 
-    protocol = FakeProtocol(objId=10, className="ProtClass")
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        className="ProtClass",
+    )
     protocol.addParam(
         "iterations",
-        FakeIntParam(label="Iterations", validationErrors=["must be greater than zero"]),
+        FakeIntParam(
+            label="Iterations",
+            validationErrors=[
+                "must be greater than zero",
+            ],
+        ),
     )
+
     service.currentProject.protocols[10] = protocol
-    mapper.dbProtocolsByProtocolId[(10, 1)] = {"id": 500, "protocolId": 10}
+    mapper.dbProtocolsByProtocolId[(10, 1)] = {
+        "id": 500,
+        "protocolId": 10,
+    }
 
     monkeypatch.setattr(
-        projectServiceModule
-        .RuntimeProtocolSaveService,
+        projectServiceModule.RuntimeProtocolSaveService,
         "applyPointerParamsToProtocol",
         lambda self, **kwargs: [
             "pointer error",
         ],
     )
 
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.storedProtocols:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {"protocols": len(service.currentProject.storedProtocols), "dependencies": 0}
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Save must not synchronize the legacy project graph"
+        )
 
     monkeypatch.setattr(
         service,
         "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+        failLegacyGraphSync,
     )
 
-    _, errors = service.saveProtocol(
+    params = {
+        "iterations": "3",
+    }
+
+    savedProtocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=10,
         protocolClassName="ProtClass",
-        params={"iterations": "3"},
+        params=params,
     )
 
+    assert savedProtocol is protocol
     assert errors == [
         "**Iterations** must be greater than zero",
         "pointer error",
     ]
-    assert len(service.currentProject.storedProtocols) == 1
+
+    assert service.currentProject.storedProtocols == [
+        protocol,
+    ]
+
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
+
+
+def test_SaveProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    params = {
+        "threshold": 0.5,
+    }
+
+    expectedProtocol = object()
+    expectedResult = (
+        expectedProtocol,
+        [],
+    )
+
+    saveCalls = []
+
+    class FakeSaveService:
+        def saveProtocol(
+                self,
+                **kwargs,
+        ):
+            saveCalls.append(kwargs)
+            return expectedResult
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolSaveService",
+        FakeSaveService,
+    )
+
+    result = service.saveProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params=params,
+        setToSave=True,
+    )
+
+    assert result is expectedResult
+    assert len(saveCalls) == 1
+
+    saveCall = saveCalls[0]
+
+    assert saveCall["mapper"] is mapper
+    assert saveCall["projectId"] == 1
+    assert saveCall["protocolId"] == 500
+    assert saveCall["protocolClassName"] == "ProtClass"
+    assert saveCall["params"] is params
+    assert saveCall["setToSave"] is True
+    assert saveCall["currentProject"] is service.currentProject
+
+    assert set(saveCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "protocolClassName",
+        "params",
+        "setToSave",
+        "currentProject",
+        "getScipionProtocolForRuntimeCallback",
+        "resolvePointerParentProtocolCallback",
+        "resolveParentOutputCallback",
+        "syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback",
+    }
 
 
 def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
@@ -2261,30 +2452,51 @@ def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypa
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
-    projectServiceModule,
-    service,
-    mapper,
-    monkeypatch,
+def test_SaveProtocolResolvesPostgresqlProtocolIdAndDefersPersistenceForLaunch(
+        service,
+        mapper,
+        monkeypatch,
 ):
-    patchRuntimeParamCasting(monkeypatch)
+    patchRuntimeParamCasting(
+        monkeypatch
+    )
 
-    protocol = FakeProtocol(objId=10, className="ProtClass")
-    protocol.addParam("runName", FakeStringParam(label="Run name"))
-    protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        className="ProtClass",
+    )
+    protocol.addParam(
+        "runName",
+        FakeStringParam(
+            label="Run name"
+        ),
+    )
+    protocol.addParam(
+        "iterations",
+        FakeIntParam(
+            label="Iterations"
+        ),
+    )
 
     service.currentProject.protocols[10] = protocol
     mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    params = {
+        "runName": "Edited protocol",
+        "iterations": "7",
+    }
 
     savedProtocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=500,
         protocolClassName="ProtClass",
-        params={
-            "runName": "Edited protocol",
-            "iterations": "7",
-        },
+        params=params,
         setToSave=False,
     )
 
@@ -2292,8 +2504,17 @@ def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
     assert savedProtocol is protocol
     assert protocol.runName.get() == "Edited protocol"
     assert protocol.attributeValues["iterations"] == 7
-    assert service.currentProject.storedProtocols == [protocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+
+    assert service.currentProject.storedProtocols == []
+
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
+
+    assert mapper.db.fetchOneCalls[0]["params"] == (
+        1,
+        500,
+    )
 
 
 def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
@@ -3163,5 +3384,3 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
         "300002.outputVolume",
         "300003.outputVolume",
     ]
-
-
