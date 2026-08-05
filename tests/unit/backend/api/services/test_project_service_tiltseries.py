@@ -422,13 +422,17 @@ def test_GetGeneratedSetOutputIdentityUsesPostgresqlOutputs(
                 "outputCoordinates",
             }
 
+    generatedSetHelpersModule = importlib.import_module(
+        "app.backend.api.services.project.core.generated_set_helpers"
+    )
+
     monkeypatch.setattr(
-        projectServiceModule,
+        generatedSetHelpersModule,
         "ProtocolIdentityResolver",
         FakeProtocolIdentityResolver,
     )
     monkeypatch.setattr(
-        projectServiceModule,
+        generatedSetHelpersModule,
         "RuntimeProtocolOutputPersistenceService",
         FakeOutputPersistenceService,
     )
@@ -585,8 +589,12 @@ def test_CreateWritableGeneratedPostgresqlSetReservesOutputWithoutSqlite(
         "app.backend.runtime.postgresql_runtime_set_factory"
     )
 
+    generatedSetHelpersModule = importlib.import_module(
+        "app.backend.api.services.project.core.generated_set_helpers"
+    )
+
     monkeypatch.setattr(
-        projectServiceModule,
+        generatedSetHelpersModule,
         "ProtocolIdentityResolver",
         FakeProtocolIdentityResolver,
     )

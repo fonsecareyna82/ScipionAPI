@@ -71,12 +71,6 @@ from app.backend.runtime.project_lifecycle_service import (
     RuntimeProjectLifecycleService,
 )
 
-try:
-    from pyworkflow.viewer import DESKTOP_TKINTER
-except Exception:
-    DESKTOP_TKINTER = None
-    findViewers=None
-
 logger = logging.getLogger(__name__)
 
 import os
@@ -93,7 +87,6 @@ from app.backend.mapper.postgresql import (
     POSTGRESQL_RUNTIME_OBJECT_ID_START,
     PostgresqlFlatMapper,
 )
-from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
 from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
@@ -139,6 +132,17 @@ from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
+from app.backend.api.services.project.core import (
+    external_viewers as _externalViewers,
+    fsc_preview as _fscPreview,
+    generated_set_helpers as _generatedSetHelpers,
+    object_manager_factory as _objectManagerFactory,
+    output_registration as _outputRegistration,
+    postgresql_viewer_errors as _postgresqlViewerErrors,
+    protocol_resolution as _protocolResolution,
+    scipion_object_helpers as _scipionObjectHelpers,
+    tags as _tags,
+)
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
@@ -236,18 +240,7 @@ class ProjectService:
         return thumbnailService
 
     def _currentProjectUsesPostgresqlRuntimeMapper(self) -> bool:
-        project = getattr(self, "currentProject", None)
-        if project is None:
-            return False
-
-        checker = getattr(project, "usingPostgresqlRuntimeMapper", None)
-        if callable(checker):
-            try:
-                return bool(checker())
-            except Exception:
-                return False
-
-        return isinstance(getattr(project, "mapper", None), PostgresqlRuntimeMapper)
+        return _protocolResolution.currentProjectUsesPostgresqlRuntimeMapper(self.currentProject)
 
     def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
                                       projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
@@ -293,12 +286,7 @@ class ProjectService:
         A new instance is returned on each call to avoid sharing
         SQLite connections across threads.
         """
-        objMgr = ObjectManager()
-        objMgr.registerDAO(ScipionSetsDAO)
-        objMgr.registerDAO(StarFile)
-        objMgr.registerReader(ScipionImageReader)
-        NumpyDao.addCompatibleFileType('cs')
-        return objMgr
+        return _objectManagerFactory.createObjectManager()
 
     def _getPreviewObjectManager(self) -> ObjectManager:
         """
@@ -313,191 +301,33 @@ class ProjectService:
         """
         Convert Scipion/Python values into JSON-safe preview values.
         """
-        if value is None:
-            return None
-
-        if isinstance(value, (str, int, float, bool)):
-            if isinstance(value, str) and len(value) > 240:
-                return value[:240] + "..."
-            return value
-
-        if isinstance(value, (list, tuple)):
-            return [self._safeScipionValue(v) for v in value[:20]]
-
-        if isinstance(value, dict):
-            return {
-                str(k): self._safeScipionValue(v)
-                for k, v in list(value.items())[:30]
-            }
-
-        try:
-            text = str(value)
-            return text[:240] + "..." if len(text) > 240 else text
-        except Exception:
-            return repr(value)
+        return _scipionObjectHelpers.safeScipionValue(value)
 
     def _tryReadScipionSetWithObjectManager(self, filePath: FsPath) -> Optional[Any]:
         """
         Try several ObjectManager entry points because different metadata
         viewer versions expose slightly different method names.
         """
-        objMgr = self._getPreviewObjectManager()
-        fileName = str(filePath)
-
-        candidateCalls = [
-            ("read", (fileName,)),
-            ("load", (fileName,)),
-            ("open", (fileName,)),
-            ("getObject", (fileName,)),
-            ("getDataObject", (fileName,)),
-            ("getDataObjects", (fileName,)),
-        ]
-
-        lastError = None
-
-        for methodName, args in candidateCalls:
-            method = getattr(objMgr, methodName, None)
-            if method is None:
-                continue
-
-            try:
-                result = method(*args)
-                if result is not None:
-                    if isinstance(result, (list, tuple)) and result:
-                        return result[0]
-                    return result
-            except Exception as exc:
-                lastError = exc
-
-        if lastError is not None:
-            logger.debug(
-                "Could not read Scipion sqlite with ObjectManager. file=%s error=%s",
-                fileName,
-                lastError,
-            )
-
-        return None
+        return _objectManagerFactory.tryReadScipionSetWithObjectManager(filePath)
 
     def _extractScipionSetPreviewInfo(self, obj: Any) -> Dict[str, Any]:
         """
         Build a compact preview payload from a Scipion set-like object.
         """
-        objectClass = obj.__class__.__name__ if obj is not None else None
-
-        objectCount = None
-        for methodName in ("getSize", "__len__"):
-            try:
-                if methodName == "__len__":
-                    objectCount = len(obj)
-                else:
-                    method = getattr(obj, methodName, None)
-                    if method is not None:
-                        objectCount = int(method())
-                if objectCount is not None:
-                    break
-            except Exception:
-                pass
-
-        summary: list[Dict[str, Any]] = []
-
-        if objectClass:
-            summary.append({"key": "Object class", "value": objectClass})
-        if objectCount is not None:
-            summary.append({"key": "Items", "value": objectCount})
-
-        scalarMethods = [
-            ("Sampling rate", "getSamplingRate"),
-            ("Dimensions", "getDimensions"),
-            ("First item", "getFirstItem"),
-            ("File name", "getFileName"),
-        ]
-
-        for label, methodName in scalarMethods:
-            try:
-                method = getattr(obj, methodName, None)
-                if method is None:
-                    continue
-                value = method()
-                safeValue = self._safeScipionValue(value)
-                if safeValue not in (None, ""):
-                    summary.append({"key": label, "value": safeValue})
-            except Exception:
-                pass
-
-        sampleRows = []
-        sampleColumns: list[str] = []
-
-        try:
-            iterator = iter(obj)
-            for index, item in enumerate(iterator):
-                if index >= 10:
-                    break
-
-                row = self._buildScipionItemPreviewRow(item)
-                if row:
-                    for key in row.keys():
-                        if key not in sampleColumns:
-                            sampleColumns.append(key)
-                    sampleRows.append(row)
-        except Exception:
-            pass
-
-        return {
-            "objectClass": objectClass,
-            "objectCount": objectCount,
-            "summary": summary,
-            "sample": {
-                "columns": sampleColumns,
-                "rows": sampleRows,
-            },
-        }
+        return _objectManagerFactory.extractScipionSetPreviewInfo(obj)
 
     def _buildScipionItemPreviewRow(self, item: Any) -> Dict[str, Any]:
         """
         Build a compact preview row for one Scipion object item.
         """
-        row: Dict[str, Any] = {}
-
-        candidates = [
-            ("id", "getObjId"),
-            ("class", "getClassName"),
-            ("fileName", "getFileName"),
-            ("index", "getIndex"),
-            ("enabled", "isEnabled"),
-            ("samplingRate", "getSamplingRate"),
-            ("dimensions", "getDimensions"),
-        ]
-
-        for key, methodName in candidates:
-            try:
-                method = getattr(item, methodName, None)
-                if method is None:
-                    continue
-                value = method()
-                row[key] = self._safeScipionValue(value)
-            except Exception:
-                pass
-
-        if not row:
-            try:
-                row["value"] = self._safeScipionValue(item)
-            except Exception:
-                pass
-
-        return row
+        return _objectManagerFactory.buildScipionItemPreviewRow(item)
 
     def _inspectScipionSqliteDatabase(self, filePath: FsPath) -> Optional[Dict[str, Any]]:
         """
         Inspect a Scipion SQLite object database using the metadata viewer
         ObjectManager when possible.
         """
-        obj = self._tryReadScipionSetWithObjectManager(filePath)
-        if obj is None:
-            return None
-
-        info = self._extractScipionSetPreviewInfo(obj)
-        info["reader"] = "ObjectManager"
-        return info
+        return _objectManagerFactory.inspectScipionSqliteDatabase(filePath)
 
     @staticmethod
     def sanitizeProjectName(rawName: str) -> str:
@@ -871,47 +701,22 @@ class ProjectService:
         return project
 
     def _shouldRegisterProtocolOutputs(self, protocol: Any) -> bool:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
-        return runtimeProtocolOutputPersistenceService.shouldRegisterProtocolOutputs(
-            protocol=protocol,
-        )
+        return _outputRegistration.shouldRegisterProtocolOutputs(protocol)
 
     def _safeCall(self, obj: Any, methodName: str, default: Any = None) -> Any:
-        try:
-            method = getattr(obj, methodName, None)
-            if method is None:
-                return default
-            return method()
-        except Exception:
-            return default
+        return _scipionObjectHelpers.safeCall(obj, methodName, default)
 
     def _getScipionClassName(self, obj: Any) -> Optional[str]:
-        if obj is None:
-            return None
-
-        className = self._safeCall(obj, "getClassName", None)
-        if className:
-            return str(className)
-
-        return obj.__class__.__name__
+        return _scipionObjectHelpers.getScipionClassName(obj)
 
     def _getScipionObjectId(self, obj: Any) -> Optional[Any]:
-        return self._safeCall(obj, "getObjId", None)
+        return _scipionObjectHelpers.getScipionObjectId(obj)
 
     def _isPersistableNonSetOutput(self, outputObj: Any) -> bool:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
-        return runtimeProtocolOutputPersistenceService.isPersistableNonSetOutput(
-            outputObj=outputObj,
-        )
+        return _outputRegistration.isPersistableNonSetOutput(outputObj)
 
     def _isScipionSetLikeOutput(self, outputObj: Any) -> bool:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
-        return runtimeProtocolOutputPersistenceService.isScipionSetLikeOutput(
-            outputObj=outputObj,
-        )
+        return _outputRegistration.isScipionSetLikeOutput(outputObj)
 
     # ------------------------------------------------------------------
     # Scipion runtime protocol resolution
@@ -922,88 +727,24 @@ class ProjectService:
             projectId: int,
             protocolId,
     ) -> Optional[int]:
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        )
-
-        return protocolIdentityResolver.resolveScipionProtocolId(protocolId)
+        return _protocolResolution.resolveScipionProtocolId(mapper, projectId, protocolId)
 
     def _getScipionProtocolByRuntimeId(
             self,
             protocolId: Union[int, str],
             logFailure: bool = True,
     ):
-        if self.currentProject is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No current Scipion project loaded",
-            )
-
-        try:
-            runtimeMapper = getattr(
-                self.currentProject,
-                "mapper",
-                None,
-            )
-            selectRuntimeProtocol = getattr(
-                runtimeMapper,
-                "selectRuntimeProtocolById",
-                None,
-            )
-
-            if callable(selectRuntimeProtocol):
-                protocol = selectRuntimeProtocol(
-                    int(protocolId)
-                )
-            else:
-                protocol = self.currentProject.getProtocol(
-                    int(protocolId)
-                )
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logMessage = (
-                "Failed to load protocol from currentProject. "
-                "protocolId=%s currentProject=%s mapper=%s"
-            )
-
-            logArgs = (
-                protocolId,
-                type(self.currentProject),
-                type(getattr(self.currentProject, "mapper", None)),
-            )
-
-            if logFailure:
-                logger.exception(logMessage, *logArgs)
-            else:
-                logger.debug(logMessage, *logArgs)
-
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
-            )
-
-        if protocol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in Scipion runtime: {protocolId}",
-            )
-
-        return protocol
+        return _protocolResolution.getScipionProtocolByRuntimeId(
+            self.currentProject,
+            protocolId,
+            logFailure=logFailure,
+        )
 
     def _tryGetScipionProtocolByRuntimeId(
             self,
             protocolId: Union[int, str],
     ):
-        try:
-            return self._getScipionProtocolByRuntimeId(
-                protocolId,
-                logFailure=False,
-            )
-        except Exception:
-            return None
+        return _protocolResolution.tryGetScipionProtocolByRuntimeId(self.currentProject, protocolId)
 
     def _getScipionProtocolForRuntime(
             self,
@@ -1011,13 +752,12 @@ class ProjectService:
             projectId: Optional[int],
             protocolId: Union[int, str],
     ):
-        scipionProtocolId = self._resolveScipionProtocolId(
+        return _protocolResolution.getScipionProtocolForRuntime(
+            self.currentProject,
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
-
-        return self._getScipionProtocolByRuntimeId(scipionProtocolId)
 
     def _tryGetScipionProtocolForRuntime(
             self,
@@ -1025,20 +765,12 @@ class ProjectService:
             projectId: Optional[int],
             protocolId: Union[int, str],
     ):
-        try:
-            scipionProtocolId = self._resolveScipionProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-            return self._getScipionProtocolByRuntimeId(
-                scipionProtocolId,
-                logFailure=False,
-            )
-
-        except Exception:
-            return None
+        return _protocolResolution.tryGetScipionProtocolForRuntime(
+            self.currentProject,
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
 
     def _resolvePostgresqlProtocolDbId(
             self,
@@ -1046,12 +778,7 @@ class ProjectService:
             projectId: int,
             protocolId,
     ) -> Optional[int]:
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        )
-
-        return protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+        return _protocolResolution.resolvePostgresqlProtocolDbId(mapper, projectId, protocolId)
 
     def _raisePostgresqlViewerUnavailable(
             self,
@@ -1062,29 +789,13 @@ class ProjectService:
             reason: Optional[str] = None,
             **extra,
     ) -> None:
-        extraText = " ".join(
-            "%s=%s" % (key, value)
-            for key, value in extra.items()
-            if value is not None
-        )
-
-        logger.warning(
-            "%s output is not available in PostgreSQL metadata. projectId=%s protocolId=%s outputName=%s reason=%s %s",
-            viewerName,
-            projectId,
-            protocolId,
-            outputName,
-            reason,
-            extraText,
-        )
-
-        detail = "%s output is not available in PostgreSQL metadata" % viewerName
-        if reason:
-            detail = "%s: %s" % (detail, reason)
-
-        raise HTTPException(
-            status_code=404,
-            detail=detail,
+        _postgresqlViewerErrors.raisePostgresqlViewerUnavailable(
+            viewerName=viewerName,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            reason=reason,
+            **extra,
         )
 
     def _resolvePostgresqlReaderProtocolId(
@@ -1110,50 +821,13 @@ class ProjectService:
             protocol,
             outputPrefix: str,
     ) -> Dict[str, Any]:
-        if mapper is None:
-            return {
-                "outputName": protocol.getNextOutputName(outputPrefix),
-                "outputSuffix": str(protocol.getOutputsSize()),
-                "protocolDbId": None,
-            }
-
-        protocolIdentityResolver = ProtocolIdentityResolver(
+        return _generatedSetHelpers.getGeneratedSetOutputIdentity(
             mapper=mapper,
             projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix=outputPrefix,
         )
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
-            )
-
-        outputNames = RuntimeProtocolOutputPersistenceService().loadPersistedProtocolOutputNames(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
-        )
-
-        maxCounter = -1
-
-        for attributeName in outputNames:
-            nameSuffix = str(attributeName).replace(outputPrefix, "")
-
-            try:
-                counter = int(nameSuffix)
-            except (TypeError, ValueError):
-                counter = 1
-
-            maxCounter = max(counter, maxCounter)
-
-        nextNameSuffix = str(maxCounter + 1) if maxCounter > 0 else ""
-
-        return {
-            "outputName": outputPrefix + nextNameSuffix,
-            "outputSuffix": str(len(outputNames)),
-            "protocolDbId": int(protocolDbId),
-        }
 
     def _createWritableGeneratedPostgresqlSet(
             self,
@@ -1164,136 +838,17 @@ class ProjectService:
             outputName: str,
             sourceSet,
     ) -> Dict[str, Any]:
-        if mapper is None:
-            raise RuntimeError(
-                "Generated Sets require a PostgreSQL mapper"
-            )
-
-        db = getattr(mapper, "db", None)
-
-        if db is None:
-            raise RuntimeError(
-                "Generated Sets require a PostgreSQL database"
-            )
-
-        protocolDbId = ProtocolIdentityResolver(
+        return _generatedSetHelpers.createWritableGeneratedPostgresqlSet(
             mapper=mapper,
             projectId=projectId,
-        ).resolvePostgresqlProtocolDbId(protocolId)
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
-            )
-
-        allocator = getattr(
-            mapper,
-            "allocateProjectObjectId",
-            None,
-        )
-
-        if not callable(allocator):
-            raise RuntimeError(
-                "PostgreSQL mapper does not expose allocateProjectObjectId()"
-            )
-
-        nativeSetClass = sourceSet.getClass()
-
-        if not isinstance(nativeSetClass, type):
-            raise RuntimeError(
-                f"Could not resolve native Set class for '{outputName}'"
-            )
-
-        seedSet = nativeSetClass()
-
-        copyInfo = getattr(
-            seedSet,
-            "copyInfo",
-            None,
-        )
-
-        if callable(copyInfo):
-            copyInfo(sourceSet)
-        else:
-            seedSet.copy(
-                sourceSet,
-                copyId=False,
-            )
-
-        runtimeObjectId = int(
-            allocator(int(projectId))
-        )
-
-        seedSet.setObjId(runtimeObjectId)
-        seedSet.setName(outputName)
-        seedSet.setObjLabel(outputName)
-
-        from app.backend.mapper.scipion_set_mapper import (
-            ScipionSetPostgresqlMapper,
-        )
-        from app.backend.runtime.postgresql_runtime_set_factory import (
-            PostgresqlRuntimeSetFactory,
-        )
-
-        setMapper = ScipionSetPostgresqlMapper(db)
-
-        reservation = setMapper.reserveRuntimeSet(
-            projectId=int(projectId),
-            protocolDbId=int(protocolDbId),
+            protocolId=protocolId,
+            protocol=protocol,
             outputName=outputName,
-            scipionSet=seedSet,
-            reservationToken=str(uuid4()),
+            sourceSet=sourceSet,
         )
-
-        runtimeSetFactory = PostgresqlRuntimeSetFactory()
-
-        try:
-            outputInfo = dict(reservation)
-            outputInfo["exists"] = True
-            outputInfo["itemsCount"] = 0
-
-            outputSet = runtimeSetFactory.build(
-                db=db,
-                parent=protocol,
-                outputName=outputName,
-                outputInfo=outputInfo,
-            )
-
-            outputSet.enablePostgresqlWrite()
-
-        except Exception:
-            setMapper.discardReservedRuntimeSet(
-                projectId=int(projectId),
-                protocolDbId=int(protocolDbId),
-                runtimeObjectId=runtimeObjectId,
-            )
-            raise
-
-        return {
-            "outputSet": outputSet,
-            "setMapper": setMapper,
-            "runtimeSetFactory": runtimeSetFactory,
-            "reservation": reservation,
-            "protocolDbId": int(protocolDbId),
-            "runtimeObjectId": runtimeObjectId,
-        }
 
     def _cloneGeneratedNestedSet(self, sourceSet):
-        nativeSetClass = sourceSet.getClass()
-
-        if not isinstance(nativeSetClass, type):
-            raise RuntimeError(
-                "Could not resolve native nested Set class"
-            )
-
-        result = nativeSetClass()
-        result.copy(
-            sourceSet,
-            copyId=False,
-        )
-
-        return result
+        return _generatedSetHelpers.cloneGeneratedNestedSet(sourceSet)
 
     def _finalizeGeneratedPostgresqlSet(
             self,
@@ -1301,37 +856,14 @@ class ProjectService:
             projectId: int,
             outputName: str,
     ) -> Dict[str, Any]:
-        return context["setMapper"].finalizeRuntimeSetOutput(
-            projectId=int(projectId),
-            protocolDbId=int(context["protocolDbId"]),
-            outputName=outputName,
-            scipionSet=context["outputSet"],
-        )
+        return _generatedSetHelpers.finalizeGeneratedPostgresqlSet(context, projectId, outputName)
 
     def _discardGeneratedPostgresqlSet(
             self,
             context: Optional[Dict[str, Any]],
             projectId: int,
     ) -> bool:
-        if not context:
-            return False
-
-        reservation = context.get("reservation") or {}
-        runtimeObjectId = reservation.get(
-            "runtimeObjectId",
-            context.get("runtimeObjectId"),
-        )
-
-        if runtimeObjectId is None:
-            return False
-
-        return bool(
-            context["setMapper"].discardReservedRuntimeSet(
-                projectId=int(projectId),
-                protocolDbId=int(context["protocolDbId"]),
-                runtimeObjectId=int(runtimeObjectId),
-            )
-        )
+        return _generatedSetHelpers.discardGeneratedPostgresqlSet(context, projectId)
 
     def _storeGeneratedSetInPostgresql(
             self,
@@ -1342,9 +874,7 @@ class ProjectService:
             scipionSet,
             contextLabel: str,
     ) -> Dict[str, Any]:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
-
-        return runtimeProtocolOutputPersistenceService.storeGeneratedSetInPostgresql(
+        return _generatedSetHelpers.storeGeneratedSetInPostgresql(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -1364,59 +894,15 @@ class ProjectService:
             ] = None,
             allowDetachedSetOutputs: bool = False,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        runtimeProtocolOutputPersistenceService = (
-            RuntimeProtocolOutputPersistenceService()
+        return _outputRegistration.registerOutput(
+            self.currentProject,
+            projectId=projectId,
+            protocol=protocol,
+            mapper=mapper,
+            returnReport=returnReport,
+            projectPaths=projectPaths,
+            allowDetachedSetOutputs=allowDetachedSetOutputs,
         )
-
-        resolvedProjectPaths = []
-
-        for candidatePath in (
-                list(projectPaths or [])
-                + [
-                    self._getCurrentProjectPath()
-                ]
-        ):
-            if not candidatePath:
-                continue
-
-            normalizedPath = os.path.abspath(
-                os.path.expanduser(
-                    str(candidatePath)
-                )
-            )
-
-            if (
-                    normalizedPath
-                    not in resolvedProjectPaths
-            ):
-                resolvedProjectPaths.append(
-                    normalizedPath
-                )
-
-        try:
-            return (
-                runtimeProtocolOutputPersistenceService
-                .registerOutput(
-                    projectId=projectId,
-                    protocol=protocol,
-                    mapper=mapper,
-                    returnReport=returnReport,
-                    projectPaths=(
-                        resolvedProjectPaths
-                    ),
-                    allowDetachedSetOutputs=(
-                        allowDetachedSetOutputs
-                    ),
-                )
-            )
-
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_404_NOT_FOUND
-                ),
-                detail=str(exc),
-            )
 
     def _deletePersistedProtocolOutputsFromPostgresql(
             self,
@@ -12455,23 +11941,18 @@ class ProjectService:
             return None
 
         try:
-            from app.backend.viewers.postgresql_fsc_reader import PostgresqlFscReader
-
             readerProtocolId = self._resolvePostgresqlReaderProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
 
-            reader = PostgresqlFscReader(
-                db=mapper.db,
+            return _fscPreview.buildPostgresqlFscReader(
+                mapper=mapper,
                 projectId=projectId,
                 protocolId=readerProtocolId,
                 outputName=outputName,
             )
-
-            if reader.hasOutput():
-                return reader
 
         except Exception:
             logger.exception(
@@ -12536,118 +12017,7 @@ class ProjectService:
                 detail=f"Output '{outputName}' not found in protocol",
             )
 
-        threshold = 0.143
-
-        def iterFscObjects():
-            # iterateWithoutReusingSameMutableObject
-            iterItemsFn = getattr(output, "iterItems", None)
-            if callable(iterItemsFn):
-                try:
-                    for item in iterItemsFn(iterate=False):
-                        yield item
-                    return
-                except TypeError:
-                    pass
-                except Exception:
-                    pass
-
-                try:
-                    for item in iterItemsFn():
-                        clone = getattr(item, "clone", lambda: item)()
-                        yield clone
-                    return
-                except Exception:
-                    pass
-
-            # singleFscObjectFallback
-            if hasattr(output, "getData") and callable(getattr(output, "getData", None)):
-                yield output
-                return
-
-            # genericIterableFallback
-            try:
-                for item in output:
-                    clone = getattr(item, "clone", lambda: item)()
-                    yield clone
-                return
-            except Exception:
-                pass
-
-            raise HTTPException(
-                status_code=500,
-                detail="Output does not expose iterable FSC objects",
-            )
-
-        def getXY(fsc):
-            # getXYExactlyLikeThumbnailPreview
-            data = fsc.getData()
-
-            if isinstance(data, (list, tuple)) and len(data) == 2:
-                x, y = data
-                x = np.asarray(x, dtype=float)
-                y = np.asarray(y, dtype=float)
-            else:
-                arr = np.asarray(data, dtype=float)
-
-                if arr.ndim != 2:
-                    raise ValueError("Invalid FSC data shape")
-
-                if arr.shape[1] >= 2:
-                    x, y = arr[:, 0], arr[:, 1]
-                elif arr.shape[0] >= 2:
-                    x, y = arr[0, :], arr[1, :]
-                else:
-                    raise ValueError("Invalid FSC data shape")
-
-            mask = np.isfinite(x) & np.isfinite(y)
-            x = x[mask]
-            y = y[mask]
-
-            return x, y
-
-        rows: List[Dict[str, Any]] = []
-
-        for i, fsc in enumerate(iterFscObjects()):
-            if fsc is None:
-                continue
-
-            clone = getattr(fsc, "clone", lambda: fsc)()
-
-            label = getattr(clone, "getObjLabel", lambda: None)() or f"FSC {i + 1}"
-
-            try:
-                x, y = getXY(clone)
-            except Exception as e:
-                logger.warning("Skipping FSC '%s' because data could not be parsed: %s", label, e)
-                continue
-
-            if x.size == 0:
-                continue
-
-            resolution = None
-            if hasattr(clone, "calculateResolution"):
-                try:
-                    res = clone.calculateResolution(threshold)
-                    if res is not None:
-                        res = float(res)
-                        if np.isfinite(res) and res > 0:
-                            resolution = res
-                except Exception:
-                    resolution = None
-
-            rows.append(
-                {
-                    "label": str(label),
-                    "resolution": resolution,
-                    "x": x.astype(float).tolist(),
-                    "y": y.astype(float).tolist(),
-                }
-            )
-
-        return {
-            "threshold": threshold,
-            "rows": rows,
-        }
+        return _fscPreview.buildFscRows(output, threshold=_fscPreview.DEFAULT_FSC_THRESHOLD)
 
     # ======================================================================
     # Internal helpers for metadata tables (STAR / SQLITE / etc.)
@@ -14207,165 +13577,34 @@ class ProjectService:
             outputObj: Any,
             objectId: Union[str, int],
     ) -> Any:
-        targetId = str(objectId).strip()
-        if not targetId:
-            return None
-
-        cached = getattr(self, "tomoList", {}).get(targetId)
-        if cached is not None:
-            return cached
-
-        getTomogram = getattr(outputObj, "_getTomogram", None)
-        if callable(getTomogram):
-            try:
-                tomo = getTomogram(targetId)
-                if tomo is not None:
-                    return tomo
-            except Exception:
-                pass
-
-        iterTomograms = getattr(outputObj, "iterTomograms", None)
-        if callable(iterTomograms):
-            try:
-                for tomo in iterTomograms():
-                    tomoIds = self._getExternalViewerObjectIds(tomo)
-
-                    getTsId = getattr(tomo, "getTsId", None)
-                    if callable(getTsId):
-                        try:
-                            tomoIds.add(str(getTsId()))
-                        except Exception:
-                            pass
-
-                    getObjLabel = getattr(tomo, "getObjLabel", None)
-                    if callable(getObjLabel):
-                        try:
-                            tomoIds.add(str(getObjLabel()))
-                        except Exception:
-                            pass
-
-                    if targetId in tomoIds:
-                        if not hasattr(self, "tomoList") or self.tomoList is None:
-                            self.tomoList = {}
-                        self.tomoList[targetId] = tomo
-                        return tomo
-            except Exception:
-                pass
-
-        return None
+        result, self.tomoList = _externalViewers.resolveCoords3dTomogram(
+            outputObj=outputObj,
+            objectId=objectId,
+            tomoList=self.tomoList,
+        )
+        return result
 
     def _resolveExternalViewerCTFTomoSeries(
             self,
             outputObj: Any,
             objectId: Union[str, int],
     ) -> Any:
-        targetId = str(objectId).strip()
-        if not targetId:
-            return None
-
-        try:
-            for item in outputObj:
-                itemIds = self._getExternalViewerObjectIds(item)
-
-                for methodName in (
-                        "getTsId",
-                        "getTomoId",
-                        "getCTFTomoSeriesId",
-                        "getObjId",
-                        "getObjLabel",
-                        "getName",
-                ):
-                    method = getattr(item, methodName, None)
-                    if callable(method):
-                        try:
-                            value = method()
-                            if value is not None:
-                                itemIds.add(str(value))
-                        except Exception:
-                            pass
-
-                if targetId in itemIds:
-                    return item
-        except Exception:
-            pass
-
-        return None
+        return _externalViewers.resolveCTFTomoSeries(outputObj=outputObj, objectId=objectId)
 
     def _isSingleExternalViewerObject(self, outputObj: Any) -> bool:
-        if outputObj is None:
-            return False
-
-        getItem = getattr(outputObj, "getItem", None)
-        if callable(getItem):
-            return False
-
-        iterItems = getattr(outputObj, "__iter__", None)
-        if callable(iterItems):
-            return False
-
-        getFileName = getattr(outputObj, "getFileName", None)
-        if callable(getFileName):
-            return True
-
-        return False
+        return _externalViewers.isSingleExternalViewerObject(outputObj)
 
     def _findExternalViewerClasses(self, targetObj: Any) -> List[Any]:
-        try:
-            viewers = Config.getDomain().findViewers(targetObj, DESKTOP_TKINTER) or []
-            return list(viewers)
-        except BaseException as e:
-            logger.exception(
-                "Failed to find external viewers for object type %s: %s",
-                type(targetObj).__name__,
-                e,
-            )
-            return []
+        return _externalViewers.findExternalViewerClasses(targetObj)
 
     def _normalizeExternalViewerId(self, viewerClass: Any) -> str:
-        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
-        viewerId = className.strip()
-
-        if viewerId.lower().endswith("viewer"):
-            viewerId = viewerId[:-6]
-
-        viewerId = re.sub(r"[^A-Za-z0-9]+", "-", viewerId).strip("-").lower()
-        return viewerId or "viewer"
+        return _externalViewers.normalizeExternalViewerId(viewerClass)
 
     def _buildExternalViewerDescriptor(self, viewerClass: Any) -> Dict[str, Any]:
-        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
-        moduleName = getattr(viewerClass, "__module__", None)
-
-        label = (
-            getattr(viewerClass, "_label", None)
-            or getattr(viewerClass, "label", None)
-            or className
-        )
-
-        label = str(label).replace("Viewer", "").strip() or className
-
-        return {
-            "id": self._normalizeExternalViewerId(viewerClass),
-            "label": label,
-            "className": className,
-            "moduleName": moduleName,
-            "available": True,
-            "reason": None,
-        }
+        return _externalViewers.buildExternalViewerDescriptor(viewerClass)
 
     def _unwrapScipionObject(self, obj: Any) -> Any:
-        if obj is None:
-            return None
-
-        getter = getattr(obj, "get", None)
-        if callable(getter):
-            try:
-                value = getter()
-                if value is not None:
-                    return value
-            except Exception:
-                pass
-
-        return obj
+        return _externalViewers.unwrapScipionObject(obj)
 
     def _getProtocolOutputObject(
             self,
@@ -14374,90 +13613,16 @@ class ProjectService:
             mapper=None,
             projectId: Optional[int] = None,
     ) -> Tuple[Any, Any]:
-        protocol = self._getScipionProtocolForRuntime(
+        return _externalViewers.getProtocolOutputObject(
+            currentProject=self.currentProject,
+            protocolId=protocolId,
+            outputName=outputName,
             mapper=mapper,
             projectId=projectId,
-            protocolId=protocolId,
         )
 
-        outputObj = None
-
-        if hasattr(protocol, outputName):
-            outputObj = getattr(protocol, outputName)
-
-        if outputObj is None:
-            iterator = getattr(protocol, "iterOutputAttributes", None)
-            if callable(iterator):
-                try:
-                    for attrName, attrObj in iterator():
-                        if str(attrName) == str(outputName):
-                            outputObj = attrObj
-                            break
-                except Exception:
-                    pass
-
-        outputObj = self._unwrapScipionObject(outputObj)
-
-        if outputObj is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Output not found: {outputName}",
-            )
-
-        return protocol, outputObj
-
     def _getExternalViewerObjectIds(self, obj: Any) -> TypingSet[str]:
-        values: TypingSet[str] = set()
-
-        def addValue(value: Any):
-            if value is None:
-                return
-
-            getter = getattr(value, "get", None)
-            if callable(getter):
-                try:
-                    value = getter()
-                except Exception:
-                    pass
-
-            if value is None:
-                return
-
-            text = str(value).strip()
-            if text:
-                values.add(text)
-
-        for methodName in (
-            "getTsId",
-            "getObjId",
-            "getId",
-            "getName",
-            "getFileName",
-        ):
-            method = getattr(obj, methodName, None)
-            if callable(method):
-                try:
-                    addValue(method())
-                except Exception:
-                    pass
-
-        for attrName in (
-            "tsId",
-            "id",
-            "objId",
-            "_objId",
-            "name",
-            "label",
-            "filename",
-            "fileName",
-        ):
-            if hasattr(obj, attrName):
-                try:
-                    addValue(getattr(obj, attrName))
-                except Exception:
-                    pass
-
-        return values
+        return _externalViewers.getExternalViewerObjectIds(obj)
 
     def _resolveExternalViewerTargetObject(
             self,
@@ -14465,93 +13630,20 @@ class ProjectService:
             objectId: Optional[Union[str, int]] = None,
             objectKind: Optional[str] = None,
     ) -> Any:
-        if objectId is None or str(objectId).strip() == "":
-            return outputObj
-
-        targetId = str(objectId).strip()
-        objectKindText = str(objectKind or "").strip().lower()
-
-        if objectKindText in {"volume", "tomogram"} and self._isSingleExternalViewerObject(outputObj):
-            if targetId in {"0", "1"}:
-                return outputObj
-
-        if objectKindText in {"coords3dtomogram", "coords3d-tomogram", "coordinates3dtomogram"}:
-            resolved = self._resolveExternalViewerCoords3dTomogram(
-                outputObj=outputObj,
-                objectId=objectId,
-            )
-            if resolved is not None:
-                return resolved
-
-        if objectKindText in {"ctftomoseries", "ctf-tomo-series", "ctfseries"}:
-            resolved = self._resolveExternalViewerCTFTomoSeries(
-                outputObj=outputObj,
-                objectId=objectId,
-            )
-            if resolved is not None:
-                return resolved
-
-        if objectKindText in {"volume", "tomogram"}:
-            resolved = self._resolveExternalViewerSetItemByPublicId(
-                outputObj=outputObj,
-                objectId=objectId,
-            )
-            if resolved is not None:
-                return resolved
-
-        try:
-            for item in outputObj:
-                itemIds = self._getExternalViewerObjectIds(item)
-                if targetId in itemIds:
-                    return item
-        except Exception:
-            pass
-
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Object '{targetId}' not found inside output. "
-                f"objectKind={objectKind or 'unknown'}"
-            ),
+        result, self.tomoList = _externalViewers.resolveExternalViewerTargetObject(
+            outputObj=outputObj,
+            tomoList=self.tomoList,
+            objectId=objectId,
+            objectKind=objectKind,
         )
+        return result
 
     def _resolveExternalViewerSetItemByPublicId(
             self,
             outputObj: Any,
             objectId: Union[str, int],
     ) -> Any:
-        try:
-            publicId = int(objectId)
-        except Exception:
-            return None
-
-        getItem = getattr(outputObj, "getItem", None)
-        if callable(getItem):
-            for key, value in (
-                    ("_objId", publicId + 1),
-                    ("_objId", publicId),
-                    ("id", publicId),
-                    ("index", publicId),
-            ):
-                try:
-                    item = getItem(key, value)
-                    if item is not None:
-                        return item
-                except Exception:
-                    pass
-
-        try:
-            for index, item in enumerate(outputObj):
-                if index == publicId:
-                    return item
-
-                itemIds = self._getExternalViewerObjectIds(item)
-                if str(publicId) in itemIds or str(publicId + 1) in itemIds:
-                    return item
-        except Exception:
-            pass
-
-        return None
+        return _externalViewers.resolveSetItemByPublicId(outputObj=outputObj, objectId=objectId)
 
     def listExternalViewers(
             self,
@@ -14562,40 +13654,16 @@ class ProjectService:
             mapper=None,
             projectId: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-
-        protocol, outputObj = self._getProtocolOutputObject(
+        descriptors, self.tomoList = _externalViewers.listExternalViewersData(
+            currentProject=self.currentProject,
+            tomoList=self.tomoList,
             protocolId=protocolId,
             outputName=outputName,
+            objectId=objectId,
+            objectKind=objectKind,
             mapper=mapper,
             projectId=projectId,
         )
-
-        targetObj = self._resolveExternalViewerTargetObject(
-            outputObj=outputObj,
-            objectId=objectId,
-            objectKind=objectKind,
-        )
-
-        viewerClasses = self._findExternalViewerClasses(targetObj)
-
-        descriptors = []
-        seenIds: TypingSet[str] = set()
-        excludedViewer = ['TomoDataViewer', 'MDViewer', 'DataViewer', 'CtfEstimationTomoViewer']
-        for viewerClass in viewerClasses:
-            descriptor = self._buildExternalViewerDescriptor(viewerClass)
-            viewerId = descriptor["id"]
-            if descriptor['className'] in excludedViewer:
-                continue
-
-            if viewerId in seenIds:
-                className = descriptor.get("className") or viewerId
-                viewerId = f"{viewerId}-{len(seenIds) + 1}"
-                descriptor["id"] = viewerId
-                descriptor["className"] = className
-
-            seenIds.add(viewerId)
-            descriptors.append(descriptor)
-
         return descriptors
 
     def _matchExternalViewerClass(
@@ -14603,101 +13671,28 @@ class ProjectService:
         viewerClasses: List[Any],
         viewerId: str,
     ) -> Tuple[Any, Dict[str, Any]]:
-        requested = str(viewerId or "").strip().lower()
-
-        for viewerClass in viewerClasses:
-            descriptor = self._buildExternalViewerDescriptor(viewerClass)
-
-            tokens = {
-                str(descriptor.get("id") or "").lower(),
-                str(descriptor.get("label") or "").lower(),
-                str(descriptor.get("className") or "").lower(),
-                str(descriptor.get("moduleName") or "").lower(),
-            }
-
-            className = str(descriptor.get("className") or "")
-            if className.lower().endswith("viewer"):
-                tokens.add(className[:-6].lower())
-
-            if requested in tokens:
-                return viewerClass, descriptor
-
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"External viewer not found or not compatible: {viewerId}",
+        return _externalViewers.matchExternalViewerClass(
+            viewerClasses=viewerClasses,
+            viewerId=viewerId,
         )
 
     def _createExternalViewerInstance(self, viewerClass: Any, protocol: Any) -> Any:
-        attempts = [
-            {"project": self.currentProject, "protocol": protocol},
-            {"protocol": protocol},
-            {"project": self.currentProject},
-            {},
-        ]
-
-        lastError = None
-
-        for kwargs in attempts:
-            try:
-                viewer = viewerClass(**kwargs)
-                return viewer
-            except TypeError as e:
-                lastError = e
-            except Exception as e:
-                lastError = e
-                break
-
-        raise RuntimeError(f"Could not create viewer instance: {lastError}")
+        return _externalViewers.createExternalViewerInstance(
+            viewerClass=viewerClass,
+            protocol=protocol,
+            currentProject=self.currentProject,
+        )
 
     def _showExternalView(self, view: Any):
-        if view is None:
-            return
-
-        for methodName in ("show", "execute", "launch", "run"):
-            method = getattr(view, methodName, None)
-            if callable(method):
-                method()
-                return
-
-        if callable(view):
-            view()
+        _externalViewers.showExternalView(view)
 
     def _runExternalViewer(self, viewerClass: Any, protocol: Any, targetObj: Any):
-        viewer = self._createExternalViewerInstance(viewerClass, protocol)
-
-        for methodName in ("setProject",):
-            method = getattr(viewer, methodName, None)
-            if callable(method):
-                try:
-                    method(self.currentProject)
-                except Exception:
-                    pass
-
-        for methodName in ("setProtocol",):
-            method = getattr(viewer, methodName, None)
-            if callable(method):
-                try:
-                    method(protocol)
-                except Exception:
-                    pass
-
-        visualize = getattr(viewer, "visualize", None)
-        if not callable(visualize):
-            visualize = getattr(viewer, "_visualize", None)
-
-        if not callable(visualize):
-            raise RuntimeError("Viewer does not expose a visualize method")
-
-        views = visualize(targetObj)
-
-        if views is None:
-            return
-
-        if not isinstance(views, (list, tuple)):
-            views = [views]
-
-        for view in views:
-            self._showExternalView(view)
+        _externalViewers.runExternalViewer(
+            viewerClass=viewerClass,
+            protocol=protocol,
+            targetObj=targetObj,
+            currentProject=self.currentProject,
+        )
 
     def launchExternalViewer(
             self,
@@ -14710,44 +13705,18 @@ class ProjectService:
             mapper=None,
             projectId: Optional[int] = None,
     ) -> Dict[str, Any]:
-
-        protocol, outputObj = self._getProtocolOutputObject(
+        result, self.tomoList = _externalViewers.launchExternalViewerData(
+            currentProject=self.currentProject,
+            tomoList=self.tomoList,
             protocolId=protocolId,
             outputName=outputName,
+            viewerId=viewerId,
+            objectId=objectId,
+            objectKind=objectKind,
             mapper=mapper,
             projectId=projectId,
         )
-
-        targetObj = self._resolveExternalViewerTargetObject(
-            outputObj=outputObj,
-            objectId=objectId,
-            objectKind=objectKind,
-        )
-
-        viewerClasses = self._findExternalViewerClasses(targetObj)
-
-        viewerClass, descriptor = self._matchExternalViewerClass(
-            viewerClasses=viewerClasses,
-            viewerId=viewerId,
-        )
-
-        thread = threading.Thread(
-            target=self._safeRunExternalViewer,
-            args=(viewerClass, protocol, targetObj, descriptor),
-            daemon=True,
-        )
-        thread.start()
-
-        return {
-            "success": True,
-            "viewerId": descriptor["id"],
-            "message": f"{descriptor['label']} launch requested.",
-            "pid": None,
-            "data": {
-                "objectId": objectId,
-                "objectKind": objectKind,
-            },
-        }
+        return result
 
     def _safeRunExternalViewer(
         self,
@@ -14756,19 +13725,13 @@ class ProjectService:
         targetObj: Any,
         descriptor: Dict[str, Any],
     ):
-        try:
-            self._runExternalViewer(
-                viewerClass=viewerClass,
-                protocol=protocol,
-                targetObj=targetObj,
-            )
-        except Exception as e:
-            logger.exception(
-                "External viewer failed. viewerId=%s className=%s error=%s",
-                descriptor.get("id"),
-                descriptor.get("className"),
-                e,
-            )
+        _externalViewers.safeRunExternalViewer(
+            viewerClass=viewerClass,
+            protocol=protocol,
+            targetObj=targetObj,
+            descriptor=descriptor,
+            currentProject=self.currentProject,
+        )
 
     # -----------------------------
     # Tags Service Methods
@@ -14779,20 +13742,7 @@ class ProjectService:
         projectId: int,
         currentUser: dict,
     ) -> List[Dict[str, Any]]:
-        # listProjectTags
-        listFn = getattr(mapper, "listProjectTags", None)
-        if callable(listFn):
-            return listFn(projectId=projectId)
-
-        # mapperMethodFallback: keep backward compatibility with older mapper name
-        legacyListFn = getattr(mapper, "listProtocolTags", None)
-        if callable(legacyListFn):
-            return legacyListFn(projectId=projectId)
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Mapper does not implement listProjectTags",
-        )
+        return _tags.listProjectTags(mapper=mapper, projectId=projectId)
 
     def createProjectTag(
         self,
@@ -14801,29 +13751,7 @@ class ProjectService:
         currentUser: dict,
         payload,
     ) -> Dict[str, Any]:
-        # createProjectTag
-        title = (payload.title or "").strip()
-        if not title:
-            raise HTTPException(status_code=400, detail="title is required")
-
-        tagId = (payload.id or "").strip() if getattr(payload, "id", None) else ""
-        if not tagId:
-            tagId = str(uuid4())
-
-        tag = {
-            "id": tagId,
-            "title": title,
-            "description": getattr(payload, "description", None),
-            "color": getattr(payload, "color", None),
-        }
-
-        try:
-            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create tag: {e}",
-            )
+        return _tags.createProjectTag(mapper=mapper, projectId=projectId, payload=payload)
 
     def updateProjectTag(
         self,
@@ -14833,49 +13761,7 @@ class ProjectService:
         currentUser: dict,
         payload,
     ) -> Dict[str, Any]:
-        # updateProjectTag
-        tagId = (tagId or "").strip()
-        if not tagId:
-            raise HTTPException(status_code=400, detail="tagId is required")
-
-        existing = None
-        for t in self.listProjectTags(mapper=mapper, projectId=projectId, currentUser=currentUser):
-            if str(t.get("id", "")).strip() == tagId:
-                existing = t
-                break
-
-        if not existing:
-            raise HTTPException(status_code=404, detail="Tag not found")
-
-        nextTitle = getattr(payload, "title", None)
-        if nextTitle is None:
-            nextTitle = existing.get("title")
-        nextTitle = (nextTitle or "").strip()
-        if not nextTitle:
-            raise HTTPException(status_code=400, detail="title cannot be empty")
-
-        nextDescription = getattr(payload, "description", None)
-        if nextDescription is None:
-            nextDescription = existing.get("description")
-
-        nextColor = getattr(payload, "color", None)
-        if nextColor is None:
-            nextColor = existing.get("color")
-
-        tag = {
-            "id": tagId,
-            "title": nextTitle,
-            "description": nextDescription,
-            "color": nextColor,
-        }
-
-        try:
-            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update tag: {e}",
-            )
+        return _tags.updateProjectTag(mapper=mapper, projectId=projectId, tagId=tagId, payload=payload)
 
     def deleteProjectTag(
         self,
@@ -14884,19 +13770,7 @@ class ProjectService:
         tagId: str,
         currentUser: dict,
     ) -> bool:
-        # deleteProjectTag
-        tagId = (tagId or "").strip()
-        if not tagId:
-            raise HTTPException(status_code=400, detail="tagId is required")
-
-        # cascadeBehavior: protocol_tag_assignments(tagId) has ON DELETE CASCADE
-        try:
-            return bool(mapper.deleteProtocolTag(projectId=projectId, tagId=tagId))
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete tag: {e}",
-            )
+        return _tags.deleteProjectTag(mapper=mapper, projectId=projectId, tagId=tagId)
 
     def listProtocolTags(
             self,
@@ -14905,35 +13779,7 @@ class ProjectService:
             protocolId: int,
             currentUser: dict,
     ) -> Dict[str, Any]:
-        # listProtocolTags
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
-
-        try:
-            tagIds = mapper.getProtocolTagIds(
-                projectId=projectId,
-                protocolDbId=protocolDbId,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to list protocol tags: {e}",
-            )
-
-        return {
-            "protocolId": str(protocolId),
-            "protocolDbId": protocolDbId,
-            "tagIds": tagIds,
-        }
+        return _tags.listProtocolTags(mapper=mapper, projectId=projectId, protocolId=protocolId)
 
     def setProtocolTags(
             self,
@@ -14943,38 +13789,12 @@ class ProjectService:
             tagIds: List[str],
             currentUser: dict,
     ) -> Dict[str, Any]:
-        # setProtocolTags
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
+        return _tags.setProtocolTags(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            tagIds=tagIds,
         )
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
-
-        try:
-            setByDbId = getattr(mapper, "setProtocolTagIdsByProtocolDbId", None)
-            if callable(setByDbId):
-                return setByDbId(
-                    projectId=projectId,
-                    protocolDbId=protocolDbId,
-                    tagIds=tagIds or [],
-                )
-
-            return mapper.setProtocolTagIds(
-                projectId=projectId,
-                protocolId=int(protocolId),
-                tagIds=tagIds or [],
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to set protocol tags: {e}",
-            )
 
     def getContextMenuVisibilityPolicy(self) -> dict:
         return {
