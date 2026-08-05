@@ -2078,12 +2078,52 @@ class RuntimePostgresqlProtocolWorker:
                 errors.append({
                     **dict(ref),
                     "error": (
-                        "Could not reconstruct "
-                        "PostgreSQL output %s"
-                        % parentOutputName
+                            "Could not reconstruct "
+                            "PostgreSQL output %s"
+                            % parentOutputName
                     ),
                 })
                 continue
+
+            if isinstance(outputObject, Set):
+                refreshRuntimeState = getattr(outputObject, "refreshPostgresqlRuntimeState", None)
+
+                if not callable(refreshRuntimeState):
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "PostgreSQL input Set %s does not expose "
+                                "runtime refresh support"
+                                % parentOutputName
+                        ),
+                    })
+                    continue
+
+                try:
+                    refreshedOutputObject = refreshRuntimeState()
+                except Exception as error:
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "Could not refresh PostgreSQL input Set %s: %s"
+                                % (
+                                    parentOutputName,
+                                    error,
+                                )
+                        ),
+                    })
+                    continue
+
+                if refreshedOutputObject is not outputObject:
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "PostgreSQL input Set refresh replaced runtime "
+                                "object identity. outputName=%s"
+                                % parentOutputName
+                        ),
+                    })
+                    continue
 
             pointer = Pointer(
                 outputObject

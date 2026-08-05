@@ -782,6 +782,7 @@ def test_TomoCreatorReturnsPostgresqlSetWithoutClassIdentityCheck():
     )
 
     adapter.install()
+    assert RuntimePostgresqlOutputSetAdapter.DELETE_CHILD_ATTRIBUTE not in adapter._patches
 
     outputSet = protocol._createSet(
         OutputSetStub,

@@ -632,12 +632,8 @@ class RuntimePostgresqlOutputSetAdapter:
             None,
         )
 
-        if not callable(
-                originalDeleteChild
-        ):
-            raise RuntimeError(
-                "Protocol does not expose _deleteChild()."
-            )
+        if not callable(originalDeleteChild):
+            return
 
         adapter = self
 
