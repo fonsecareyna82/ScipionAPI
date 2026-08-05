@@ -419,6 +419,20 @@ class PostgresqlSetRuntimeMapper:
 
         return items
 
+    def getColumns(self) -> List[Dict[str, Any]]:
+        self._refreshReadSchema()
+
+        return [
+            dict(column)
+            for column in sorted(
+                self._columns.values(),
+                key=lambda column: (
+                    int(column.get("position") or 0),
+                    str(column.get("labelProperty") or ""),
+                ),
+            )
+        ]
+
     def selectFirst(self):
         items = self.selectAll(
             orderBy="id",
