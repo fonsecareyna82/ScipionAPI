@@ -861,7 +861,4 @@ class RuntimePostgresqlContinueLauncherService:
             "skipped": skippedItems,
             "errors": errors,
             "parentProtocolsModified": False,
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
         }

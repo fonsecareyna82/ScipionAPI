@@ -596,7 +596,4 @@ class RuntimePostgresqlRestartLauncherService:
             "prepared": preparedItems,
             "launched": launchedItems,
             "errors": errors,
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
         }

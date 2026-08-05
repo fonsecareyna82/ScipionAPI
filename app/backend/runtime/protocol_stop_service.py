@@ -1348,10 +1348,6 @@ class RuntimeProtocolStopService:
                 ),
                 dependenciesCount=0,
                 postgresqlRuntimeStop=True,
-                postgresqlOnly=True,
-                usesProjectSqlite=False,
-                usesRunDb=False,
-                usesStepsSqlite=False,
                 stopped=stopped,
                 skipped=skipped,
                 localStopped=localStopped,
@@ -1368,10 +1364,6 @@ class RuntimeProtocolStopService:
                 postgresqlRuntimeOutputs=(
                     outputReports
                 ),
-                postgresqlPointerRestore=None,
-                postgresqlRuntimeSync=None,
-                missingExecutionMirrors=[],
-                degradedStop=False,
             )
         )
 

@@ -369,10 +369,6 @@ class RuntimeProtocolDeleteService:
                 )
             ),
             "postgresqlRuntimeDelete": True,
-            "postgresqlOnly": True,
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
             "deleteValidationInfo": (
                 deleteValidationInfo
             ),
@@ -521,8 +517,6 @@ class RuntimeProtocolDeleteService:
                     }]
 
                     runtimeCleanup = {
-                        "postgresqlOnly": True,
-                        "usesProjectSqlite": False,
                         "errors": cleanupErrors,
                     }
 
