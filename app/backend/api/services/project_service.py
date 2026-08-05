@@ -6388,27 +6388,23 @@ class ProjectService:
             projectId: int,
             protocolId,
     ):
-        runtimeProtocolRestartService = (
-            RuntimeProtocolRestartService()
-        )
+        runtimeProtocolRestartService = RuntimeProtocolRestartService()
 
-        return (
-            runtimeProtocolRestartService
-            .restartProtocolSubworkflow(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
-                launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolRestartService.restartProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
+            launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def continueProtocolAll(
