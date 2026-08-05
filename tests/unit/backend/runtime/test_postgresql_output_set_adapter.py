@@ -133,25 +133,6 @@ class ProtocolStub:
         self.inserted = []
         self.deleted = []
         self.nativeCreated = []
-        self.bound = []
-
-    def bindPostgresqlOutputSetAlias(
-            self,
-            protocol,
-            runtimeSet,
-            canonicalSet,
-    ):
-        runtimeSet.setObjId(
-            canonicalSet.getObjId()
-        )
-
-        self.bound.append({
-            "protocol": protocol,
-            "runtimeSet": runtimeSet,
-            "canonicalSet": canonicalSet,
-        })
-
-        return runtimeSet
 
     def getObjId(self):
         return 17
@@ -264,6 +245,23 @@ class RuntimeMapperStub:
         self.finalized = []
         self.discarded = []
         self.replaced = []
+        self.bound = []
+
+    def bindPostgresqlOutputSetAlias(
+            self,
+            protocol,
+            runtimeSet,
+            canonicalSet,
+    ):
+        runtimeSet.setObjId(canonicalSet.getObjId())
+
+        self.bound.append({
+            "protocol": protocol,
+            "runtimeSet": runtimeSet,
+            "canonicalSet": canonicalSet,
+        })
+
+        return runtimeSet
 
     def getPostgresqlOutputSetCapability(
             self,
@@ -1200,6 +1198,42 @@ def test_DeleteChildDelegatesForUnregisteredNativeSet():
     )
 
     adapter.uninstall()
+
+
+def test_InsertChildPassesThroughNonSetProtocolMetadata():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    outputsMetadata = Object()
+
+    protocol._insertChild(
+        "_outputs",
+        outputsMetadata,
+    )
+
+    assert protocol.inserted == [
+        (
+            "_outputs",
+            outputsMetadata,
+        ),
+    ]
+
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+    assert runtimeMapper.replaced == []
+    assert runtimeMapper.bound == []
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
 
 
 def test_DirectFilenameSetReusesPostgresqlStorageWithoutCreatingSqlite(

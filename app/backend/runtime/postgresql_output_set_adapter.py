@@ -938,6 +938,9 @@ class RuntimePostgresqlOutputSetAdapter:
             outputName: str,
             child,
     ):
+        if not isinstance(child, ScipionSet):
+            return child
+
         directCanonicalSet = (
             self
             ._directCanonicalSetsByAliasIdentity
