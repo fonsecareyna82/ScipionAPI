@@ -1317,18 +1317,27 @@ class PostgresqlRuntimeSetFactory:
             )
 
             if nestedSetItemClass:
-                parentItemId = (
-                    self._toOptionalInt(
-                        row.get(
-                            "scipionItemId"
-                        )
-                    )
+                parentItemId = self._toOptionalInt(
+                    row.get("scipionItemId")
                 )
 
                 if (
+                        parentItemId is not None
+                        and int(parentItemId) not in logicalTablesByParentId
+                ):
+                    refreshedLogicalTables = self._loadLogicalTablesByParentItemId(
+                        setMapper=setMapper,
+                        setId=int(setId),
+                    )
+
+                    logicalTablesByParentId.clear()
+                    logicalTablesByParentId.update(
+                        refreshedLogicalTables
+                    )
+
+                if (
                         parentItemId is None
-                        or int(parentItemId)
-                        not in logicalTablesByParentId
+                        or int(parentItemId) not in logicalTablesByParentId
                 ):
                     raise RuntimeError(
                         "PostgreSQL nested set snapshot "
@@ -1341,8 +1350,7 @@ class PostgresqlRuntimeSetFactory:
                             parentItemId,
                             itemClassName,
                             sorted(
-                                logicalTablesByParentId
-                                .keys()
+                                logicalTablesByParentId.keys()
                             ),
                         )
                     )

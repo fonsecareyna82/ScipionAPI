@@ -102,8 +102,146 @@ class FakeItem:
         return self.itemId
 
 
+class FakeRelationIdentityItem:
+    def getObjId(self):
+        return 7
+
+    def getObjDict(
+            self,
+            includeClass=False,
+    ):
+        if includeClass:
+            return {
+                "self": (
+                    "TiltSeries",
+                    None,
+                ),
+            }
+
+        return {}
+
+    def getTsId(self):
+        return "TS_001"
+
+    def getTomoId(self):
+        return "TOMO_001"
+
+
+class FakeSyntheticScalarItem:
+    def getObjId(self):
+        return 8
+
+    def getObjDict(
+            self,
+            includeClass=False,
+    ):
+        if includeClass:
+            return {
+                "self": (
+                    "SyntheticItem",
+                    None,
+                ),
+            }
+
+        return {
+            "_micName": "mic_001",
+            "_index": 3,
+            "_samplingRate": 2.5,
+            "_enabledFlag": True,
+            "_matrix": [
+                1,
+                2,
+                3,
+            ],
+        }
+
+
 class FakeSet:
     pass
+
+
+def test_RelationIdentityFieldsAreIncludedInItemSchema():
+    mapper = ScipionSetPostgresqlMapper(
+        RecordingDb()
+    )
+
+    item = FakeRelationIdentityItem()
+
+    schema = mapper._getCompleteItemSchema(
+        item
+    )
+
+    values = mapper._getItemValues(
+        item
+    )
+
+    columns = {
+        column["labelProperty"]: column
+        for column in mapper._getSetColumns(
+            schema
+        )
+    }
+
+    assert schema["_tsId"] == (
+        "String",
+        None,
+    )
+    assert schema["_tomoId"] == (
+        "String",
+        None,
+    )
+
+    assert values["_tsId"] == "TS_001"
+    assert values["_tomoId"] == "TOMO_001"
+
+    assert columns["_tsId"]["valueType"] == "text"
+    assert columns["_tomoId"]["valueType"] == "text"
+
+
+def test_ArbitraryScalarValuesCompleteItemSchema():
+    mapper = ScipionSetPostgresqlMapper(
+        RecordingDb()
+    )
+
+    item = FakeSyntheticScalarItem()
+
+    schema = mapper._getCompleteItemSchema(
+        item
+    )
+
+    columns = {
+        column["labelProperty"]: column
+        for column in mapper._getSetColumns(
+            schema
+        )
+    }
+
+    assert schema["_micName"] == (
+        "String",
+        None,
+    )
+
+    assert schema["_index"] == (
+        "Integer",
+        None,
+    )
+
+    assert schema["_samplingRate"] == (
+        "Float",
+        None,
+    )
+
+    assert schema["_enabledFlag"] == (
+        "Boolean",
+        None,
+    )
+
+    assert "_matrix" not in schema
+
+    assert columns["_micName"]["valueType"] == "text"
+    assert columns["_index"]["valueType"] == "integer"
+    assert columns["_samplingRate"]["valueType"] == "float"
+    assert columns["_enabledFlag"]["valueType"] == "boolean"
 
 
 class SnapshotSetMapper(ScipionSetPostgresqlMapper):
@@ -382,6 +520,29 @@ class SnapshotSetMapper(ScipionSetPostgresqlMapper):
             obj,
     ) -> str:
         return "SetOfParticles"
+
+
+def test_CompleteItemSchemaKeepsLegacyOverrideSignature():
+    mapper = SnapshotSetMapper(
+        itemIds=[
+            1,
+        ]
+    )
+
+    item = FakeItem(
+        itemId=1
+    )
+
+    schema = mapper._getCompleteItemSchema(
+        item,
+        scipionSet=FakeSet(),
+    )
+
+    assert schema == {
+        "_objId": {
+            "className": "Integer",
+        },
+    }
 
 
 class SnapshotObjectMapper(ScipionObjectPostgresqlMapper):

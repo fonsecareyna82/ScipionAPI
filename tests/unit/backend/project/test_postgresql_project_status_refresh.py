@@ -84,10 +84,6 @@ def buildProject(
     project.mapper = mapper
     project.postgresqlProjectId = 3
 
-    project.usingPostgresqlRuntimeMapper = (
-        lambda: True
-    )
-
     return project
 
 

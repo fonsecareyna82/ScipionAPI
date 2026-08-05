@@ -1991,6 +1991,49 @@ def test_NestedRuntimeSetResolvesProtocolThroughRuntimeParent():
         == 4
     )
 
+def test_NestedSetReloadsLogicalTablesAddedAfterRuntimeBuild():
+    db = FakeNestedSetDb()
+
+    childTable = db.logicalTables.pop()
+
+    _, runtimeSet = buildNestedRuntimeSet(
+        db=db
+    )
+
+    db.logicalTables.append(
+        childTable
+    )
+
+    nestedSet = runtimeSet.getFirstItem()
+
+    assert isinstance(
+        nestedSet,
+        ExampleNestedSet,
+    )
+
+    children = list(
+        nestedSet.iterItems()
+    )
+
+    assert len(children) == 1
+    assert isinstance(
+        children[0],
+        ExampleChildItem,
+    )
+
+    assert children[0]._value.get() == (
+        "child-3"
+    )
+
+    assert (
+        nestedSet
+        .getPostgresqlRuntimeInfo()[
+            "tableId"
+        ]
+        == FakeNestedSetDb.CHILD_TABLE_ID
+    )
+
+
 def test_NestedSetWithoutLogicalTableFailsExplicitly():
     db = FakeNestedSetDb()
 

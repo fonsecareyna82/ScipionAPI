@@ -72,11 +72,9 @@ class RuntimeProtocolSaveService:
             setToSave: bool,
             currentProject,
             getScipionProtocolForRuntimeCallback: Callable,
-            usesPostgresqlRuntimeCallback: Callable[[], bool],
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback: Callable,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
     ) -> Tuple[Any, List[str]]:
         params = params or {}
         errorList: List[str] = []
@@ -123,24 +121,12 @@ class RuntimeProtocolSaveService:
             )
         )
 
-        usingPostgresqlRuntime = usesPostgresqlRuntimeCallback()
-
-        if (
-                errorList
-                and usingPostgresqlRuntime
-                and not setToSave
-        ):
+        if errorList and not setToSave:
             logger.warning(
-                "Blocking protocol execution because "
-                "parameter application produced errors. "
-                "projectId=%s protocolId=%s "
-                "protocolClassName=%s errors=%s",
+                "Blocking protocol execution because parameter application produced errors. "
+                "projectId=%s protocolId=%s protocolClassName=%s errors=%s",
                 projectId,
-                getattr(
-                    protocol,
-                    "getObjId",
-                    lambda: protocolId,
-                )(),
+                getattr(protocol, "getObjId", lambda: protocolId)(),
                 protocolClassName,
                 errorList,
             )
@@ -148,8 +134,7 @@ class RuntimeProtocolSaveService:
             return protocol, errorList
 
         deferPersistenceToNativeLaunch = (
-                usingPostgresqlRuntime
-                and not setToSave
+                not setToSave
                 and protocolId not in (None, "")
         )
 
@@ -158,15 +143,11 @@ class RuntimeProtocolSaveService:
                 "Deferring existing PostgreSQL runtime protocol persistence "
                 "to Scipion native launch. projectId=%s protocolId=%s",
                 projectId,
-                getattr(
-                    protocol,
-                    "getObjId",
-                    lambda: protocolId,
-                )(),
+                getattr(protocol, "getObjId", lambda: protocolId)(),
             )
 
         else:
-            self._persistProtocolInScipion(
+            self._persistProtocolInRuntime(
                 currentProject=currentProject,
                 protocol=protocol,
                 protocolId=protocolId,
@@ -174,28 +155,14 @@ class RuntimeProtocolSaveService:
                 protocolClassName=protocolClassName,
             )
 
-        if usingPostgresqlRuntime:
-            self._syncPostgresqlRuntimeInputsAndDependencies(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=protocol,
-                protocolId=protocolId,
-                params=params,
-                syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
-                    syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback
-                ),
-            )
-
-        self._syncLegacyGraphAfterSaveIfNeeded(
+        self._syncPostgresqlRuntimeInputsAndDependencies(
             mapper=mapper,
             projectId=projectId,
             protocol=protocol,
             protocolId=protocolId,
-            protocolClassName=protocolClassName,
-            setToSave=setToSave,
-            usingPostgresqlRuntime=usingPostgresqlRuntime,
-            syncProjectProtocolsAndDependenciesCallback=(
-                syncProjectProtocolsAndDependenciesCallback
+            params=params,
+            syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
+                syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback
             ),
         )
 
@@ -556,7 +523,7 @@ class RuntimeProtocolSaveService:
 
         return errorList
 
-    def _persistProtocolInScipion(
+    def _persistProtocolInRuntime(
             self,
             *,
             currentProject,
@@ -566,20 +533,17 @@ class RuntimeProtocolSaveService:
             protocolClassName: str,
     ) -> None:
         try:
-            isNewProtocol = not protocolId
+            isNewProtocol = protocolId in (None, "")
 
             if isNewProtocol:
-                # Important in PostgreSQL runtime mode:
-                # A new protocol can already have an objId assigned by the runtime mapper,
-                # but that does not mean it exists as a root object in Scipion's legacy SQLite.
-                # _setupProtocol is the correct path for new protocols.
                 currentProject._setupProtocol(protocol)
             else:
                 currentProject._storeProtocol(protocol)
 
-        except Exception as e:
+        except Exception as error:
             logger.exception(
-                "Failed to persist protocol in Scipion. projectId=%s protocolId=%s protocolClassName=%s",
+                "Failed to persist PostgreSQL runtime protocol. "
+                "projectId=%s protocolId=%s protocolClassName=%s",
                 projectId,
                 protocolId,
                 protocolClassName,
@@ -587,8 +551,8 @@ class RuntimeProtocolSaveService:
 
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to persist protocol in Scipion: {e}",
-            )
+                detail="Failed to persist PostgreSQL runtime protocol: %s" % error,
+            ) from error
 
     def _syncPostgresqlRuntimeInputsAndDependencies(
             self,
@@ -629,45 +593,3 @@ class RuntimeProtocolSaveService:
                 detail=f"Failed to sync PostgreSQL runtime protocol dependencies after save: {e}",
             )
 
-    def _syncLegacyGraphAfterSaveIfNeeded(
-            self,
-            *,
-            mapper,
-            projectId: int,
-            protocol,
-            protocolId,
-            protocolClassName: str,
-            setToSave: bool,
-            usingPostgresqlRuntime: bool,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
-    ) -> None:
-        if setToSave and not usingPostgresqlRuntime:
-            try:
-                syncProjectProtocolsAndDependenciesCallback(
-                    mapper,
-                    projectId,
-                    refresh=True,
-                    checkPid=True,
-                )
-
-            except Exception as e:
-                logger.exception(
-                    "Failed to sync protocol graph after save. projectId=%s protocolId=%s protocolClassName=%s",
-                    projectId,
-                    getattr(protocol, "getObjId", lambda: protocolId)(),
-                    protocolClassName,
-                )
-
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Protocol was saved in Scipion but graph sync to PostgreSQL failed: {e}",
-                )
-
-        elif setToSave:
-            logger.info(
-                "Skipping legacy graph sync after PostgreSQL runtime save. "
-                "projectId=%s protocolId=%s protocolClassName=%s",
-                projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
-                protocolClassName,
-            )

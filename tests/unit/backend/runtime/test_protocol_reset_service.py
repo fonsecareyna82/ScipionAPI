@@ -226,19 +226,9 @@ class FakeRuntimeMapper:
 class FakeCurrentProject:
     def __init__(self, runtimeMapper=None):
         self.runtimeMapper = runtimeMapper or FakeRuntimeMapper()
-        self.legacyWorkflow = None
-        self.legacyResetErrors = []
-        self.legacyResetCalls = []
 
     def getPostgresqlRuntimeMapper(self):
         return self.runtimeMapper
-
-    def _getSubworkflow(self, protocol):
-        return self.legacyWorkflow, {}
-
-    def resetWorkFlow(self, workflowProtocolList):
-        self.legacyResetCalls.append(workflowProtocolList)
-        return list(self.legacyResetErrors)
 
 
 def buildResult(message, **extra):
@@ -278,7 +268,6 @@ def callReset(
         currentProject,
         rootProtocol,
         workflowProtocolMap,
-        usingPostgresqlRuntime=True,
         stopCallback=None,
         cleanupCallback=None,
         refCleanupCallback=None,
@@ -287,35 +276,24 @@ def callReset(
         mapper=mapper,
         projectId=1,
         protocolId=rootProtocol.getObjId(),
-        usingPostgresqlRuntime=usingPostgresqlRuntime,
         currentProject=currentProject,
-        getScipionProtocolForRuntimeCallback=lambda **kwargs: rootProtocol,
-        getPostgresqlRuntimeSubworkflowCallback=(
-            lambda **kwargs: workflowProtocolMap
-        ),
-        workflowProtocolMapToProtocolsCallback=lambda workflow: [
-            value[0] for value in workflow.values()
-        ],
+        getPostgresqlRuntimeSubworkflowCallback=lambda **kwargs: workflowProtocolMap,
         stopPostgresqlProtocolsCallback=stopCallback or (
             lambda **kwargs: {"status": 0, "errors": []}
         ),
-        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-            cleanupCallback or (
-                lambda **kwargs: {
-                    "protocolsCount": len(kwargs["protocols"]),
-                    "setsDeleted": 0,
-                    "objectsDeleted": 0,
-                    "items": [],
-                }
-            )
+        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=cleanupCallback or (
+            lambda **kwargs: {
+                "protocolsCount": len(kwargs["protocols"]),
+                "setsDeleted": 0,
+                "objectsDeleted": 0,
+                "items": [],
+            }
         ),
-        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-            refCleanupCallback or (
-                lambda **kwargs: {
-                    "updated": 0,
-                    "parentProtocolDbIds": [],
-                }
-            )
+        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=refCleanupCallback or (
+            lambda **kwargs: {
+                "updated": 0,
+                "parentProtocolDbIds": [],
+            }
         ),
         buildProtocolMutationResultCallback=buildResult,
     )
@@ -329,6 +307,24 @@ def test_ResetServiceDoesNotExecuteDirectPostgresqlQueries():
     assert ".db.fetchOne(" not in source
     assert ".db.fetchAll(" not in source
     assert ".db.execute(" not in source
+
+
+def test_ResetServiceHasNoLegacyRuntimePath():
+    signature = inspect.signature(
+        RuntimeProtocolResetService.resetProtocolSubworkflow
+    )
+    source = inspect.getsource(
+        RuntimeProtocolResetService.resetProtocolSubworkflow
+    )
+
+    assert "usingPostgresqlRuntime" not in signature.parameters
+    assert "getScipionProtocolForRuntimeCallback" not in signature.parameters
+    assert "workflowProtocolMapToProtocolsCallback" not in signature.parameters
+    assert "getPostgresqlRuntimeSubworkflowCallback" in signature.parameters
+
+    assert "currentProject._getSubworkflow" not in source
+    assert "currentProject.resetWorkFlow" not in source
+    assert "postgresqlRuntimeReset=False" not in source
 
 
 def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
@@ -639,56 +635,6 @@ def test_PostgresqlResetSkipsSubworkflowAlreadySaved(
     assert cleanupCalls == []
     assert refCleanupCalls == []
     assert runtimeMapper.storedProtocols == []
-
-
-def test_LegacyResetStillDelegatesToProject():
-    mapper = FakeMapper()
-    currentProject = FakeCurrentProject()
-    rootProtocol = FakeProtocol(10, STATUS_FINISHED)
-    childProtocol = FakeProtocol(11, STATUS_FINISHED)
-    workflow = {
-        "10": (rootProtocol, 0),
-        "11": (childProtocol, 1),
-    }
-    currentProject.legacyWorkflow = workflow
-
-    result = callReset(
-        mapper=mapper,
-        currentProject=currentProject,
-        rootProtocol=rootProtocol,
-        workflowProtocolMap=workflow,
-        usingPostgresqlRuntime=False,
-    )
-
-    assert currentProject.legacyResetCalls == [workflow]
-    assert result["status"] == 0
-    assert result["protocolsCount"] == 2
-    assert result["postgresqlRuntimeReset"] is False
-
-
-def test_LegacyResetRaisesWhenProjectReportsErrors():
-    mapper = FakeMapper()
-    currentProject = FakeCurrentProject()
-    rootProtocol = FakeProtocol(10, STATUS_FINISHED)
-    failedProtocol = FakeProtocol(11, STATUS_FINISHED)
-    workflow = {
-        "10": (rootProtocol, 0),
-        "11": (failedProtocol, 1),
-    }
-    currentProject.legacyWorkflow = workflow
-    currentProject.legacyResetErrors = [failedProtocol]
-
-    with pytest.raises(HTTPException) as error:
-        callReset(
-            mapper=mapper,
-            currentProject=currentProject,
-            rootProtocol=rootProtocol,
-            workflowProtocolMap=workflow,
-            usingPostgresqlRuntime=False,
-        )
-
-    assert error.value.status_code == 500
-    assert error.value.detail == ["Failed to reset protocol 11"]
 
 
 def test_ResetProtocolRuntimeMetadataClearsExecutionState():

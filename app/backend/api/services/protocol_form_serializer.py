@@ -60,7 +60,6 @@ class ProtocolFormSerializer:
             mapper=None,
             projectId=None,
             protocol=None,
-            usingPostgresqlRuntime: bool,
             getScipionObjectIdCallback: Callable,
             resolvePostgresqlProtocolDbIdCallback: Callable,
             splitPointerValueCallback: Callable,
@@ -116,46 +115,41 @@ class ProtocolFormSerializer:
                 if isinstance(param, MultiPointerParam):
                     valueList = []
 
+                    protocolDbId = None
+
                     if (
                             mapper is not None
                             and projectId is not None
                             and protocol is not None
-                            and usingPostgresqlRuntime
+                            and getScipionObjectIdCallback is not None
+                            and resolvePostgresqlProtocolDbIdCallback is not None
                     ):
-                        protocolId = (
-                            getScipionObjectIdCallback(
-                                protocol
-                            )
+                        protocolId = getScipionObjectIdCallback(
+                            protocol
                         )
 
-                        protocolDbId = (
-                            resolvePostgresqlProtocolDbIdCallback(
+                        if protocolId not in (None, ""):
+                            protocolDbId = resolvePostgresqlProtocolDbIdCallback(
                                 mapper=mapper,
                                 projectId=projectId,
                                 protocolId=protocolId,
                             )
+
+                    if protocolDbId is not None:
+                        protocolGraphRepository = ProtocolGraphRepository()
+
+                        valueList = protocolGraphRepository.loadInputRefPointerValues(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolDbId=protocolDbId,
+                            inputName=paramName,
                         )
 
-                        if protocolDbId is not None:
-                            protocolGraphRepository = (
-                                ProtocolGraphRepository()
-                            )
+                        paramDict["readOnly"] = True
 
-                            valueList = (
-                                protocolGraphRepository
-                                .loadInputRefPointerValues(
-                                    mapper=mapper,
-                                    projectId=projectId,
-                                    protocolDbId=protocolDbId,
-                                    inputName=paramName,
-                                )
-                            )
-
-                            paramDict["readOnly"] = True
-
-                            # PostgreSQL is authoritative,
-                            # including an empty pointer list.
-                            return paramDict, valueList
+                        # PostgreSQL is authoritative,
+                        # including an empty pointer list.
+                        return paramDict, valueList
 
                     for pointer in protVar:
                         value = None
@@ -223,21 +217,19 @@ class ProtocolFormSerializer:
                             mapper is not None
                             and projectId is not None
                             and protocol is not None
-                            and usingPostgresqlRuntime
+                            and getScipionObjectIdCallback is not None
+                            and resolvePostgresqlProtocolDbIdCallback is not None
                     ):
-                        protocolId = (
-                            getScipionObjectIdCallback(
-                                protocol
-                            )
+                        protocolId = getScipionObjectIdCallback(
+                            protocol
                         )
 
-                        protocolDbId = (
-                            resolvePostgresqlProtocolDbIdCallback(
+                        if protocolId not in (None, ""):
+                            protocolDbId = resolvePostgresqlProtocolDbIdCallback(
                                 mapper=mapper,
                                 projectId=projectId,
                                 protocolId=protocolId,
                             )
-                        )
 
                     if protocolDbId is not None:
                         protocolGraphRepository = (
@@ -408,7 +400,6 @@ class ProtocolFormSerializer:
             projectId,
             headerParams: List[str],
             runName,
-            usingPostgresqlRuntime: bool,
             getScipionObjectIdCallback: Callable,
             resolvePostgresqlProtocolDbIdCallback: Callable,
             splitPointerValueCallback: Callable,
@@ -428,7 +419,6 @@ class ProtocolFormSerializer:
                 mapper=mapper,
                 projectId=projectId,
                 protocol=protocol,
-                usingPostgresqlRuntime=usingPostgresqlRuntime,
                 getScipionObjectIdCallback=getScipionObjectIdCallback,
                 resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
                 splitPointerValueCallback=splitPointerValueCallback,
@@ -742,7 +732,6 @@ class ProtocolFormSerializer:
             protocol,
             mapper=None,
             projectId=None,
-            usingPostgresqlRuntime: bool = False,
             getScipionObjectIdCallback: Callable = None,
             resolvePostgresqlProtocolDbIdCallback: Callable = None,
             splitPointerValueCallback: Callable,
@@ -754,9 +743,10 @@ class ProtocolFormSerializer:
         protocols, parent protocols, outputs or persisted input references.
         """
         inputs = []
+        protocolDbId = None
+
         if (
-                usingPostgresqlRuntime
-                and mapper is not None
+                mapper is not None
                 and projectId is not None
                 and getScipionObjectIdCallback is not None
                 and resolvePostgresqlProtocolDbIdCallback is not None
@@ -765,72 +755,71 @@ class ProtocolFormSerializer:
                 protocol
             )
 
-            protocolDbId = (
-                resolvePostgresqlProtocolDbIdCallback(
+            if protocolId not in (None, ""):
+                protocolDbId = resolvePostgresqlProtocolDbIdCallback(
                     mapper=mapper,
                     projectId=projectId,
                     protocolId=protocolId,
                 )
+
+        if protocolDbId is not None:
+            protocolGraphRepository = ProtocolGraphRepository()
+
+            inputRefs = protocolGraphRepository.loadInputRefsForProtocolCopy(
+                mapper=mapper,
+                projectId=projectId,
+                protocolDbId=protocolDbId,
             )
 
-            if protocolDbId is not None:
-                protocolGraphRepository = (
-                    ProtocolGraphRepository()
+            for inputRef in inputRefs:
+                inputName = str(
+                    inputRef.get("inputName")
+                    or ""
+                ).strip()
+
+                parentProtocolId = inputRef.get(
+                    "parentProtocolId"
                 )
 
-                inputRefs = protocolGraphRepository.loadInputRefsForProtocolCopy(mapper=mapper,
-                                                                                 projectId=projectId,
-                                                                                 protocolDbId=protocolDbId,)
+                parentOutputName = str(
+                    inputRef.get("parentOutputName")
+                    or ""
+                ).strip()
 
-                for inputRef in inputRefs:
-                    inputName = str(
-                        inputRef.get("inputName")
-                        or ""
-                    ).strip()
+                if (
+                        not inputName
+                        or parentProtocolId in (None, "")
+                        or not parentOutputName
+                ):
+                    continue
 
-                    parentProtocolId = inputRef.get(
-                        "parentProtocolId"
+                try:
+                    normalizedParentId = int(
+                        parentProtocolId
                     )
+                except Exception:
+                    normalizedParentId = parentProtocolId
 
-                    parentOutputName = str(
-                        inputRef.get("parentOutputName")
+                pointerValue = "%s.%s" % (
+                    normalizedParentId,
+                    parentOutputName,
+                )
+
+                inputs.append({
+                    "inputName": inputName,
+                    "paramClass": "PointerParam",
+                    "pointerClass": (
+                        inputRef.get("objectClassName")
                         or ""
-                    ).strip()
+                    ),
+                    "info": pointerValue,
+                    "value": pointerValue,
+                    "parentId": normalizedParentId,
+                })
 
-                    if not inputName or parentProtocolId in (None, "",) or not parentOutputName:
-                        continue
-
-                    try:
-                        normalizedParentId = int(
-                            parentProtocolId
-                        )
-                    except Exception:
-                        normalizedParentId = (
-                            parentProtocolId
-                        )
-
-                    pointerValue = "%s.%s" % (
-                        normalizedParentId,
-                        parentOutputName,
-                    )
-
-                    inputs.append({
-                        "inputName": inputName,
-                        "paramClass": "PointerParam",
-                        "pointerClass": (
-                                inputRef.get(
-                                    "objectClassName"
-                                )
-                                or ""
-                        ),
-                        "info": pointerValue,
-                        "value": pointerValue,
-                        "parentId": normalizedParentId,
-                    })
-
-                # PostgreSQL is authoritative.
-                # An empty list means the protocol has no inputs.
-                return inputs
+            # PostgreSQL is authoritative.
+            # An empty list means the protocol has no inputs.
+            return inputs
 
         for key, attr in protocol.iterInputAttributes():
             inputData = {

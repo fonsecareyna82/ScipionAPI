@@ -22,10 +22,6 @@ scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 
 **This is deliberate, not a bug to fix now.** The fork is ahead of the official `scipion-em` org repos on the current roadmap work (tests/CI/Python 3.8-3.12, AI-agent docs, etc.) - `ScipionAPI` needs to build against the fork's versions of `scipion-pyworkflow`/`scipion-em`/`scipion-app` while that work is in progress, otherwise a fresh `ScipionAPI` would import an old `scipion-em` that doesn't have the changes this whole initiative is making. **Do not point this at the official org until *after* the fork's changes are merged back upstream** - only then should `requirements.txt` (or its `pyproject.toml` successor, see above) switch to tracking the official repos again. Tracked as a post-merge task in `.ai/roadmap.md`.
 
-## Runtime artifacts tracked in git
-
-`dump.rdb` (a Redis dump file) and `.backend_reload_marker` are both tracked (`git ls-files` confirms). Neither should be versioned - both are generated at runtime. Low risk but easy, drive-by fix whenever this repo is next touched for something else.
-
 ## CI still on older action versions
 
 `.github/workflows/tests.yml` uses `actions/checkout@v4` and `actions/setup-python@v5` - the 3 core repos were bumped to `@v7` this session (clears a Node.js-version deprecation warning GitHub surfaces on older majors). Same fix would apply here.

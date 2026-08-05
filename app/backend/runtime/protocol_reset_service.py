@@ -57,9 +57,7 @@ logger = logging.getLogger(__name__)
 class RuntimeProtocolResetService:
     """
     Reset a selected protocol and its downstream subworkflow.
-
-    PostgreSQL runtime mode never uses project.sqlite,
-    run.db or steps.sqlite.
+    Runtime reset never uses project.sqlite, run.db or steps.sqlite.
     """
 
     @staticmethod
@@ -723,130 +721,43 @@ class RuntimeProtocolResetService:
             mapper,
             projectId: int,
             protocolId,
-            usingPostgresqlRuntime: bool,
             currentProject,
-            getScipionProtocolForRuntimeCallback: Callable,
             getPostgresqlRuntimeSubworkflowCallback: Callable,
-            workflowProtocolMapToProtocolsCallback: Callable,
             stopPostgresqlProtocolsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ) -> Dict[str, Any]:
-        protocol = (
-            getScipionProtocolForRuntimeCallback(
+        try:
+            workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
-        )
-
-        try:
-            if usingPostgresqlRuntime:
-                workflowProtocolList = (
-                    getPostgresqlRuntimeSubworkflowCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
-                )
-
-            else:
-                (
-                    workflowProtocolList,
-                    _activeProtocolList,
-                ) = currentProject._getSubworkflow(
-                    protocol
-                )
-
         except Exception as error:
             logger.exception(
-                "Failed to resolve subworkflow for "
-                "reset-from. projectId=%s "
-                "protocolId=%s",
+                "Failed to resolve subworkflow for reset-from. "
+                "projectId=%s protocolId=%s",
                 projectId,
                 protocolId,
             )
 
             raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail=(
-                    "Failed to resolve protocol "
-                    "subworkflow: %s"
-                    % error
-                ),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resolve protocol subworkflow: %s" % error,
             ) from error
 
-        if usingPostgresqlRuntime:
-            return (
-                self
-                ._resetPostgresqlSubworkflow(
-                    mapper=mapper,
-                    projectId=projectId,
-                    workflowProtocolMap=(
-                        workflowProtocolList
-                    ),
-                    currentProject=(
-                        currentProject
-                    ),
-                    stopPostgresqlProtocolsCallback=(
-                        stopPostgresqlProtocolsCallback
-                    ),
-                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                        deletePersistedProtocolOutputsForRuntimeProtocolsCallback
-                    ),
-                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-                        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback
-                    ),
-                    buildProtocolMutationResultCallback=(
-                        buildProtocolMutationResultCallback
-                    ),
-                )
-            )
-
-        errorProtocols = (
-            currentProject.resetWorkFlow(
-                workflowProtocolList
-            )
-            or []
-        )
-
-        if errorProtocols:
-            raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail=[
-                    (
-                        "Failed to reset protocol %s"
-                        % getattr(
-                            protocolToReset,
-                            "getObjId",
-                            lambda: "unknown",
-                        )()
-                    )
-                    for protocolToReset
-                    in errorProtocols
-                ],
-            )
-
-        workflowProtocols = (
-            workflowProtocolMapToProtocolsCallback(
-                workflowProtocolList
-            )
-        )
-
-        return (
-            buildProtocolMutationResultCallback(
-                "Protocol subtree reset successfully",
-                protocolsCount=len(
-                    workflowProtocols
-                ),
-                dependenciesCount=0,
-                postgresqlRuntimeReset=False,
-            )
+        return self._resetPostgresqlSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            workflowProtocolMap=workflowProtocolMap,
+            currentProject=currentProject,
+            stopPostgresqlProtocolsCallback=stopPostgresqlProtocolsCallback,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback
+            ),
+            buildProtocolMutationResultCallback=buildProtocolMutationResultCallback,
         )

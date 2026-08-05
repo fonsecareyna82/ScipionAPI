@@ -41,9 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeProjectGraphSyncService:
-    """Synchronize the Scipion project graph into PostgreSQL runtime tables."""
+    """
+    Import a complete legacy Scipion project graph into PostgreSQL.
 
-    def syncProjectProtocolsAndDependencies(
+    This service belongs exclusively to old-project migration. Normal runtime
+    mutations must synchronize only the explicitly affected protocols.
+    """
+
+    def syncLegacyProjectGraphToPostgresql(
             self,
             mapper,
             projectId: int,

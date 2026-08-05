@@ -227,44 +227,35 @@ class ProtocolService:
             mapper,
             projectId: int,
             protocolId: int,
-            usingPostgresqlRuntime: bool,
             syncPostgresqlRuntimeProtocolCallback: Callable,
-            getScipionProtocolForRuntimeCallback: Callable,
-            fixProtocolParamsConfigurationCallback: Callable,
-            buildProtocolContextCallback: Callable,
     ) -> Dict[str, Any]:
         """
-        Return the web context of an existing protocol.
+        Return the PostgreSQL runtime web context of an existing protocol.
 
-        PostgreSQL-runtime protocols reuse the context built from the real
-        run.db protocol, preserving runtime outputs and avoiding a second
-        protocol reconstruction.
+        The protocol is reconstructed from PostgreSQL and the context produced
+        during that reconstruction is returned directly.
         """
-        if usingPostgresqlRuntime:
-            syncResult = (
-                syncPostgresqlRuntimeProtocolCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                    registerOutputs=False,
-                    syncRelations=False,
-                    returnProtocolContext=True,
-                )
-            )
-
-            return syncResult["protocolContext"]
-
-        protocol = getScipionProtocolForRuntimeCallback(
+        syncResult = syncPostgresqlRuntimeProtocolCallback(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            registerOutputs=False,
+            syncRelations=False,
+            returnProtocolContext=True,
         )
 
-        protocol.getPlugin()
-        fixProtocolParamsConfigurationCallback(protocol)
-
-        return buildProtocolContextCallback(
-            projectId,
-            protocol,
-            mapper,
+        protocolContext = (syncResult or {}).get(
+            "protocolContext"
         )
+
+        if protocolContext is None:
+            raise RuntimeError(
+                "PostgreSQL runtime protocol context is not available. "
+                "projectId=%s protocolId=%s"
+                % (
+                    projectId,
+                    protocolId,
+                )
+            )
+
+        return protocolContext

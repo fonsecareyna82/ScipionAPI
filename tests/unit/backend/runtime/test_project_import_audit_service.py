@@ -25,6 +25,8 @@
 # ******************************************************************************
 import inspect
 
+import pytest
+
 import app.backend.runtime.project_import_audit_service as auditModule
 from app.backend.runtime.project_import_audit_service import RuntimeProjectImportAuditService
 
@@ -111,3 +113,158 @@ def test_AuditProjectDelegatesRuntimeCounts(monkeypatch):
     assert ".db.fetchAll(" not in source
     assert ".db.execute(" not in source
 
+
+def test_ImportAuditExposesPostMigrationAuditsWithoutRuntimeModeSwitch():
+    auditServiceClass = RuntimeProjectImportAuditService
+    classSource = inspect.getsource(
+        auditServiceClass
+    )
+
+    assert hasattr(
+        auditServiceClass,
+        "auditProject",
+    )
+    assert hasattr(
+        auditServiceClass,
+        "auditLoadedProject",
+    )
+    assert hasattr(
+        auditServiceClass,
+        "auditRuntimeProject",
+    )
+
+    assert "usingPostgresqlRuntimeMapper" not in classSource
+
+
+class RuntimeProjectStub:
+    def __init__(
+            self,
+            runtimeMapper,
+            activeMapper=None,
+    ):
+        self.runtimeMapper = runtimeMapper
+        self.mapper = (
+            runtimeMapper
+            if activeMapper is None
+            else activeMapper
+        )
+
+    def getPostgresqlRuntimeMapper(self):
+        return self.runtimeMapper
+
+
+def test_AuditRuntimeProjectValidatesRegisteredPostgresqlMapper(
+        tmp_path,
+):
+    runtimeMapper = object()
+    runtimeProject = RuntimeProjectStub(
+        runtimeMapper=runtimeMapper,
+    )
+
+    result = (
+        RuntimeProjectImportAuditService()
+        .auditRuntimeProject(
+            runtimeProject=runtimeProject,
+            projectPath=str(tmp_path),
+        )
+    )
+
+    assert result == {
+        "complete": True,
+        "runtimeMapper": "object",
+        "writeFallbackEnabled": False,
+        "projectSqlitePresent": False,
+    }
+
+
+def test_AuditRuntimeProjectRejectsDifferentActiveMapper(
+        tmp_path,
+):
+    runtimeProject = RuntimeProjectStub(
+        runtimeMapper=object(),
+        activeMapper=object(),
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="registered PostgreSQL runtime mapper",
+    ):
+        RuntimeProjectImportAuditService().auditRuntimeProject(
+            runtimeProject=runtimeProject,
+            projectPath=str(tmp_path),
+        )
+
+
+def test_AuditRuntimeProjectRejectsRemainingProjectSqlite(
+        tmp_path,
+):
+    projectDatabase = tmp_path / "project.sqlite"
+    projectDatabase.write_text(
+        "legacy",
+        encoding="utf-8",
+    )
+
+    runtimeProject = RuntimeProjectStub(
+        runtimeMapper=object(),
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="legacy project databases",
+    ):
+        RuntimeProjectImportAuditService().auditRuntimeProject(
+            runtimeProject=runtimeProject,
+            projectPath=str(tmp_path),
+        )
+
+
+def test_AuditLoadedProjectValidatesReconstructedGraph():
+    loadedProject = {
+        "protocols": {
+            "PROJECT": {
+                "id": "PROJECT",
+            },
+            "10": {
+                "parents": [],
+                "inputs": [],
+                "outputs": [
+                    {
+                        "name": "outputParticles",
+                    },
+                ],
+            },
+            "11": {
+                "parents": [
+                    "10",
+                ],
+                "inputs": [
+                    {
+                        "name": "inputParticles",
+                    },
+                ],
+                "outputs": [],
+            },
+        },
+    }
+
+    migrationReport = {
+        "protocols": 2,
+        "dependencies": 1,
+        "inputRefs": 1,
+        "outputs": 1,
+    }
+
+    result = (
+        RuntimeProjectImportAuditService()
+        .auditLoadedProject(
+            loadedProject=loadedProject,
+            migrationReport=migrationReport,
+        )
+    )
+
+    assert result == {
+        "complete": True,
+        "expected": migrationReport,
+        "actual": migrationReport,
+        "mismatches": [],
+    }

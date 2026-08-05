@@ -122,18 +122,10 @@ class RuntimeProjectImportAuditService:
         }
 
         expected = {
-            "protocols": int(
-                migrationReport.get("protocols") or 0
-            ),
-            "dependencies": int(
-                migrationReport.get("dependencies") or 0
-            ),
-            "inputRefs": int(
-                migrationReport.get("inputRefs") or 0
-            ),
-            "outputs": int(
-                migrationReport.get("outputs") or 0
-            ),
+            "protocols": int(migrationReport.get("protocols") or 0),
+            "dependencies": int(migrationReport.get("dependencies") or 0),
+            "inputRefs": int(migrationReport.get("inputRefs") or 0),
+            "outputs": int(migrationReport.get("outputs") or 0),
         }
 
         actual = {
@@ -188,27 +180,27 @@ class RuntimeProjectImportAuditService:
                 "PostgreSQL runtime project was not loaded"
             )
 
-        usingPostgresqlMapper = getattr(
+        getRuntimeMapper = getattr(
             runtimeProject,
-            "usingPostgresqlRuntimeMapper",
+            "getPostgresqlRuntimeMapper",
             None,
         )
 
-        if (
-                not callable(usingPostgresqlMapper)
-                or not usingPostgresqlMapper()
-        ):
+        if not callable(getRuntimeMapper):
             raise RuntimeError(
-                "Imported project is not using "
-                "PostgresqlRuntimeMapper"
+                "Imported project does not expose getPostgresqlRuntimeMapper()"
             )
 
-        runtimeMapper = runtimeProject.getPostgresqlRuntimeMapper()
+        runtimeMapper = getRuntimeMapper()
 
         if runtimeMapper is None:
             raise RuntimeError(
-                "Imported project does not expose "
-                "PostgresqlRuntimeMapper"
+                "Imported project does not expose PostgresqlRuntimeMapper"
+            )
+
+        if getattr(runtimeProject, "mapper", None) is not runtimeMapper:
+            raise RuntimeError(
+                "Imported project is not using its registered PostgreSQL runtime mapper"
             )
 
         writeFallbackMapper = getattr(
@@ -219,12 +211,10 @@ class RuntimeProjectImportAuditService:
 
         if writeFallbackMapper is not None:
             raise RuntimeError(
-                "Imported project unexpectedly enabled "
-                "the SQLite write fallback"
+                "Imported project unexpectedly enabled the SQLite write fallback"
             )
 
-        projectRoot = Path(projectPath)
-        projectDatabase = projectRoot / "project.sqlite"
+        projectDatabase = Path(projectPath) / "project.sqlite"
 
         remainingProjectDatabases = [
             str(projectDatabase) + suffix
@@ -234,24 +224,20 @@ class RuntimeProjectImportAuditService:
                 "-shm",
                 "-journal",
             )
-            if os.path.lexists(
-                str(projectDatabase) + suffix
-            )
+            if os.path.lexists(str(projectDatabase) + suffix)
         ]
 
         if remainingProjectDatabases:
             raise RuntimeError(
-                "PostgreSQL runtime project still has "
-                "legacy project databases: %s"
+                "PostgreSQL runtime project still has legacy project databases: %s"
                 % remainingProjectDatabases
             )
 
         return {
             "complete": True,
-            "runtimeMapper": (
-                runtimeMapper.__class__.__name__
-            ),
+            "runtimeMapper": runtimeMapper.__class__.__name__,
             "writeFallbackEnabled": False,
             "projectSqlitePresent": False,
         }
+
 

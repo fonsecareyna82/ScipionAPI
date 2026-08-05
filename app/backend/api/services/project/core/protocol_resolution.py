@@ -1,6 +1,5 @@
 """Resolving protocol identities/objects across the Scipion runtime and
-PostgreSQL, and detecting whether a loaded project uses the PostgreSQL
-runtime mapper. All functions here take the state they need (currentProject,
+PostgreSQL. All functions here take the state they need (currentProject,
 mapper, projectId, protocolId) explicitly rather than caching it - the
 caller (ProjectService) owns currentProject and it can be reassigned during
 a request, so nothing here should snapshot it at construction time.
@@ -10,24 +9,9 @@ from typing import Optional, Union
 
 from fastapi import HTTPException, status
 
-from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
 logger = logging.getLogger(__name__)
-
-
-def currentProjectUsesPostgresqlRuntimeMapper(currentProject) -> bool:
-    if currentProject is None:
-        return False
-
-    checker = getattr(currentProject, "usingPostgresqlRuntimeMapper", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-
-    return isinstance(getattr(currentProject, "mapper", None), PostgresqlRuntimeMapper)
 
 
 def resolveScipionProtocolId(mapper, projectId: int, protocolId) -> Optional[int]:

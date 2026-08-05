@@ -89,7 +89,6 @@ from app.backend.mapper.postgresql import (
 )
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
-from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
@@ -238,9 +237,6 @@ class ProjectService:
             self._thumbnailService = thumbnailService
 
         return thumbnailService
-
-    def _currentProjectUsesPostgresqlRuntimeMapper(self) -> bool:
-        return _protocolResolution.currentProjectUsesPostgresqlRuntimeMapper(self.currentProject)
 
     def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
                                       projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
@@ -1411,7 +1407,7 @@ class ProjectService:
             "interactive",
         }
 
-    def syncProjectProtocolsAndDependencies(
+    def _syncLegacyProjectGraphToPostgresql(
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
@@ -1419,130 +1415,59 @@ class ProjectService:
             checkPid: bool = False,
             strict: bool = False,
             syncRelations: bool = False,
-            outputProjectPaths: Optional[
-                Sequence[str]
-            ] = None,
+            outputProjectPaths: Optional[Sequence[str]] = None,
             allowDetachedSetOutputs: bool = False,
-            prepareProtocolForOutputPersistenceCallback:
-            Optional[Callable] = None,
+            prepareProtocolForOutputPersistenceCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
+        """
+        Import a complete legacy Scipion project graph into PostgreSQL.
+
+        This method is restricted to the old-project migration boundary.
+        Normal runtime mutations must synchronize only their explicitly
+        selected protocols, inputs, dependencies, outputs and relations.
+        """
         if self.currentProject is None:
             raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail="No current project loaded",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No legacy project loaded for PostgreSQL import",
             )
 
-        runtimeProjectGraphSyncService = (
-            RuntimeProjectGraphSyncService()
-        )
-
-        registerOutputCallback = (
-            self.registerOutput
-        )
-
+        runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
+        registerOutputCallback = self.registerOutput
         normalizedOutputProjectPaths = []
 
-        for candidatePath in (
-                outputProjectPaths or []
-        ):
+        for candidatePath in outputProjectPaths or []:
             if not candidatePath:
                 continue
 
-            normalizedPath = os.path.abspath(
-                os.path.expanduser(
-                    str(candidatePath)
-                )
-            )
+            normalizedPath = os.path.abspath(os.path.expanduser(str(candidatePath)))
 
-            if (
-                    normalizedPath
-                    not in normalizedOutputProjectPaths
-            ):
-                normalizedOutputProjectPaths.append(
-                    normalizedPath
-                )
+            if normalizedPath not in normalizedOutputProjectPaths:
+                normalizedOutputProjectPaths.append(normalizedPath)
 
-        if (
-                normalizedOutputProjectPaths
-                or allowDetachedSetOutputs
-        ):
-            def registerOutputCallback(
-                    **kwargs
-            ):
+        if normalizedOutputProjectPaths or allowDetachedSetOutputs:
+            def registerOutputCallback(**kwargs):
                 return self.registerOutput(
                     **kwargs,
-                    projectPaths=(
-                        normalizedOutputProjectPaths
-                    ),
-                    allowDetachedSetOutputs=(
-                        allowDetachedSetOutputs
-                    ),
+                    projectPaths=normalizedOutputProjectPaths,
+                    allowDetachedSetOutputs=allowDetachedSetOutputs,
                 )
 
-        return (
-            runtimeProjectGraphSyncService
-            .syncProjectProtocolsAndDependencies(
-                mapper=mapper,
-                projectId=projectId,
-                currentProject=self.currentProject,
-                buildProtocolContextCallback=(
-                    self._buildProtocolContext
-                ),
-                tryGetScipionProtocolByRuntimeIdCallback=(
-                    self
-                    ._tryGetScipionProtocolByRuntimeId
-                ),
-                getScipionObjectIdCallback=(
-                    self._getScipionObjectId
-                ),
-                registerOutputCallback=(
-                    registerOutputCallback
-                ),
-                shouldPreservePostgresqlOnlyProtocolsCallback=(
-                    self
-                    ._shouldPreservePostgresqlOnlyProtocols
-                ),
-                prepareProtocolForOutputPersistenceCallback=(
-                    prepareProtocolForOutputPersistenceCallback
-                ),
-                refresh=refresh,
-                checkPid=checkPid,
-                strict=strict,
-                syncRelations=syncRelations,
-            )
+        return runtimeProjectGraphSyncService.syncLegacyProjectGraphToPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            currentProject=self.currentProject,
+            buildProtocolContextCallback=self._buildProtocolContext,
+            tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            registerOutputCallback=registerOutputCallback,
+            shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
+            prepareProtocolForOutputPersistenceCallback=prepareProtocolForOutputPersistenceCallback,
+            refresh=refresh,
+            checkPid=checkPid,
+            strict=strict,
+            syncRelations=syncRelations,
         )
-
-    def syncProjectGraphAfterMutation(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            actionLabel: str,
-            refresh: bool = True,
-            checkPid: bool = True,
-    ) -> Dict[str, Any]:
-        try:
-            return self.syncProjectProtocolsAndDependencies(
-                mapper,
-                projectId,
-                refresh=refresh,
-                checkPid=checkPid,
-                syncRelations=False,
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(
-                "Failed to sync protocol graph after %s. projectId=%s",
-                actionLabel,
-                projectId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"{actionLabel} succeeded but graph sync to PostgreSQL failed: {e}",
-            )
 
     def _migrateImportedProjectToPostgresql(
             self,
@@ -1682,20 +1607,16 @@ class ProjectService:
 
             migrationReport = (
                 self
-                .syncProjectProtocolsAndDependencies(
+                ._syncLegacyProjectGraphToPostgresql(
                     mapper=mapper,
                     projectId=projectId,
                     refresh=False,
                     checkPid=False,
                     strict=True,
                     syncRelations=True,
-                    outputProjectPaths=(
-                        outputProjectPaths
-                    ),
+                    outputProjectPaths=outputProjectPaths,
                     allowDetachedSetOutputs=True,
-                    prepareProtocolForOutputPersistenceCallback=(
-                        prepareImportedProtocolOutputs
-                    ),
+                    prepareProtocolForOutputPersistenceCallback=prepareImportedProtocolOutputs,
                 )
             )
 
@@ -3518,7 +3439,7 @@ class ProjectService:
         Apply a predefined workflow template to an existing project.
         Returns a JSON-serializable dict suitable for sending to the frontend.
         """
-        if self.currentProject is None or not self._currentProjectUsesPostgresqlRuntimeMapper():
+        if self.currentProject is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="PostgreSQL runtime project context is not loaded",
@@ -4656,7 +4577,6 @@ class ProjectService:
             buildProtocolThumbnailUrlCallback=self.buildProtocolThumbnailUrl,
             buildProtocolThumbnailRebuildUrlCallback=self.buildProtocolThumbnailRebuildUrl,
             findViewersWebCallback=self.findViewersWeb,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             getScipionObjectIdCallback=self._getScipionObjectId,
             resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             splitPointerValueCallback=self._splitPointerValue,
@@ -4688,11 +4608,7 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            fixProtocolParamsConfigurationCallback=self.currentProject._fixProtParamsConfiguration,
-            buildProtocolContextCallback=self._buildProtocolContext,
         )
 
     def getNextProtocolSuggestions(
@@ -4980,14 +4896,10 @@ class ProjectService:
             setToSave=setToSave,
             currentProject=self.currentProject,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
                 self.syncPostgresqlRuntimeProtocolInputsAndDependencies
-            ),
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
             ),
         )
 
@@ -5052,12 +4964,8 @@ class ProjectService:
             currentProject=self.currentProject,
             saveProtocolCallback=self.saveProtocol,
             stopProtocolCallback=self.stopProtocol,
-            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
             preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
                 self._preparePostgresqlRuntimePointerOutputsForLaunch
-            ),
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
             ),
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
                 self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
@@ -5228,7 +5136,7 @@ class ProjectService:
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
-    def _duplicatePostgresqlRuntimeProtocols(self, mapper, projectId: int, protocols):
+    def duplicateProtocol(self, mapper, projectId, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
         return runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
@@ -5242,30 +5150,6 @@ class ProjectService:
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
             getParentProtocolForPointerCallback=self._getParentProtocolForPointer,
             storeProtocolCallback=self.currentProject._storeProtocol,
-            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-        )
-
-    def duplicateProtocol(self, mapper, projectId, protocols):
-        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
-
-        usingPostgresqlRuntime = self._currentProjectUsesPostgresqlRuntimeMapper()
-
-        if usingPostgresqlRuntime:
-            return self._duplicatePostgresqlRuntimeProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=protocols,
-            )
-
-        return runtimeProtocolDuplicateService.duplicateLegacyProtocols(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=protocols,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            copyProtocolsCallback=self.currentProject.copyProtocol,
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
-            ),
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
@@ -5547,13 +5431,7 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            currentProjectDeleteProtocolCallback=self.currentProject.deleteProtocol,
-            mapperDeleteProtocolCallback=mapper.deleteProtocol,
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
-            ),
             cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
         )
 
@@ -5904,27 +5782,23 @@ class ProjectService:
             projectId: int,
             protocolId,
     ):
-        runtimeProtocolRestartService = (
-            RuntimeProtocolRestartService()
-        )
+        runtimeProtocolRestartService = RuntimeProtocolRestartService()
 
-        return (
-            runtimeProtocolRestartService
-            .restartProtocolSubworkflow(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
-                launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolRestartService.restartProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
+            launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def continueProtocolAll(
@@ -5934,9 +5808,7 @@ class ProjectService:
             protocolId,
             currentUser,
     ):
-        runtimeProtocolContinueService = (
-            RuntimeProtocolContinueService()
-        )
+        runtimeProtocolContinueService = RuntimeProtocolContinueService()
 
         return (
             runtimeProtocolContinueService
@@ -5944,45 +5816,12 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                usingPostgresqlRuntime=(
-                    self
-                    ._currentProjectUsesPostgresqlRuntimeMapper()
-                ),
-                currentProject=(
-                    self.currentProject
-                ),
-                getScipionProtocolForRuntimeCallback=(
-                    self
-                    ._getScipionProtocolForRuntime
-                ),
-                getPostgresqlRuntimeSubworkflowCallback=(
-                    self
-                    ._getPostgresqlRuntimeSubworkflow
-                ),
-                workflowProtocolMapToProtocolsCallback=(
-                    self
-                    ._workflowProtocolMapToProtocols
-                ),
-                buildPostgresqlContinuePlanCallback=(
-                    self
-                    ._buildPostgresqlContinuePlan
-                ),
-                launchPostgresqlContinueSubworkflowCallback=(
-                    self
-                    ._launchPostgresqlContinueSubworkflow
-                ),
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                    self
-                    ._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
-                ),
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-                    self
-                    ._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
-                ),
-                buildProtocolMutationResultCallback=(
-                    self
-                    ._buildProtocolMutationResult
-                ),
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                buildPostgresqlContinuePlanCallback=self._buildPostgresqlContinuePlan,
+                launchPostgresqlContinueSubworkflowCallback=self._launchPostgresqlContinueSubworkflow,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             )
         )
 
@@ -5992,26 +5831,22 @@ class ProjectService:
             projectId: int,
             protocolId,
     ):
-        runtimeProtocolResetService = (
-            RuntimeProtocolResetService()
-        )
+        runtimeProtocolResetService = RuntimeProtocolResetService()
 
-        return (
-            runtimeProtocolResetService
-            .resetProtocolSubworkflow(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
-                stopPostgresqlProtocolsCallback=self.stopProtocol,
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolResetService.resetProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentProject=self.currentProject,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            stopPostgresqlProtocolsCallback=self.stopProtocol,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def stopProtocol(
@@ -6020,21 +5855,15 @@ class ProjectService:
             projectId: int,
             protocolIds,
     ):
-        runtimeProtocolStopService = (
-            RuntimeProtocolStopService()
-        )
+        runtimeProtocolStopService = RuntimeProtocolStopService()
 
-        return (
-            runtimeProtocolStopService
-            .stopProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocolIds=protocolIds,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolStopService.stopProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocolIds=protocolIds,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
@@ -6601,12 +6430,6 @@ class ProjectService:
                 protocolIds=protocolIds,
             )
         )
-
-        if not (
-                self
-                        ._currentProjectUsesPostgresqlRuntimeMapper()
-        ):
-            return protocolList
 
         parentProtocolsById = {}
 
@@ -7195,33 +7018,17 @@ class ProjectService:
             Any,
         ] = {}
 
-        if (
-                mapper is not None
-                and projectId is not None
-                and (
-                self
-                        ._currentProjectUsesPostgresqlRuntimeMapper()
-        )
-        ):
-            postgresqlOutput, outputInfo = (
-                self
-                ._resolvePostgresqlOutputForPreview(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=(
-                        scipionProtocolId
-                    ),
-                    outputName=outputName,
-                )
-            )
+        if mapper is not None and projectId is not None:
+            postgresqlOutput, outputInfo = self._resolvePostgresqlOutputForPreview(mapper=mapper,
+                                                                                   projectId=projectId,
+                                                                                   protocolId=scipionProtocolId,
+                                                                                   outputName=outputName,)
 
             if postgresqlOutput is not None:
                 output = postgresqlOutput
 
         if output is None:
-            reason = outputInfo.get(
-                "reason"
-            )
+            reason = outputInfo.get("reason")
 
             detail = (
                 f"Output '{outputName}' "

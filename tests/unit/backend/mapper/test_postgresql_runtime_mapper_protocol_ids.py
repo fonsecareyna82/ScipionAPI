@@ -23,7 +23,6 @@
 # * 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import sqlite3
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -51,18 +50,6 @@ class ExampleProtocol(Protocol):
 
 class ExampleObject(Object):
     pass
-
-
-class FakeProject:
-    def __init__(self, projectPath, dbPath=None):
-        self.path = str(projectPath)
-        self.dbPath = str(dbPath) if dbPath is not None else None
-
-    def getPath(self):
-        return self.path
-
-    def getDbPath(self):
-        return self.dbPath
 
 
 class FakeFlatMapper:
@@ -133,60 +120,10 @@ class FakeProtocolCounterDb:
             "Unexpected query: %s" % normalizedQuery
         )
 
-def createProjectSqlite(projectPath, occupiedIds=()):
-    projectPath.mkdir(parents=True, exist_ok=True)
-    sqlitePath = projectPath / "project.sqlite"
 
-    with sqlite3.connect(sqlitePath) as connection:
-        connection.execute(
-            """
-            CREATE TABLE Objects (
-                id INTEGER PRIMARY KEY,
-                parent_id INTEGER,
-                name TEXT,
-                classname TEXT,
-                value TEXT,
-                label TEXT,
-                comment TEXT,
-                creation TEXT
-            )
-            """
-        )
-
-        for objId in occupiedIds:
-            connection.execute(
-                """
-                INSERT INTO Objects (
-                    id,
-                    parent_id,
-                    name,
-                    classname,
-                    value,
-                    label,
-                    comment,
-                    creation
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(objId),
-                    600,
-                    "600.status",
-                    "String",
-                    "finished",
-                    "",
-                    "",
-                    None,
-                ),
-            )
-
-    return sqlitePath
-
-
-def buildRuntimeMapper(project, protocolIds=None, objectIds=None):
+def buildRuntimeMapper(protocolIds=None, objectIds=None):
     mapper = object.__new__(PostgresqlRuntimeMapper)
     mapper.projectId = 31
-    mapper.project = project
     mapper.flatMapper = FakeFlatMapper(
         protocolIds=protocolIds,
         objectIds=objectIds,
@@ -195,166 +132,63 @@ def buildRuntimeMapper(project, protocolIds=None, objectIds=None):
     return mapper
 
 
-def test_ExistsInProjectSqliteReadsPhysicalDatabaseWithoutFallbackMapper(
-        tmp_path,
-):
-    projectPath = tmp_path / "ImportedProject"
-    sqlitePath = createProjectSqlite(
-        projectPath,
-        occupiedIds=[602],
+def test_ProjectSqliteProtocolIdCompatibilityIsRemoved():
+    mapper = buildRuntimeMapper()
+
+    assert not hasattr(
+        mapper,
+        "_getProjectSqlitePath",
+    )
+    assert not hasattr(
+        mapper,
+        "_existsInProjectSqlite",
     )
 
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath=sqlitePath,
-    )
 
-    mapper = buildRuntimeMapper(project)
-
-    assert mapper._existsInProjectSqlite(602) is True
-    assert mapper._existsInProjectSqlite(603) is False
-
-
-def test_ExistsInProjectSqliteResolvesRelativeDatabasePath(
-        tmp_path,
-):
-    projectPath = tmp_path / "ImportedProject"
-
-    createProjectSqlite(
-        projectPath,
-        occupiedIds=[602],
-    )
-
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath="project.sqlite",
-    )
-
-    mapper = buildRuntimeMapper(project)
-
-    assert mapper._getProjectSqlitePath() == str(
-        projectPath / "project.sqlite"
-    )
-
-    assert mapper._existsInProjectSqlite(602) is True
-
-
-def test_ExistsInProjectSqliteReturnsFalseWhenDatabaseDoesNotExist(
-        tmp_path,
-):
-    projectPath = tmp_path / "MissingProject"
-
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath=projectPath / "project.sqlite",
-    )
-
-    mapper = buildRuntimeMapper(project)
-
-    assert mapper._existsInProjectSqlite(602) is False
-
-
-def test_EnsureObjIdSkipsOccupiedProjectSqliteIdsForProtocol(
-        tmp_path,
-):
-    projectPath = tmp_path / "ImportedProject"
-
-    sqlitePath = createProjectSqlite(
-        projectPath,
-        occupiedIds=[
-            602,
-            603,
-            604,
-        ],
-    )
-
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath=sqlitePath,
-    )
-
+def test_EnsureObjIdAllocatesProtocolFromPostgresqlCounter():
     mapper = buildRuntimeMapper(
-        project,
         protocolIds=[
             602,
-            603,
-            604,
-            605,
         ],
     )
-
     protocol = ExampleProtocol()
 
-    protocolId = mapper._ensureObjId(protocol)
+    protocolId = mapper._ensureObjId(
+        protocol
+    )
 
-    assert protocolId == 605
-    assert protocol.getObjId() == 605
-
+    assert protocolId == 602
+    assert protocol.getObjId() == 602
     assert mapper.flatMapper.protocolAllocationCalls == [
-        31,
-        31,
-        31,
         31,
     ]
 
 
-def test_EnsureObjIdKeepsExistingProtocolIdentity(
-        tmp_path,
-):
-    projectPath = tmp_path / "ImportedProject"
-
-    sqlitePath = createProjectSqlite(
-        projectPath,
-        occupiedIds=[602],
-    )
-
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath=sqlitePath,
-    )
-
+def test_EnsureObjIdKeepsExistingProtocolIdentity():
     mapper = buildRuntimeMapper(
-        project,
-        protocolIds=[603],
+        protocolIds=[
+            603,
+        ],
     )
-
     protocol = ExampleProtocol(
         objId=777
     )
 
-    protocolId = mapper._ensureObjId(protocol)
+    protocolId = mapper._ensureObjId(
+        protocol
+    )
 
     assert protocolId == 777
     assert protocol.getObjId() == 777
     assert mapper.flatMapper.protocolAllocationCalls == []
 
 
-def test_EnsureObjIdDoesNotCheckProjectSqliteForNonProtocol(
-        tmp_path,
-):
-    projectPath = tmp_path / "ImportedProject"
-
-    sqlitePath = createProjectSqlite(
-        projectPath,
-        occupiedIds=[602],
-    )
-
-    project = FakeProject(
-        projectPath=projectPath,
-        dbPath=sqlitePath,
-    )
-
+def test_EnsureObjIdAllocatesNonProtocolFromObjectNamespace():
     mapper = buildRuntimeMapper(
-        project,
         objectIds=[
-            POSTGRESQL_RUNTIME_OBJECT_ID_START
+            POSTGRESQL_RUNTIME_OBJECT_ID_START,
         ],
     )
-
-    mapper._existsInProjectSqlite = lambda objId: pytest.fail(
-        "Non-protocol ids must not be checked against project.sqlite"
-    )
-
     runtimeObject = ExampleObject()
 
     objectId = mapper._ensureObjId(
@@ -363,7 +197,9 @@ def test_EnsureObjIdDoesNotCheckProjectSqliteForNonProtocol(
 
     assert objectId == POSTGRESQL_RUNTIME_OBJECT_ID_START
     assert runtimeObject.getObjId() == POSTGRESQL_RUNTIME_OBJECT_ID_START
-    assert mapper.flatMapper.objectAllocationCalls == [31]
+    assert mapper.flatMapper.objectAllocationCalls == [
+        31,
+    ]
 
 
 def test_AllocateProjectProtocolIdRebasesLegacyMillionCounter():

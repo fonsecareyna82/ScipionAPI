@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pyworkflow as pw
-from pyworkflow import PROJECT_DBNAME
 from pyworkflow.project import Project as ScipionProject
 from pyworkflow.project.project import REGEX_NUMBER_ENDING
 from pyworkflow.protocol.constants import (
@@ -73,26 +72,11 @@ class PostgresqlProject(ScipionProject):
         self._postgresqlRuntimeMapper: Optional[PostgresqlRuntimeMapper] = None
 
     def _loadDb(self, dbPath=None):
-        """Load PostgreSQL for the project database and SQLite only for legacy runtime databases."""
-        if dbPath is not None:
-            self.setDbPath(dbPath)
-
-        sqlitePath = self._normalizeSqlitePath(self.dbPath)
-
-        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
-            self.mapper = self.createMapper(sqlitePath)
-            return
-
+        """Load PostgreSQL as the only project runtime mapper."""
         self.mapper = self.createMapper(None)
 
     def createMapper(self, sqliteFn):
-        """Use PostgreSQL for the project and SQLite only for legacy runtime databases."""
-        sqlitePath = self._normalizeSqlitePath(sqliteFn)
-
-        if sqlitePath and os.path.basename(sqlitePath) != PROJECT_DBNAME:
-            logger.info("Creating legacy SQLite mapper for protocol runtime db: %s", sqlitePath)
-            return ScipionProject.createMapper(self, sqlitePath)
-
+        """Create the PostgreSQL runtime mapper regardless of sqliteFn."""
         runtimeMapper = PostgresqlRuntimeMapper(
             flatMapper=self.postgresqlFlatMapper,
             projectId=self.postgresqlProjectId,
@@ -104,9 +88,6 @@ class PostgresqlProject(ScipionProject):
 
     def getPostgresqlRuntimeMapper(self) -> Optional[PostgresqlRuntimeMapper]:
         return self._postgresqlRuntimeMapper
-
-    def usingPostgresqlRuntimeMapper(self) -> bool:
-        return isinstance(self.mapper, PostgresqlRuntimeMapper)
 
     def _updateProtocol(
             self,
@@ -124,13 +105,6 @@ class PostgresqlProject(ScipionProject):
         Reading or refreshing a project must therefore remain read-only with
         respect to protocol execution state.
         """
-        if not self.usingPostgresqlRuntimeMapper():
-            return super()._updateProtocol(
-                protocol,
-                tries=tries,
-                checkPid=checkPid,
-            )
-
         if protocol is None:
             return pw.NOT_UPDATED_UNNECESSARY
 
@@ -166,17 +140,6 @@ class PostgresqlProject(ScipionProject):
             return pw.PROTOCOL_UPDATED
 
         return pw.NOT_UPDATED_UNNECESSARY
-
-    def _normalizeSqlitePath(self, sqliteFn) -> Optional[str]:
-        if not sqliteFn:
-            return None
-
-        sqlitePath = str(sqliteFn)
-
-        if os.path.isabs(sqlitePath):
-            return sqlitePath
-
-        return os.path.abspath(os.path.join(self.path, sqlitePath))
 
     def closeMapper(self):
         """Close the PostgreSQL runtime mapper."""
@@ -230,12 +193,6 @@ class PostgresqlProject(ScipionProject):
         protocol.setObjLabel(label)
 
     def newProtocol(self, protocolClass, **kwargs):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().newProtocol(
-                protocolClass,
-                **kwargs,
-            )
-
         protocol = protocolClass(
             project=self,
             **kwargs,
@@ -261,11 +218,6 @@ class PostgresqlProject(ScipionProject):
         blocks relaunch unless it is saved, scheduled, or included in the
         same mutation group.
         """
-        if not self.usingPostgresqlRuntimeMapper():
-            return super()._getProtocolsDependencies(
-                protocols
-            )
-
         selectedProtocolIds = {
             str(protocolId)
             for protocolId in (
@@ -501,14 +453,6 @@ class PostgresqlProject(ScipionProject):
             scheduled=False,
             force=False,
     ):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().launchProtocol(
-                protocol,
-                wait=wait,
-                scheduled=scheduled,
-                force=force,
-            )
-
         if (
                 protocol.getPrerequisites()
                 and not scheduled
@@ -603,17 +547,6 @@ class PostgresqlProject(ScipionProject):
             prerequisites=None,
             initialSleepTime=0,
     ):
-        if not self.usingPostgresqlRuntimeMapper():
-            return super().scheduleProtocol(
-                protocol,
-                prerequisites=(
-                        prerequisites or []
-                ),
-                initialSleepTime=(
-                    initialSleepTime
-                ),
-            )
-
         prerequisites = (
                 prerequisites or []
         )

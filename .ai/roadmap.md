@@ -5,7 +5,6 @@
 ## This repo specifically
 
 - Consolidate `requirements.txt` into `pyproject.toml` (same pattern as the 3 core repos) — see `.ai/tech-debt.md`.
-- Untrack `dump.rdb`/`.backend_reload_marker` and gitignore them.
 - Bump `actions/checkout`/`actions/setup-python` to `@v7` in `.github/workflows/tests.yml`.
 - Consider a real refactor plan for `app/backend/api/services/project_service.py` (15176 lines) - this is the single largest tech-debt item across all 5 repos by size alone.
 - In progress (`app/backend/api/services/project/core/`): during Phase 1 of that split, `external_viewers.py` landed at ~612 lines (target was ~200-500), since discovery/resolution/matching/launch felt like one cohesive responsibility. Worth a second look once the rest of the split is done - split further only if a cleaner boundary is actually apparent then, not as a given.

@@ -1420,11 +1420,8 @@ class PostgresqlFlatMapper(Mapper):
             nextProtocolId: int,
     ) -> int:
         """
-        Ensure that future PostgreSQL protocol ids do not collide with
-        objects already present in an imported project.sqlite.
-
-        Scipion's SQLite Objects table uses one global id namespace for
-        protocols and all their stored child objects.
+        Ensure that future PostgreSQL protocol ids start above the
+        protocol identities imported from a legacy project.
         """
         projectId = int(projectId)
 
@@ -1485,9 +1482,8 @@ class PostgresqlFlatMapper(Mapper):
         Protocol ids remain below the PostgreSQL runtime-object
         namespace. A legacy imported counter that was initialized from
         MAX(project.sqlite.Objects.id) is automatically rebased.
-
-        SQLite collisions are handled by PostgresqlRuntimeMapper before
-        assigning the candidate to a new protocol.
+        The import flow initializes this counter above the maximum
+        imported protocol id before PostgreSQL runtime allocation begins.
         """
         projectId = int(
             projectId

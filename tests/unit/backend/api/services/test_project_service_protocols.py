@@ -25,6 +25,7 @@
 # ******************************************************************************
 
 import importlib
+import inspect
 import json
 
 import pytest
@@ -33,6 +34,12 @@ from pyworkflow.object import Object as ScipionObject
 from pyworkflow.protocol.params import MultiPointerParam, PointerParam
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
+)
+from app.backend.runtime.protocol_launch_service import (
+    RuntimeProtocolLaunchService,
+)
+from app.backend.runtime.protocol_save_service import (
+    RuntimeProtocolSaveService,
 )
 
 
@@ -161,6 +168,108 @@ def patchRuntimePointerTypes(monkeypatch):
         FakePointerList,
     )
 
+def patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+):
+    syncCalls = []
+
+    def fakeSyncPostgresqlRuntimeInputsAndDependencies(
+            **kwargs,
+    ):
+        syncCalls.append(kwargs)
+
+        protocol = kwargs["protocol"]
+
+        return {
+            "protocolId": str(
+                protocol.getObjId()
+            ),
+            "inputs": 0,
+            "dependencies": 0,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "syncPostgresqlRuntimeProtocolInputsAndDependencies",
+        fakeSyncPostgresqlRuntimeInputsAndDependencies,
+    )
+
+    return syncCalls
+
+
+def patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+):
+    patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+    monkeypatch.setattr(
+        service,
+        "_preparePostgresqlRuntimePointerOutputsForLaunch",
+        lambda **kwargs: {
+            "prepared": 0,
+            "items": [],
+            "errors": [],
+            "skipped": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "syncPostgresqlRuntimeProtocol",
+        lambda **kwargs: {
+            "protocols": 1,
+            "dependencies": 0,
+            "postgresqlRuntimeSync": True,
+        },
+    )
+
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService,
+        "getStoredElapsedTimeSeconds",
+        lambda self, **kwargs: 0.0,
+    )
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 500,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "scheduled",
+            "params": {},
+        },
+        raising=False,
+    )
+    def fakeLaunchProtocol(protocol):
+        if protocol not in service.currentProject.storedProtocols:
+            service.currentProject.storedProtocols.append(protocol)
+
+        service.currentProject.launchedProtocols.append(protocol)
+
+    def fakeScheduleProtocol(protocol):
+        if protocol not in service.currentProject.storedProtocols:
+            service.currentProject.storedProtocols.append(protocol)
+
+        service.currentProject.scheduledProtocols.append(protocol)
+
+    monkeypatch.setattr(
+        service.currentProject,
+        "launchProtocol",
+        fakeLaunchProtocol,
+    )
+    monkeypatch.setattr(
+        service.currentProject,
+        "scheduleProtocol",
+        fakeScheduleProtocol,
+    )
+
+
 class FakePointerAttribute:
     def __init__(self):
         self.extended = None
@@ -254,14 +363,6 @@ class FakeCurrentProject:
         self.storedProtocols = []
         self.launchedProtocols = []
         self.scheduledProtocols = []
-        self.stoppedProtocols = []
-        self.copiedProtocolInputs = []
-        self.copiedProtocolOutputs = []
-        self.deleteProtocolCalls = []
-        self.restartWorkflowInjectedErrors = []
-        self.resetWorkflowResult = []
-        self.failDeleteProtocol = None
-        self.failResetWorkflow = None
 
     def getDomain(self):
         return FakeDomain(self.protocolFactories)
@@ -290,34 +391,6 @@ class FakeCurrentProject:
 
     def scheduleProtocol(self, protocol):
         self.scheduledProtocols.append(protocol)
-
-    def stopProtocol(self, protocol):
-        self.stoppedProtocols.append(protocol)
-
-    def copyProtocol(self, protocols):
-        self.copiedProtocolInputs.append(list(protocols))
-        return list(self.copiedProtocolOutputs)
-
-    def deleteProtocol(self, *protocols):
-        if self.failDeleteProtocol is not None:
-            raise self.failDeleteProtocol
-        self.deleteProtocolCalls.append(list(protocols))
-
-    def _getSubworkflow(self, protocol):
-        return ["wf-a", "wf-b"], ["active-a"]
-
-    def _restartWorkflow(self, errorList, workflowProtocolList):
-        errorList.extend(self.restartWorkflowInjectedErrors)
-
-    def _continueWorkflow(self, errorList, workflowProtocolList):
-        for protocol in workflowProtocolList:
-            protocol.runMode.set("resume-mode")
-            self.launchProtocol(protocol)
-
-    def resetWorkFlow(self, workflowProtocolList):
-        if self.failResetWorkflow is not None:
-            raise self.failResetWorkflow
-        return self.resetWorkflowResult
 
 
 class FakeDb:
@@ -414,7 +487,7 @@ def service(projectServiceModule):
         "protocolClassName": getattr(protocol, "_className", "ProtClass"),
         "params": {},
     }
-    instance.syncProjectProtocolsAndDependencies = (
+    instance._syncLegacyProjectGraphToPostgresql = (
         lambda mapper, projectId, refresh=False, checkPid=False: {
             "protocols": 0,
             "dependencies": 0,
@@ -781,13 +854,13 @@ def test_RegisterOutputReturnsPersistenceReport(
     ]
 
 
-def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
+def test_SyncLegacyProjectGraphToPostgresqlReportsOutputPersistence(
     projectServiceModule,
     service,
     monkeypatch,
 ):
-    service.syncProjectProtocolsAndDependencies = (
-        projectServiceModule.ProjectService.syncProjectProtocolsAndDependencies.__get__(
+    service._syncLegacyProjectGraphToPostgresql = (
+        projectServiceModule.ProjectService._syncLegacyProjectGraphToPostgresql.__get__(
             service,
             projectServiceModule.ProjectService,
         )
@@ -934,7 +1007,7 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
 
     mapper = FakeSyncMapper()
 
-    result = service.syncProjectProtocolsAndDependencies(
+    result = service._syncLegacyProjectGraphToPostgresql(
         mapper=mapper,
         projectId=1,
         refresh=True,
@@ -1314,51 +1387,112 @@ def test_CastParamValueSupportsPrimitiveTypes(monkeypatch):
     assert castValue(FakeCsvList(), "item") == ["item"]
 
 
-def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, service, mapper, monkeypatch):
+def test_SaveServiceHasNoLegacyRuntimePath():
+    signature = inspect.signature(
+        RuntimeProtocolSaveService.saveProtocol
+    )
+    classSource = inspect.getsource(
+        RuntimeProtocolSaveService
+    )
+
+    assert "usesPostgresqlRuntimeCallback" not in signature.parameters
+    assert "syncProjectProtocolsAndDependenciesCallback" not in signature.parameters
+    assert "usingPostgresqlRuntime" not in classSource
+    assert "_syncLegacyGraphAfterSaveIfNeeded" not in classSource
+    assert "_persistProtocolInScipion" not in classSource
+    assert "_persistProtocolInRuntime" in classSource
+
+
+def test_FullProjectGraphSyncIsRestrictedToLegacyImport(
+        projectServiceModule,
+):
+    projectServiceClass = projectServiceModule.ProjectService
+
+    assert not hasattr(
+        projectServiceClass,
+        "syncProjectGraphAfterMutation",
+    )
+    assert not hasattr(
+        projectServiceClass,
+        "syncProjectProtocolsAndDependencies",
+    )
+    assert hasattr(
+        projectServiceClass,
+        "_syncLegacyProjectGraphToPostgresql",
+    )
+
+    legacySyncSource = inspect.getsource(
+        projectServiceClass._syncLegacyProjectGraphToPostgresql
+    )
+    migrationSource = inspect.getsource(
+        projectServiceClass._migrateImportedProjectToPostgresql
+    )
+
+    assert "syncLegacyProjectGraphToPostgresql" in legacySyncSource
+    assert "_syncLegacyProjectGraphToPostgresql" in migrationSource
+    assert "LegacyRuntimeProtocolLoaderService" in migrationSource
+    assert "sqlite3.connect" in migrationSource
+
+
+def test_SaveProtocolCreatesNewProtocolAndSyncsPostgresqlInputs(
+        service,
+        mapper,
+        monkeypatch,
+):
     patchRuntimeParamCasting(
         monkeypatch
     )
-    monkeypatch.setattr(
+
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
         service,
-        "_buildProtocolContext",
-        lambda projectId, protocol: {
-            "projectId": projectId,
-            "protocolId": protocol.getObjId(),
-            "label": protocol._label,
-            "runName": protocol.runName.get(),
-            "comment": protocol._objComment.get(),
-        },
     )
 
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.setupProtocols:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {"protocols": len(service.currentProject.setupProtocols), "dependencies": 0}
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Save must not synchronize the legacy project graph"
+        )
 
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+       "_syncLegacyProjectGraphToPostgresql",
+        failLegacyGraphSync,
     )
 
     def buildProtocol():
-        protocol = FakeProtocol(objId=None, className="ProtClass")
-        protocol.addParam("runName", FakeStringParam(label="Run name"))
-        protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+        protocol = FakeProtocol(
+            objId=None,
+            className="ProtClass",
+        )
+        protocol.addParam(
+            "runName",
+            FakeStringParam(
+                label="Run name"
+            ),
+        )
+        protocol.addParam(
+            "iterations",
+            FakeIntParam(
+                label="Iterations"
+            ),
+        )
+
         return protocol
 
     service.currentProject.protocolFactories["ProtClass"] = buildProtocol
+
+    params = {
+        "runName": "My protocol",
+        "iterations": "5",
+        "_objComment": "comment",
+    }
 
     protocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=None,
         protocolClassName="ProtClass",
-        params={
-            "runName": "My protocol",
-            "iterations": "5",
-            "_objComment": "comment",
-        },
+        params=params,
     )
 
     assert errors == []
@@ -1368,64 +1502,166 @@ def test_SaveProtocolCreatesNewProtocolAndPersistsContext(projectServiceModule, 
     assert protocol.attributeValues["runName"] == "My protocol"
     assert protocol.attributeValues["iterations"] == 5
     assert protocol._objComment.get() == "comment"
-    assert len(service.currentProject.setupProtocols) == 1
-    assert mapper.savedProtocolContexts == [
-        {
-            "projectId": 1,
-            "protocolId": 999,
-            "label": None,
-            "runName": "My protocol",
-            "comment": "comment",
-        }
+
+    assert service.currentProject.setupProtocols == [
+        protocol,
     ]
 
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["mapper"] is mapper
+    assert syncCalls[0]["projectId"] == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
 
-def test_SaveProtocolAggregatesValidationAndPointerErrors(projectServiceModule, service, mapper, monkeypatch):
+
+def test_SaveProtocolAggregatesValidationAndPointerErrors(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
     patchRuntimeParamCasting(
         monkeypatch
     )
 
-    protocol = FakeProtocol(objId=10, className="ProtClass")
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        className="ProtClass",
+    )
     protocol.addParam(
         "iterations",
-        FakeIntParam(label="Iterations", validationErrors=["must be greater than zero"]),
+        FakeIntParam(
+            label="Iterations",
+            validationErrors=[
+                "must be greater than zero",
+            ],
+        ),
     )
+
     service.currentProject.protocols[10] = protocol
-    mapper.dbProtocolsByProtocolId[(10, 1)] = {"id": 500, "protocolId": 10}
+    mapper.dbProtocolsByProtocolId[(10, 1)] = {
+        "id": 500,
+        "protocolId": 10,
+    }
 
     monkeypatch.setattr(
-        projectServiceModule
-        .RuntimeProtocolSaveService,
+        projectServiceModule.RuntimeProtocolSaveService,
         "applyPointerParamsToProtocol",
         lambda self, **kwargs: [
             "pointer error",
         ],
     )
 
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.storedProtocols:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {"protocols": len(service.currentProject.storedProtocols), "dependencies": 0}
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Save must not synchronize the legacy project graph"
+        )
 
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+       "_syncLegacyProjectGraphToPostgresql",
+        failLegacyGraphSync,
     )
 
-    _, errors = service.saveProtocol(
+    params = {
+        "iterations": "3",
+    }
+
+    savedProtocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=10,
         protocolClassName="ProtClass",
-        params={"iterations": "3"},
+        params=params,
     )
 
+    assert savedProtocol is protocol
     assert errors == [
         "**Iterations** must be greater than zero",
         "pointer error",
     ]
-    assert len(service.currentProject.storedProtocols) == 1
+
+    assert service.currentProject.storedProtocols == [
+        protocol,
+    ]
+
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
+
+
+def test_SaveProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    params = {
+        "threshold": 0.5,
+    }
+
+    expectedProtocol = object()
+    expectedResult = (
+        expectedProtocol,
+        [],
+    )
+
+    saveCalls = []
+
+    class FakeSaveService:
+        def saveProtocol(
+                self,
+                **kwargs,
+        ):
+            saveCalls.append(kwargs)
+            return expectedResult
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolSaveService",
+        FakeSaveService,
+    )
+
+    result = service.saveProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params=params,
+        setToSave=True,
+    )
+
+    assert result is expectedResult
+    assert len(saveCalls) == 1
+
+    saveCall = saveCalls[0]
+
+    assert saveCall["mapper"] is mapper
+    assert saveCall["projectId"] == 1
+    assert saveCall["protocolId"] == 500
+    assert saveCall["protocolClassName"] == "ProtClass"
+    assert saveCall["params"] is params
+    assert saveCall["setToSave"] is True
+    assert saveCall["currentProject"] is service.currentProject
+
+    assert set(saveCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "protocolClassName",
+        "params",
+        "setToSave",
+        "currentProject",
+        "getScipionProtocolForRuntimeCallback",
+        "resolvePointerParentProtocolCallback",
+        "resolveParentOutputCallback",
+        "syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback",
+    }
 
 
 def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
@@ -1443,42 +1679,102 @@ def test_LaunchProtocolRejectsUnknownExecuteMode(service, mapper):
     assert exc.value.detail == "Unknown executeMode: invalid-mode"
 
 
-def test_LaunchProtocolPostgresqlResumeDoesNotUseLegacyRuntimeDb(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10, validateErrors=[])
-    monkeypatch.setattr(service, "_currentProjectUsesPostgresqlRuntimeMapper", lambda: True)
-    monkeypatch.setattr(service, "saveProtocol", lambda *args, **kwargs: (protocol, []))
-    monkeypatch.setattr(service, "_preparePostgresqlRuntimePointerOutputsForLaunch", lambda **kwargs: {"prepared": 0, "items": [], "errors": [], "skipped": False})
-    monkeypatch.setattr(RuntimeProtocolStatusSyncService, "getStoredElapsedTimeSeconds", lambda self, **kwargs: 0.0)
-    mapper.getProjectProtocolByProtocolId = lambda projectId, protocolId: {"status": "scheduled"}
+def test_LaunchServiceHasNoLegacyRuntimePath():
+    signature = inspect.signature(
+        RuntimeProtocolLaunchService.launchProtocol
+    )
+    classSource = inspect.getsource(
+        RuntimeProtocolLaunchService
+    )
 
-    result = service.launchProtocol(mapper=mapper, projectId=1, protocolId="10", protocolClassName="ProtClass", params={}, executeMode="launch")
+    assert "usesPostgresqlRuntimeCallback" not in signature.parameters
+    assert "syncProjectProtocolsAndDependenciesCallback" not in signature.parameters
+    assert "usingPostgresqlRuntime" not in classSource
+    assert "_syncBeforeLaunchIfNeeded" not in classSource
+    assert "syncProjectProtocolsAndDependenciesCallback" not in classSource
+    assert "preparePostgresqlRuntimePointerOutputsForLaunchCallback" in signature.parameters
+    assert "syncPostgresqlRuntimeProtocolCallback" in signature.parameters
+
+
+def test_LaunchProtocolPostgresqlResumeDoesNotUseLegacyRuntimeDb(
+        service,
+        mapper,
+        monkeypatch,
+):
+    protocol = FakeProtocol(
+        objId=10,
+        validateErrors=[],
+    )
+
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "saveProtocol",
+        lambda *args, **kwargs: (
+            protocol,
+            [],
+        ),
+    )
+
+    result = service.launchProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId="10",
+        protocolClassName="ProtClass",
+        params={},
+        executeMode="launch",
+    )
 
     assert service.currentProject.launchedProtocols == [protocol]
     assert result["postgresqlRuntimeLaunch"] is True
     assert result["protocolStatus"] == "scheduled"
 
-def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch):
+
+def test_LaunchProtocolStopReturnsPostgresqlStopResult(
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeStop": True,
+    }
+
     calls = []
 
-    def fakeStopProtocol(mapper, projectId, protocolIds):
-        calls.append(protocolIds)
-
-    def fakeSyncProjectProtocolsAndDependencies(
-        mapper,
-        projectId,
-        refresh=False,
-        checkPid=False,
+    def fakeStopProtocol(
+            mapper,
+            projectId,
+            protocolIds,
     ):
-        return {
-            "protocols": 1,
-            "dependencies": 0,
-        }
+        calls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        })
 
-    monkeypatch.setattr(service, "stopProtocol", fakeStopProtocol)
+        return expectedResult
+
+    def failLegacyGraphSync(*args, **kwargs):
+        raise AssertionError(
+            "Launch stop must not synchronize the legacy project graph"
+        )
+
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
+        "stopProtocol",
+        fakeStopProtocol,
+    )
+    monkeypatch.setattr(
+        service,
+       "_syncLegacyProjectGraphToPostgresql",
+        failLegacyGraphSync,
     )
 
     result = service.launchProtocol(
@@ -1490,21 +1786,36 @@ def test_LaunchProtocolStopDelegatesToStopProtocol(service, mapper, monkeypatch)
         executeMode="stop",
     )
 
-    assert calls == [["10"]]
-    assert result == {
-        "protocols": 1,
-        "dependencies": 0,
-    }
+    assert result is expectedResult
+    assert calls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocolIds": ["10"],
+    }]
 
 
 def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch):
     protocol = FakeProtocol(objId=10, validateErrors=["protocol validation error"])
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
     monkeypatch.setattr(
         service,
         "saveProtocol",
         lambda *args, **kwargs: (
             protocol,
             [],
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+       "_syncLegacyProjectGraphToPostgresql",
+        lambda *args, **kwargs: (
+            pytest.fail(
+                "Validation failure must not synchronize the legacy project graph"
+            )
         ),
     )
 
@@ -1557,17 +1868,14 @@ def test_LaunchProtocolRunsProtocolWithExpectedRunMode(
         "restart-mode",
     )
 
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
+
     protocol = FakeProtocol(objId=10, useQueueFlag=True, validateErrors=[])
     monkeypatch.setattr(service, "saveProtocol", lambda *args, **kwargs: (protocol, []))
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        lambda *args, **kwargs: {
-            "protocols": 1,
-            "dependencies": 0,
-        },
-    )
 
     monkeypatch.setattr(
         service,
@@ -1602,9 +1910,14 @@ def test_LaunchProtocolRunsProtocolWithExpectedRunMode(
 
 def test_LaunchProtocolSchedulesProtocol(service, mapper, monkeypatch):
     protocol = FakeProtocol(objId=10, validateErrors=[])
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
     monkeypatch.setattr(service, "saveProtocol", lambda *args, **kwargs: (protocol, []))
 
-    service.launchProtocol(
+    result = service.launchProtocol(
         mapper=mapper,
         projectId=1,
         protocolId="10",
@@ -1615,6 +1928,78 @@ def test_LaunchProtocolSchedulesProtocol(service, mapper, monkeypatch):
 
     assert service.currentProject.scheduledProtocols == [protocol]
     assert service.currentProject.launchedProtocols == []
+    assert result["postgresqlRuntimeLaunch"] is True
+    assert result["postgresqlRuntimeSync"] is True
+
+
+def test_LaunchProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    params = {
+        "threshold": 0.5,
+    }
+
+    expectedResult = {
+        "protocols": 1,
+        "dependencies": 0,
+        "postgresqlRuntimeLaunch": True,
+    }
+
+    launchCalls = []
+
+    class FakeLaunchService:
+        def launchProtocol(
+                self,
+                **kwargs,
+        ):
+            launchCalls.append(kwargs)
+            return expectedResult
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolLaunchService",
+        FakeLaunchService,
+    )
+
+    result = service.launchProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+        protocolClassName="ProtClass",
+        params=params,
+        executeMode="launch",
+    )
+
+    assert result is expectedResult
+    assert len(launchCalls) == 1
+
+    launchCall = launchCalls[0]
+
+    assert launchCall["mapper"] is mapper
+    assert launchCall["projectId"] == 1
+    assert launchCall["protocolId"] == 500
+    assert launchCall["protocolClassName"] == "ProtClass"
+    assert launchCall["params"] is params
+    assert launchCall["executeMode"] == "launch"
+    assert launchCall["currentProject"] is service.currentProject
+
+    assert set(launchCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "protocolClassName",
+        "params",
+        "executeMode",
+        "currentProject",
+        "saveProtocolCallback",
+        "stopProtocolCallback",
+        "preparePostgresqlRuntimePointerOutputsForLaunchCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "syncPostgresqlRuntimeProtocolCallback",
+    }
 
 
 def test_RenameProtocolStoresAnnotation(service):
@@ -1636,162 +2021,69 @@ def test_RenameProtocolStoresAnnotation(service):
     assert service.currentProject.storedProtocols == [protocol]
 
 
-def test_DuplicateProtocolCopiesAndPersists(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    copiedA = FakeProtocol(objId=110)
-    copiedB = FakeProtocol(objId=111)
+def test_DuplicateProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    duplicateItems = [
+        object(),
+        object(),
+    ]
 
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-    service.currentProject.copiedProtocolOutputs = [copiedA, copiedB]
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "duplicated": [],
+    }
+
+    duplicateCalls = []
+
+    class FakeDuplicateService:
+        def duplicatePostgresqlRuntimeProtocols(
+                self,
+                **kwargs,
+        ):
+            duplicateCalls.append(
+                kwargs
+            )
+            return expectedResult
 
     monkeypatch.setattr(
-        service,
-        "_buildProtocolContext",
-        lambda projectId, protocol, mapper=None: {
-            "projectId": projectId,
-            "protocolId": protocol.getObjId(),
-        },
+        projectServiceModule,
+        "RuntimeProtocolDuplicateService",
+        FakeDuplicateService,
     )
-
-    def fakeSyncProjectProtocolsAndDependencies(mapperObj, projectId, refresh=False, checkPid=False):
-        for protocolObj in service.currentProject.copiedProtocolOutputs:
-            mapperObj.saveProtocol(service._buildProtocolContext(projectId, protocolObj))
-        return {
-            "protocols": len(service.currentProject.copiedProtocolOutputs),
-            "dependencies": 0,
-        }
-
-    monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        fakeSyncProjectProtocolsAndDependencies,
-    )
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
 
     result = service.duplicateProtocol(
         mapper=mapper,
         projectId=1,
-        protocols=[DuplicateItem("10"), DuplicateItem("11")],
+        protocols=duplicateItems,
     )
 
-    assertSuccessEnvelope(result)
-    assert result["protocolsCount"] == 2
-    assert result["dependenciesCount"] == 0
-    assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
-    assert mapper.savedProtocolContexts == [
-        {"projectId": 1, "protocolId": 110},
-        {"projectId": 1, "protocolId": 111},
-    ]
+    assert result is expectedResult
+    assert len(duplicateCalls) == 1
 
+    duplicateCall = duplicateCalls[0]
 
-def test_DeleteProtocolDelegatesToCurrentProjectAndMapper(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
+    assert duplicateCall["mapper"] is mapper
+    assert duplicateCall["projectId"] == 1
+    assert duplicateCall["protocols"] is duplicateItems
 
-    service.deleteProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=["10", "11"],
-    )
-
-    assert service.currentProject.deleteProtocolCalls == [[protocolA, protocolB]]
-    assert mapper.deleteProtocolCalls == [
-        {
-            "projectId": 1,
-            "protocolList": [protocolA, protocolB],
-        }
-    ]
-
-
-def test_DeleteProtocolWrapsUnexpectedErrorAsHttpException(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.failDeleteProtocol = RuntimeError("delete failed")
-
-    with pytest.raises(HTTPException) as exc:
-        service.deleteProtocol(
-            mapper=mapper,
-            projectId=1,
-            protocols=["10"],
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "delete failed"
-
-
-def test_RestartProtocolAllReturnsCollectedErrors(service):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-    service.currentProject.restartWorkflowInjectedErrors = ["cannot restart", "blocked"]
-
-    with pytest.raises(HTTPException) as exc:
-        service.restartProtocolAll(
-            mapper=None,
-            projectId=None,
-            protocolId=10,
-        )
-
-    assert exc.value.status_code == 422
-    assert exc.value.detail == ["cannot restart", "blocked"]
-
-
-def test_ContinueProtocolAllLaunchesActiveProtocolsInResumeMode(
-    service,
-    mapper,
-):
-    protocol = FakeProtocol(objId=10)
-    activeProtocol = FakeProtocol(objId=20)
-
-    service.currentProject.protocols[10] = protocol
-    service.currentProject._getSubworkflow = lambda protocolObj: (["wf-a", "wf-b"], [activeProtocol])
-
-    result = service.continueProtocolAll(
-        mapper=mapper,
-        projectId=1,
-        protocolId=10,
-        currentUser={"id": 1},
-    )
-
-    assertSuccessEnvelope(result)
-    assert activeProtocol.runMode.get() == "resume-mode"
-    assert service.currentProject.launchedProtocols == [activeProtocol]
-
-
-def test_ResetProtocolFromReturnsSuccessWhenWorkflowResets(service):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-    service.currentProject.resetWorkflowResult = []
-
-    result = service.resetProtocolFrom(
-        mapper=None,
-        projectId=None,
-        protocolId=10,
-    )
-
-    assertSuccessEnvelope(result)
-
-
-def test_StopProtocolStopsEachProtocol(service):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    result = service.stopProtocol(
-        mapper=None,
-        projectId=None,
-        protocolIds=["10", "11"],
-    )
-
-    assertSuccessEnvelope(result)
-    assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
+    assert set(duplicateCall) == {
+        "mapper",
+        "projectId",
+        "protocols",
+        "getScipionProtocolForRuntimeCallback",
+        "getScipionObjectIdCallback",
+        "resolvePostgresqlProtocolDbIdCallback",
+        "saveProtocolCallback",
+        "syncPostgresqlRuntimeProtocolCallback",
+        "getParentProtocolForPointerCallback",
+        "storeProtocolCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
@@ -1814,114 +2106,94 @@ def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_DuplicateProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    copiedA = FakeProtocol(objId=110)
-    copiedB = FakeProtocol(objId=111)
-
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-    service.currentProject.copiedProtocolOutputs = [copiedA, copiedB]
-
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
-
-    monkeypatch.setattr(
+def test_StopProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
         service,
-        "syncProjectProtocolsAndDependencies",
-        lambda mapper, projectId, refresh=False, checkPid=False: {
-            "protocols": 2,
-            "dependencies": 0,
-        },
-    )
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
-
-    result = service.duplicateProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=[DuplicateItem("500"), DuplicateItem("501")],
-    )
-
-    assertSuccessEnvelope(result)
-    assert service.currentProject.copiedProtocolInputs == [[protocolA, protocolB]]
-    assert result["duplicated"] == [
-        {"sourceId": "500", "newId": "110"},
-        {"sourceId": "501", "newId": "111"},
+        mapper,
+        monkeypatch,
+):
+    protocolIds = [
+        "500",
+        "501",
     ]
 
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeStop": True,
+    }
 
-def test_DeleteProtocolResolvesPostgresqlProtocolIds(service, mapper, monkeypatch):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
+    stopCalls = []
 
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
+    class FakeStopService:
+        def stopProtocols(
+                self,
+                **kwargs,
+        ):
+            stopCalls.append(kwargs)
+            return expectedResult
 
     monkeypatch.setattr(
-        service,
-        "syncProjectProtocolsAndDependencies",
-        lambda mapper, projectId, refresh=False, checkPid=False: {
-            "protocols": 0,
-            "dependencies": 0,
-        },
+        projectServiceModule,
+        "RuntimeProtocolStopService",
+        FakeStopService,
     )
-
-    result = service.deleteProtocol(
-        mapper=mapper,
-        projectId=1,
-        protocols=["500", "501"],
-    )
-
-    assert result["status"] == 0
-    assert service.currentProject.deleteProtocolCalls == [[protocolA, protocolB]]
-    assert mapper.deleteProtocolCalls == [
-        {
-            "projectId": 1,
-            "protocolList": [protocolA, protocolB],
-        }
-    ]
-
-def test_StopProtocolResolvesPostgresqlProtocolIds(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
 
     result = service.stopProtocol(
         mapper=mapper,
         projectId=1,
-        protocolIds=["500", "501"],
+        protocolIds=protocolIds,
     )
 
-    assertSuccessEnvelope(result)
-    assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
+    assert result is expectedResult
+    assert len(stopCalls) == 1
+
+    stopCall = stopCalls[0]
+
+    assert stopCall["mapper"] is mapper
+    assert stopCall["projectId"] == 1
+    assert stopCall["protocolIds"] is protocolIds
+    assert stopCall["currentProject"] is service.currentProject
+
+    assert set(stopCall) == {
+        "mapper",
+        "projectId",
+        "protocolIds",
+        "currentProject",
+        "getScipionProtocolForRuntimeCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
-def test_RestartProtocolAllResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
+def test_RestartProtocolAllUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeRestart": True,
+    }
 
-    subworkflowCalls = []
+    restartCalls = []
 
-    def fakeGetSubworkflow(protocolObj):
-        subworkflowCalls.append(protocolObj)
-        return [protocol], []
+    class FakeRestartService:
+        def restartProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            restartCalls.append(
+                kwargs
+            )
+            return expectedResult
 
-    service.currentProject._getSubworkflow = fakeGetSubworkflow
-
-
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolRestartService",
+        FakeRestartService,
+    )
 
     result = service.restartProtocolAll(
         mapper=mapper,
@@ -1929,60 +2201,117 @@ def test_RestartProtocolAllResolvesPostgresqlProtocolId(service, mapper, monkeyp
         protocolId=500,
     )
 
-    assertSuccessEnvelope(result)
-    assert subworkflowCalls == [protocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    assert result is expectedResult
+    assert len(restartCalls) == 1
+
+    restartCall = restartCalls[0]
+
+    assert restartCall["mapper"] is mapper
+    assert restartCall["projectId"] == 1
+    assert restartCall["protocolId"] == 500
+
+    assert set(restartCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "getPostgresqlRuntimeSubworkflowCallback",
+        "workflowProtocolMapToProtocolsCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
+        "validatePostgresqlRestartSubworkflowCallback",
+        "launchPostgresqlRestartSubworkflowCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
-def test_ContinueProtocolAllResolvesPostgresqlProtocolId(
-    service,
-    mapper,
+def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
 ):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeContinue": True,
+    }
 
-    protocol = FakeProtocol(objId=10)
-    activeProtocol = FakeProtocol(objId=20)
+    continueCalls = []
 
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    class FakeContinueService:
+        def continueProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            continueCalls.append(
+                kwargs
+            )
+            return expectedResult
 
-    subworkflowCalls = []
-
-    def fakeGetSubworkflow(protocolObj):
-        subworkflowCalls.append(protocolObj)
-        return [protocol], [activeProtocol]
-
-    service.currentProject._getSubworkflow = fakeGetSubworkflow
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolContinueService",
+        FakeContinueService,
+    )
 
     result = service.continueProtocolAll(
         mapper=mapper,
         projectId=1,
         protocolId=500,
-        currentUser={"id": 1},
+        currentUser={
+            "id": 1,
+        },
     )
 
-    assertSuccessEnvelope(result)
-    assert subworkflowCalls == [protocol]
-    assert activeProtocol.runMode.get() == "resume-mode"
-    assert service.currentProject.launchedProtocols == [activeProtocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    assert result is expectedResult
+    assert len(continueCalls) == 1
+
+    continueCall = continueCalls[0]
+
+    assert continueCall["mapper"] is mapper
+    assert continueCall["projectId"] == 1
+    assert continueCall["protocolId"] == 500
+
+    assert set(continueCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "getPostgresqlRuntimeSubworkflowCallback",
+        "buildPostgresqlContinuePlanCallback",
+        "launchPostgresqlContinueSubworkflowCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
-def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10)
+def test_ResetProtocolFromUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeReset": True,
+    }
 
-    service.currentProject.protocols[10] = protocol
-    service.currentProject.resetWorkflowResult = []
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    resetCalls = []
 
-    subworkflowCalls = []
+    class FakeResetService:
+        def resetProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            resetCalls.append(kwargs)
+            return expectedResult
 
-    def fakeGetSubworkflow(protocolObj):
-        subworkflowCalls.append(protocolObj)
-        return [protocol], []
-
-    service.currentProject._getSubworkflow = fakeGetSubworkflow
-
-
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolResetService",
+        FakeResetService,
+    )
 
     result = service.resetProtocolFrom(
         mapper=mapper,
@@ -1990,9 +2319,27 @@ def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypa
         protocolId=500,
     )
 
-    assertSuccessEnvelope(result)
-    assert subworkflowCalls == [protocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    assert result is expectedResult
+    assert len(resetCalls) == 1
+
+    resetCall = resetCalls[0]
+
+    assert resetCall["mapper"] is mapper
+    assert resetCall["projectId"] == 1
+    assert resetCall["protocolId"] == 500
+    assert resetCall["currentProject"] is service.currentProject
+
+    assert set(resetCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "currentProject",
+        "getPostgresqlRuntimeSubworkflowCallback",
+        "stopPostgresqlProtocolsCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_GetNextProtocolSuggestionsResolvesPostgresqlProtocolId(
@@ -2079,41 +2426,13 @@ def test_GetNextProtocolSuggestionsResolvesPostgresqlProtocolId(
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10, className="ProtClass")
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-
-    buildContextCalls = []
-
-    def fakeBuildProtocolContext(projectId, protocolObj, mapperObj):
-        buildContextCalls.append({
-            "projectId": projectId,
-            "protocol": protocolObj,
-            "mapper": mapperObj,
-        })
-
-        return {
-            "info": {
-                "projectId": projectId,
-                "protocolId": protocolObj.getObjId(),
-                "protocolClassName": protocolObj.getClassName(),
-            },
-            "form": {
-                "sections": [],
-            },
-            "values": {},
-        }
-
-    monkeypatch.setattr(service, "_buildProtocolContext", fakeBuildProtocolContext)
-
-    result = service.getProtocolParams(
-        mapper=mapper,
-        projectId=1,
-        protocolId=500,
-    )
-
-    assert result == {
+def test_GetProtocolParamsUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedContext = {
         "info": {
             "projectId": 1,
             "protocolId": 10,
@@ -2125,41 +2444,90 @@ def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypa
         "values": {},
     }
 
-    assert service.currentProject.fixedProtocolParams == [protocol]
-    assert buildContextCalls == [
-        {
-            "projectId": 1,
-            "protocol": protocol,
-            "mapper": mapper,
-        }
-    ]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    protocolServiceCalls = []
+
+    class FakeProtocolService:
+        def getProtocolParams(
+                self,
+                **kwargs,
+        ):
+            protocolServiceCalls.append(kwargs)
+            return expectedContext
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolService",
+        FakeProtocolService,
+    )
+
+    result = service.getProtocolParams(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assert result is expectedContext
+    assert len(protocolServiceCalls) == 1
+
+    protocolServiceCall = protocolServiceCalls[0]
+
+    assert protocolServiceCall["mapper"] is mapper
+    assert protocolServiceCall["projectId"] == 1
+    assert protocolServiceCall["protocolId"] == 500
+
+    assert set(protocolServiceCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "syncPostgresqlRuntimeProtocolCallback",
+    }
 
 
-def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
-    projectServiceModule,
-    service,
-    mapper,
-    monkeypatch,
+def test_SaveProtocolResolvesPostgresqlProtocolIdAndDefersPersistenceForLaunch(
+        service,
+        mapper,
+        monkeypatch,
 ):
-    patchRuntimeParamCasting(monkeypatch)
+    patchRuntimeParamCasting(
+        monkeypatch
+    )
 
-    protocol = FakeProtocol(objId=10, className="ProtClass")
-    protocol.addParam("runName", FakeStringParam(label="Run name"))
-    protocol.addParam("iterations", FakeIntParam(label="Iterations"))
+    syncCalls = patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+
+    protocol = FakeProtocol(
+        objId=10,
+        className="ProtClass",
+    )
+    protocol.addParam(
+        "runName",
+        FakeStringParam(
+            label="Run name"
+        ),
+    )
+    protocol.addParam(
+        "iterations",
+        FakeIntParam(
+            label="Iterations"
+        ),
+    )
 
     service.currentProject.protocols[10] = protocol
     mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    params = {
+        "runName": "Edited protocol",
+        "iterations": "7",
+    }
 
     savedProtocol, errors = service.saveProtocol(
         mapper=mapper,
         projectId=1,
         protocolId=500,
         protocolClassName="ProtClass",
-        params={
-            "runName": "Edited protocol",
-            "iterations": "7",
-        },
+        params=params,
         setToSave=False,
     )
 
@@ -2167,8 +2535,17 @@ def test_SaveProtocolResolvesPostgresqlProtocolIdForExistingProtocol(
     assert savedProtocol is protocol
     assert protocol.runName.get() == "Edited protocol"
     assert protocol.attributeValues["iterations"] == 7
-    assert service.currentProject.storedProtocols == [protocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+
+    assert service.currentProject.storedProtocols == []
+
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
+
+    assert mapper.db.fetchOneCalls[0]["params"] == (
+        1,
+        500,
+    )
 
 
 def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
@@ -2178,6 +2555,11 @@ def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
     monkeypatch,
 ):
     patchRuntimeParamCasting(monkeypatch)
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
 
     runtimeProtocolLaunchServiceModule = importlib.import_module(
         "app.backend.runtime.protocol_launch_service"
@@ -2223,6 +2605,11 @@ def test_LaunchProtocolRestartResolvesPostgresqlProtocolId(
             monkeypatch,
     ):
         patchRuntimeParamCasting(monkeypatch)
+        patchPostgresqlLaunchRuntime(
+            monkeypatch,
+            service,
+            mapper,
+        )
 
         runtimeProtocolLaunchServiceModule = importlib.import_module(
             "app.backend.runtime.protocol_launch_service"
@@ -2300,6 +2687,11 @@ def test_LaunchProtocolScheduleResolvesPostgresqlProtocolId(
     monkeypatch,
 ):
     patchRuntimeParamCasting(monkeypatch)
+    patchPostgresqlLaunchRuntime(
+        monkeypatch,
+        service,
+        mapper,
+    )
 
     protocol = FakeProtocol(objId=10, className="ProtClass", validateErrors=[])
     protocol.addParam("runName", FakeStringParam(label="Run name"))
@@ -2329,7 +2721,11 @@ def test_LaunchProtocolScheduleResolvesPostgresqlProtocolId(
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
+def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(
+        service,
+        mapper,
+        monkeypatch,
+):
     protocolA = FakeProtocol(objId=10, className="ProtA")
     protocolB = FakeProtocol(objId=11, className="ProtB")
 
@@ -2340,9 +2736,11 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
     mapper.db.runtimeProtocolIdByDbId[501] = 11
 
     exportedProtocolLists = []
+    restoreCalls = []
 
     def fakeGetProtocolsJson(protocolList):
         exportedProtocolLists.append(protocolList)
+
         return [
             {
                 "protocol": "exported-a",
@@ -2352,7 +2750,21 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
             },
         ]
 
+    def fakeRestorePostgresqlRuntimePointersForProtocols(**kwargs):
+        restoreCalls.append(kwargs)
+
+        return {
+            "reports": [],
+            "errors": [],
+        }
+
     service.currentProject.getProtocolsJson = fakeGetProtocolsJson
+
+    monkeypatch.setattr(
+        service,
+        "_restorePostgresqlRuntimePointersForProtocols",
+        fakeRestorePostgresqlRuntimePointersForProtocols,
+    )
 
     class FakeExportPayload:
         includeUpstream = False
@@ -2366,6 +2778,22 @@ def test_ExportWorkflowProtocolsResolvesPostgresqlProtocolIds(service, mapper):
     )
 
     assert exportedProtocolLists == [[protocolA, protocolB]]
+
+    assert restoreCalls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocols": [
+            protocolA,
+            protocolB,
+        ],
+        "prepareOutputsForLaunch": False,
+        "allowMissingParentOutputs": True,
+        "parentProtocolsById": {
+            "10": protocolA,
+            "11": protocolB,
+        },
+    }]
+
     assert result["sourceProjectId"] == 1
     assert result["protocolIds"] == ["500", "501"]
     assert result["workflow"] == [
@@ -2921,30 +3349,6 @@ def test_GetNewProtocolParamsCacheIsScopedByProject(
     assert second["info"]["projectId"] == 2
     assert buildCalls == [1, 2]
 
-def test_DuplicateProtocolWrapsCopyErrorAsHttpException(service, mapper):
-    protocol = FakeProtocol(objId=10)
-    service.currentProject.protocols[10] = protocol
-
-    def fakeCopyProtocol(protocols):
-        raise RuntimeError("copy failed")
-
-    service.currentProject.copyProtocol = fakeCopyProtocol
-
-    class DuplicateItem:
-        def __init__(self, itemId):
-            self.id = itemId
-
-    with pytest.raises(HTTPException) as exc:
-        service.duplicateProtocol(
-            mapper=mapper,
-            projectId=1,
-            protocols=[DuplicateItem("10")],
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "Failed to duplicate protocols: copy failed"
-
-
 def test_PreserveStoredProtocolParamsInRuntimeContext(
         service,
 ):
@@ -3047,5 +3451,3 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
         "300002.outputVolume",
         "300003.outputVolume",
     ]
-
-

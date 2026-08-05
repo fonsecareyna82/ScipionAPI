@@ -60,7 +60,6 @@ class ProtocolContextService:
             buildProtocolThumbnailUrlCallback: Callable,
             buildProtocolThumbnailRebuildUrlCallback: Callable,
             findViewersWebCallback: Callable,
-            usingPostgresqlRuntime: bool,
             getScipionObjectIdCallback: Callable,
             resolvePostgresqlProtocolDbIdCallback: Callable,
             splitPointerValueCallback: Callable,
@@ -173,7 +172,6 @@ class ProtocolContextService:
                 protocol=protocol,
                 mapper=mapper,
                 projectId=projectId,
-                usingPostgresqlRuntime=usingPostgresqlRuntime,
                 getScipionObjectIdCallback=getScipionObjectIdCallback,
                 resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
                 splitPointerValueCallback=splitPointerValueCallback,
@@ -182,24 +180,16 @@ class ProtocolContextService:
 
         persistedOutputs = {}
 
-        if (
-                usingPostgresqlRuntime
-                and mapper is not None
-        ):
-            protocolId = (
-                getScipionObjectIdCallback(
-                    protocol
-                )
+        if mapper is not None:
+            protocolId = getScipionObjectIdCallback(
+                protocol
             )
 
-            if protocolId is not None:
-                persistedOutputs = (
-                    RuntimeProtocolOutputPersistenceService()
-                    .loadPersistedProtocolOutputs(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
+            if protocolId not in (None, ""):
+                persistedOutputs = RuntimeProtocolOutputPersistenceService().loadPersistedProtocolOutputs(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
                 )
 
         info["outputs"] = (
@@ -222,7 +212,6 @@ class ProtocolContextService:
                 projectId=projectId,
                 headerParams=headerParams,
                 runName=runName,
-                usingPostgresqlRuntime=usingPostgresqlRuntime,
                 getScipionObjectIdCallback=getScipionObjectIdCallback,
                 resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
                 splitPointerValueCallback=splitPointerValueCallback,
