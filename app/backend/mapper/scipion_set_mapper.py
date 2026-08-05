@@ -229,8 +229,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 "a Scipion object id."
             )
 
+        itemValues = self._getItemValues(
+            item,
+            scipionSet=scipionSet,
+        )
+
         itemSchema = self._getItemSchema(
-            item
+            item,
+            scipionSet=scipionSet,
+            itemValues=itemValues,
         )
 
         return {
@@ -249,10 +256,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             "creation": self._getObjectCreation(
                 item
             ),
-            "values": self._getItemValues(
-                item,
-                scipionSet=scipionSet,
-            ),
+            "values": itemValues,
 
             # Runtime-only metadata. It is consumed by
             # PostgresqlSetRuntimeMapper and is never persisted
@@ -288,7 +292,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         itemSchema = self._getItemSchema(
-            item
+            item,
+            scipionSet=scipionSet,
         )
 
         itemClassName = self._getItemClassName(
@@ -429,7 +434,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         itemSchema = self._getItemSchema(
-            item
+            item,
+            scipionSet=parentSet,
         )
 
         itemClassName = (
@@ -633,7 +639,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         itemIterator = iter(self._iterSetItems(scipionSet))
         firstItem = self._nextOrNone(itemIterator)
-        itemSchema = self._getItemSchema(firstItem) if firstItem is not None else {}
+        itemSchema = self._getItemSchema(firstItem, scipionSet=scipionSet) if firstItem is not None else {}
         itemClassName = self._getItemClassName(firstItem, itemSchema, scipionSet=scipionSet,)
         columns = self._getSetColumns(itemSchema)
         initialProperties = self._getSetProperties(scipionSet)
@@ -2753,7 +2759,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         else:
             childSchema = self._getItemSchema(
-                firstChild
+                firstChild,
+                scipionSet=parentItem,
             )
 
             childColumns = self._getSetColumns(
@@ -3398,6 +3405,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     def _getItemSchema(
             self,
             item: Any,
+            scipionSet: Optional[Any] = None,
+            itemValues: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         schema = self._getObjDict(
             item,
@@ -3408,21 +3417,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             schema
         )
 
-        for path, pointerAttribute in (
-                self._iterPointerAttributes(
-                    item
-                )
-        ):
+        for path, pointerAttribute in self._iterPointerAttributes(item):
             schema[str(path)] = (
-                self._getClassName(
-                    pointerAttribute
-                ),
+                self._getClassName(pointerAttribute),
                 None,
             )
 
-        self._addRelationIdentitySchema(
-            item=item,
+        if itemValues is None:
+            itemValues = self._getItemValues(
+                item,
+                scipionSet=scipionSet,
+            )
+
+        self._completeScalarSchemaFromValues(
             schema=schema,
+            values=itemValues,
         )
 
         return schema
@@ -3714,27 +3723,49 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     None,
                 )
 
-    def _addRelationIdentitySchema(
+    def _completeScalarSchemaFromValues(
             self,
-            item: Any,
             schema: Dict[str, Any],
+            values: Dict[str, Any],
     ) -> None:
-        for fieldName, getterNames in RELATION_IDENTITY_FIELDS:
-            if fieldName in schema:
+        for label, value in (values or {}).items():
+            label = str(label)
+
+            if (
+                    label == SELF_LABEL
+                    or label in schema
+            ):
                 continue
 
-            value = self._getFirstGetterValue(
-                item,
-                getterNames,
+            className = self._getScalarSchemaClassName(
+                value
             )
 
-            if value is None:
+            if className is None:
                 continue
 
-            schema[fieldName] = (
-                "String",
+            schema[label] = (
+                className,
                 None,
             )
+
+    @staticmethod
+    def _getScalarSchemaClassName(
+            value: Any,
+    ) -> Optional[str]:
+        if isinstance(value, bool):
+            return "Boolean"
+
+        if isinstance(value, int):
+            return "Integer"
+
+        if isinstance(value, float):
+            return "Float"
+
+        if isinstance(value, str):
+            return "String"
+
+        return None
 
     def _addRelationIdentityValues(
             self,
@@ -4128,8 +4159,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return None
 
     def _getColumnValueType(self, className: Optional[str]) -> Optional[str]:
-        if className in ("Integer", "Long", "Boolean"):
+        if className in ("Integer", "Long"):
             return "integer"
+
+        if className == "Boolean":
+            return "boolean"
         if className in ("Float", "Decimal"):
             return "float"
         if className in (

@@ -81,11 +81,6 @@ class PostgresqlSetRuntimeMapper:
         re.VERBOSE,
     )
 
-    RELATION_IDENTITY_FIELDS = frozenset({
-        "_tsId",
-        "_tomoId",
-    })
-
     def __init__(
             self,
             db,
@@ -314,6 +309,7 @@ class PostgresqlSetRuntimeMapper:
 
         self._columns = self._loadColumns()
         self._itemSchemaReady = bool(self._columns)
+        self._dynamicFieldValueTypes = {}
 
     def _refreshLogicalTableScope(
             self,
@@ -2527,6 +2523,8 @@ class PostgresqlSetRuntimeMapper:
     def _refreshReadSchema(
             self,
     ) -> None:
+        self._dynamicFieldValueTypes.clear()
+
         scopeChanged = (
             self
             ._refreshLogicalTableScope()
@@ -2745,8 +2743,7 @@ class PostgresqlSetRuntimeMapper:
 
         if field == "creation":
             return (
-                self
-                .STREAMING_CREATION_EXPRESSION,
+                self.STREAMING_CREATION_EXPRESSION,
                 [],
             )
 
@@ -2756,8 +2753,7 @@ class PostgresqlSetRuntimeMapper:
 
         if directColumn is not None:
             return (
-                '"%s"'
-                % directColumn,
+                '"%s"' % directColumn,
                 [],
             )
 
@@ -2766,51 +2762,205 @@ class PostgresqlSetRuntimeMapper:
         )
 
         if column is None:
-            if field in self.RELATION_IDENTITY_FIELDS:
-                return (
-                    '"values" ->> %s',
-                    [
-                        field,
-                    ],
-                )
-
-            raise ValueError(
-                "Unknown Scipion set item field: %s"
-                % field
+            valueType = self._resolveDynamicFieldValueType(
+                field
             )
 
-        valueType = str(
+            if valueType is None:
+                raise ValueError(
+                    "Unknown Scipion set item field: %s"
+                    % field
+                )
+
+        else:
+            valueType = self._getColumnQueryValueType(
+                column
+            )
+
+        return self._jsonFieldExpression(
+            field=field,
+            valueType=valueType,
+        )
+
+    @staticmethod
+    def _getColumnQueryValueType(
+            column: Dict[str, Any],
+    ) -> str:
+        className = str(
+            column.get("className")
+            or ""
+        )
+
+        if className == "Boolean":
+            return "boolean"
+
+        return str(
             column.get("valueType")
             or ""
         ).lower()
 
-        expression = (
-            '"values" ->> %s'
-        )
-
-        params = [
-            field,
-        ]
+    @staticmethod
+    def _jsonFieldExpression(
+            *,
+            field: str,
+            valueType: str,
+    ) -> Tuple[str, List[Any]]:
+        expression = '"values" ->> %s'
 
         if valueType == "integer":
             expression = (
                 'NULLIF("values" ->> %s, \'\')::BIGINT'
             )
+
         elif valueType == "float":
             expression = (
                 'NULLIF("values" ->> %s, \'\')::DOUBLE PRECISION'
             )
 
+        elif valueType == "boolean":
+            expression = (
+                'NULLIF("values" ->> %s, \'\')::BOOLEAN'
+            )
+
         return (
             expression,
-            params,
+            [
+                field,
+            ],
         )
+
+    def _resolveDynamicFieldValueType(
+            self,
+            field: str,
+    ) -> Optional[str]:
+        field = str(
+            field
+        )
+
+        cachedValueType = self._dynamicFieldValueTypes.get(
+            field
+        )
+
+        if cachedValueType is not None:
+            return cachedValueType
+
+        row = self.db.fetchOne(
+            """
+            SELECT ARRAY_AGG(
+                       DISTINCT "jsonType"
+                   ) AS "jsonTypes",
+                   BOOL_OR(
+                       "jsonType" = 'number'
+                       AND "valueText" ~ '[.eE]'
+                   ) AS "hasFloatingNumber"
+              FROM (
+                    SELECT jsonb_typeof(
+                               "values" -> %s
+                           ) AS "jsonType",
+                           "values" ->> %s AS "valueText"
+                      FROM {itemsTable}
+                     WHERE "{scopeColumn}" = %s
+                       AND "values" ? %s
+                       AND jsonb_typeof(
+                               "values" -> %s
+                           ) <> 'null'
+                   ) AS "fieldValues"
+            """.format(
+                itemsTable=self._itemsTable,
+                scopeColumn=self._scopeColumn,
+            ),
+            (
+                field,
+                field,
+                self._scopeId,
+                field,
+                field,
+            ),
+        ) or {}
+
+        rawJsonTypes = row.get(
+            "jsonTypes"
+        ) or []
+
+        if isinstance(rawJsonTypes, str):
+            rawJsonTypes = [
+                rawJsonTypes,
+            ]
+
+        jsonTypes = {
+            str(jsonType).lower()
+            for jsonType in rawJsonTypes
+            if jsonType not in (
+                None,
+                "",
+            )
+        }
+
+        if not jsonTypes:
+            return None
+
+        unsupportedTypes = (
+            jsonTypes
+            - {
+                "string",
+                "number",
+                "boolean",
+            }
+        )
+
+        if unsupportedTypes:
+            raise ValueError(
+                "Scipion set item field is not scalar: %s. "
+                "jsonTypes=%s"
+                % (
+                    field,
+                    sorted(jsonTypes),
+                )
+            )
+
+        if len(jsonTypes) != 1:
+            raise ValueError(
+                "Inconsistent Scipion set item field types: %s. "
+                "jsonTypes=%s"
+                % (
+                    field,
+                    sorted(jsonTypes),
+                )
+            )
+
+        jsonType = next(
+            iter(jsonTypes)
+        )
+
+        if jsonType == "string":
+            valueType = "text"
+
+        elif jsonType == "boolean":
+            valueType = "boolean"
+
+        elif row.get(
+                "hasFloatingNumber"
+        ):
+            valueType = "float"
+
+        else:
+            valueType = "integer"
+
+        self._dynamicFieldValueTypes[
+            field
+        ] = valueType
+
+        return valueType
 
     def _normalizeFieldValue(
             self,
             field,
             value,
     ):
+        field = str(
+            field
+        )
+
         if field in self.ID_FIELDS:
             return int(
                 value
@@ -2821,17 +2971,25 @@ class PostgresqlSetRuntimeMapper:
                 value
             )
 
-        column = self._columns.get(
-            str(field)
-        )
-
-        if column is None:
+        if (
+                field in self.DIRECT_FIELDS
+                or field == "creation"
+        ):
             return value
 
-        valueType = str(
-            column.get("valueType")
-            or ""
-        ).lower()
+        column = self._columns.get(
+            field
+        )
+
+        if column is not None:
+            valueType = self._getColumnQueryValueType(
+                column
+            )
+
+        else:
+            valueType = self._dynamicFieldValueTypes.get(
+                field
+            )
 
         if valueType == "integer":
             return int(
@@ -2840,6 +2998,11 @@ class PostgresqlSetRuntimeMapper:
 
         if valueType == "float":
             return float(
+                value
+            )
+
+        if valueType == "boolean":
+            return self._toBoolean(
                 value
             )
 

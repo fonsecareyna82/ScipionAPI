@@ -72,6 +72,62 @@ class FakeDb:
         return self.row
 
 
+class DynamicFieldFakeDb(FakeDb):
+    def __init__(
+            self,
+            rows=None,
+            fieldTypes=None,
+    ):
+        super().__init__(
+            rows=rows
+        )
+
+        self.fieldTypes = dict(
+            fieldTypes or {}
+        )
+
+        self.dynamicFieldQueries = []
+
+    def fetchOne(
+            self,
+            query,
+            params=None,
+    ):
+        normalizedQuery = " ".join(
+            str(query).split()
+        )
+
+        if (
+                'AS "jsonTypes"'
+                in normalizedQuery
+                and 'AS "fieldValues"'
+                in normalizedQuery
+        ):
+            field = str(
+                params[0]
+            )
+
+            self.dynamicFieldQueries.append({
+                "field": field,
+                "params": params,
+            })
+
+            return dict(
+                self.fieldTypes.get(
+                    field,
+                    {
+                        "jsonTypes": [],
+                        "hasFloatingNumber": False,
+                    },
+                )
+            )
+
+        return super().fetchOne(
+            query,
+            params,
+        )
+
+
 class FakeConnection:
     def __init__(self):
         self.commitCalls = 0
@@ -693,7 +749,7 @@ def test_UniqueReturnsListForSingleAttribute():
 
 
 def test_UniqueSupportsTsIdWithoutStoredColumnMetadata():
-    db = FakeDb(
+    db = DynamicFieldFakeDb(
         rows=[
             {
                 "value_0": "TS_001",
@@ -701,7 +757,15 @@ def test_UniqueSupportsTsIdWithoutStoredColumnMetadata():
             {
                 "value_0": "TS_002",
             },
-        ]
+        ],
+        fieldTypes={
+            "_tsId": {
+                "jsonTypes": [
+                    "string",
+                ],
+                "hasFloatingNumber": False,
+            },
+        },
     )
 
     mapper = PostgresqlSetRuntimeMapper(
@@ -728,6 +792,195 @@ def test_UniqueSupportsTsIdWithoutStoredColumnMetadata():
         "_tsId",
         31,
     )
+
+
+def test_UniqueDiscoversArbitraryTypedScalarFields():
+    db = DynamicFieldFakeDb(
+        rows=[
+            {
+                "value_0": "mic_001",
+                "value_1": 2.5,
+                "value_2": True,
+            },
+        ],
+        fieldTypes={
+            "_micName": {
+                "jsonTypes": [
+                    "string",
+                ],
+                "hasFloatingNumber": False,
+            },
+            "_samplingRate": {
+                "jsonTypes": [
+                    "number",
+                ],
+                "hasFloatingNumber": True,
+            },
+            "_enabledFlag": {
+                "jsonTypes": [
+                    "boolean",
+                ],
+                "hasFloatingNumber": False,
+            },
+            "_index": {
+                "jsonTypes": [
+                    "number",
+                ],
+                "hasFloatingNumber": False,
+            },
+        },
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.unique(
+        [
+            "_micName",
+            "_samplingRate",
+            "_enabledFlag",
+        ],
+        where="_index = 2",
+    )
+
+    assert result == {
+        "_micName": [
+            "mic_001",
+        ],
+        "_samplingRate": [
+            2.5,
+        ],
+        "_enabledFlag": [
+            True,
+        ],
+    }
+
+    assert (
+        '"values" ->> %s AS "value_0"'
+        in db.query
+    )
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')::DOUBLE PRECISION '
+        'AS "value_1"'
+        in db.query
+    )
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')::BOOLEAN '
+        'AS "value_2"'
+        in db.query
+    )
+
+    assert (
+        'NULLIF("values" ->> %s, \'\')::BIGINT = %s'
+        in db.query
+    )
+
+    assert db.params == (
+        "_micName",
+        "_samplingRate",
+        "_enabledFlag",
+        31,
+        "_index",
+        2,
+    )
+
+    assert [
+        call["field"]
+        for call in db.dynamicFieldQueries
+    ] == [
+        "_micName",
+        "_samplingRate",
+        "_enabledFlag",
+        "_index",
+    ]
+
+
+def test_DynamicScalarFieldTypeIsCachedWithinReadOperation():
+    db = DynamicFieldFakeDb(
+        rows=[
+            {
+                "value_0": 2.5,
+            },
+        ],
+        fieldTypes={
+            "_samplingRate": {
+                "jsonTypes": [
+                    "number",
+                ],
+                "hasFloatingNumber": True,
+            },
+        },
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    mapper.unique(
+        "_samplingRate",
+        where="_samplingRate = 2.5",
+    )
+
+    assert [
+        call["field"]
+        for call in db.dynamicFieldQueries
+    ] == [
+        "_samplingRate",
+    ]
+
+
+def test_UnknownDynamicScalarFieldStillFailsExplicitly():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=DynamicFieldFakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    with pytest.raises(
+            ValueError,
+            match=(
+                "Unknown Scipion set item field: "
+                "_missingField"
+            ),
+    ):
+        mapper.unique(
+            "_missingField"
+        )
+
+
+def test_DynamicComplexFieldFailsExplicitly():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=DynamicFieldFakeDb(
+            fieldTypes={
+                "_matrix": {
+                    "jsonTypes": [
+                        "array",
+                    ],
+                    "hasFloatingNumber": False,
+                },
+            },
+        ),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    with pytest.raises(
+            ValueError,
+            match=(
+                "Scipion set item field "
+                "is not scalar: _matrix"
+            ),
+    ):
+        mapper.unique(
+            "_matrix"
+        )
 
 
 def test_AggregateGroupsSetItemsByFilename():

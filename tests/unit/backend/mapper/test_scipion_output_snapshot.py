@@ -127,6 +127,35 @@ class FakeRelationIdentityItem:
         return "TOMO_001"
 
 
+class FakeSyntheticScalarItem:
+    def getObjId(self):
+        return 8
+
+    def getObjDict(
+            self,
+            includeClass=False,
+    ):
+        if includeClass:
+            return {
+                "self": (
+                    "SyntheticItem",
+                    None,
+                ),
+            }
+
+        return {
+            "_micName": "mic_001",
+            "_index": 3,
+            "_samplingRate": 2.5,
+            "_enabledFlag": True,
+            "_matrix": [
+                1,
+                2,
+                3,
+            ],
+        }
+
+
 class FakeSet:
     pass
 
@@ -167,6 +196,52 @@ def test_RelationIdentityFieldsAreIncludedInItemSchema():
 
     assert columns["_tsId"]["valueType"] == "text"
     assert columns["_tomoId"]["valueType"] == "text"
+
+
+def test_ArbitraryScalarValuesCompleteItemSchema():
+    mapper = ScipionSetPostgresqlMapper(
+        RecordingDb()
+    )
+
+    item = FakeSyntheticScalarItem()
+
+    schema = mapper._getItemSchema(
+        item
+    )
+
+    columns = {
+        column["labelProperty"]: column
+        for column in mapper._getSetColumns(
+            schema
+        )
+    }
+
+    assert schema["_micName"] == (
+        "String",
+        None,
+    )
+
+    assert schema["_index"] == (
+        "Integer",
+        None,
+    )
+
+    assert schema["_samplingRate"] == (
+        "Float",
+        None,
+    )
+
+    assert schema["_enabledFlag"] == (
+        "Boolean",
+        None,
+    )
+
+    assert "_matrix" not in schema
+
+    assert columns["_micName"]["valueType"] == "text"
+    assert columns["_index"]["valueType"] == "integer"
+    assert columns["_samplingRate"]["valueType"] == "float"
+    assert columns["_enabledFlag"]["valueType"] == "boolean"
 
 
 class SnapshotSetMapper(ScipionSetPostgresqlMapper):
