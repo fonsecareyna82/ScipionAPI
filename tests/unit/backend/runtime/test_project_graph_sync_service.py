@@ -26,7 +26,7 @@
 import importlib
 
 
-def test_ProjectGraphSyncUsesPreparedProtocolForRelations(monkeypatch):
+def test_LegacyProjectGraphSyncUsesPreparedProtocolForRelations(monkeypatch):
     module = importlib.import_module(
         "app.backend.runtime.project_graph_sync_service"
     )
@@ -168,7 +168,7 @@ def test_ProjectGraphSyncUsesPreparedProtocolForRelations(monkeypatch):
 
     service = module.RuntimeProjectGraphSyncService()
 
-    result = service.syncProjectProtocolsAndDependencies(
+    result = service.syncLegacyProjectGraphToPostgresql(
         mapper=FakeMapper(),
         projectId=376,
         currentProject=FakeProject(graphProtocol),

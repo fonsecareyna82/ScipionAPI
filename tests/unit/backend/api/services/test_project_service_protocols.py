@@ -487,7 +487,7 @@ def service(projectServiceModule):
         "protocolClassName": getattr(protocol, "_className", "ProtClass"),
         "params": {},
     }
-    instance.syncProjectProtocolsAndDependencies = (
+    instance._syncLegacyProjectGraphToPostgresql = (
         lambda mapper, projectId, refresh=False, checkPid=False: {
             "protocols": 0,
             "dependencies": 0,
@@ -854,13 +854,13 @@ def test_RegisterOutputReturnsPersistenceReport(
     ]
 
 
-def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
+def test_SyncLegacyProjectGraphToPostgresqlReportsOutputPersistence(
     projectServiceModule,
     service,
     monkeypatch,
 ):
-    service.syncProjectProtocolsAndDependencies = (
-        projectServiceModule.ProjectService.syncProjectProtocolsAndDependencies.__get__(
+    service._syncLegacyProjectGraphToPostgresql = (
+        projectServiceModule.ProjectService._syncLegacyProjectGraphToPostgresql.__get__(
             service,
             projectServiceModule.ProjectService,
         )
@@ -1007,7 +1007,7 @@ def test_SyncProjectProtocolsAndDependenciesReportsOutputPersistence(
 
     mapper = FakeSyncMapper()
 
-    result = service.syncProjectProtocolsAndDependencies(
+    result = service._syncLegacyProjectGraphToPostgresql(
         mapper=mapper,
         projectId=1,
         refresh=True,
@@ -1403,6 +1403,37 @@ def test_SaveServiceHasNoLegacyRuntimePath():
     assert "_persistProtocolInRuntime" in classSource
 
 
+def test_FullProjectGraphSyncIsRestrictedToLegacyImport(
+        projectServiceModule,
+):
+    projectServiceClass = projectServiceModule.ProjectService
+
+    assert not hasattr(
+        projectServiceClass,
+        "syncProjectGraphAfterMutation",
+    )
+    assert not hasattr(
+        projectServiceClass,
+        "syncProjectProtocolsAndDependencies",
+    )
+    assert hasattr(
+        projectServiceClass,
+        "_syncLegacyProjectGraphToPostgresql",
+    )
+
+    legacySyncSource = inspect.getsource(
+        projectServiceClass._syncLegacyProjectGraphToPostgresql
+    )
+    migrationSource = inspect.getsource(
+        projectServiceClass._migrateImportedProjectToPostgresql
+    )
+
+    assert "syncLegacyProjectGraphToPostgresql" in legacySyncSource
+    assert "_syncLegacyProjectGraphToPostgresql" in migrationSource
+    assert "LegacyRuntimeProtocolLoaderService" in migrationSource
+    assert "sqlite3.connect" in migrationSource
+
+
 def test_SaveProtocolCreatesNewProtocolAndSyncsPostgresqlInputs(
         service,
         mapper,
@@ -1424,7 +1455,7 @@ def test_SaveProtocolCreatesNewProtocolAndSyncsPostgresqlInputs(
 
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
+       "_syncLegacyProjectGraphToPostgresql",
         failLegacyGraphSync,
     )
 
@@ -1533,7 +1564,7 @@ def test_SaveProtocolAggregatesValidationAndPointerErrors(
 
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
+       "_syncLegacyProjectGraphToPostgresql",
         failLegacyGraphSync,
     )
 
@@ -1742,7 +1773,7 @@ def test_LaunchProtocolStopReturnsPostgresqlStopResult(
     )
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
+       "_syncLegacyProjectGraphToPostgresql",
         failLegacyGraphSync,
     )
 
@@ -1780,7 +1811,7 @@ def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch
     )
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
+       "_syncLegacyProjectGraphToPostgresql",
         lambda *args, **kwargs: (
             pytest.fail(
                 "Validation failure must not synchronize the legacy project graph"

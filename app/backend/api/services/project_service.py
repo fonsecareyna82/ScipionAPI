@@ -1910,7 +1910,7 @@ class ProjectService:
             "interactive",
         }
 
-    def syncProjectProtocolsAndDependencies(
+    def _syncLegacyProjectGraphToPostgresql(
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
@@ -1918,130 +1918,59 @@ class ProjectService:
             checkPid: bool = False,
             strict: bool = False,
             syncRelations: bool = False,
-            outputProjectPaths: Optional[
-                Sequence[str]
-            ] = None,
+            outputProjectPaths: Optional[Sequence[str]] = None,
             allowDetachedSetOutputs: bool = False,
-            prepareProtocolForOutputPersistenceCallback:
-            Optional[Callable] = None,
+            prepareProtocolForOutputPersistenceCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
+        """
+        Import a complete legacy Scipion project graph into PostgreSQL.
+
+        This method is restricted to the old-project migration boundary.
+        Normal runtime mutations must synchronize only their explicitly
+        selected protocols, inputs, dependencies, outputs and relations.
+        """
         if self.currentProject is None:
             raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail="No current project loaded",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No legacy project loaded for PostgreSQL import",
             )
 
-        runtimeProjectGraphSyncService = (
-            RuntimeProjectGraphSyncService()
-        )
-
-        registerOutputCallback = (
-            self.registerOutput
-        )
-
+        runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
+        registerOutputCallback = self.registerOutput
         normalizedOutputProjectPaths = []
 
-        for candidatePath in (
-                outputProjectPaths or []
-        ):
+        for candidatePath in outputProjectPaths or []:
             if not candidatePath:
                 continue
 
-            normalizedPath = os.path.abspath(
-                os.path.expanduser(
-                    str(candidatePath)
-                )
-            )
+            normalizedPath = os.path.abspath(os.path.expanduser(str(candidatePath)))
 
-            if (
-                    normalizedPath
-                    not in normalizedOutputProjectPaths
-            ):
-                normalizedOutputProjectPaths.append(
-                    normalizedPath
-                )
+            if normalizedPath not in normalizedOutputProjectPaths:
+                normalizedOutputProjectPaths.append(normalizedPath)
 
-        if (
-                normalizedOutputProjectPaths
-                or allowDetachedSetOutputs
-        ):
-            def registerOutputCallback(
-                    **kwargs
-            ):
+        if normalizedOutputProjectPaths or allowDetachedSetOutputs:
+            def registerOutputCallback(**kwargs):
                 return self.registerOutput(
                     **kwargs,
-                    projectPaths=(
-                        normalizedOutputProjectPaths
-                    ),
-                    allowDetachedSetOutputs=(
-                        allowDetachedSetOutputs
-                    ),
+                    projectPaths=normalizedOutputProjectPaths,
+                    allowDetachedSetOutputs=allowDetachedSetOutputs,
                 )
 
-        return (
-            runtimeProjectGraphSyncService
-            .syncProjectProtocolsAndDependencies(
-                mapper=mapper,
-                projectId=projectId,
-                currentProject=self.currentProject,
-                buildProtocolContextCallback=(
-                    self._buildProtocolContext
-                ),
-                tryGetScipionProtocolByRuntimeIdCallback=(
-                    self
-                    ._tryGetScipionProtocolByRuntimeId
-                ),
-                getScipionObjectIdCallback=(
-                    self._getScipionObjectId
-                ),
-                registerOutputCallback=(
-                    registerOutputCallback
-                ),
-                shouldPreservePostgresqlOnlyProtocolsCallback=(
-                    self
-                    ._shouldPreservePostgresqlOnlyProtocols
-                ),
-                prepareProtocolForOutputPersistenceCallback=(
-                    prepareProtocolForOutputPersistenceCallback
-                ),
-                refresh=refresh,
-                checkPid=checkPid,
-                strict=strict,
-                syncRelations=syncRelations,
-            )
+        return runtimeProjectGraphSyncService.syncLegacyProjectGraphToPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            currentProject=self.currentProject,
+            buildProtocolContextCallback=self._buildProtocolContext,
+            tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            registerOutputCallback=registerOutputCallback,
+            shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
+            prepareProtocolForOutputPersistenceCallback=prepareProtocolForOutputPersistenceCallback,
+            refresh=refresh,
+            checkPid=checkPid,
+            strict=strict,
+            syncRelations=syncRelations,
         )
-
-    def syncProjectGraphAfterMutation(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            actionLabel: str,
-            refresh: bool = True,
-            checkPid: bool = True,
-    ) -> Dict[str, Any]:
-        try:
-            return self.syncProjectProtocolsAndDependencies(
-                mapper,
-                projectId,
-                refresh=refresh,
-                checkPid=checkPid,
-                syncRelations=False,
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(
-                "Failed to sync protocol graph after %s. projectId=%s",
-                actionLabel,
-                projectId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"{actionLabel} succeeded but graph sync to PostgreSQL failed: {e}",
-            )
 
     def _migrateImportedProjectToPostgresql(
             self,
@@ -2181,20 +2110,16 @@ class ProjectService:
 
             migrationReport = (
                 self
-                .syncProjectProtocolsAndDependencies(
+                ._syncLegacyProjectGraphToPostgresql(
                     mapper=mapper,
                     projectId=projectId,
                     refresh=False,
                     checkPid=False,
                     strict=True,
                     syncRelations=True,
-                    outputProjectPaths=(
-                        outputProjectPaths
-                    ),
+                    outputProjectPaths=outputProjectPaths,
                     allowDetachedSetOutputs=True,
-                    prepareProtocolForOutputPersistenceCallback=(
-                        prepareImportedProtocolOutputs
-                    ),
+                    prepareProtocolForOutputPersistenceCallback=prepareImportedProtocolOutputs,
                 )
             )
 

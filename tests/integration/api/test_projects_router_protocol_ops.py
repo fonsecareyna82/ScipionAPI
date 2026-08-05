@@ -683,11 +683,6 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
     }
     assert (
             fakeProjectService
-            .lastSyncProjectGraphAfterMutationCall
-            is None
-    )
-    assert (
-            fakeProjectService
             .lastLoadPostgresqlRuntimeProjectForMutationCall
             == {
                 "mapper": (
@@ -1057,11 +1052,6 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolId": 10,
     }
-    assert (
-            fakeProjectService
-            .lastSyncProjectGraphAfterMutationCall
-            is None
-    )
 
 
 def test_ContinueProtocolAllWrapsHttpException(projectClient, fakeProjectService):
@@ -1135,11 +1125,6 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
             }
     )
 
-    assert (
-            fakeProjectService
-            .lastSyncProjectGraphAfterMutationCall
-            is None
-    )
     assert fakeProjectService.lastContinueProtocolAllCall == {
         "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
         "projectId": 1,
@@ -1209,19 +1194,9 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolId": 10,
     }
-    assert (
-            fakeProjectService
-            .lastSyncProjectGraphAfterMutationCall
-            is None
-    )
 
 
-def test_RestartProtocolAllIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="Legacy graph sync must not run",
-    )
-
+def test_RestartProtocolAllIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
     response = projectClient.post(
         "/projects/1/protocols/10/restart-all"
         "?usePostgresqlRuntimeProject=false"
@@ -1242,15 +1217,8 @@ def test_RestartProtocolAllIgnoresLegacyRuntimeSwitch(projectClient, fakeProject
         "protocolId": 10,
     }
 
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
-
-def test_ResetProtocolFromIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="Legacy graph sync must not run",
-    )
-
+def test_ResetProtocolFromIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
     response = projectClient.post(
         "/projects/1/protocols/10/reset-from"
         "?usePostgresqlRuntimeProject=false"
@@ -1270,8 +1238,6 @@ def test_ResetProtocolFromIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectS
         "projectId": 1,
         "protocolId": 10,
     }
-
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolWrapsHttpException(projectClient, fakeProjectService):
@@ -1320,12 +1286,7 @@ def test_StopProtocolWrapsUnexpectedException(
     }
 
 
-def test_StopProtocolIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectService):
-    fakeProjectService.syncProjectGraphAfterMutationError = HTTPException(
-        status_code=500,
-        detail="Legacy graph sync must not run",
-    )
-
+def test_StopProtocolIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
     response = projectClient.post(
         "/projects/1/protocols/stop"
         "?usePostgresqlRuntimeProject=false",
@@ -1351,8 +1312,6 @@ def test_StopProtocolIgnoresLegacyRuntimeSwitch(projectClient, fakeProjectServic
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
-
-    assert fakeProjectService.lastSyncProjectGraphAfterMutationCall is None
 
 
 def test_StopProtocolRejectsMissingProtocolIds(projectClient):
@@ -1389,12 +1348,6 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
-
-    assert (
-            fakeProjectService
-            .lastSyncProjectGraphAfterMutationCall
-            is None
-    )
 
 
 def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(

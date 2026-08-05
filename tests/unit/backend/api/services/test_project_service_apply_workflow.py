@@ -99,9 +99,9 @@ def test_ApplyWorkflowPersistsOnlyImportedPostgresqlProtocols(tmp_path, monkeypa
 
     monkeypatch.setattr(
         service,
-        "syncProjectProtocolsAndDependencies",
+        "_syncLegacyProjectGraphToPostgresql",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("The complete project graph must not be synchronized")
+            AssertionError("The complete legacy project graph must not be synchronized")
         ),
     )
 

@@ -232,9 +232,6 @@ class FakeProjectService:
         self.applyWorkflowError = None
         self.lastApplyWorkflowCall = None
 
-        self.syncProjectGraphAfterMutationError = None
-        self.lastSyncProjectGraphAfterMutationCall = None
-
         self.protocolParamsResult = {
             "protocolId": "10",
             "protocolClassName": "ProtClass",
@@ -869,29 +866,6 @@ class FakeProjectService:
             "currentUser": currentUser,
         }
         return self.protocolsResult
-
-    def syncProjectGraphAfterMutation(self, mapper, projectId, actionLabel, refresh=True, checkPid=True):
-        self.lastSyncProjectGraphAfterMutationCall = {
-            "mapper": mapper,
-            "projectId": projectId,
-            "actionLabel": actionLabel,
-            "refresh": refresh,
-            "checkPid": checkPid,
-        }
-        if self.syncProjectGraphAfterMutationError is not None:
-            raise self.syncProjectGraphAfterMutationError
-        return {"protocols": 1, "dependencies": 0}
-
-    def applyWorkflowToProject(self, mapper, projectId, workflowId, currentUser):
-        self.lastApplyWorkflowCall = {
-            "mapper": mapper,
-            "projectId": projectId,
-            "workflowId": workflowId,
-            "currentUser": currentUser,
-        }
-        if self.applyWorkflowError is not None:
-            raise self.applyWorkflowError
-        return self.applyWorkflowResult
 
     def getProtocolParams(self, projectId, protocolId, mapper=None):
         self.lastGetProtocolParamsCall = {

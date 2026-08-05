@@ -1158,7 +1158,11 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocol", syncPostgresqlRuntimeProtocol)
     monkeypatch.setattr(service, "syncPostgresqlRuntimeProtocolInputsAndDependencies",
                         syncPostgresqlRuntimeProtocolInputsAndDependencies)
-    monkeypatch.setattr(service, "syncProjectProtocolsAndDependencies", failGlobalSync)
+    monkeypatch.setattr(
+        service,
+        "_syncLegacyProjectGraphToPostgresql",
+        failGlobalSync,
+    )
 
     result = service.runMetadataTableActionService(
         projectId=1,
