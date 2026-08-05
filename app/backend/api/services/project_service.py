@@ -5566,12 +5566,8 @@ class ProjectService:
             currentProject=self.currentProject,
             saveProtocolCallback=self.saveProtocol,
             stopProtocolCallback=self.stopProtocol,
-            usesPostgresqlRuntimeCallback=self._currentProjectUsesPostgresqlRuntimeMapper,
             preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
                 self._preparePostgresqlRuntimePointerOutputsForLaunch
-            ),
-            syncProjectProtocolsAndDependenciesCallback=(
-                self.syncProjectProtocolsAndDependencies
             ),
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
                 self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql

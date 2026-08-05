@@ -34,7 +34,6 @@ from fastapi import HTTPException, status
 from pyworkflow.protocol import (
     MODE_RESUME,
     MODE_RESTART,
-    STATUS_LAUNCHED,
     STATUS_SCHEDULED,
 )
 
@@ -62,9 +61,7 @@ class RuntimeProtocolLaunchService:
             currentProject,
             saveProtocolCallback: Callable,
             stopProtocolCallback: Callable,
-            usesPostgresqlRuntimeCallback: Callable[[], bool],
             preparePostgresqlRuntimePointerOutputsForLaunchCallback: Callable,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
     ) -> Dict[str, Any]:
@@ -85,33 +82,8 @@ class RuntimeProtocolLaunchService:
         executeMode = modeAliases.get(executeMode, executeMode)
         params = params or {}
 
-        usingPostgresqlRuntime = (
-            usesPostgresqlRuntimeCallback()
-        )
-
-        elapsedBeforeLaunchSeconds = 0.0
-
-        if (
-                usingPostgresqlRuntime
-                and executeMode
-                in {"launch", "restart"}
-                and protocolId
-                not in (None, "")
-        ):
-            runtimeStatusSyncService = (
-                RuntimeProtocolStatusSyncService()
-            )
-
-            elapsedBeforeLaunchSeconds = (
-                runtimeStatusSyncService
-                .getStoredElapsedTimeSeconds(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-            )
-
         allowedModes = {"launch", "restart", "schedule", "stop"}
+
         if executeMode not in allowedModes:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -124,8 +96,18 @@ class RuntimeProtocolLaunchService:
                 projectId=projectId,
                 protocolId=protocolId,
                 stopProtocolCallback=stopProtocolCallback,
-                usesPostgresqlRuntimeCallback=usesPostgresqlRuntimeCallback,
-                syncProjectProtocolsAndDependenciesCallback=syncProjectProtocolsAndDependenciesCallback,
+            )
+
+        elapsedBeforeLaunchSeconds = 0.0
+
+        if (
+                executeMode in {"launch", "restart"}
+                and protocolId not in (None, "")
+        ):
+            elapsedBeforeLaunchSeconds = RuntimeProtocolStatusSyncService().getStoredElapsedTimeSeconds(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
             )
 
         protocol, errors = saveProtocolCallback(
@@ -143,69 +125,46 @@ class RuntimeProtocolLaunchService:
                 detail=errors,
             )
 
-        postgresqlLaunchPointerReport = None
+        postgresqlLaunchPointerReport = preparePostgresqlRuntimePointerOutputsForLaunchCallback(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            allowMissingParentOutputs=False,
+        )
 
-        if usingPostgresqlRuntime:
-            postgresqlLaunchPointerReport = preparePostgresqlRuntimePointerOutputsForLaunchCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=protocol,
-                allowMissingParentOutputs=False,
+        if postgresqlLaunchPointerReport.get("errors"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
+                    % postgresqlLaunchPointerReport.get("errors")
+                ),
             )
 
-            if postgresqlLaunchPointerReport.get("errors"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(
-                            "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
-                            % postgresqlLaunchPointerReport.get("errors")
+        if postgresqlLaunchPointerReport.get("skipped"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "message": (
+                        "PostgreSQL runtime pointer preparation was skipped. "
+                        "The protocol cannot be launched safely because its "
+                        "runtime inputs may not be restored in the execution DB."
                     ),
-                )
-
-            if postgresqlLaunchPointerReport.get("skipped"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "message": (
-                            "PostgreSQL runtime pointer preparation was skipped. "
-                            "The protocol cannot be launched safely because its "
-                            "runtime inputs may not be restored in the execution DB."
-                        ),
-                        "report": postgresqlLaunchPointerReport,
-                    },
-                )
+                    "report": postgresqlLaunchPointerReport,
+                },
+            )
 
         if protocol.useQueue():
             queueName = params.get("_queueName")
             queueParams = params.get("_queueParams")
             protocol.setQueueParams([queueName, queueParams])
 
-        if postgresqlLaunchPointerReport is not None:
-            postgresqlLaunchPointerReport[
-                "storedPreparedProtocol"
-            ] = False
-
-            postgresqlLaunchPointerReport[
-                "persistenceDeferredToNativeLaunch"
-            ] = True
+        postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
+        postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
 
         self._validateProtocol(
             protocol=protocol,
             errors=errors,
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            usingPostgresqlRuntime=usingPostgresqlRuntime,
-            syncProjectProtocolsAndDependenciesCallback=syncProjectProtocolsAndDependenciesCallback,
-        )
-
-        self._syncBeforeLaunchIfNeeded(
-            mapper=mapper,
-            projectId=projectId,
-            protocol=protocol,
-            protocolId=protocolId,
-            usingPostgresqlRuntime=usingPostgresqlRuntime,
-            syncProjectProtocolsAndDependenciesCallback=syncProjectProtocolsAndDependenciesCallback,
         )
 
         return self._executeProtocol(
@@ -214,17 +173,13 @@ class RuntimeProtocolLaunchService:
             protocolId=protocolId,
             protocol=protocol,
             executeMode=executeMode,
-            elapsedBeforeLaunchSeconds=(
-                elapsedBeforeLaunchSeconds
-            ),
+            elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,
             currentProject=currentProject,
-            usingPostgresqlRuntime=usingPostgresqlRuntime,
             postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback
             ),
             syncPostgresqlRuntimeProtocolCallback=syncPostgresqlRuntimeProtocolCallback,
-            syncProjectProtocolsAndDependenciesCallback=syncProjectProtocolsAndDependenciesCallback,
         )
 
     def _stopProtocol(
@@ -234,109 +189,47 @@ class RuntimeProtocolLaunchService:
             projectId: int,
             protocolId,
             stopProtocolCallback: Callable,
-            usesPostgresqlRuntimeCallback: Callable[[], bool],
-            syncProjectProtocolsAndDependenciesCallback: Callable,
     ) -> Dict[str, Any]:
         try:
-            result = stopProtocolCallback(mapper, projectId, [protocolId])
-
-            if usesPostgresqlRuntimeCallback():
-                return result
-
-            return syncProjectProtocolsAndDependenciesCallback(
+            return stopProtocolCallback(
                 mapper,
                 projectId,
-                refresh=True,
-                checkPid=True,
+                [protocolId],
             )
-
         except HTTPException:
             raise
-
-        except Exception as e:
+        except Exception as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=str(e),
-            ) from e
+                detail=str(error),
+            ) from error
 
     def _validateProtocol(
             self,
             *,
             protocol,
             errors,
-            mapper,
-            projectId: int,
-            protocolId,
-            usingPostgresqlRuntime: bool,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
     ) -> None:
         try:
             validationErrors = protocol._validate()
+
             if validationErrors:
                 errors += validationErrors
 
         except Exception:
-            logger.exception("Unexpected error during protocol validation")
+            logger.exception(
+                "Unexpected error during protocol validation"
+            )
+
             errors += [
                 "**Other errors:** There are other validation errors that may be resolved by correcting the previous ones."
             ]
 
-        if not errors:
-            return
-
-        if not usingPostgresqlRuntime:
-            try:
-                syncProjectProtocolsAndDependenciesCallback(
-                    mapper,
-                    projectId,
-                    refresh=True,
-                    checkPid=True,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to sync protocol graph after validation errors. projectId=%s protocolId=%s",
-                    projectId,
-                    getattr(protocol, "getObjId", lambda: protocolId)(),
-                )
-        else:
-            logger.info(
-                "Skipping legacy graph sync after PostgreSQL runtime validation errors. "
-                "projectId=%s protocolId=%s errors=%s",
-                projectId,
-                getattr(protocol, "getObjId", lambda: protocolId)(),
-                errors,
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=errors,
             )
-
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=errors,
-        )
-
-    def _syncBeforeLaunchIfNeeded(
-            self,
-            *,
-            mapper,
-            projectId: int,
-            protocol,
-            protocolId,
-            usingPostgresqlRuntime: bool,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
-    ) -> None:
-        if not usingPostgresqlRuntime:
-            syncProjectProtocolsAndDependenciesCallback(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=False,
-            )
-            return
-
-        logger.info(
-            "Skipping legacy pre-launch graph sync for PostgreSQL runtime protocol. "
-            "projectId=%s protocolId=%s",
-            projectId,
-            getattr(protocol, "getObjId", lambda: protocolId)(),
-        )
 
     def _executeProtocol(
             self,
@@ -348,99 +241,16 @@ class RuntimeProtocolLaunchService:
             executeMode,
             elapsedBeforeLaunchSeconds: float,
             currentProject,
-            usingPostgresqlRuntime: bool,
             postgresqlLaunchPointerReport: Optional[Dict[str, Any]],
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
-            syncProjectProtocolsAndDependenciesCallback: Callable,
     ) -> Dict[str, Any]:
         try:
             if executeMode == "schedule":
-                currentProject.scheduleProtocol(protocol)
+                currentProject.scheduleProtocol(
+                    protocol
+                )
 
-            else:
-                modeToRunMode = {
-                    "launch": MODE_RESUME,
-                    "restart": MODE_RESTART,
-                }
-
-                runMode = modeToRunMode[executeMode]
-                protocol.runMode.set(runMode)
-
-                if executeMode == "restart":
-                    cleanupInfo = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocols=[protocol],
-                    )
-
-                    logger.info(
-                        "Deleted persisted protocol outputs before restart. projectId=%s protocolId=%s cleanup=%s",
-                        projectId,
-                        getattr(protocol, "getObjId", lambda: protocolId)(),
-                        cleanupInfo,
-                    )
-
-                currentProject.launchProtocol(protocol)
-
-                if usingPostgresqlRuntime:
-                    launchedProtocolId = getattr(
-                        protocol,
-                        "getObjId",
-                        lambda: protocolId,
-                    )()
-
-                    # The PostgreSQL worker owns the execution
-                    # lifecycle. While it waits for dependencies,
-                    # the authoritative status must remain scheduled.
-                    #
-                    # The worker will mark the protocol as launched
-                    # only immediately before queue submission or
-                    # local execution.
-                    storedProtocolRow = (
-                        mapper
-                        .getProjectProtocolByProtocolId(
-                            projectId=projectId,
-                            protocolId=(
-                                launchedProtocolId
-                            ),
-                        )
-                    ) or {}
-
-                    currentStatus = str(
-                        storedProtocolRow.get(
-                            "status"
-                        )
-                        or STATUS_SCHEDULED
-                    )
-
-                    return {
-                        "protocols": 1,
-                        "dependencies": 0,
-                        "postgresqlRuntimeLaunch": True,
-                        "launchAccepted": True,
-                        "protocolId": str(
-                            launchedProtocolId
-                        ),
-                        "protocolStatus": (
-                            currentStatus
-                        ),
-                        "postgresqlLaunchPointerReport": (
-                            postgresqlLaunchPointerReport
-                        ),
-                        "elapsedTiming": {
-                            "deferredToWorker": True,
-                            "baseElapsedTimeSeconds": (
-                                elapsedBeforeLaunchSeconds
-                            ),
-                            "resetElapsed": (
-                                executeMode
-                                == "restart"
-                            ),
-                        },
-                    }
-
-            if usingPostgresqlRuntime:
                 return self._syncPostgresqlRuntimeAfterLaunch(
                     mapper=mapper,
                     projectId=projectId,
@@ -450,19 +260,76 @@ class RuntimeProtocolLaunchService:
                     syncPostgresqlRuntimeProtocolCallback=syncPostgresqlRuntimeProtocolCallback,
                 )
 
-            return syncProjectProtocolsAndDependenciesCallback(
-                mapper,
-                projectId,
-                refresh=True,
-                checkPid=True,
+            modeToRunMode = {
+                "launch": MODE_RESUME,
+                "restart": MODE_RESTART,
+            }
+
+            protocol.runMode.set(
+                modeToRunMode[executeMode]
             )
+
+            if executeMode == "restart":
+                cleanupInfo = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=[protocol],
+                )
+
+                logger.info(
+                    "Deleted persisted protocol outputs before restart. "
+                    "projectId=%s protocolId=%s cleanup=%s",
+                    projectId,
+                    getattr(protocol, "getObjId", lambda: protocolId)(),
+                    cleanupInfo,
+                )
+
+            currentProject.launchProtocol(
+                protocol
+            )
+
+            launchedProtocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: protocolId,
+            )()
+
+            # The PostgreSQL worker owns the execution lifecycle.
+            # While it waits for dependencies, the authoritative
+            # status must remain scheduled. The worker marks it as
+            # launched immediately before local or queue execution.
+            storedProtocolRow = mapper.getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=launchedProtocolId,
+            ) or {}
+
+            currentStatus = str(
+                storedProtocolRow.get("status")
+                or STATUS_SCHEDULED
+            )
+
+            return {
+                "protocols": 1,
+                "dependencies": 0,
+                "postgresqlRuntimeLaunch": True,
+                "launchAccepted": True,
+                "protocolId": str(launchedProtocolId),
+                "protocolStatus": currentStatus,
+                "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
+                "elapsedTiming": {
+                    "deferredToWorker": True,
+                    "baseElapsedTimeSeconds": elapsedBeforeLaunchSeconds,
+                    "resetElapsed": executeMode == "restart",
+                },
+            }
 
         except HTTPException:
             raise
 
-        except Exception as e:
+        except Exception as error:
             logger.exception(
-                "Failed to sync protocol graph after execute. projectId=%s protocolId=%s executeMode=%s",
+                "Failed to execute PostgreSQL runtime protocol. "
+                "projectId=%s protocolId=%s executeMode=%s",
                 projectId,
                 getattr(protocol, "getObjId", lambda: protocolId)(),
                 executeMode,
@@ -470,8 +337,8 @@ class RuntimeProtocolLaunchService:
 
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"{e}",
-            )
+                detail=str(error),
+            ) from error
 
     def _syncPostgresqlRuntimeAfterLaunch(
             self,
