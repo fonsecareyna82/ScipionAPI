@@ -25,8 +25,8 @@
 # ******************************************************************************
 
 import importlib
+import inspect
 import json
-from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -237,6 +237,24 @@ def service(projectServiceModule):
     return instance
 
 
+def test_ProjectServiceHasNoObsoleteRuntimeMapperSwitch(
+        projectServiceModule,
+):
+    classSource = inspect.getsource(
+        projectServiceModule.ProjectService
+    )
+    moduleSource = inspect.getsource(
+        projectServiceModule
+    )
+
+    assert "_currentProjectUsesPostgresqlRuntimeMapper" not in classSource
+    assert (
+        "from app.backend.mapper.postgresql_runtime_mapper "
+        "import PostgresqlRuntimeMapper"
+        not in moduleSource
+    )
+
+
 def test_OutputPreviewDelegatesToOutputsPreview(projectServiceModule, service, monkeypatch, tmp_path):
     FakeOutputsPreview.instances = []
 
@@ -312,6 +330,90 @@ def test_OutputPreviewResolvesPostgresqlProtocolId(
         "objMgr": {"manager": "fresh"},
     }
     assert mapper.db.fetchCalls[0]["params"] == (1, 500)
+
+
+def test_OutputPreviewAlwaysUsesPostgresqlOutputWhenMapperIsProvided(
+        projectServiceModule,
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    FakeOutputsPreview.instances = []
+
+    outputFile = tmp_path / "output-volume.mrc"
+    outputFile.write_bytes(b"volume")
+
+    protocol = FakeProtocol(
+        protocolId=10,
+    )
+    service.currentProject = FakeCurrentProject(
+        protocols={
+            10: protocol,
+        },
+    )
+
+    mapper = object()
+    postgresqlOutput = FakeOutput(
+        str(outputFile)
+    )
+    resolveCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveScipionProtocolId",
+        lambda **kwargs: 10,
+    )
+
+    def fakeResolvePostgresqlOutputForPreview(
+            **kwargs,
+    ):
+        resolveCalls.append(kwargs)
+
+        return postgresqlOutput, {
+            "exists": True,
+            "kind": "tree",
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlOutputForPreview",
+        fakeResolvePostgresqlOutputForPreview,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "OutputsPreview",
+        FakeOutputsPreview,
+    )
+    monkeypatch.setattr(
+        service,
+        "_createObjectManager",
+        lambda: {
+            "manager": "fresh",
+        },
+    )
+
+    result = service.outputPreview(
+        protocolId=500,
+        outputName="outputVolume",
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert result == {
+        "preview": True,
+        "protocolId": 10,
+        "outputPath": str(outputFile),
+        "colormap": None,
+    }
+
+    assert resolveCalls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocolId": 10,
+        "outputName": "outputVolume",
+    }]
+
+    assert FakeOutputsPreview.instances[0].output is postgresqlOutput
 
 
 def test_BuildProtocolThumbnailDelegatesToThumbnailService(projectServiceModule, service, monkeypatch):
@@ -628,6 +730,103 @@ def test_ExportProtocolsServiceWritesJsonFile(service, monkeypatch, tmp_path):
         "mimeType": "application/json",
         "protocolIds": ["10", "11"],
     }
+
+
+def test_PrepareRuntimeProtocolsForExportAlwaysRestoresPostgresqlPointers(
+        service,
+        monkeypatch,
+):
+    parentProtocol = object()
+    childProtocol = object()
+    mapper = object()
+
+    resolveCalls = []
+    restoreCalls = []
+
+    def fakeResolveRuntimeProtocolsForExport(
+            **kwargs,
+    ):
+        resolveCalls.append(kwargs)
+
+        return [
+            parentProtocol,
+            childProtocol,
+        ]
+
+    def fakeGetProtocolObjIdForExport(
+            protocol,
+    ):
+        if protocol is parentProtocol:
+            return "10"
+
+        if protocol is childProtocol:
+            return "11"
+
+        return ""
+
+    def fakeRestorePostgresqlRuntimePointersForProtocols(
+            **kwargs,
+    ):
+        restoreCalls.append(kwargs)
+
+        return {
+            "reports": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_resolveRuntimeProtocolsForExport",
+        fakeResolveRuntimeProtocolsForExport,
+    )
+    monkeypatch.setattr(
+        service,
+        "_getProtocolObjIdForExport",
+        fakeGetProtocolObjIdForExport,
+    )
+    monkeypatch.setattr(
+        service,
+        "_restorePostgresqlRuntimePointersForProtocols",
+        fakeRestorePostgresqlRuntimePointersForProtocols,
+    )
+
+    result = service._prepareRuntimeProtocolsForExport(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=[
+            "500",
+            "501",
+        ],
+    )
+
+    assert result == [
+        parentProtocol,
+        childProtocol,
+    ]
+
+    assert resolveCalls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocolIds": [
+            "500",
+            "501",
+        ],
+    }]
+
+    assert restoreCalls == [{
+        "mapper": mapper,
+        "projectId": 1,
+        "protocols": [
+            parentProtocol,
+            childProtocol,
+        ],
+        "prepareOutputsForLaunch": False,
+        "allowMissingParentOutputs": True,
+        "parentProtocolsById": {
+            "10": parentProtocol,
+            "11": childProtocol,
+        },
+    }]
 
 
 def test_ExportProtocolsServiceRejectsMissingProtocolIds(service):

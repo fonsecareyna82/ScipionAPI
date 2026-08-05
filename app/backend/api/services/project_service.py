@@ -96,7 +96,6 @@ from app.backend.mapper.postgresql import (
 from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
-from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
 
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
@@ -234,20 +233,6 @@ class ProjectService:
             self._thumbnailService = thumbnailService
 
         return thumbnailService
-
-    def _currentProjectUsesPostgresqlRuntimeMapper(self) -> bool:
-        project = getattr(self, "currentProject", None)
-        if project is None:
-            return False
-
-        checker = getattr(project, "usingPostgresqlRuntimeMapper", None)
-        if callable(checker):
-            try:
-                return bool(checker())
-            except Exception:
-                return False
-
-        return isinstance(getattr(project, "mapper", None), PostgresqlRuntimeMapper)
 
     def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
                                       projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
@@ -4032,7 +4017,7 @@ class ProjectService:
         Apply a predefined workflow template to an existing project.
         Returns a JSON-serializable dict suitable for sending to the frontend.
         """
-        if self.currentProject is None or not self._currentProjectUsesPostgresqlRuntimeMapper():
+        if self.currentProject is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="PostgreSQL runtime project context is not loaded",
@@ -7024,12 +7009,6 @@ class ProjectService:
             )
         )
 
-        if not (
-                self
-                        ._currentProjectUsesPostgresqlRuntimeMapper()
-        ):
-            return protocolList
-
         parentProtocolsById = {}
 
         for protocol in protocolList:
@@ -7617,33 +7596,17 @@ class ProjectService:
             Any,
         ] = {}
 
-        if (
-                mapper is not None
-                and projectId is not None
-                and (
-                self
-                        ._currentProjectUsesPostgresqlRuntimeMapper()
-        )
-        ):
-            postgresqlOutput, outputInfo = (
-                self
-                ._resolvePostgresqlOutputForPreview(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=(
-                        scipionProtocolId
-                    ),
-                    outputName=outputName,
-                )
-            )
+        if mapper is not None and projectId is not None:
+            postgresqlOutput, outputInfo = self._resolvePostgresqlOutputForPreview(mapper=mapper,
+                                                                                   projectId=projectId,
+                                                                                   protocolId=scipionProtocolId,
+                                                                                   outputName=outputName,)
 
             if postgresqlOutput is not None:
                 output = postgresqlOutput
 
         if output is None:
-            reason = outputInfo.get(
-                "reason"
-            )
+            reason = outputInfo.get("reason")
 
             detail = (
                 f"Output '{outputName}' "
