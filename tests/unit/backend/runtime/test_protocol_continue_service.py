@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 from types import SimpleNamespace
-
+import inspect
 import pytest
 from fastapi import HTTPException
 
@@ -147,13 +147,6 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
             mapper=SimpleNamespace(),
             projectId=7,
             protocolId=10,
-            usingPostgresqlRuntime=True,
-            currentProject=SimpleNamespace(),
-            getScipionProtocolForRuntimeCallback=(
-                lambda **kwargs: (
-                    restartProtocol
-                )
-            ),
             getPostgresqlRuntimeSubworkflowCallback=(
                 lambda **kwargs: {
                     "10": (
@@ -165,13 +158,6 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
                         1,
                     ),
                 }
-            ),
-            workflowProtocolMapToProtocolsCallback=(
-                lambda workflow: [
-                    value[0]
-                    for value
-                    in workflow.values()
-                ]
             ),
             buildPostgresqlContinuePlanCallback=(
                 buildPlan
@@ -230,13 +216,6 @@ def test_InvalidPostgresqlContinuePlanDoesNotCleanup():
                 mapper=SimpleNamespace(),
                 projectId=7,
                 protocolId=10,
-                usingPostgresqlRuntime=True,
-                currentProject=SimpleNamespace(),
-                getScipionProtocolForRuntimeCallback=(
-                    lambda **kwargs: (
-                        ProtocolStub(10)
-                    )
-                ),
                 getPostgresqlRuntimeSubworkflowCallback=(
                     lambda **kwargs: {
                         "10": (
@@ -244,9 +223,6 @@ def test_InvalidPostgresqlContinuePlanDoesNotCleanup():
                             0,
                         ),
                     }
-                ),
-                workflowProtocolMapToProtocolsCallback=(
-                    lambda workflow: []
                 ),
                 buildPostgresqlContinuePlanCallback=(
                     lambda **kwargs: {
@@ -277,3 +253,17 @@ def test_InvalidPostgresqlContinuePlanDoesNotCleanup():
 
     assert errorInfo.value.status_code == 422
     assert operations == []
+
+
+def test_LegacyProtocolContinueCompatibilityIsRemoved():
+    parameters = inspect.signature(
+        RuntimeProtocolContinueService
+        .continueProtocolSubworkflow
+    ).parameters
+
+    assert "usingPostgresqlRuntime" not in parameters
+    assert "currentProject" not in parameters
+    assert "getScipionProtocolForRuntimeCallback" not in parameters
+    assert "workflowProtocolMapToProtocolsCallback" not in parameters
+
+

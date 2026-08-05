@@ -296,11 +296,6 @@ class FakeCurrentProject:
     def _restartWorkflow(self, errorList, workflowProtocolList):
         errorList.extend(self.restartWorkflowInjectedErrors)
 
-    def _continueWorkflow(self, errorList, workflowProtocolList):
-        for protocol in workflowProtocolList:
-            protocol.runMode.set("resume-mode")
-            self.launchProtocol(protocol)
-
     def resetWorkFlow(self, workflowProtocolList):
         if self.failResetWorkflow is not None:
             raise self.failResetWorkflow
@@ -1822,37 +1817,65 @@ def test_RestartProtocolAllResolvesPostgresqlProtocolId(service, mapper, monkeyp
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_ContinueProtocolAllResolvesPostgresqlProtocolId(
-    service,
-    mapper,
+def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
 ):
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeContinue": True,
+    }
 
-    protocol = FakeProtocol(objId=10)
-    activeProtocol = FakeProtocol(objId=20)
+    continueCalls = []
 
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    class FakeContinueService:
+        def continueProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            continueCalls.append(
+                kwargs
+            )
+            return expectedResult
 
-    subworkflowCalls = []
-
-    def fakeGetSubworkflow(protocolObj):
-        subworkflowCalls.append(protocolObj)
-        return [protocol], [activeProtocol]
-
-    service.currentProject._getSubworkflow = fakeGetSubworkflow
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolContinueService",
+        FakeContinueService,
+    )
 
     result = service.continueProtocolAll(
         mapper=mapper,
         projectId=1,
         protocolId=500,
-        currentUser={"id": 1},
+        currentUser={
+            "id": 1,
+        },
     )
 
-    assertSuccessEnvelope(result)
-    assert subworkflowCalls == [protocol]
-    assert activeProtocol.runMode.get() == "resume-mode"
-    assert service.currentProject.launchedProtocols == [activeProtocol]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    assert result is expectedResult
+    assert len(continueCalls) == 1
+
+    continueCall = continueCalls[0]
+
+    assert continueCall["mapper"] is mapper
+    assert continueCall["projectId"] == 1
+    assert continueCall["protocolId"] == 500
+
+    assert set(continueCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "getPostgresqlRuntimeSubworkflowCallback",
+        "buildPostgresqlContinuePlanCallback",
+        "launchPostgresqlContinueSubworkflowCallback",
+        "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
+        "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_ResetProtocolFromResolvesPostgresqlProtocolId(service, mapper, monkeypatch):

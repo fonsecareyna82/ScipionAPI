@@ -16,11 +16,7 @@ class RuntimeProtocolContinueService:
             mapper,
             projectId: int,
             protocolId,
-            usingPostgresqlRuntime: bool,
-            currentProject,
-            getScipionProtocolForRuntimeCallback: Callable,
             getPostgresqlRuntimeSubworkflowCallback: Callable,
-            workflowProtocolMapToProtocolsCallback: Callable,
             buildPostgresqlContinuePlanCallback: Callable,
             launchPostgresqlContinueSubworkflowCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
@@ -39,35 +35,14 @@ class RuntimeProtocolContinueService:
         - Outputs are deleted only for protocols classified as restart.
         - project.sqlite, run.db and steps.sqlite are not used.
         """
-        protocol = (
-            getScipionProtocolForRuntimeCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-        )
-
         try:
-            if usingPostgresqlRuntime:
-                workflowProtocolMap = (
-                    getPostgresqlRuntimeSubworkflowCallback(
-                        mapper=mapper,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
+            workflowProtocolMap = (
+                getPostgresqlRuntimeSubworkflowCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
                 )
-            else:
-                (
-                    workflowProtocolMap,
-                    activeProtocolMap,
-                ) = currentProject._getSubworkflow(
-                    protocol
-                )
-
-                continuedProtocolMap = (
-                    activeProtocolMap
-                    or workflowProtocolMap
-                )
+            )
 
         except Exception as error:
             logger.exception(
@@ -88,71 +63,6 @@ class RuntimeProtocolContinueService:
                     "subworkflow: %s"
                     % error
                 ),
-            )
-
-        if not usingPostgresqlRuntime:
-            protocolsToContinue = (
-                workflowProtocolMapToProtocolsCallback(
-                    continuedProtocolMap
-                )
-            )
-
-            if not protocolsToContinue:
-                return (
-                    buildProtocolMutationResultCallback(
-                        "No protocols to continue"
-                    )
-                )
-
-            errors = []
-
-            try:
-                currentProject._continueWorkflow(
-                    errors,
-                    continuedProtocolMap,
-                )
-
-            except Exception as error:
-                logger.exception(
-                    "Failed to continue legacy "
-                    "workflow subtree. "
-                    "projectId=%s protocolId=%s",
-                    projectId,
-                    protocolId,
-                )
-
-                raise HTTPException(
-                    status_code=(
-                        status
-                        .HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    detail=(
-                        "Failed to continue protocol "
-                        "subtree: %s"
-                        % error
-                    ),
-                )
-
-            if errors:
-                raise HTTPException(
-                    status_code=(
-                        status
-                        .HTTP_422_UNPROCESSABLE_ENTITY
-                    ),
-                    detail=[
-                        str(error)
-                        for error in errors
-                    ],
-                )
-
-            return (
-                buildProtocolMutationResultCallback(
-                    "Protocol subtree continued successfully",
-                    protocolsCount=len(
-                        protocolsToContinue
-                    ),
-                    dependenciesCount=0,
-                )
             )
 
         continuePlan = (

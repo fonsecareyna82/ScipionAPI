@@ -6418,9 +6418,7 @@ class ProjectService:
             protocolId,
             currentUser,
     ):
-        runtimeProtocolContinueService = (
-            RuntimeProtocolContinueService()
-        )
+        runtimeProtocolContinueService = RuntimeProtocolContinueService()
 
         return (
             runtimeProtocolContinueService
@@ -6428,45 +6426,12 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
-                usingPostgresqlRuntime=(
-                    self
-                    ._currentProjectUsesPostgresqlRuntimeMapper()
-                ),
-                currentProject=(
-                    self.currentProject
-                ),
-                getScipionProtocolForRuntimeCallback=(
-                    self
-                    ._getScipionProtocolForRuntime
-                ),
-                getPostgresqlRuntimeSubworkflowCallback=(
-                    self
-                    ._getPostgresqlRuntimeSubworkflow
-                ),
-                workflowProtocolMapToProtocolsCallback=(
-                    self
-                    ._workflowProtocolMapToProtocols
-                ),
-                buildPostgresqlContinuePlanCallback=(
-                    self
-                    ._buildPostgresqlContinuePlan
-                ),
-                launchPostgresqlContinueSubworkflowCallback=(
-                    self
-                    ._launchPostgresqlContinueSubworkflow
-                ),
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                    self
-                    ._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
-                ),
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-                    self
-                    ._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
-                ),
-                buildProtocolMutationResultCallback=(
-                    self
-                    ._buildProtocolMutationResult
-                ),
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                buildPostgresqlContinuePlanCallback=self._buildPostgresqlContinuePlan,
+                launchPostgresqlContinueSubworkflowCallback=self._launchPostgresqlContinueSubworkflow,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             )
         )
 
