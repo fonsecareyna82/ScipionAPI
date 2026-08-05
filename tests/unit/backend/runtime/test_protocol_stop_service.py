@@ -261,15 +261,8 @@ class FakeCurrentProject:
             FakeRuntimeMapper()
         )
 
-        self.legacyStopped = []
-
     def getPostgresqlRuntimeMapper(self):
         return self.runtimeMapper
-
-    def stopProtocol(self, protocol):
-        self.legacyStopped.append(
-            protocol
-        )
 
 
 class FakeStatusService:
@@ -335,6 +328,24 @@ def test_StopServiceDoesNotExecuteDirectPostgresqlQueries():
     assert ".db.fetchOne(" not in source
     assert ".db.fetchAll(" not in source
     assert ".db.execute(" not in source
+
+
+def test_StopServiceHasNoLegacyRuntimePath():
+    signature = inspect.signature(
+        RuntimeProtocolStopService.stopProtocols
+    )
+    classSource = inspect.getsource(
+        RuntimeProtocolStopService
+    )
+    methodSource = inspect.getsource(
+        RuntimeProtocolStopService.stopProtocols
+    )
+
+    assert "usingPostgresqlRuntime" not in signature.parameters
+    assert "_stopLegacyProtocols" not in classSource
+    assert "currentProject.stopProtocol" not in classSource
+    assert "postgresqlRuntimeStop=False" not in classSource
+    assert "_stopPostgresqlProtocols" in methodSource
 
 
 def test_GetProtocolJobIdsSupportsScipionCsvList():
@@ -447,7 +458,6 @@ def test_PostgresqlStopKillsWorkerAndPersistsAbort(
         mapper=mapper,
         projectId=1,
         protocolIds=["10"],
-        usingPostgresqlRuntime=True,
         currentProject=currentProject,
         getScipionProtocolForRuntimeCallback=(
             lambda **kwargs: protocol
@@ -607,7 +617,6 @@ def test_PostgresqlStopCancelsQueueAndKillsCoordinator(
         mapper=mapper,
         projectId=1,
         protocolIds=["10"],
-        usingPostgresqlRuntime=True,
         currentProject=currentProject,
         getScipionProtocolForRuntimeCallback=(
             lambda **kwargs: protocol
@@ -668,7 +677,6 @@ def test_PostgresqlStopSkipsFinishedProtocol(
         mapper=mapper,
         projectId=1,
         protocolIds=["10"],
-        usingPostgresqlRuntime=True,
         currentProject=currentProject,
         getScipionProtocolForRuntimeCallback=(
             lambda **kwargs: protocol
@@ -741,7 +749,6 @@ def test_PostgresqlStopDeduplicatesProtocolIds(
             "10",
             "10",
         ],
-        usingPostgresqlRuntime=True,
         currentProject=currentProject,
         getScipionProtocolForRuntimeCallback=(
             lambda **kwargs: (
@@ -763,46 +770,6 @@ def test_PostgresqlStopDeduplicatesProtocolIds(
     ) == 1
 
 
-def test_LegacyStopStillDelegatesToProject():
-    mapper = FakeMapper()
-
-    currentProject = (
-        FakeCurrentProject()
-    )
-
-    protocol = FakeProtocol(
-        protocolId=10,
-        protocolStatus="running",
-    )
-
-    result = (
-        RuntimeProtocolStopService()
-        .stopProtocols(
-            mapper=mapper,
-            projectId=1,
-            protocolIds=["10"],
-            usingPostgresqlRuntime=False,
-            currentProject=currentProject,
-            getScipionProtocolForRuntimeCallback=(
-                lambda **kwargs: protocol
-            ),
-            buildProtocolMutationResultCallback=(
-                buildResult
-            ),
-        )
-    )
-
-    assert result["status"] == 0
-
-    assert (
-        currentProject
-        .legacyStopped
-        == [
-            protocol,
-        ]
-    )
-
-
 def test_StopRejectsEmptyProtocolList():
     with pytest.raises(
             HTTPException
@@ -813,7 +780,6 @@ def test_StopRejectsEmptyProtocolList():
                 mapper=FakeMapper(),
                 projectId=1,
                 protocolIds=[],
-                usingPostgresqlRuntime=True,
                 currentProject=(
                     FakeCurrentProject()
                 ),
@@ -855,7 +821,6 @@ def test_StopDoesNotAbortWhenStoredPidIsDead(
             mapper=FakeMapper(),
             projectId=1,
             protocolIds=["10"],
-            usingPostgresqlRuntime=True,
             currentProject=(
                 FakeCurrentProject()
             ),

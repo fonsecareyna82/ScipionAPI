@@ -47,11 +47,8 @@ class RuntimeProtocolStopService:
     """
     Stop Scipion runtime protocols.
 
-    PostgreSQL runtime mode is completely independent from:
-
-    - project.sqlite
-    - logs/run.db
-    - steps.sqlite
+    Runtime stop is completely independent from project.sqlite,
+    logs/run.db and steps.sqlite.
 
     Only the explicitly selected protocols are modified.
     Parent and child protocols remain read-only.
@@ -1378,45 +1375,12 @@ class RuntimeProtocolStopService:
             )
         )
 
-    def _stopLegacyProtocols(
-            self,
-            *,
-            resolvedProtocols,
-            currentProject,
-            buildProtocolMutationResultCallback: Callable,
-    ) -> Dict[str, Any]:
-        stopped = []
-
-        for protocol in resolvedProtocols:
-            currentProject.stopProtocol(
-                protocol
-            )
-
-            stopped.append(
-                str(
-                    protocol.getObjId()
-                )
-            )
-
-        return (
-            buildProtocolMutationResultCallback(
-                "Protocol stopped successfully",
-                protocolsCount=len(
-                    stopped
-                ),
-                dependenciesCount=0,
-                nativeStopped=stopped,
-                postgresqlRuntimeStop=False,
-            )
-        )
-
     def stopProtocols(
             self,
             *,
             mapper,
             projectId: int,
             protocolIds,
-            usingPostgresqlRuntime: bool,
             currentProject,
             getScipionProtocolForRuntimeCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
@@ -1430,15 +1394,11 @@ class RuntimeProtocolStopService:
         resolvedProtocols = []
         seenProtocolIds = set()
 
-        for rawProtocolId in (
-                protocolIds or []
-        ):
-            protocol = (
-                getScipionProtocolForRuntimeCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=rawProtocolId,
-                )
+        for rawProtocolId in protocolIds or []:
+            protocol = getScipionProtocolForRuntimeCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=rawProtocolId,
             )
 
             protocolId = getattr(
@@ -1447,84 +1407,38 @@ class RuntimeProtocolStopService:
                 lambda: None,
             )()
 
-            protocolIdText = str(
-                protocolId
-            )
+            protocolIdText = str(protocolId)
 
             if protocolIdText in seenProtocolIds:
                 continue
 
-            seenProtocolIds.add(
-                protocolIdText
-            )
-
-            resolvedProtocols.append(
-                protocol
-            )
+            seenProtocolIds.add(protocolIdText)
+            resolvedProtocols.append(protocol)
 
         if not resolvedProtocols:
             raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_422_UNPROCESSABLE_ENTITY
-                ),
-                detail=(
-                    "No valid protocols to stop"
-                ),
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to stop",
             )
 
         try:
-            if usingPostgresqlRuntime:
-                return (
-                    self
-                    ._stopPostgresqlProtocols(
-                        mapper=mapper,
-                        projectId=projectId,
-                        resolvedProtocols=(
-                            resolvedProtocols
-                        ),
-                        currentProject=(
-                            currentProject
-                        ),
-                        buildProtocolMutationResultCallback=(
-                            buildProtocolMutationResultCallback
-                        ),
-                    )
-                )
-
-            return (
-                self
-                ._stopLegacyProtocols(
-                    resolvedProtocols=(
-                        resolvedProtocols
-                    ),
-                    currentProject=(
-                        currentProject
-                    ),
-                    buildProtocolMutationResultCallback=(
-                        buildProtocolMutationResultCallback
-                    ),
-                )
+            return self._stopPostgresqlProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                resolvedProtocols=resolvedProtocols,
+                currentProject=currentProject,
+                buildProtocolMutationResultCallback=buildProtocolMutationResultCallback,
             )
-
         except HTTPException:
             raise
-
         except Exception as error:
             logger.exception(
-                "Failed to stop protocols. "
-                "projectId=%s protocolIds=%s",
+                "Failed to stop protocols. projectId=%s protocolIds=%s",
                 projectId,
                 protocolIds,
             )
 
             raise HTTPException(
-                status_code=(
-                    status
-                    .HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail=(
-                    "Failed to stop protocols: %s"
-                    % error
-                ),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to stop protocols: %s" % error,
             ) from error

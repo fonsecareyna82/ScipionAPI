@@ -6461,21 +6461,15 @@ class ProjectService:
             projectId: int,
             protocolIds,
     ):
-        runtimeProtocolStopService = (
-            RuntimeProtocolStopService()
-        )
+        runtimeProtocolStopService = RuntimeProtocolStopService()
 
-        return (
-            runtimeProtocolStopService
-            .stopProtocols(
-                mapper=mapper,
-                projectId=projectId,
-                protocolIds=protocolIds,
-                usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
-                currentProject=self.currentProject,
-                getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            )
+        return runtimeProtocolStopService.stopProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocolIds=protocolIds,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:

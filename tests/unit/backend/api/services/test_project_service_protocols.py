@@ -254,7 +254,6 @@ class FakeCurrentProject:
         self.storedProtocols = []
         self.launchedProtocols = []
         self.scheduledProtocols = []
-        self.stoppedProtocols = []
 
     def getDomain(self):
         return FakeDomain(self.protocolFactories)
@@ -283,9 +282,6 @@ class FakeCurrentProject:
 
     def scheduleProtocol(self, protocol):
         self.scheduledProtocols.append(protocol)
-
-    def stopProtocol(self, protocol):
-        self.stoppedProtocols.append(protocol)
 
 
 class FakeDb:
@@ -1669,22 +1665,6 @@ def test_DuplicateProtocolUsesPostgresqlRuntimeService(
     }
 
 
-def test_StopProtocolStopsEachProtocol(service):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
-
-    result = service.stopProtocol(
-        mapper=None,
-        projectId=None,
-        protocolIds=["10", "11"],
-    )
-
-    assertSuccessEnvelope(result)
-    assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
-
-
 def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     protocol = FakeProtocol(objId=10)
     service.currentProject.protocols[10] = protocol
@@ -1705,24 +1685,63 @@ def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_StopProtocolResolvesPostgresqlProtocolIds(service, mapper):
-    protocolA = FakeProtocol(objId=10)
-    protocolB = FakeProtocol(objId=11)
+def test_StopProtocolUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    protocolIds = [
+        "500",
+        "501",
+    ]
 
-    service.currentProject.protocols[10] = protocolA
-    service.currentProject.protocols[11] = protocolB
+    expectedResult = {
+        "status": 0,
+        "errors": [],
+        "postgresqlRuntimeStop": True,
+    }
 
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-    mapper.db.runtimeProtocolIdByDbId[501] = 11
+    stopCalls = []
+
+    class FakeStopService:
+        def stopProtocols(
+                self,
+                **kwargs,
+        ):
+            stopCalls.append(kwargs)
+            return expectedResult
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStopService",
+        FakeStopService,
+    )
 
     result = service.stopProtocol(
         mapper=mapper,
         projectId=1,
-        protocolIds=["500", "501"],
+        protocolIds=protocolIds,
     )
 
-    assertSuccessEnvelope(result)
-    assert service.currentProject.stoppedProtocols == [protocolA, protocolB]
+    assert result is expectedResult
+    assert len(stopCalls) == 1
+
+    stopCall = stopCalls[0]
+
+    assert stopCall["mapper"] is mapper
+    assert stopCall["projectId"] == 1
+    assert stopCall["protocolIds"] is protocolIds
+    assert stopCall["currentProject"] is service.currentProject
+
+    assert set(stopCall) == {
+        "mapper",
+        "projectId",
+        "protocolIds",
+        "currentProject",
+        "getScipionProtocolForRuntimeCallback",
+        "buildProtocolMutationResultCallback",
+    }
 
 
 def test_RestartProtocolAllUsesPostgresqlRuntimeService(
