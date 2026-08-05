@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import Set as ScipionSet
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    PostgresqlScipionItemHydrator,
     getPostgresqlRuntimeParent,
 )
 
@@ -408,29 +407,34 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet: ScipionSet,
             classes: Dict[str, Type],
     ) -> None:
-        sourceClasses = self._getRuntimeClasses(sourceSet) or classes
-
-        schemaItem = self._buildItemSchemaTemplate(
-            sourceSet=sourceSet,
-            targetSet=targetSet,
-            classes=sourceClasses,
+        sourceClasses = (
+                self._getRuntimeClasses(
+                    sourceSet
+                )
+                or classes
         )
 
-        for sourceItem in self._iterSourceItems(sourceSet):
+        for sourceItem in self._iterSourceItems(
+                sourceSet
+        ):
             targetItem = self._cloneItem(
-                sourceItem=sourceItem,
-                classes=sourceClasses,
-                schemaItem=schemaItem,
+                sourceItem,
+                sourceClasses,
             )
 
-            targetSet.append(targetItem)
+            targetSet.append(
+                targetItem
+            )
 
             self._setStableStreamingCreation(
                 targetItem=targetItem,
                 targetSet=targetSet,
             )
 
-            if not isinstance(sourceItem, ScipionSet):
+            if not isinstance(
+                    sourceItem,
+                    ScipionSet,
+            ):
                 continue
 
             self._ensureNestedMapper(
@@ -446,9 +450,13 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     classes=sourceClasses,
                 )
 
-                targetItem.write(properties=False)
-                targetSet.update(targetItem)
+                targetItem.write(
+                    properties=False
+                )
 
+                targetSet.update(
+                    targetItem
+                )
             finally:
                 # The nested mapper shares the root SQLite connection.
                 # Detach it without closing the shared connection.
@@ -762,164 +770,46 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             % targetSet.getClassName()
         )
 
-    def _buildItemSchemaTemplate(
-            self,
-            sourceSet: ScipionSet,
-            targetSet: ScipionSet,
-            classes: Dict[str, Type],
-    ):
-        runtimeChecker = getattr(
-            sourceSet,
-            "isPostgresqlRuntimeOutput",
-            None,
-        )
-
-        if not callable(runtimeChecker) or not runtimeChecker():
-            return None
-
-        mapper = sourceSet._getMapper()
-
-        getColumns = getattr(
-            mapper,
-            "getColumns",
-            None,
-        )
-
-        if not callable(getColumns):
-            raise RuntimeError(
-                "PostgreSQL runtime Set mapper does not "
-                "expose its persisted item schema. "
-                "className=%s objectId=%s mapperClass=%s"
-                % (
-                    sourceSet.getClassName(),
-                    sourceSet.getObjId(),
-                    mapper.__class__.__name__,
-                )
-            )
-
-        columns = list(getColumns() or [])
-
-        itemClass = self._resolveSetItemClass(
-            sourceSet=sourceSet,
-            targetSet=targetSet,
-            classes=classes,
-        )
-
-        runtimeInfo = self._getRuntimeInfo(sourceSet)
-
-        itemClassName = str(
-            runtimeInfo.get("itemClassName")
-            or itemClass.__name__
-        )
-
-        schemaClasses = dict(classes or {})
-        schemaClasses.setdefault(itemClassName, itemClass)
-
-        if not columns:
-            return itemClass()
-
-        schemaValues = {}
-
-        for column in columns:
-            labelProperty = str(
-                column.get("labelProperty")
-                or ""
-            ).strip()
-
-            if not labelProperty or labelProperty == "self":
-                continue
-
-            schemaValues[labelProperty] = None
-
-        hydrator = PostgresqlScipionItemHydrator(
-            itemClassName=itemClassName,
-            columns=columns,
-            classes=schemaClasses,
-        )
-
-        return hydrator.build({
-            "scipionItemId": 1,
-            "enabled": True,
-            "label": "",
-            "comment": "",
-            "values": schemaValues,
-        })
-
     def _cloneItem(
             self,
             sourceItem,
             classes: Dict[str, Type],
-            schemaItem=None,
     ):
-        isNestedSet = isinstance(
-            sourceItem,
-            ScipionSet,
-        )
-
-        if isNestedSet:
-            itemClass = self._getNativeSetClass(
-                sourceItem
-            )
-
-            targetItem = itemClass()
-
-            self._setClassesDict(
-                targetItem,
-                classes,
-            )
-
-            ignoreAttrs = [
-                "_mapperPath",
-                "_size",
-                "_objParent",
-            ]
-
-        else:
-            itemClass = self._getObjectClass(
-                sourceItem
-            )
-
-            targetItem = itemClass()
-
-            ignoreAttrs = [
-                "_objParent",
-            ]
-
-        if schemaItem is not None:
-            targetItem.copy(
-                schemaItem,
-                copyId=False,
-                ignoreAttrs=ignoreAttrs,
-            )
-
-        if isNestedSet:
+        if isinstance(sourceItem, ScipionSet):
+            nativeItemClass = self._getNativeSetClass(sourceItem)
+            targetItem = nativeItemClass()
+            self._setClassesDict(targetItem, classes)
             targetItem.copy(
                 sourceItem,
                 copyId=True,
-                ignoreAttrs=ignoreAttrs,
+                ignoreAttrs=[
+                    "_mapperPath",
+                    "_size",
+                    "_objParent",
+                ],
             )
-
         else:
+            itemClass = self._getObjectClass(sourceItem)
+            targetItem = itemClass()
             try:
                 targetItem.copy(
                     sourceItem,
                     copyId=True,
-                    ignoreAttrs=ignoreAttrs,
+                    ignoreAttrs=[
+                        "_objParent",
+                    ],
                     copyEnable=True,
                 )
-
             except TypeError:
                 targetItem.copy(
                     sourceItem,
                     copyId=True,
-                    ignoreAttrs=ignoreAttrs,
+                    ignoreAttrs=[
+                        "_objParent",
+                    ],
                 )
 
-        self._copyEnabled(
-            sourceItem,
-            targetItem,
-        )
-
+        self._copyEnabled(sourceItem, targetItem)
         return targetItem
 
     def _ensureNestedMapper(

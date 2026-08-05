@@ -333,34 +333,6 @@ def test_SelectAllUsesScipionItemIdForIdOrdering():
     assert db.params == (31,)
 
 
-def test_GetColumnsReturnsOrderedDefensiveCopies():
-    mapper = PostgresqlSetRuntimeMapper(
-        db=FakeDb(),
-        setId=31,
-        itemBuilder=buildItem,
-    )
-
-    columns = mapper.getColumns()
-
-    assert [
-        column["labelProperty"]
-        for column in columns
-    ] == [
-        "_tomoId",
-        "_score",
-        "_filename",
-    ]
-
-    columns[0]["labelProperty"] = "_changed"
-
-    refreshedColumns = mapper.getColumns()
-
-    assert (
-        refreshedColumns[0]["labelProperty"]
-        == "_tomoId"
-    )
-
-
 def test_SelectAllSupportsJsonFieldEquality():
     db = FakeDb(rows=[])
 

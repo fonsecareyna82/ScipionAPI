@@ -17,26 +17,6 @@ class ExampleItem(Object):
         self._name = String()
 
 
-class ExampleOptionalMetadata(Object):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._score = Float()
-
-
-class ExampleHeterogeneousItem(Object):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._name = String()
-        self._metadata = None
-
-
-class ExampleHeterogeneousSet(Set):
-    ITEM_TYPE = ExampleHeterogeneousItem
-
-    def _loadClassesDict(self):
-        return CLASSES
-
-
 class ExampleSet(Set):
     ITEM_TYPE = ExampleItem
 
@@ -81,9 +61,6 @@ CLASSES = {
     "ExampleChildItem": ExampleChildItem,
     "ExampleNestedSet": ExampleNestedSet,
     "ExampleParentSet": ExampleParentSet,
-    "ExampleOptionalMetadata": ExampleOptionalMetadata,
-    "ExampleHeterogeneousItem": ExampleHeterogeneousItem,
-    "ExampleHeterogeneousSet": ExampleHeterogeneousSet,
 }
 
 
@@ -914,72 +891,6 @@ class RevisionAwareMapper:
         )
 
 
-class HeterogeneousRuntimeMapper:
-    def __init__(
-            self,
-            items,
-            columns,
-    ):
-        self.items = list(items)
-        self.columns = [
-            dict(column)
-            for column in columns
-        ]
-        self.closeCalls = 0
-
-    def getRevisionToken(self):
-        return (
-            "root",
-            501,
-            len(self.items),
-            max(
-                item.getObjId()
-                for item in self.items
-            ),
-            "heterogeneous-schema",
-        )
-
-    def getColumns(self):
-        return [
-            dict(column)
-            for column in self.columns
-        ]
-
-    def count(self):
-        return len(self.items)
-
-    def maxId(self):
-        return max(
-            item.getObjId()
-            for item in self.items
-        )
-
-    def selectAll(
-            self,
-            orderBy="id",
-            direction="ASC",
-            iterate=True,
-            **kwargs,
-    ):
-        items = sorted(
-            self.items,
-            key=lambda item: item.getObjId(),
-            reverse=(
-                str(direction).upper()
-                == "DESC"
-            ),
-        )
-
-        return (
-            iter(items)
-            if iterate
-            else items
-        )
-
-    def close(self):
-        self.closeCalls += 1
-
-
 def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         tmp_path,
 ):
@@ -1149,101 +1060,6 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
             compatibilitySet.close()
 
     finally:
-        sourceSet.close()
-
-
-def test_MaterializeCompletesHeterogeneousPostgresqlItemSchema(
-        tmp_path,
-):
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-
-    firstItem = ExampleHeterogeneousItem()
-    firstItem.setObjId(1)
-    firstItem._name.set("first")
-    firstItem._metadata = ExampleOptionalMetadata()
-    firstItem._metadata._score.set(0.75)
-
-    secondItem = ExampleHeterogeneousItem()
-    secondItem.setObjId(2)
-    secondItem._name.set("second")
-
-    columns = [
-        {
-            "labelProperty": "_name",
-            "className": "String",
-            "valueType": "text",
-            "position": 0,
-        },
-        {
-            "labelProperty": "_metadata",
-            "className": "ExampleOptionalMetadata",
-            "valueType": "object",
-            "position": 1,
-        },
-        {
-            "labelProperty": "_metadata._score",
-            "className": "Float",
-            "valueType": "float",
-            "position": 2,
-        },
-    ]
-
-    sourceSet = ExampleHeterogeneousSet()
-
-    sourceSet._mapper = HeterogeneousRuntimeMapper(
-        items=[
-            firstItem,
-            secondItem,
-        ],
-        columns=columns,
-    )
-
-    sourceSet.isPostgresqlRuntimeOutput = (
-        lambda: True
-    )
-
-    _configureRuntimeSource(
-        sourceSet=sourceSet,
-        owner=owner,
-        nativeSetClass=ExampleHeterogeneousSet,
-        runtimeInfo={
-            "setId": 501,
-            "className": "ExampleHeterogeneousSet",
-            "itemClassName": "ExampleHeterogeneousItem",
-        },
-    )
-
-    materializer = (
-        PostgresqlRuntimeSetSqliteMaterializer()
-    )
-
-    targetPath = materializer.materialize(
-        sourceSet
-    )
-
-    compatibilitySet = _openSet(
-        ExampleHeterogeneousSet,
-        targetPath,
-    )
-
-    try:
-        items = list(
-            compatibilitySet
-        )
-
-        assert len(items) == 2
-
-        assert items[0]._name.get() == "first"
-        assert items[0]._metadata._score.get() == 0.75
-
-        assert items[1]._name.get() == "second"
-        assert items[1]._metadata is not None
-        assert items[1]._metadata._score.get() is None
-
-    finally:
-        compatibilitySet.close()
         sourceSet.close()
 
 
