@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import importlib
-
+import inspect
 
 class FakeCurrentProject:
     def __init__(self, projectPath):
@@ -184,3 +184,103 @@ def test_BuildNewProtocolContextInSubprocessResolvesProjectGetPath(
         "SCIPIONWEB_PROJECT_ID": 344,
         "SCIPIONWEB_PROTOCOL_CLASS": "ProtNewPlugin",
     }
+
+
+def test_ProtocolContextStackHasNoLegacyRuntimeSwitch(
+        authTestEnv,
+):
+    protocolServiceModule = importlib.import_module(
+        "app.backend.api.services.protocol_service"
+    )
+    protocolContextServiceModule = importlib.import_module(
+        "app.backend.api.services.protocol_context_service"
+    )
+    protocolFormSerializerModule = importlib.import_module(
+        "app.backend.api.services.protocol_form_serializer"
+    )
+
+    protocolService = protocolServiceModule.ProtocolService
+    protocolContextService = protocolContextServiceModule.ProtocolContextService
+    protocolFormSerializer = protocolFormSerializerModule.ProtocolFormSerializer
+
+    assert "usingPostgresqlRuntime" not in inspect.signature(
+        protocolService.getProtocolParams
+    ).parameters
+    assert "usingPostgresqlRuntime" not in inspect.signature(
+        protocolContextService.buildContext
+    ).parameters
+    assert "usingPostgresqlRuntime" not in inspect.signature(
+        protocolFormSerializer.serializeParam
+    ).parameters
+    assert "usingPostgresqlRuntime" not in inspect.signature(
+        protocolFormSerializer.serializeProtocolSections
+    ).parameters
+    assert "usingPostgresqlRuntime" not in inspect.signature(
+        protocolFormSerializer.serializeProtocolInputs
+    ).parameters
+
+    assert "usingPostgresqlRuntime" not in inspect.getsource(
+        protocolService
+    )
+    assert "usingPostgresqlRuntime" not in inspect.getsource(
+        protocolContextService
+    )
+    assert "usingPostgresqlRuntime" not in inspect.getsource(
+        protocolFormSerializer
+    )
+
+    getProtocolParamsSource = inspect.getsource(
+        protocolService.getProtocolParams
+    )
+
+    assert "getScipionProtocolForRuntimeCallback" not in getProtocolParamsSource
+    assert "fixProtocolParamsConfigurationCallback" not in getProtocolParamsSource
+    assert "buildProtocolContextCallback" not in getProtocolParamsSource
+    assert "syncPostgresqlRuntimeProtocolCallback" in getProtocolParamsSource
+
+
+def test_GetProtocolParamsReturnsPostgresqlRuntimeContext(
+        authTestEnv,
+):
+    protocolServiceModule = importlib.import_module(
+        "app.backend.api.services.protocol_service"
+    )
+
+    expectedContext = {
+        "info": {
+            "projectId": 344,
+            "protocolId": 10,
+        },
+        "form": {
+            "sections": [],
+        },
+        "values": {},
+    }
+
+    syncCalls = []
+
+    def fakeSyncPostgresqlRuntimeProtocol(**kwargs):
+        syncCalls.append(kwargs)
+
+        return {
+            "protocolContext": expectedContext,
+        }
+
+    result = protocolServiceModule.ProtocolService().getProtocolParams(
+        mapper="mapper",
+        projectId=344,
+        protocolId=500,
+        syncPostgresqlRuntimeProtocolCallback=fakeSyncPostgresqlRuntimeProtocol,
+    )
+
+    assert result is expectedContext
+    assert syncCalls == [{
+        "mapper": "mapper",
+        "projectId": 344,
+        "protocolId": 500,
+        "registerOutputs": False,
+        "syncRelations": False,
+        "returnProtocolContext": True,
+    }]
+
+

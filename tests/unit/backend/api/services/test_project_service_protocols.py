@@ -2395,41 +2395,13 @@ def test_GetNextProtocolSuggestionsResolvesPostgresqlProtocolId(
     assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
 
 
-def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypatch):
-    protocol = FakeProtocol(objId=10, className="ProtClass")
-    service.currentProject.protocols[10] = protocol
-    mapper.db.runtimeProtocolIdByDbId[500] = 10
-
-    buildContextCalls = []
-
-    def fakeBuildProtocolContext(projectId, protocolObj, mapperObj):
-        buildContextCalls.append({
-            "projectId": projectId,
-            "protocol": protocolObj,
-            "mapper": mapperObj,
-        })
-
-        return {
-            "info": {
-                "projectId": projectId,
-                "protocolId": protocolObj.getObjId(),
-                "protocolClassName": protocolObj.getClassName(),
-            },
-            "form": {
-                "sections": [],
-            },
-            "values": {},
-        }
-
-    monkeypatch.setattr(service, "_buildProtocolContext", fakeBuildProtocolContext)
-
-    result = service.getProtocolParams(
-        mapper=mapper,
-        projectId=1,
-        protocolId=500,
-    )
-
-    assert result == {
+def test_GetProtocolParamsUsesPostgresqlRuntimeService(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    expectedContext = {
         "info": {
             "projectId": 1,
             "protocolId": 10,
@@ -2441,15 +2413,43 @@ def test_GetProtocolParamsResolvesPostgresqlProtocolId(service, mapper, monkeypa
         "values": {},
     }
 
-    assert service.currentProject.fixedProtocolParams == [protocol]
-    assert buildContextCalls == [
-        {
-            "projectId": 1,
-            "protocol": protocol,
-            "mapper": mapper,
-        }
-    ]
-    assert mapper.db.fetchOneCalls[0]["params"] == (1, 500)
+    protocolServiceCalls = []
+
+    class FakeProtocolService:
+        def getProtocolParams(
+                self,
+                **kwargs,
+        ):
+            protocolServiceCalls.append(kwargs)
+            return expectedContext
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolService",
+        FakeProtocolService,
+    )
+
+    result = service.getProtocolParams(
+        mapper=mapper,
+        projectId=1,
+        protocolId=500,
+    )
+
+    assert result is expectedContext
+    assert len(protocolServiceCalls) == 1
+
+    protocolServiceCall = protocolServiceCalls[0]
+
+    assert protocolServiceCall["mapper"] is mapper
+    assert protocolServiceCall["projectId"] == 1
+    assert protocolServiceCall["protocolId"] == 500
+
+    assert set(protocolServiceCall) == {
+        "mapper",
+        "projectId",
+        "protocolId",
+        "syncPostgresqlRuntimeProtocolCallback",
+    }
 
 
 def test_SaveProtocolResolvesPostgresqlProtocolIdAndDefersPersistenceForLaunch(

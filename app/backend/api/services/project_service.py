@@ -5170,7 +5170,6 @@ class ProjectService:
             buildProtocolThumbnailUrlCallback=self.buildProtocolThumbnailUrl,
             buildProtocolThumbnailRebuildUrlCallback=self.buildProtocolThumbnailRebuildUrl,
             findViewersWebCallback=self.findViewersWeb,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             getScipionObjectIdCallback=self._getScipionObjectId,
             resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             splitPointerValueCallback=self._splitPointerValue,
@@ -5202,11 +5201,7 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-            usingPostgresqlRuntime=self._currentProjectUsesPostgresqlRuntimeMapper(),
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
-            fixProtocolParamsConfigurationCallback=self.currentProject._fixProtParamsConfiguration,
-            buildProtocolContextCallback=self._buildProtocolContext,
         )
 
     def getNextProtocolSuggestions(
