@@ -308,11 +308,17 @@ class PostgresqlRuntimeSetMixin:
             {},
         )
 
-        return (
-            dict(properties)
-            if isinstance(properties, dict)
-            else {}
+        if not isinstance(properties, dict):
+            return {}
+
+        runtimeProperties = dict(properties)
+
+        runtimeProperties.pop(
+            "materializedFileName",
+            None,
         )
+
+        return runtimeProperties
 
     def getPostgresqlRuntimeInfo(self):
         info = getattr(
@@ -763,7 +769,6 @@ class PostgresqlRuntimeSetMixin:
 
         for attributeName in (
                 "_postgresqlRuntimeInfo",
-                "_postgresqlRuntimeProperties",
                 "_postgresqlRuntimeClasses",
                 "_postgresqlRuntimeValues",
         ):
@@ -782,6 +787,10 @@ class PostgresqlRuntimeSetMixin:
                     else {}
                 ),
             )
+
+        runtimeClone._postgresqlRuntimeProperties = (
+            self.getPostgresqlRuntimeProperties()
+        )
 
         classesDict = getattr(
             self,
