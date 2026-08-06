@@ -265,7 +265,8 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         assert targetPath != "/legacy/output.sqlite"
         assert materializer.materialize(sourceSet) == targetPath
         assert sourceSet._postgresqlRuntimeProperties["fileName"] == "/legacy/output.sqlite"
-        assert sourceSet._postgresqlRuntimeProperties["materializedFileName"] == targetPath
+        assert sourceSet._postgresqlMaterializedFileName == targetPath
+        assert "materializedFileName" not in sourceSet._postgresqlRuntimeProperties
 
         compatibilitySet = _openSet(ExampleSet, targetPath)
 
@@ -791,7 +792,6 @@ def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         sourceSet.close()
 
 
-
 def test_PersistentCachedMaterializedPathIsIgnored(
         tmp_path,
 ):
@@ -844,6 +844,66 @@ def test_PersistentCachedMaterializedPathIsIgnored(
             is True
         )
 
+    finally:
+        sourceSet.close()
+
+
+def test_RuntimePropertiesMaterializedPathIsIgnored(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    sourcePath = tmp_path / "source.sqlite"
+    sourceSet = _createRootSource(sourcePath)
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    stalePath = (
+        Path(materializer._getCurrentWorkerDirectory())
+        / "stale.sqlite"
+    )
+
+    stalePath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    stalePath.write_bytes(b"stale")
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 32,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+        runtimeProperties={
+            "materializedFileName": str(stalePath),
+        },
+    )
+
+    try:
+        targetPath = materializer.materialize(sourceSet)
+
+        assert targetPath != str(stalePath)
+        assert Path(targetPath).is_file()
+        assert sourceSet._postgresqlMaterializedFileName == targetPath
+        assert sourceSet._postgresqlRuntimeProperties["materializedFileName"] == str(stalePath)
+
+        compatibilitySet = _openSet(
+            ExampleSet,
+            targetPath,
+        )
+
+        try:
+            assert compatibilitySet.getSize() == 1
+            assert compatibilitySet.getFirstItem().getObjId() == 7
+        finally:
+            compatibilitySet.close()
     finally:
         sourceSet.close()
 

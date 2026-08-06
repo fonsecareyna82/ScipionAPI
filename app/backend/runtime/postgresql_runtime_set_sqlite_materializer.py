@@ -53,7 +53,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
     """
 
     DIRECTORY_NAME = "postgresql-runtime-sets"
-    MATERIALIZED_PATH_PROPERTY = "materializedFileName"
     COMPATIBILITY_BUILD_ATTRIBUTE = "_postgresqlCompatibilityBuild"
 
     _managedPathsLock = threading.RLock()
@@ -433,17 +432,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         if not cachedPath:
-            cachedPath = (
-                self
-                ._getRuntimeProperties(
-                    runtimeSet
-                )
-                .get(
-                    self.MATERIALIZED_PATH_PROPERTY
-                )
-            )
-
-        if not cachedPath:
             return None
 
         cachedPath = os.path.realpath(
@@ -517,18 +505,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
         runtimeSet._postgresqlMaterializedRevision = (
             sourceRevision
-        )
-
-        properties = self._getRuntimeProperties(
-            runtimeSet
-        )
-
-        properties[
-            self.MATERIALIZED_PATH_PROPERTY
-        ] = materializedPath
-
-        runtimeSet._postgresqlRuntimeProperties = (
-            properties
         )
 
         self._registerManagedPath(
