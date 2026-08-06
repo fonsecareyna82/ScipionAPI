@@ -7,9 +7,7 @@ from pyworkflow.object import Float, Object, Set, String
 from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
     PostgresqlRuntimeSetSqliteMaterializer,
 )
-from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    setPostgresqlRuntimeParentReference,
-)
+
 
 class ExampleItem(Object):
     def __init__(self, **kwargs):
