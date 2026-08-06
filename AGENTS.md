@@ -5,6 +5,7 @@ Read this before making changes here. Written for an AI coding agent, not end us
 For deeper, less-frequently-needed context, see:
 - [`.ai/tech-debt.md`](.ai/tech-debt.md) — known problem areas, with file:line
 - [`.ai/roadmap.md`](.ai/roadmap.md) — planned/likely future work (draft, pending team review)
+- [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) — mandatory PostgreSQL runtime Set, streaming, concurrency, and legacy SQLite compatibility rules
 
 ## What this repo is
 
@@ -34,6 +35,16 @@ Unlike the 3 core repos (which consolidated test deps into `pyproject.toml`'s `[
 - CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`. Note: still on `actions/checkout@v4`/`setup-python@v5`, not yet bumped to `@v7` like the 3 core repos.
 - Run locally: needs real Postgres + Redis (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -r requirements.txt && pip install -e . && pytest`.
 - `tests/smoke/` (e.g. `test_app_import.py`, `test_main_app.py`) is the fastest thing to run to sanity-check the app still imports/boots.
+
+## PostgreSQL runtime Set contract
+
+PostgreSQL is the only authoritative runtime persistence for Scipion Sets. Temporary SQLite files are allowed only as worker-local compatibility snapshots for legacy code that explicitly calls `Set.getFileName()`.
+
+These snapshots must remain under `/tmp/postgresql-runtime-sets/worker-<PID>/`, must be isolated per consumer worker, and must refresh at the same path when the PostgreSQL revision changes. Never replace this with one SQLite file shared by the producer and consumers, and never create compatibility SQLite files inside `Runs/`.
+
+Input restoration and compatibility materialization must not mutate or persist parent protocols or their canonical outputs.
+
+Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
 ## Known gotchas
 

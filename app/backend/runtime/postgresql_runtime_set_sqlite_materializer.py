@@ -43,7 +43,16 @@ logger = logging.getLogger(__name__)
 
 
 class PostgresqlRuntimeSetSqliteMaterializer:
-    """Create a temporary SQLite compatibility snapshot from a runtime PG Set."""
+    """
+    Create worker-local SQLite compatibility snapshots from PostgreSQL
+    runtime Sets.
+
+    PostgreSQL remains the only authoritative persistence. These files are
+    disposable, isolated per consumer worker and refreshed at a stable path
+    for legacy streaming protocols that cache Set.getFileName().
+
+    See .ai/postgresql-runtime-compatibility.md before changing this class.
+    """
 
     DIRECTORY_NAME = "postgresql-runtime-sets"
     MATERIALIZED_PATH_PROPERTY = "materializedFileName"
