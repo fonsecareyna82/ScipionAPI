@@ -237,6 +237,53 @@ def _createNestedSource(
     return parentSet
 
 
+def test_MaterializeCreatesReadableSqliteAndCachesPath(
+        tmp_path,
+):
+    sourcePath = tmp_path / "source.sqlite"
+    sourceSet = _createRootSource(sourcePath)
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 31,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+        runtimeProperties={
+            "fileName": "/legacy/output.sqlite",
+        },
+    )
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+    targetPath = materializer.materialize(sourceSet)
+
+    try:
+        assert Path(targetPath).is_file()
+        assert targetPath != str(sourcePath)
+        assert targetPath != "/legacy/output.sqlite"
+        assert materializer.materialize(sourceSet) == targetPath
+        assert sourceSet._postgresqlRuntimeProperties["fileName"] == "/legacy/output.sqlite"
+        assert sourceSet._postgresqlRuntimeProperties["materializedFileName"] == targetPath
+
+        compatibilitySet = _openSet(ExampleSet, targetPath)
+
+        try:
+            assert compatibilitySet.getSize() == 1
+            assert compatibilitySet.getSamplingRate() == 1.5
+
+            item = compatibilitySet.getFirstItem()
+
+            assert isinstance(item, ExampleItem)
+            assert item.getObjId() == 7
+            assert item._name.get() == "particle-7"
+        finally:
+            compatibilitySet.close()
+    finally:
+        sourceSet.close()
+
+
 def test_MaterializeRefreshesRuntimeStateBeforeReturningCachedPath(
         tmp_path,
 ):
