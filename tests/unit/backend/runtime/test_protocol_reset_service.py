@@ -426,11 +426,14 @@ def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
     assert result["status"] == 0
     assert result["protocolsCount"] == 2
     assert result["postgresqlRuntimeReset"] is True
-    assert result["postgresqlOnly"] is True
-    assert result["usesProjectSqlite"] is False
-    assert result["usesRunDb"] is False
-    assert result["usesStepsSqlite"] is False
     assert result["parentProtocolsModified"] is False
+    for legacyField in (
+            "postgresqlOnly",
+            "usesProjectSqlite",
+            "usesRunDb",
+            "usesStepsSqlite",
+    ):
+        assert legacyField not in result
 
     assert stopCalls == [{
         "mapper": mapper,

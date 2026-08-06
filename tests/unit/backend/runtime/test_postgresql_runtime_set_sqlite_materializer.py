@@ -7,9 +7,7 @@ from pyworkflow.object import Float, Object, Set, String
 from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
     PostgresqlRuntimeSetSqliteMaterializer,
 )
-from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    setPostgresqlRuntimeParentReference,
-)
+
 
 class ExampleItem(Object):
     def __init__(self, **kwargs):
@@ -55,22 +53,45 @@ class ExampleParentSet(Set):
         return CLASSES
 
 
+class ExampleLoadingNestedParentSet(
+        ExampleParentSet
+):
+    """
+    Reproduce the SetOfTiltSeries contract: inserting a nested Set
+    assigns its table prefix and calls load() immediately.
+    """
+
+    def _insertItem(
+            self,
+            item,
+    ):
+        item._mapperPath.set(
+            "%s,Nested%s"
+            % (
+                self.getFileName(),
+                item.getObjId(),
+            )
+        )
+
+        item.load()
+
+        super()._insertItem(
+            item
+        )
+
+        item.write(
+            properties=False
+        )
+
+
 CLASSES = {
     "ExampleItem": ExampleItem,
     "ExampleSet": ExampleSet,
     "ExampleChildItem": ExampleChildItem,
     "ExampleNestedSet": ExampleNestedSet,
     "ExampleParentSet": ExampleParentSet,
+    "ExampleLoadingNestedParentSet": ExampleLoadingNestedParentSet,
 }
-
-
-class FakePathOwner(Object):
-    def __init__(self, extraPath, **kwargs):
-        super().__init__(**kwargs)
-        self._extraPath = Path(extraPath)
-
-    def getExtraPath(self, *paths):
-        return str(self._extraPath.joinpath(*paths))
 
 
 def _openSet(
@@ -100,20 +121,15 @@ def _openSet(
 
 def _configureRuntimeSource(
         sourceSet,
-        owner,
         nativeSetClass,
         runtimeInfo,
         runtimeProperties=None,
 ):
-    sourceSet._objParent = owner
     sourceSet._postgresqlNativeSetClass = nativeSetClass
     sourceSet._postgresqlRuntimeInfo = dict(runtimeInfo or {})
-    sourceSet._postgresqlRuntimeProperties = dict(
-        runtimeProperties or {}
-    )
+    sourceSet._postgresqlRuntimeProperties = dict(runtimeProperties or {})
     sourceSet._postgresqlRuntimeClasses = dict(CLASSES)
     sourceSet._postgresqlMaterializedFileName = None
-
 
 def _createRootSource(
         fileName,
@@ -220,28 +236,15 @@ def _createNestedSource(
 
     return parentSet
 
+
 def test_MaterializeCreatesReadableSqliteAndCachesPath(
         tmp_path,
 ):
     sourcePath = tmp_path / "source.sqlite"
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-    sourceSet = _createRootSource(
-        sourcePath
-    )
-
-    sourceItem = sourceSet.getFirstItem()
-    sourceItem._objParent = owner
-
-    sourceSet.iterItems = (
-        lambda *args, **kwargs:
-        iter([sourceItem])
-    )
+    sourceSet = _createRootSource(sourcePath)
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
@@ -253,40 +256,19 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
         },
     )
 
-    materializer = (
-        PostgresqlRuntimeSetSqliteMaterializer()
-    )
-
-    targetPath = materializer.materialize(
-        sourceSet
-    )
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+    targetPath = materializer.materialize(sourceSet)
 
     try:
         assert Path(targetPath).is_file()
         assert targetPath != str(sourcePath)
         assert targetPath != "/legacy/output.sqlite"
+        assert materializer.materialize(sourceSet) == targetPath
+        assert sourceSet._postgresqlRuntimeProperties["fileName"] == "/legacy/output.sqlite"
+        assert sourceSet._postgresqlMaterializedFileName == targetPath
+        assert "materializedFileName" not in sourceSet._postgresqlRuntimeProperties
 
-        assert materializer.materialize(
-            sourceSet
-        ) == targetPath
-
-        assert (
-            sourceSet._postgresqlRuntimeProperties[
-                "fileName"
-            ]
-            == "/legacy/output.sqlite"
-        )
-        assert (
-            sourceSet._postgresqlRuntimeProperties[
-                "materializedFileName"
-            ]
-            == targetPath
-        )
-
-        compatibilitySet = _openSet(
-            ExampleSet,
-            targetPath,
-        )
+        compatibilitySet = _openSet(ExampleSet, targetPath)
 
         try:
             assert compatibilitySet.getSize() == 1
@@ -294,14 +276,62 @@ def test_MaterializeCreatesReadableSqliteAndCachesPath(
 
             item = compatibilitySet.getFirstItem()
 
-            assert isinstance(
-                item,
-                ExampleItem,
-            )
+            assert isinstance(item, ExampleItem)
             assert item.getObjId() == 7
             assert item._name.get() == "particle-7"
         finally:
             compatibilitySet.close()
+    finally:
+        sourceSet.close()
+
+
+def test_MaterializeRefreshesRuntimeStateBeforeReturningCachedPath(
+        tmp_path,
+):
+    sourcePath = tmp_path / "cached-runtime-state-source.sqlite"
+
+    sourceSet = _createRootSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 31,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    refreshCalls = []
+
+    def refreshRuntimeState():
+        refreshCalls.append(True)
+        sourceSet._samplingRate.set(1.5)
+        return sourceSet
+
+    sourceSet.refreshPostgresqlRuntimeState = refreshRuntimeState
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    try:
+        targetPath = materializer.materialize(
+            sourceSet
+        )
+
+        assert refreshCalls == [True]
+
+        sourceSet._samplingRate.set(None)
+
+        cachedPath = materializer.materialize(
+            sourceSet
+        )
+
+        assert cachedPath == targetPath
+        assert refreshCalls == [True, True]
+        assert sourceSet.getSamplingRate() == 1.5
+
     finally:
         sourceSet.close()
 
@@ -312,10 +342,6 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
     sourcePath = (
         tmp_path
         / "streaming-cursor-source.sqlite"
-    )
-
-    owner = FakePathOwner(
-        tmp_path / "extra"
     )
 
     sourceSet = _createEmptySource(
@@ -363,7 +389,6 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 71,
@@ -475,18 +500,12 @@ def test_MaterializeNeverReusesPersistentLegacySqlite(
         / "source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
@@ -556,16 +575,12 @@ def test_MaterializeSupportsEmptySets(
         tmp_path,
 ):
     sourcePath = tmp_path / "empty-source.sqlite"
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
     sourceSet = _createEmptySource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 32,
@@ -594,6 +609,88 @@ def test_MaterializeSupportsEmptySets(
         sourceSet.close()
 
 
+def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
+        tmp_path,
+):
+    sourcePath = tmp_path / "heterogeneous-source.sqlite"
+
+    sourceSet = _createEmptySource(
+        sourcePath
+    )
+
+    firstItem = ExampleItem()
+    firstItem.setObjId(1)
+    firstItem._name.set("first")
+    firstItem._metadata = ExampleChildItem()
+    firstItem._metadata._value.set("present")
+
+    secondItem = ExampleItem()
+    secondItem.setObjId(2)
+    secondItem._name.set("second")
+
+    sourceSet.iterItems = (
+        lambda *args, **kwargs:
+        iter([
+            firstItem,
+            secondItem,
+        ])
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 501,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+    )
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    targetPath = materializer.materialize(
+        sourceSet
+    )
+
+    compatibilitySet = _openSet(
+        ExampleSet,
+        targetPath,
+    )
+
+    try:
+        itemsById = {}
+
+        for item in compatibilitySet:
+            metadata = getattr(
+                item,
+                "_metadata",
+                None,
+            )
+
+            itemsById[item.getObjId()] = {
+                "name": item._name.get(),
+                "metadata": (
+                    metadata._value.get()
+                    if metadata is not None
+                    else None
+                ),
+            }
+
+        assert itemsById == {
+            1: {
+                "name": "first",
+                "metadata": "present",
+            },
+            2: {
+                "name": "second",
+                "metadata": None,
+            },
+        }
+
+    finally:
+        compatibilitySet.close()
+        sourceSet.close()
+
 def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         tmp_path,
 ):
@@ -606,14 +703,8 @@ def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         sourcePath
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 61,
@@ -701,35 +792,6 @@ def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         sourceSet.close()
 
 
-def test_MaterializerFindsOwnerThroughRuntimeParentReference(
-        tmp_path,
-):
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
-    rootSet = ExampleParentSet()
-    rootSet._objParent = owner
-
-    nestedSet = ExampleNestedSet()
-
-    setPostgresqlRuntimeParentReference(
-        runtimeObject=nestedSet,
-        parent=rootSet,
-    )
-
-    materializer = (
-        PostgresqlRuntimeSetSqliteMaterializer()
-    )
-
-    assert (
-        materializer._findPathOwner(
-            nestedSet
-        )
-        is owner
-    )
-
 def test_PersistentCachedMaterializedPathIsIgnored(
         tmp_path,
 ):
@@ -738,18 +800,12 @@ def test_PersistentCachedMaterializedPathIsIgnored(
         / "cached-output.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 32,
@@ -792,6 +848,66 @@ def test_PersistentCachedMaterializedPathIsIgnored(
         sourceSet.close()
 
 
+def test_RuntimePropertiesMaterializedPathIsIgnored(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    sourcePath = tmp_path / "source.sqlite"
+    sourceSet = _createRootSource(sourcePath)
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    stalePath = (
+        Path(materializer._getCurrentWorkerDirectory())
+        / "stale.sqlite"
+    )
+
+    stalePath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    stalePath.write_bytes(b"stale")
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={
+            "setId": 32,
+            "className": "ExampleSet",
+            "itemClassName": "ExampleItem",
+        },
+        runtimeProperties={
+            "materializedFileName": str(stalePath),
+        },
+    )
+
+    try:
+        targetPath = materializer.materialize(sourceSet)
+
+        assert targetPath != str(stalePath)
+        assert Path(targetPath).is_file()
+        assert sourceSet._postgresqlMaterializedFileName == targetPath
+        assert sourceSet._postgresqlRuntimeProperties["materializedFileName"] == str(stalePath)
+
+        compatibilitySet = _openSet(
+            ExampleSet,
+            targetPath,
+        )
+
+        try:
+            assert compatibilitySet.getSize() == 1
+            assert compatibilitySet.getFirstItem().getObjId() == 7
+        finally:
+            compatibilitySet.close()
+    finally:
+        sourceSet.close()
+
+
 def test_RecursiveMaterializationFailsFast(
         tmp_path,
 ):
@@ -800,18 +916,12 @@ def test_RecursiveMaterializationFailsFast(
         / "recursive-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 91,
@@ -891,6 +1001,120 @@ class RevisionAwareMapper:
         )
 
 
+def test_MaterializeRefreshesNestedSetsWithoutRecursiveManagedPathRefresh(
+        tmp_path,
+        monkeypatch,
+):
+    sourcePath = (
+        tmp_path
+        / "nested-refresh-source.sqlite"
+    )
+
+    sourceSet = _createNestedSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleLoadingNestedParentSet,
+        runtimeInfo={
+            "setId": 4250,
+            "className": "ExampleLoadingNestedParentSet",
+            "itemClassName": "ExampleNestedSet",
+        },
+    )
+
+    sourceSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    originalMapper = sourceSet._getMapper()
+
+    revisionMapper = RevisionAwareMapper(
+        originalMapper,
+        (
+            "root",
+            4250,
+            1,
+            7,
+            "revision-1",
+        ),
+    )
+
+    sourceSet._mapper = revisionMapper
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    originalLoad = Set.load
+
+    def load(runtimeSet):
+        compatibilityBuild = bool(
+            getattr(
+                runtimeSet,
+                PostgresqlRuntimeSetSqliteMaterializer.COMPATIBILITY_BUILD_ATTRIBUTE,
+                False,
+            )
+        )
+
+        if compatibilityBuild:
+            return originalLoad(runtimeSet)
+
+        mapperPath = getattr(
+            runtimeSet,
+            "_mapperPath",
+            None,
+        )
+
+        storagePath = (
+            str(mapperPath[0]).strip()
+            if mapperPath is not None and len(mapperPath)
+            else ""
+        )
+
+        if (
+                storagePath
+                and PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    storagePath
+                )
+        ):
+            return originalLoad(runtimeSet)
+
+        return originalLoad(runtimeSet)
+
+    monkeypatch.setattr(
+        Set,
+        "load",
+        load,
+    )
+
+    try:
+        targetPath = materializer.materialize(
+            sourceSet
+        )
+
+        revisionMapper.revision = (
+            "root",
+            4250,
+            2,
+            7,
+            "revision-2",
+        )
+
+        # Rebuilding an already registered nested-set snapshot must not
+        # recursively refresh itself when the native parent append()
+        # calls load() on its nested item.
+        assert materializer.materialize(
+            sourceSet
+        ) == targetPath
+
+        assert Path(
+            targetPath
+        ).is_file()
+
+    finally:
+        sourceSet.close()
+
+
 def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         tmp_path,
 ):
@@ -899,18 +1123,12 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         / "streaming-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
@@ -984,10 +1202,10 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
 
         # Unchanged revision keeps the cached snapshot.
         assert (
-            materializer.materialize(
-                sourceSet
-            )
-            == targetPath
+                PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    targetPath
+                )
+                is True
         )
 
         assert copyCalls == [
@@ -1018,11 +1236,14 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
             "revision-2",
         )
 
-        refreshedPath = (
-            materializer.materialize(
-                sourceSet
-            )
+        assert (
+                PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    targetPath
+                )
+                is True
         )
+
+        refreshedPath = targetPath
 
         # Keep a stable compatibility filename.
         assert (
@@ -1063,3 +1284,163 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         sourceSet.close()
 
 
+def test_CleanupCurrentWorkerDirectoryRemovesOnlyCurrentWorkerSnapshots(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    workerDirectory = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getCurrentWorkerDirectory()
+    )
+
+    siblingDirectory = (
+        workerDirectory.parent
+        / "worker-999999999"
+    )
+
+    workerDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    siblingDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    snapshotPath = (
+        workerDirectory
+        / "input.sqlite"
+    )
+
+    snapshotPath.write_bytes(
+        b"snapshot"
+    )
+
+    Path(
+        "%s-wal"
+        % snapshotPath
+    ).write_bytes(
+        b"wal"
+    )
+
+    Path(
+        "%s-shm"
+        % snapshotPath
+    ).write_bytes(
+        b"shm"
+    )
+
+    Path(
+        "%s-journal"
+        % snapshotPath
+    ).write_bytes(
+        b"journal"
+    )
+
+    siblingSnapshotPath = (
+        siblingDirectory
+        / "input.sqlite"
+    )
+
+    siblingSnapshotPath.write_bytes(
+        b"sibling"
+    )
+
+    runtimeSet = ExampleSet()
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    materializer._registerManagedPath(
+        runtimeSet=runtimeSet,
+        materializedPath=str(snapshotPath),
+    )
+
+    managedPath = str(
+        snapshotPath.resolve()
+    )
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(managedPath)
+        is runtimeSet
+    )
+
+    report = PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
+
+    assert report["workerDirectory"] == str(
+        workerDirectory
+    )
+
+    assert report["removed"] is True
+    assert report["deletedCount"] == 4
+    assert report["registryEntriesRemoved"] == 1
+
+    assert not workerDirectory.exists()
+
+    assert siblingSnapshotPath.read_bytes() == b"sibling"
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(managedPath)
+        is None
+    )
+
+
+def test_CleanupCurrentWorkerDirectoryRefusesSymbolicLink(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    workerDirectory = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getCurrentWorkerDirectory()
+    )
+
+    outsideDirectory = (
+        tmp_path
+        / "outside"
+    )
+
+    outsideDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sentinelPath = (
+        outsideDirectory
+        / "sentinel.sqlite"
+    )
+
+    sentinelPath.write_bytes(
+        b"do-not-delete"
+    )
+
+    workerDirectory.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    workerDirectory.symlink_to(
+        outsideDirectory,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="symbolic PostgreSQL SQLite worker directory",
+    ):
+        PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
+
+    assert sentinelPath.read_bytes() == b"do-not-delete"
+    assert workerDirectory.is_symlink()

@@ -138,9 +138,6 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         return {
             "protocolsCount": 2,
             "errors": [],
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
         }
 
     result = RuntimeProtocolRestartService().restartProtocolSubworkflow(
@@ -167,9 +164,20 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
 
     assert result["protocolsCount"] == 2
     assert result["postgresqlRuntimeRestart"] is True
-    assert result["postgresqlWorkerLaunch"]["usesProjectSqlite"] is False
-    assert result["postgresqlWorkerLaunch"]["usesRunDb"] is False
-    assert result["postgresqlWorkerLaunch"]["usesStepsSqlite"] is False
+    workerLaunch = result[
+        "postgresqlWorkerLaunch"
+    ]
+
+    assert workerLaunch[
+        "protocolsCount"
+    ] == 2
+
+    for legacyField in (
+            "usesProjectSqlite",
+            "usesRunDb",
+            "usesStepsSqlite",
+    ):
+        assert legacyField not in workerLaunch
 
 
 def test_InvalidPostgresqlRestartDoesNotCleanupOrLaunch():

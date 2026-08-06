@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import pytest
+from pathlib import Path
 from pyworkflow.object import (
     Object,
     Set,
@@ -37,6 +38,9 @@ from app.backend.mapper.postgresql_runtime_mapper import (
 )
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
+)
+from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
+    PostgresqlRuntimeSetSqliteMaterializer,
 )
 
 
@@ -131,6 +135,7 @@ class DeepNestedOutputSetStub(Set):
 class ProtocolStub:
     def __init__(self):
         self.inserted = []
+        self.deleted = []
         self.nativeCreated = []
 
     def getObjId(self):
@@ -158,6 +163,18 @@ class ProtocolStub:
             child,
     ):
         self.inserted.append(
+            (
+                key,
+                child,
+            )
+        )
+
+    def _deleteChild(
+            self,
+            key,
+            child,
+    ):
+        self.deleted.append(
             (
                 key,
                 child,
@@ -231,6 +248,24 @@ class RuntimeMapperStub:
         self.created = []
         self.finalized = []
         self.discarded = []
+        self.replaced = []
+        self.bound = []
+
+    def bindPostgresqlOutputSetAlias(
+            self,
+            protocol,
+            runtimeSet,
+            canonicalSet,
+    ):
+        runtimeSet.setObjId(canonicalSet.getObjId())
+
+        self.bound.append({
+            "protocol": protocol,
+            "runtimeSet": runtimeSet,
+            "canonicalSet": canonicalSet,
+        })
+
+        return runtimeSet
 
     def getPostgresqlOutputSetCapability(
             self,
@@ -309,17 +344,50 @@ class RuntimeMapperStub:
             protocol,
             outputName,
             runtimeSet,
+            metadataSource=None,
     ):
-        self.finalized.append({
+        call = {
             "protocol": protocol,
             "outputName": outputName,
             "runtimeSet": runtimeSet,
-        })
+        }
+
+        if metadataSource is not None:
+            call["metadataSource"] = (
+                metadataSource
+            )
+
+        self.finalized.append(
+            call
+        )
 
         return {
             "setId": 33,
             "outputName": outputName,
+            "properties": {
+                "itemsCount": (
+                    metadataSource.getSize()
+                    if metadataSource is not None
+                    else runtimeSet.getSize()
+                ),
+            },
         }
+
+    def replacePostgresqlOutputSetSnapshot(
+            self,
+            protocol,
+            outputName,
+            runtimeSet,
+            sourceSet,
+    ):
+        self.replaced.append({
+            "protocol": protocol,
+            "outputName": outputName,
+            "runtimeSet": runtimeSet,
+            "sourceSet": sourceSet,
+        })
+
+        return runtimeSet
 
     def discardPostgresqlOutputSet(
             self,
@@ -440,180 +508,54 @@ def test_InsertChildAdoptsDirectlyConstructedOutputSet():
 
 
 def test_InsertChildAdoptsPopulatedDirectOutputSet():
-    class PopulatedOutputSetStub(OutputSetStub):
+    class PopulatedOutputSetStub(
+            OutputSetStub
+    ):
         def isEmpty(self):
             return False
 
         def getSize(self):
             return 500
 
-    class DirectConstructorProtocolStub(ProtocolStub):
+    class DirectConstructorProtocolStub(
+            ProtocolStub
+    ):
         _possibleOutputs = {
-            "outputParticles": PopulatedOutputSetStub,
+            "outputParticles": (
+                PopulatedOutputSetStub
+            ),
         }
 
     protocol = DirectConstructorProtocolStub()
     runtimeMapper = RuntimeMapperStub()
 
-    adapter = RuntimePostgresqlOutputSetAdapter(runtimeMapper=runtimeMapper, projectId=4, protocol=protocol)
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
     adapter.install()
 
     outputSet = PopulatedOutputSetStub()
     originalIdentity = id(outputSet)
 
-    protocol._insertChild("outputParticles", outputSet)
-
-    assert id(outputSet) == originalIdentity
-
-    assert protocol.inserted == [
-        (
-            "outputParticles",
-            outputSet,
-        ),
-    ]
-
-    assert len(runtimeMapper.created) == 1
-    assert runtimeMapper.created[0]["setClass"] is PopulatedOutputSetStub
-    assert runtimeMapper.created[0]["providedRuntimeSet"] is outputSet
-    assert runtimeMapper.created[0]["runtimeSet"] is outputSet
-
-    assert len(runtimeMapper.finalized) == 1
-    assert runtimeMapper.finalized[0]["outputName"] == "outputParticles"
-    assert runtimeMapper.finalized[0]["runtimeSet"] is outputSet
-
-    adapter.uninstall()
-
-    assert runtimeMapper.discarded == []
-
-
-def test_SpaCreatorKeepsUndeclaredWorkingSetNative():
-    protocol = DeclaredOutputProtocolStub()
-    runtimeMapper = RuntimeMapperStub()
-
-    adapter = RuntimePostgresqlOutputSetAdapter(
-        runtimeMapper=runtimeMapper,
-        projectId=4,
-        protocol=protocol,
-    )
-
-    adapter.install()
-
-    workingSet = (
-        protocol
-        ._EMProtocol__createSet(
-            OutputSetStub,
-            "particles%s.sqlite",
-            "",
-        )
-    )
-
-    assert isinstance(
-        workingSet,
-        OutputSetStub,
-    )
-
-    assert len(
-        protocol.nativeCreated
-    ) == 1
-
-    assert (
-        protocol.nativeCreated[0]["SetClass"]
-        is OutputSetStub
-    )
-
-    assert runtimeMapper.created == []
-
-    outputSet = (
-        protocol
-        ._EMProtocol__createSet(
-            NestedOutputSetStub,
-            "classes2D%s.sqlite",
-            "",
-        )
-    )
-
-    assert outputSet.getObjId() == 91
-
-    assert len(
-        runtimeMapper.created
-    ) == 1
-
-    assert (
-        runtimeMapper.created[0]["setClass"]
-        is NestedOutputSetStub
-    )
-
     protocol._insertChild(
-        "outputClasses",
+        "outputParticles",
         outputSet,
     )
 
-    assert len(
-        runtimeMapper.finalized
-    ) == 1
-
-    assert (
-        runtimeMapper.finalized[0]["outputName"]
-        == "outputClasses"
-    )
-
-    adapter.uninstall()
-
-    assert runtimeMapper.discarded == []
-
-
-def test_InsertChildAdoptsUndeclaredWorkingSetWhenRegisteredAsOutput():
-    protocol = DeclaredOutputProtocolStub()
-    runtimeMapper = RuntimeMapperStub()
-
-    adapter = RuntimePostgresqlOutputSetAdapter(
-        runtimeMapper=runtimeMapper,
-        projectId=4,
-        protocol=protocol,
-    )
-
-    adapter.install()
-
-    workingSet = protocol._EMProtocol__createSet(
-        OutputSetStub,
-        "particles%s.sqlite",
-        "",
-    )
-
-    originalIdentity = id(workingSet)
-
-    assert len(protocol.nativeCreated) == 1
-    assert runtimeMapper.created == []
-    assert runtimeMapper.finalized == []
-
-    protocol._insertChild(
-        "outputParticles",
-        workingSet,
-    )
-
-    assert id(workingSet) == originalIdentity
-
-    assert protocol.inserted == [
-        (
-            "outputParticles",
-            workingSet,
-        ),
-    ]
-
+    assert id(outputSet) == originalIdentity
     assert len(runtimeMapper.created) == 1
-
-    createdSet = runtimeMapper.created[0]
-
-    assert createdSet["setClass"] is OutputSetStub
-    assert createdSet["providedRuntimeSet"] is workingSet
-    assert createdSet["runtimeSet"] is workingSet
-
     assert len(runtimeMapper.finalized) == 1
 
-    finalizedSet = runtimeMapper.finalized[0]
-
-    assert finalizedSet["outputName"] == "outputParticles"
-    assert finalizedSet["runtimeSet"] is workingSet
+    assert (
+        adapter
+        ._finalizedSetsByOutputName[
+            "outputParticles"
+        ]
+        is outputSet
+    )
 
     adapter.uninstall()
 
@@ -752,6 +694,7 @@ def test_TomoCreatorReturnsPostgresqlSetWithoutClassIdentityCheck():
     )
 
     adapter.install()
+    assert RuntimePostgresqlOutputSetAdapter.DELETE_CHILD_ATTRIBUTE not in adapter._patches
 
     outputSet = protocol._createSet(
         OutputSetStub,
@@ -1103,6 +1046,446 @@ def test_RealCapabilitySupportsFlatItems():
         "nestedSetItems": False,
         "itemClassName": "ItemStub",
     }
+
+
+def test_RepeatedOutputDefinitionRefreshesExistingPostgresqlSet():
+    class RepeatedOutputSetStub(
+            OutputSetStub
+    ):
+        def isEmpty(self):
+            return False
+
+        def getSize(self):
+            return 10
+
+    class RepeatedOutputProtocolStub(
+            ProtocolStub
+    ):
+        _possibleOutputs = {
+            "outputParticles": (
+                RepeatedOutputSetStub
+            ),
+        }
+
+    protocol = (
+        RepeatedOutputProtocolStub()
+    )
+
+    runtimeMapper = (
+        RuntimeMapperStub()
+    )
+
+    adapter = (
+        RuntimePostgresqlOutputSetAdapter(
+            runtimeMapper=runtimeMapper,
+            projectId=4,
+            protocol=protocol,
+        )
+    )
+
+    adapter.install()
+
+    firstSnapshot = (
+        RepeatedOutputSetStub()
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        firstSnapshot,
+    )
+
+    assert (
+        adapter
+        ._finalizedSetsByOutputName[
+            "outputParticles"
+        ]
+        is firstSnapshot
+    )
+
+    secondSnapshot = (
+        RepeatedOutputSetStub()
+    )
+
+    # Reproduce Protocol._defineOutputs():
+    # delete the previous child first and then insert
+    # the newly generated output snapshot.
+    protocol._deleteChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
+    protocol._insertChild(
+        "outputParticles",
+        secondSnapshot,
+    )
+
+    assert protocol.deleted == []
+
+    assert len(
+        runtimeMapper.created
+    ) == 1
+
+    assert len(
+        runtimeMapper.finalized
+    ) == 1
+
+    assert runtimeMapper.replaced == [{
+        "protocol": protocol,
+        "outputName": "outputParticles",
+        "runtimeSet": firstSnapshot,
+        "sourceSet": secondSnapshot,
+    }]
+
+    assert protocol.inserted == [
+        (
+            "outputParticles",
+            firstSnapshot,
+        ),
+        (
+            "outputParticles",
+            firstSnapshot,
+        ),
+    ]
+
+    assert (
+        adapter
+        ._finalizedSetsByOutputName[
+            "outputParticles"
+        ]
+        is firstSnapshot
+    )
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
+    )
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+    assert adapter._createdSets == {}
+    assert adapter._finalizedSetsByOutputName == {}
+    assert adapter._pendingOutputSetReplacements == {}
+
+
+def test_DeleteChildDelegatesForUnregisteredNativeSet():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    workingSet = OutputSetStub()
+
+    protocol._deleteChild(
+        "workingSet",
+        workingSet,
+    )
+
+    assert protocol.deleted == [
+        (
+            "workingSet",
+            workingSet,
+        ),
+    ]
+
+    assert (
+        adapter
+        ._pendingOutputSetReplacements
+        == {}
+    )
+
+    adapter.uninstall()
+
+
+def test_InsertChildPassesThroughNonSetProtocolMetadata():
+    protocol = ProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    outputsMetadata = Object()
+
+    protocol._insertChild(
+        "_outputs",
+        outputsMetadata,
+    )
+
+    assert protocol.inserted == [
+        (
+            "_outputs",
+            outputsMetadata,
+        ),
+    ]
+
+    assert runtimeMapper.created == []
+    assert runtimeMapper.finalized == []
+    assert runtimeMapper.replaced == []
+    assert runtimeMapper.bound == []
+
+    adapter.uninstall()
+
+    assert runtimeMapper.discarded == []
+
+
+def test_DirectFilenameSetReusesPostgresqlStorageWithoutCreatingSqlite(
+        tmp_path,
+):
+    class DirectLoadProtocolStub(
+            ProtocolStub
+    ):
+        def getWorkingDir(self):
+            return str(
+                tmp_path
+            )
+
+    protocol = DirectLoadProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    storagePath = (
+        tmp_path
+        / "particles.sqlite"
+    )
+
+    adapter.install()
+
+    try:
+        firstAlias = OutputSetStub(
+            filename=str(storagePath)
+        )
+
+        assert storagePath.exists() is False
+        assert len(runtimeMapper.created) == 1
+        assert len(runtimeMapper.bound) == 1
+
+        canonicalSet = (
+            runtimeMapper.created[0][
+                "runtimeSet"
+            ]
+        )
+
+        assert firstAlias is not canonicalSet
+        assert (
+            firstAlias.getObjId()
+            == canonicalSet.getObjId()
+        )
+
+        protocol._insertChild(
+            "outputParticles",
+            firstAlias,
+        )
+
+        assert len(
+            runtimeMapper.finalized
+        ) == 1
+
+        assert (
+            runtimeMapper.finalized[0][
+                "runtimeSet"
+            ]
+            is canonicalSet
+        )
+
+        assert (
+            runtimeMapper.finalized[0][
+                "metadataSource"
+            ]
+            is firstAlias
+        )
+
+        secondAlias = OutputSetStub(
+            filename=str(storagePath)
+        )
+
+        assert storagePath.exists() is False
+        assert len(runtimeMapper.created) == 1
+        assert len(runtimeMapper.bound) == 2
+
+        protocol._deleteChild(
+            "outputParticles",
+            secondAlias,
+        )
+
+        protocol._insertChild(
+            "outputParticles",
+            secondAlias,
+        )
+
+        assert protocol.deleted == []
+
+        assert len(
+            runtimeMapper.finalized
+        ) == 2
+
+        assert (
+            runtimeMapper.finalized[1][
+                "runtimeSet"
+            ]
+            is canonicalSet
+        )
+
+        assert (
+            runtimeMapper.finalized[1][
+                "metadataSource"
+            ]
+            is secondAlias
+        )
+
+        assert runtimeMapper.replaced == []
+
+        assert protocol.inserted == [
+            (
+                "outputParticles",
+                canonicalSet,
+            ),
+            (
+                "outputParticles",
+                canonicalSet,
+            ),
+        ]
+
+    finally:
+        adapter.uninstall()
+
+
+
+def test_ManagedCompatibilitySqliteRefreshesBeforeNativeLoad(
+        tmp_path,
+        monkeypatch,
+):
+    class CompatibilityInputProtocolStub(
+            ProtocolStub
+    ):
+        def getWorkingDir(self):
+            return str(
+                tmp_path
+                / "Runs"
+                / "protocol"
+            )
+
+    protocol = CompatibilityInputProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    compatibilityPath = (
+        tmp_path
+        / "postgresql-runtime-sets"
+        / "input.sqlite"
+    )
+
+    compatibilityPath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    refreshCalls = []
+
+    def refreshManagedPath(
+            cls,
+            path,
+    ):
+        refreshCalls.append(
+            str(
+                compatibilityPath.resolve()
+            )
+        )
+
+        assert (
+            str(
+                compatibilityPath.resolve()
+            )
+            == str(
+                Path(path).resolve()
+            )
+        )
+
+        return True
+
+    monkeypatch.setattr(
+        PostgresqlRuntimeSetSqliteMaterializer,
+        "refreshManagedPath",
+        classmethod(refreshManagedPath),
+    )
+
+    adapter.install()
+
+    inputSet = None
+
+    try:
+        inputSet = OutputSetStub(
+            filename=str(
+                compatibilityPath
+            )
+        )
+
+        assert refreshCalls == [
+            str(
+                compatibilityPath.resolve()
+            ),
+        ]
+
+        assert runtimeMapper.created == []
+        assert runtimeMapper.bound == []
+        assert runtimeMapper.finalized == []
+
+        internalSet = OutputSetStub()
+
+        internalSet._mapperPath.set(
+            "%s, "
+            % compatibilityPath
+        )
+
+        setattr(
+            internalSet,
+            PostgresqlRuntimeSetSqliteMaterializer.COMPATIBILITY_BUILD_ATTRIBUTE,
+            True,
+        )
+
+        result = adapter._loadDirectPostgresqlSet(
+            originalLoad=lambda runtimeSet: runtimeSet,
+            runtimeSet=internalSet,
+        )
+
+        assert result is internalSet
+
+        # Internal materialization must not trigger another refresh.
+        assert refreshCalls == [
+            str(
+                compatibilityPath.resolve()
+            ),
+        ]
+
+    finally:
+        if inputSet is not None:
+            inputSet.close()
+
+        adapter.uninstall()
+
+
+
 
 
 

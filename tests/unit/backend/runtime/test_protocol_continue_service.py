@@ -136,9 +136,6 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
         return {
             "protocolsCount": 2,
             "errors": [],
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
         }
 
     result = (
@@ -187,12 +184,21 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
     assert result[
         "postgresqlRuntimeContinue"
     ] is True
-
-    assert result[
+    workerLaunch = result[
         "postgresqlWorkerLaunch"
-    ][
-        "usesRunDb"
-    ] is False
+    ]
+
+    assert workerLaunch[
+        "protocolsCount"
+    ] == 2
+
+    for legacyField in (
+            "usesProjectSqlite",
+            "usesRunDb",
+            "usesStepsSqlite",
+    ):
+        assert legacyField not in workerLaunch
+
 
 
 def test_InvalidPostgresqlContinuePlanDoesNotCleanup():

@@ -468,10 +468,17 @@ def test_PostgresqlStopKillsWorkerAndPersistsAbort(
     )
 
     assert result["status"] == 0
-    assert result["postgresqlOnly"] is True
-    assert result["usesProjectSqlite"] is False
-    assert result["usesRunDb"] is False
-    assert result["usesStepsSqlite"] is False
+    for legacyField in (
+            "postgresqlOnly",
+            "usesProjectSqlite",
+            "usesRunDb",
+            "usesStepsSqlite",
+            "postgresqlPointerRestore",
+            "postgresqlRuntimeSync",
+            "missingExecutionMirrors",
+            "degradedStop",
+    ):
+        assert legacyField not in result
 
     assert killCalls == [
         {

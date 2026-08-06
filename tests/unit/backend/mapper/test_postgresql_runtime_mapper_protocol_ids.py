@@ -202,6 +202,38 @@ def test_EnsureObjIdAllocatesNonProtocolFromObjectNamespace():
     ]
 
 
+def test_AssignFreshRuntimeObjectIdReplacesExistingObjectIdentity():
+    freshObjectId = (
+        POSTGRESQL_RUNTIME_OBJECT_ID_START
+        + 481
+    )
+
+    mapper = buildRuntimeMapper(
+        objectIds=[
+            freshObjectId,
+        ],
+    )
+
+    runtimeObject = ExampleObject()
+    runtimeObject.setObjId(
+        77
+    )
+
+    objectId = (
+        mapper
+        ._assignFreshRuntimeObjectId(
+            runtimeObject
+        )
+    )
+
+    assert objectId == freshObjectId
+    assert runtimeObject.getObjId() == freshObjectId
+
+    assert mapper.flatMapper.objectAllocationCalls == [
+        31,
+    ]
+
+
 def test_AllocateProjectProtocolIdRebasesLegacyMillionCounter():
     db = FakeProtocolCounterDb(
         storedCandidate=POSTGRESQL_RUNTIME_OBJECT_ID_START + 200,

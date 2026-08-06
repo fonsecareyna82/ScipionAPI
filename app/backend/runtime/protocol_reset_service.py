@@ -689,18 +689,10 @@ class RuntimeProtocolResetService:
                 ),
                 dependenciesCount=0,
                 postgresqlRuntimeReset=True,
-                postgresqlOnly=True,
-                usesProjectSqlite=False,
-                usesRunDb=False,
-                usesStepsSqlite=False,
                 parentProtocolsModified=False,
                 postgresqlStop=stopInfo,
-                postgresqlCleanup=(
-                    cleanupInfo
-                ),
-                postgresqlInputRefCleanup=(
-                    refCleanupInfo
-                ),
+                postgresqlCleanup=cleanupInfo,
+                postgresqlInputRefCleanup=refCleanupInfo,
                 postgresqlReset={
                     "items": (
                         resetReports

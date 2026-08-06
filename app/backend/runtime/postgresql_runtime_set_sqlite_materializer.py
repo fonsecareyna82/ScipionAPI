@@ -1,26 +1,62 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import uuid
+import weakref
 from datetime import datetime, timedelta
 from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import Set as ScipionSet
-from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    getPostgresqlRuntimeParent,
-)
 
 logger = logging.getLogger(__name__)
 
 
 class PostgresqlRuntimeSetSqliteMaterializer:
-    """Create a temporary SQLite compatibility snapshot from a runtime PG Set."""
+    """
+    Create worker-local SQLite compatibility snapshots from PostgreSQL
+    runtime Sets.
+
+    PostgreSQL remains the only authoritative persistence. These files are
+    disposable, isolated per consumer worker and refreshed at a stable path
+    for legacy streaming protocols that cache Set.getFileName().
+
+    See .ai/postgresql-runtime-compatibility.md before changing this class.
+    """
 
     DIRECTORY_NAME = "postgresql-runtime-sets"
-    MATERIALIZED_PATH_PROPERTY = "materializedFileName"
+    COMPATIBILITY_BUILD_ATTRIBUTE = "_postgresqlCompatibilityBuild"
+
+    _managedPathsLock = threading.RLock()
+    _managedRuntimeSets = weakref.WeakValueDictionary()
     STREAMING_CURSOR_EPOCH = datetime(
         2000,
         1,
@@ -35,6 +71,169 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
         self._materializingSetIdentities = set()
 
+    @classmethod
+    def refreshManagedPath(
+            cls,
+            path: str,
+    ) -> bool:
+        if not path:
+            return False
+
+        managedPath = os.path.realpath(str(path))
+
+        with cls._managedPathsLock:
+            runtimeSet = cls._managedRuntimeSets.get(managedPath)
+
+        if runtimeSet is None:
+            return False
+
+        materializer = getattr(
+            runtimeSet,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        if materializer is None:
+            with cls._managedPathsLock:
+                cls._managedRuntimeSets.pop(managedPath, None)
+
+            return False
+
+        refreshedPath = materializer.materialize(runtimeSet)
+        refreshedPath = os.path.realpath(str(refreshedPath))
+
+        if refreshedPath != managedPath:
+            raise RuntimeError(
+                "PostgreSQL SQLite compatibility refresh "
+                "changed its managed path. expected=%s actual=%s"
+                % (
+                    managedPath,
+                    refreshedPath,
+                )
+            )
+
+        return True
+
+    def _registerManagedPath(
+            self,
+            runtimeSet: ScipionSet,
+            materializedPath: str,
+    ) -> None:
+        managedPath = os.path.realpath(str(materializedPath))
+
+        runtimeSet._postgresqlSqliteMaterializer = self
+
+        with self._managedPathsLock:
+            self._managedRuntimeSets[managedPath] = runtimeSet
+
+    @classmethod
+    def _getManagedRootDirectory(cls) -> str:
+        return os.path.realpath(os.path.join(tempfile.gettempdir(), cls.DIRECTORY_NAME))
+
+    @classmethod
+    def _getCurrentWorkerDirectory(cls) -> str:
+        return os.path.abspath(
+            os.path.join(
+                cls._getManagedRootDirectory(),
+                "worker-%s" % os.getpid(),
+            )
+        )
+
+    @classmethod
+    def cleanupCurrentWorkerDirectory(cls) -> Dict[str, Any]:
+        managedRoot = cls._getManagedRootDirectory()
+        workerDirectory = cls._getCurrentWorkerDirectory()
+        expectedDirectoryName = "worker-%s" % os.getpid()
+
+        try:
+            commonPath = os.path.commonpath(
+                (
+                    managedRoot,
+                    workerDirectory,
+                )
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "Could not validate PostgreSQL SQLite worker directory: %s"
+                % workerDirectory
+            ) from error
+
+        if (
+                commonPath != managedRoot
+                or os.path.basename(workerDirectory) != expectedDirectoryName
+        ):
+            raise RuntimeError(
+                "Refusing to clean an unexpected PostgreSQL SQLite "
+                "worker directory: %s"
+                % workerDirectory
+            )
+
+        with cls._managedPathsLock:
+            managedPaths = []
+
+            for managedPath in list(cls._managedRuntimeSets.keys()):
+                try:
+                    belongsToWorker = (
+                        os.path.commonpath(
+                            (
+                                workerDirectory,
+                                os.path.realpath(managedPath),
+                            )
+                        )
+                        == workerDirectory
+                    )
+                except ValueError:
+                    belongsToWorker = False
+
+                if belongsToWorker:
+                    managedPaths.append(managedPath)
+
+        if not os.path.lexists(workerDirectory):
+            with cls._managedPathsLock:
+                for managedPath in managedPaths:
+                    cls._managedRuntimeSets.pop(managedPath, None)
+
+            return {
+                "workerDirectory": workerDirectory,
+                "removed": False,
+                "deleted": [],
+                "deletedCount": 0,
+                "registryEntriesRemoved": len(managedPaths),
+            }
+
+        if os.path.islink(workerDirectory):
+            raise RuntimeError(
+                "Refusing to clean a symbolic PostgreSQL SQLite "
+                "worker directory: %s"
+                % workerDirectory
+            )
+
+        if not os.path.isdir(workerDirectory):
+            raise RuntimeError(
+                "PostgreSQL SQLite worker path is not a directory: %s"
+                % workerDirectory
+            )
+
+        deletedPaths = sorted(
+            os.path.join(rootPath, fileName)
+            for rootPath, _, fileNames in os.walk(workerDirectory)
+            for fileName in fileNames
+        )
+
+        shutil.rmtree(workerDirectory)
+
+        with cls._managedPathsLock:
+            for managedPath in managedPaths:
+                cls._managedRuntimeSets.pop(managedPath, None)
+
+        return {
+            "workerDirectory": workerDirectory,
+            "removed": True,
+            "deleted": deletedPaths,
+            "deletedCount": len(deletedPaths),
+            "registryEntriesRemoved": len(managedPaths),
+        }
+
     def materialize(
             self,
             runtimeSet: ScipionSet,
@@ -44,15 +243,24 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         with self._lock:
-            cachedPath = self._getCachedPath(
-                runtimeSet
-            )
+            if runtimeSetIdentity in self._materializingSetIdentities:
+                runtimeInfo = self._getRuntimeInfo(runtimeSet)
 
-            sourceRevision = (
-                self._getSourceRevision(
-                    runtimeSet
+                raise RuntimeError(
+                    "Recursive PostgreSQL SQLite "
+                    "materialization detected. "
+                    "className=%s setId=%s tableId=%s"
+                    % (
+                        runtimeSet.getClassName(),
+                        runtimeInfo.get("setId"),
+                        runtimeInfo.get("tableId"),
+                    )
                 )
-            )
+
+            self._refreshRuntimeSetState(runtimeSet)
+
+            cachedPath = self._getCachedPath(runtimeSet)
+            sourceRevision = self._getSourceRevision(runtimeSet)
 
             cachedRevision = getattr(
                 runtimeSet,
@@ -63,39 +271,13 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             if (
                     cachedPath is not None
                     and (
-                    sourceRevision is None
-                    or cachedRevision
-                    == sourceRevision
-            )
+                        sourceRevision is None
+                        or cachedRevision == sourceRevision
+                    )
             ):
                 return cachedPath
 
-            if (
-                    runtimeSetIdentity
-                    in self._materializingSetIdentities
-            ):
-                runtimeInfo = self._getRuntimeInfo(
-                    runtimeSet
-                )
-
-                raise RuntimeError(
-                    "Recursive PostgreSQL SQLite "
-                    "materialization detected. "
-                    "className=%s setId=%s tableId=%s"
-                    % (
-                        runtimeSet.getClassName(),
-                        runtimeInfo.get(
-                            "setId"
-                        ),
-                        runtimeInfo.get(
-                            "tableId"
-                        ),
-                    )
-                )
-
-            self._materializingSetIdentities.add(
-                runtimeSetIdentity
-            )
+            self._materializingSetIdentities.add(runtimeSetIdentity)
 
             materializedPath = None
             targetSet = None
@@ -136,10 +318,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     setClass=nativeSetClass,
                     fileName=materializedPath,
                     classes=classes,
-                )
-
-                self._refreshRuntimeSetState(
-                    runtimeSet
                 )
 
                 self._copySetMetadata(
@@ -254,17 +432,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         if not cachedPath:
-            cachedPath = (
-                self
-                ._getRuntimeProperties(
-                    runtimeSet
-                )
-                .get(
-                    self.MATERIALIZED_PATH_PROPERTY
-                )
-            )
-
-        if not cachedPath:
             return None
 
         cachedPath = os.path.realpath(
@@ -301,12 +468,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         if not path:
             return False
 
-        managedRoot = os.path.realpath(
-            os.path.join(
-                tempfile.gettempdir(),
-                self.DIRECTORY_NAME,
-            )
-        )
+        managedRoot = self._getManagedRootDirectory()
 
         candidatePath = os.path.realpath(
             str(path)
@@ -345,16 +507,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             sourceRevision
         )
 
-        properties = self._getRuntimeProperties(
-            runtimeSet
-        )
-
-        properties[
-            self.MATERIALIZED_PATH_PROPERTY
-        ] = materializedPath
-
-        runtimeSet._postgresqlRuntimeProperties = (
-            properties
+        self._registerManagedPath(
+            runtimeSet=runtimeSet,
+            materializedPath=materializedPath,
         )
 
     def _openSet(
@@ -375,7 +530,21 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             )
 
         mapperPath.set("%s, %s" % (fileName, prefix))
-        targetSet.load()
+
+        setattr(
+            targetSet,
+            self.COMPATIBILITY_BUILD_ATTRIBUTE,
+            True,
+        )
+
+        try:
+            targetSet.load()
+        finally:
+            targetSet.__dict__.pop(
+                self.COMPATIBILITY_BUILD_ATTRIBUTE,
+                None,
+            )
+
         return targetSet
 
     def _copySetMetadata(
@@ -407,66 +576,102 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet: ScipionSet,
             classes: Dict[str, Type],
     ) -> None:
-        sourceClasses = (
-                self._getRuntimeClasses(
-                    sourceSet
-                )
-                or classes
-        )
+        sourceClasses = self._getRuntimeClasses(sourceSet) or classes
+        itemSchema = None
 
-        for sourceItem in self._iterSourceItems(
-                sourceSet
-        ):
+        for sourceItem in self._iterSourceItems(sourceSet):
             targetItem = self._cloneItem(
                 sourceItem,
                 sourceClasses,
             )
 
-            targetSet.append(
-                targetItem
+            nestedSetItem = isinstance(
+                sourceItem,
+                ScipionSet,
             )
 
-            self._setStableStreamingCreation(
-                targetItem=targetItem,
-                targetSet=targetSet,
-            )
-
-            if not isinstance(
-                    sourceItem,
-                    ScipionSet,
-            ):
-                continue
-
-            self._ensureNestedMapper(
-                targetParentSet=targetSet,
-                targetNestedSet=targetItem,
-                classes=sourceClasses,
-            )
+            if nestedSetItem:
+                setattr(targetItem, self.COMPATIBILITY_BUILD_ATTRIBUTE, True)
 
             try:
+                if not nestedSetItem:
+                    if itemSchema is None:
+                        itemSchema = targetItem
+                    else:
+                        self._completeMissingItemAttributes(
+                            targetItem,
+                            itemSchema,
+                        )
+
+                targetSet.append(targetItem)
+
+                self._setStableStreamingCreation(
+                    targetItem=targetItem,
+                    targetSet=targetSet,
+                )
+
+                if not nestedSetItem:
+                    continue
+
+                self._ensureNestedMapper(
+                    targetParentSet=targetSet,
+                    targetNestedSet=targetItem,
+                    classes=sourceClasses,
+                )
+
                 self._copySetItems(
                     sourceSet=sourceItem,
                     targetSet=targetItem,
                     classes=sourceClasses,
                 )
 
-                targetItem.write(
-                    properties=False
-                )
+                targetItem.write(properties=False)
+                targetSet.update(targetItem)
 
-                targetSet.update(
-                    targetItem
-                )
             finally:
-                # The nested mapper shares the root SQLite connection.
-                # Detach it without closing the shared connection.
-                targetItem._mapper = None
+                if nestedSetItem:
+                    # Native tomography Sets may call load() from append().
+                    # Keep that internal load outside the managed-path
+                    # refresh mechanism while this snapshot is constructed.
+                    targetItem._mapper = None
+                    targetItem.__dict__.pop(
+                        self.COMPATIBILITY_BUILD_ATTRIBUTE,
+                        None,
+                    )
 
         self._ensureSetSchema(
             sourceSet=sourceSet,
             targetSet=targetSet,
             classes=sourceClasses,
         )
+
+    def _completeMissingItemAttributes(
+            self,
+            targetItem,
+            schemaItem,
+    ) -> None:
+        for attributeName, schemaAttribute in schemaItem.getAttributesToStore():
+            targetAttribute = getattr(
+                targetItem,
+                attributeName,
+                None,
+            )
+
+            if targetAttribute is None:
+                targetAttribute = schemaAttribute.getClass()()
+                setattr(
+                    targetItem,
+                    attributeName,
+                    targetAttribute,
+                )
+
+            if schemaAttribute.isPointer():
+                continue
+
+            self._completeMissingItemAttributes(
+                targetAttribute,
+                schemaAttribute,
+            )
 
     @classmethod
     def _buildStableStreamingCreation(
@@ -895,36 +1100,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         return os.path.join(
-            tempfile.gettempdir(),
-            self.DIRECTORY_NAME,
-            "worker-%s" % os.getpid(),
+            self._getCurrentWorkerDirectory(),
             fileName,
         )
-
-    def _findPathOwner(self, runtimeSet: ScipionSet):
-        current = runtimeSet
-        visited = set()
-
-        while current is not None:
-            currentId = id(current)
-            if currentId in visited:
-                break
-            visited.add(currentId)
-
-            parent = (
-                getPostgresqlRuntimeParent(
-                    current
-                )
-            )
-            if parent is None:
-                break
-
-            if callable(getattr(parent, "getExtraPath", None)):
-                return parent
-
-            current = parent
-
-        return None
 
     def _getRuntimeInfo(
             self,

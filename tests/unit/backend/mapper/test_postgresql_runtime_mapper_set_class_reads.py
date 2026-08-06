@@ -54,9 +54,19 @@ class FakeDb:
 class FakeFlatMapper:
     def __init__(self):
         self.db = FakeDb()
+        self.nextObjectId = 91
+        self.objectAllocationCalls = []
 
     def getProjectProtocolByProtocolId(self, projectId, protocolId):
         return None
+
+    def allocateProjectObjectId(self, projectId):
+        self.objectAllocationCalls.append(int(projectId))
+
+        objectId = self.nextObjectId
+        self.nextObjectId += 1
+
+        return objectId
 
 
 class FakeRepository:
@@ -416,6 +426,8 @@ def test_CreatePostgresqlOutputSetCopiesPopulatedNativeSetBeforePromotion():
 
     assert result is outputSet
     assert outputSet.postgresqlWritable is True
+    assert outputSet.getObjId() == 91
+    assert mapper.flatMapper.objectAllocationCalls == [4]
 
     assert events == [
         "prepare-snapshot",
@@ -486,6 +498,8 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenReservationFails():
     ]
 
     assert outputSet.__class__ is EmptyRuntimeOutputSet
+    assert outputSet.getObjId() == 91
+    assert mapper.flatMapper.objectAllocationCalls == [4]
     assert outputSet.getObjName() == "workingSet"
     assert outputSet.getObjLabel() == "Working Set"
     assert outputSet.getObjParentId() == 71
@@ -538,8 +552,121 @@ def test_CreatePostgresqlOutputSetRestoresEmptyNativeSetWhenDiscardFails():
     ]
 
     assert outputSet.__class__ is EmptyRuntimeOutputSet
+    assert outputSet.getObjId() == 91
+    assert mapper.flatMapper.objectAllocationCalls == [4]
     assert outputSet.getObjName() == "workingSet"
     assert outputSet.getObjLabel() == "Working Set"
     assert outputSet.getObjParentId() == 71
     assert outputSet._objParent is nativeParent
     assert "_postgresqlRuntimeParentRef" not in outputSet.__dict__
+
+
+def test_ReplacePostgresqlOutputSetSnapshotPreservesRuntimeIdentity():
+    events = []
+
+    mapper = buildMapper()
+    protocol = OutputProtocolStub()
+
+    existingOutput = (
+        PopulatedRuntimeOutputSet(
+            events
+        )
+    )
+
+    existingOutput.setObjId(
+        91
+    )
+
+    existingOutput._postgresqlRuntimeInfo = {
+        "setId": 31,
+    }
+
+    existingOutput._postgresqlNativeSetClass = (
+        PopulatedRuntimeOutputSet
+    )
+
+    existingOutput.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    sourceOutput = (
+        PopulatedRuntimeOutputSet(
+            events
+        )
+    )
+
+    sourceOutput.setObjId(
+        7
+    )
+
+    sourceOutput._mapper = (
+        NativeMapperStub(
+            events
+        )
+    )
+
+    setMapper = RuntimeSetMapperStub(
+        events
+    )
+
+    mapper.setMapper = setMapper
+
+    mapper._resolveProtocolDbIdFromObject = (
+        lambda currentProtocol: 23
+    )
+
+    mapper._prepareNativeSetForPostgresqlSnapshot = (
+        lambda runtimeSet:
+        events.append(
+            "prepare-snapshot"
+        )
+    )
+
+    def refreshRuntimeSet(runtimeSet):
+        events.append(
+            "refresh-runtime-set"
+        )
+
+        return True
+
+    mapper._updateSetFromPostgresql = (
+        refreshRuntimeSet
+    )
+
+    result = (
+        mapper
+        .replacePostgresqlOutputSetSnapshot(
+            protocol=protocol,
+            outputName="outputParticles",
+            runtimeSet=existingOutput,
+            sourceSet=sourceOutput,
+        )
+    )
+
+    assert result is existingOutput
+    assert existingOutput.getObjId() == 91
+    assert existingOutput.postgresqlWritable is True
+
+    assert mapper.flatMapper.objectAllocationCalls == []
+
+    assert len(setMapper.storeCalls) == 1
+
+    storeCall = setMapper.storeCalls[0]
+
+    assert storeCall["projectId"] == 4
+    assert storeCall["protocolDbId"] == 23
+    assert storeCall["outputName"] == "outputParticles"
+    assert storeCall["scipionSet"] is sourceOutput
+    assert storeCall["runtimeReserved"] is False
+    assert storeCall["replaceRuntimeOutput"] is True
+    assert sourceOutput.getObjId() == 91
+
+    assert events == [
+        "prepare-snapshot",
+        "store-snapshot",
+        "close-native-mapper",
+        "refresh-runtime-set",
+        "enable-write",
+    ]
+
+

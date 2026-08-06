@@ -463,3 +463,33 @@ def test_PostgresqlLaunchersDoNotExecuteDirectQueries():
         assert ".db.fetchAll(" not in source
         assert ".db.execute(" not in source
 
+
+def test_PostgresqlLaunchersDoNotExposeLegacyStorageProvenance():
+    launcherMethods = (
+        (
+            RuntimePostgresqlRestartLauncherService,
+            "launchRestartSubworkflow",
+        ),
+        (
+            RuntimePostgresqlContinueLauncherService,
+            "launchContinueSubworkflow",
+        ),
+    )
+
+    for launcherClass, methodName in launcherMethods:
+        source = inspect.getsource(
+            getattr(
+                launcherClass,
+                methodName,
+            )
+        )
+
+        for legacyField in (
+                "usesProjectSqlite",
+                "usesRunDb",
+                "usesStepsSqlite",
+        ):
+            assert legacyField not in source
+
+
+

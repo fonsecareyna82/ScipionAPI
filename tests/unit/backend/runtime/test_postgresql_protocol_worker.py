@@ -286,6 +286,142 @@ def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
     assert worker.protocol is protocol
 
 
+def test_RestoreExecutionInputsRefreshesCachedPostgresqlSet(
+        monkeypatch,
+):
+    class CachedInputSet(Set):
+        def __init__(self):
+            super().__init__()
+
+            self._size.set(
+                2236
+            )
+
+            self.refreshCalls = 0
+
+        def refreshPostgresqlRuntimeState(self):
+            self.refreshCalls += 1
+
+            self._size.set(
+                5236
+            )
+
+            return self
+
+    class RuntimeMapperStub:
+        def __init__(
+                self,
+                outputSet,
+        ):
+            self.outputSet = outputSet
+            self.selectCalls = []
+
+        def selectRuntimeInputObjectById(
+                self,
+                runtimeObjectId,
+        ):
+            self.selectCalls.append(
+                runtimeObjectId
+            )
+
+            return self.outputSet
+
+    class GraphRepositoryStub:
+        def getPostgresqlRuntimeOutputInfo(
+                self,
+                **kwargs,
+        ):
+            assert kwargs["projectId"] == 1
+            assert kwargs["parentProtocolDbId"] == 20
+            assert kwargs["outputName"] == "outputParticles"
+
+            return {
+                "exists": True,
+                "runtimeObjectId": 44,
+                "className": "SetOfParticles",
+            }
+
+    class InputProtocolStub:
+        def getParam(
+                self,
+                paramName,
+        ):
+            assert paramName == "inputParticles"
+
+            return SimpleNamespace()
+
+    inputSet = CachedInputSet()
+
+    inputSet.setObjId(
+        44
+    )
+
+    assert inputSet.getSize() == 2236
+
+    runtimeMapper = RuntimeMapperStub(
+        inputSet
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = object()
+    worker.runtimeMapper = runtimeMapper
+    worker.protocol = InputProtocolStub()
+    worker.getProtocolDbId = lambda: 30
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "ProtocolGraphRepository",
+        GraphRepositoryStub,
+    )
+
+    inputRefs = [{
+        "inputName": "inputParticles",
+        "itemIndex": 0,
+        "parentProtocolDbId": 20,
+        "parentProtocolId": 2,
+        "parentOutputName": "outputParticles",
+    }]
+
+    firstReport = worker.restoreExecutionInputs(
+        persistResolvedRefs=False,
+        inputRefs=inputRefs,
+    )
+
+    assert firstReport["errors"] == []
+    assert firstReport["restored"] == 1
+
+    assert inputSet.refreshCalls == 1
+    assert inputSet.getSize() == 5236
+
+    assert runtimeMapper.selectCalls == [
+        44,
+    ]
+
+    assert worker.protocol.inputParticles.get() is inputSet
+    assert worker.protocol.inputParticles.get().getSize() == 5236
+    assert firstReport["items"][0]["parentProtocolModified"] is False
+
+    secondReport = worker.restoreExecutionInputs(
+        persistResolvedRefs=False,
+        inputRefs=inputRefs,
+    )
+
+    assert secondReport["errors"] == []
+    assert inputSet.refreshCalls == 2
+
+    assert runtimeMapper.selectCalls == [
+        44,
+        44,
+    ]
+
+    assert worker.protocol.inputParticles.get() is inputSet
+    assert worker.protocol.inputParticles.get().getSize() == 5236
+
+
 def test_NonStreamingProtocolWaitsForRunningParent():
     worker = buildWorker(
         streaming=False,
@@ -1012,5 +1148,103 @@ def test_MarkFailedRollsBackBeforeStoringProtocol():
         ),
         "store",
     ]
+
+
+def test_RunClosesWorkerBeforeCleaningCompatibilitySqliteSnapshots():
+    events = []
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.load = lambda: events.append("load")
+    worker.waitUntilReady = lambda: events.append("wait")
+    worker.execute = lambda: events.append("execute") or 0
+    worker.close = lambda: events.append("close")
+    worker.cleanupCompatibilitySqliteSnapshots = lambda: events.append("cleanup")
+
+    assert worker.run(
+        execute=True
+    ) == 0
+
+    assert events == [
+        "load",
+        "wait",
+        "execute",
+        "close",
+        "cleanup",
+    ]
+
+
+def test_RunCleansCompatibilitySqliteSnapshotsAfterFailure():
+    events = []
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.load = lambda: events.append("load")
+    worker.waitUntilReady = lambda: events.append("wait")
+
+    def failExecution():
+        events.append("execute")
+        raise RuntimeError("protocol failure")
+
+    worker.execute = failExecution
+
+    worker.markFailed = lambda error: events.append(
+        (
+            "failed",
+            str(error),
+        )
+    )
+
+    worker.close = lambda: events.append("close")
+    worker.cleanupCompatibilitySqliteSnapshots = lambda: events.append("cleanup")
+
+    assert worker.run(
+        execute=True
+    ) == 1
+
+    assert events == [
+        "load",
+        "wait",
+        "execute",
+        (
+            "failed",
+            "protocol failure",
+        ),
+        "close",
+        "cleanup",
+    ]
+
+
+def test_CompatibilitySqliteCleanupFailureIsBestEffort(
+        monkeypatch,
+):
+    def failCleanup(cls):
+        raise RuntimeError(
+            "cleanup failure"
+        )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.PostgresqlRuntimeSetSqliteMaterializer,
+        "cleanupCurrentWorkerDirectory",
+        classmethod(failCleanup),
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    report = worker.cleanupCompatibilitySqliteSnapshots()
+
+    assert report["removed"] is False
+    assert report["deletedCount"] == 0
+    assert report["registryEntriesRemoved"] == 0
+    assert report["error"] == "cleanup failure"
 
 

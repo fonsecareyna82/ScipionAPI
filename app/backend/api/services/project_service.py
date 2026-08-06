@@ -5410,10 +5410,6 @@ class ProjectService:
                 })
 
         return {
-            "postgresqlOnly": True,
-            "usesProjectSqlite": False,
-            "usesRunDb": False,
-            "usesStepsSqlite": False,
             "cacheCleanup": cacheCleanup,
             "deletedDirectories": (
                 deletedDirectories

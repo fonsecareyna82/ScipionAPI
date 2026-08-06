@@ -116,6 +116,10 @@ class PostgresqlRuntimeSetMixin:
             self._mapper.maxId()
         )
 
+        self._refreshPostgresqlRuntimeProperties(
+            self._mapper
+        )
+
         return self
 
     def refreshPostgresqlRuntimeState(self):
@@ -132,25 +136,76 @@ class PostgresqlRuntimeSetMixin:
 
         return self
 
-    def _refreshPostgresqlRuntimeProperties(self, mapper):
-        getPropertyKeys = getattr(mapper, "getPropertyKeys", None)
-        getProperty = getattr(mapper, "getProperty", None)
+    def _refreshPostgresqlRuntimeProperties(
+            self,
+            mapper,
+    ):
+        runtimeProperties = (
+            self.getPostgresqlRuntimeProperties()
+        )
 
-        if not callable(getPropertyKeys) or not callable(getProperty):
-            return
+        getPropertyKeys = getattr(
+            mapper,
+            "getPropertyKeys",
+            None,
+        )
 
-        runtimeProperties = self.getPostgresqlRuntimeProperties()
+        getProperty = getattr(
+            mapper,
+            "getProperty",
+            None,
+        )
 
-        for propertyName in getPropertyKeys():
-            propertyName = str(propertyName)
+        if (
+                callable(getPropertyKeys)
+                and callable(getProperty)
+        ):
+            for propertyName in getPropertyKeys():
+                propertyName = str(
+                    propertyName
+                )
+
+                if propertyName == "self":
+                    continue
+
+                runtimeProperties[propertyName] = (
+                    getProperty(
+                        propertyName
+                    )
+                )
+
+        if runtimeProperties.get("_samplingRate") is None:
+            getSamplingRate = getattr(self, "getSamplingRate", None)
+            selectFirst = getattr(mapper, "selectFirst", None)
+
+            if callable(getSamplingRate) and callable(selectFirst):
+                try:
+                    firstItem = selectFirst()
+                except Exception:
+                    firstItem = None
+
+                getFirstItemSamplingRate = getattr(firstItem, "getSamplingRate", None)
+
+                if callable(getFirstItemSamplingRate):
+                    try:
+                        firstItemSamplingRate = getFirstItemSamplingRate()
+                    except Exception:
+                        firstItemSamplingRate = None
+
+                    if firstItemSamplingRate is not None:
+                        runtimeProperties["_samplingRate"] = firstItemSamplingRate
+
+        for propertyName, propertyValue in runtimeProperties.items():
+            propertyName = str(
+                propertyName
+            )
 
             if propertyName == "self":
                 continue
 
-            propertyValue = getProperty(propertyName)
-            runtimeProperties[propertyName] = propertyValue
-
-            if self._isPostgresqlRuntimePointerProperty(propertyName):
+            if self._isPostgresqlRuntimePointerProperty(
+                    propertyName
+            ):
                 continue
 
             currentAttribute = self
@@ -175,10 +230,14 @@ class PostgresqlRuntimeSetMixin:
                 continue
 
             try:
-                setter(propertyValue)
+                setter(
+                    propertyValue
+                )
+
             except Exception:
                 logger.warning(
-                    "Could not refresh PostgreSQL runtime Set property. "
+                    "Could not refresh PostgreSQL runtime "
+                    "Set property. "
                     "className=%s objectId=%s property=%s",
                     self.getClassName(),
                     self.getObjId(),
@@ -186,7 +245,9 @@ class PostgresqlRuntimeSetMixin:
                     exc_info=True,
                 )
 
-        self._postgresqlRuntimeProperties = runtimeProperties
+        self._postgresqlRuntimeProperties = (
+            runtimeProperties
+        )
 
     def _isPostgresqlRuntimePointerProperty(self, propertyName):
         current = self

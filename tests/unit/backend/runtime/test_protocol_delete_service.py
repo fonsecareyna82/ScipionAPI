@@ -342,7 +342,7 @@ def test_DeletePostgresqlRuntimeProtocolsPassesBlockedStatusesAndReturnsRealIds(
     ]
 
 
-def test_BuildPostgresqlRuntimeDeleteResultIsPostgresqlOnly():
+def test_BuildPostgresqlRuntimeDeleteResultContainsDeleteDataOnly():
     result = (
         RuntimeProtocolDeleteService()
         .buildPostgresqlRuntimeDeleteResult(
@@ -378,10 +378,13 @@ def test_BuildPostgresqlRuntimeDeleteResultIsPostgresqlOnly():
     assert result["protocolsCount"] == 2
     assert result["dependenciesCount"] == 3
     assert result["postgresqlRuntimeDelete"] is True
-    assert result["postgresqlOnly"] is True
-    assert result["usesProjectSqlite"] is False
-    assert result["usesRunDb"] is False
-    assert result["usesStepsSqlite"] is False
+    for legacyField in (
+            "postgresqlOnly",
+            "usesProjectSqlite",
+            "usesRunDb",
+            "usesStepsSqlite",
+    ):
+        assert legacyField not in result
 
 
 def test_LegacyProtocolDeleteCompatibilityIsRemoved():
