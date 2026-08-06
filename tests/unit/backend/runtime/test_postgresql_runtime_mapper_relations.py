@@ -63,7 +63,6 @@ def buildRuntimeMapper(rows=None):
 
     mapper.projectId = 7
     mapper.db = FakeDatabase(rows=rows)
-    mapper.writeFallbackMapper = None
     mapper._runtimeProtocolsById = {}
 
     return mapper

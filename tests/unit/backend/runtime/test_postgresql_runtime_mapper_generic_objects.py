@@ -220,7 +220,6 @@ def buildRuntimeMapper(
 
     mapper.projectId = 7
     mapper.project = None
-    mapper.writeFallbackMapper = None
     mapper.flatMapper = Mock()
     mapper.flatMapper.getProtocols.return_value = []
     mapper.flatMapper.getProjectRuntimeMetadata.return_value = None
